@@ -334,7 +334,7 @@ export const register: Register = (on: On, options: PluginOptions) => {
     let tokens: number | undefined;
     try {
       party = await partyOf(st, $, agentId);
-      tokens = agentId ? currentTokens(st.parties.reading(agentId), e.messages) : currentTokens((await $.session.usage()).context.tokens, e.messages);
+      tokens = currentTokens(agentId ? st.parties.reading(agentId) : (await $.session.usage()).context.tokens, e.messages, st.asked.has(key));
     } catch (error) {
       const line = `sub-agent-compact: deciding ${agentId ? `sub-agent ${agentId}` : 'main'} ${e.trigger} compaction failed: ${message(error)}; letting it through`;
       $.ui.log(line);
@@ -353,7 +353,7 @@ export const register: Register = (on: On, options: PluginOptions) => {
       if (e.trigger === 'auto') st.asked.add(key);
       return { skip: decision.reason };
     }
-    if (decision.why === 'no-reading') $.ui.log(`sub-agent-compact: no token reading for ${party.label}; letting the ${e.trigger} compaction through`);
+    if (decision.why === 'no-reading') $.ui.log(`sub-agent-compact: no token reading for ${party.label} and no transcript estimate to trust; letting the ${e.trigger} compaction through`);
     const firstAsk = !st.asked.has(key);
     if (e.trigger === 'auto') st.asked.add(key);
     // With the window known, a first ask past the limit is one step's growth, not a window set too high.

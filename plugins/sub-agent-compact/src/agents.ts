@@ -116,23 +116,29 @@ export class AgentPolicies {
 }
 
 /**
- * Each sub-agent's type by id. A type the engine announced (SubagentStart,
- * SubagentStop) comes first: a Workflow run's agents are never in
- * `$.agent.list()`, so the announcement is their only source. Otherwise the
- * list is asked once per id it names; an id neither names is an engine loop.
+ * Each sub-agent's type by id. The session's agent list comes first, once per
+ * id it names: a teammate's SubagentStart and SubagentStop carry its name as
+ * `agent_type`, not its type. An id no list row names takes the type the
+ * engine announced (SubagentStart, SubagentStop): a Workflow run's agents are
+ * never in `$.agent.list()`, so the announcement is their only source. An id
+ * neither names is an engine loop.
  */
 export class AgentTypes {
-  private readonly byId = new Map<string, string>();
+  private readonly listed = new Map<string, string>();
+  private readonly announced = new Map<string, string>();
 
   learn(id: string, type: string): void {
-    if (id && type) this.byId.set(id, type);
+    if (id && type) this.announced.set(id, type);
   }
 
   async of(id: string, list: () => Promise<readonly { id: string; type: string }[]>): Promise<string | undefined> {
-    const known = this.byId.get(id);
+    const known = this.listed.get(id);
     if (known) return known;
     const agent = (await list()).find((info) => info.id === id);
-    if (agent) this.byId.set(id, agent.type);
-    return agent?.type;
+    if (agent?.type) {
+      this.listed.set(id, agent.type);
+      return agent.type;
+    }
+    return this.announced.get(id) ?? agent?.type;
   }
 }

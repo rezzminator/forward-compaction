@@ -9,7 +9,7 @@ export type DecideInput = {
   /** "main", or the sub-agent's type. */
   label: string;
   limit: number;
-  /** The party's current context tokens; undefined when no reading could be taken. */
+  /** The party's current context tokens; undefined when neither a usage reading nor a trusted transcript estimate could be taken (currentTokens). */
   tokens: number | undefined;
   /** False when automatic compaction is off for this party; default true. */
   enabled?: boolean;
@@ -27,7 +27,8 @@ export type Decision =
  * One compaction request: a person's or plugin's always passes, and so does an
  * automatic one once the party's model asked to compact itself. Otherwise an
  * automatic one is held for a party with automatic compaction off, and while
- * the party is below its limit. No reading never holds an enabled party, and
+ * the party is below its limit. A party with no count at all (neither a usage
+ * reading nor a transcript estimate) is never held while enabled, and
  * an engine loop the session does not list (a fork of its own) is never held.
  */
 export function decide({ trigger, label, limit, tokens, enabled = true, armed, unlisted = false }: DecideInput): Decision {
@@ -85,10 +86,20 @@ export function estimateTranscript(messages: readonly TranscriptMessage[]): numb
  * A party's context now. The last response's usage lags by one step: the
  * tool results that came back since are not in it, and one step of parallel
  * reads can add 100k tokens. The transcript estimate sees them, so the larger
- * of the two is taken; no usage reading at all gives undefined.
+ * of the two is taken. A party that has not answered yet has no usage reading
+ * (a sub-agent resumed from its transcript is asked to compact first): the
+ * estimate stands alone, for its first ask only. Asked again (`askedBefore`)
+ * with still no reading, the request after that ask got no response, as a
+ * prompt too long gets none: the estimate, which runs below the true context
+ * and is set against a limit sized without the party's model, is not trusted
+ * twice. Neither a reading nor a trusted estimate gives undefined.
  */
-export function currentTokens(lastResponse: number | undefined, messages: readonly TranscriptMessage[]): number | undefined {
-  if (lastResponse === undefined) return undefined;
+export function currentTokens(lastResponse: number | undefined, messages: readonly TranscriptMessage[], askedBefore = false): number | undefined {
+  if (lastResponse === undefined) {
+    if (askedBefore) return undefined;
+    const estimate = estimateTranscript(messages);
+    return estimate > 0 ? estimate : undefined;
+  }
   return Math.max(lastResponse, estimateTranscript(messages));
 }
 
