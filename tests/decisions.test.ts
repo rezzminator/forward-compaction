@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { AgentPolicies, type AgentFs } from '../plugins/sub-agent-compact/src/agents.ts';
-import { compactionEnd, contextTokens, currentTokens, decide, estimateTranscript, personPrompt } from '../plugins/sub-agent-compact/src/decide.ts';
+import { AgentPolicies, AgentTypes, type AgentFs } from '../plugins/sub-agent-compact/src/agents.ts';
+import { compactionEnd, contextTokens, decide, personPrompt } from '../plugins/sub-agent-compact/src/decide.ts';
 import { parseFrontmatter } from '../plugins/sub-agent-compact/src/frontmatter.ts';
 import { DEFAULT_KEEP_BRIEF, DEFAULT_MAIN, DEFAULT_SUBAGENT, parseEnabled, parseSize, resolveOptions, sizeTokens } from '../plugins/sub-agent-compact/src/limits.ts';
 
@@ -241,32 +241,18 @@ describe('AgentPolicies', () => {
   });
 });
 
-describe('currentTokens', () => {
-  const file = 'x'.repeat(35_000); // ~10k tokens
-  const transcript = [
-    { text: 'read the files', toolUses: [], toolResults: [] },
-    { text: '', toolUses: [{ tool_use_id: 't1', input: { file_path: 'a.go' }, text: file }, { tool_use_id: 't2', input: { file_path: 'b.go' }, text: file }] },
-    { text: '', toolUses: [], toolResults: [{ tool_use_id: 't1', text: file }, { tool_use_id: 't2', text: file }] },
-  ];
-
-  it('counts each tool result once', () => {
-    const tokens = estimateTranscript(transcript);
-    expect(tokens).toBeGreaterThan(20_000);
-    expect(tokens).toBeLessThan(20_100);
+describe('AgentTypes', () => {
+  it("takes the list's type over an announcement for an id the list names: a teammate's announcement carries its name", async () => {
+    const types = new AgentTypes();
+    types.learn('tm1', 'scout-2');
+    expect(await types.of('tm1', async () => [{ id: 'tm1', type: 'general-purpose' }])).toBe('general-purpose');
   });
 
-  it('counts a call whose answer is missing by its own text', () => {
-    expect(estimateTranscript([transcript[1]!])).toBeGreaterThan(20_000);
-  });
-
-  it('sees tool results the last response usage has not (the one-step lag)', () => {
-    // live: a sub-agent's last response read 59k while two parallel reads had just added ~80k
-    expect(currentTokens(5_000, transcript)).toBe(estimateTranscript(transcript));
-  });
-
-  it('keeps the usage when it is the larger, undefined without one', () => {
-    expect(currentTokens(90_000, transcript)).toBe(90_000);
-    expect(currentTokens(undefined, transcript)).toBeUndefined();
+  it('takes the announced type for an id no list row names, as a Workflow run\'s agent has', async () => {
+    const types = new AgentTypes();
+    types.learn('wf1', 'Explore');
+    expect(await types.of('wf1', async () => [])).toBe('Explore');
+    expect(await types.of('fork1', async () => [])).toBeUndefined();
   });
 });
 
