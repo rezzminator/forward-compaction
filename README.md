@@ -5,9 +5,9 @@
 **Smart auto-compact for Claude Code: a separate compaction point for every sub-agent, and self-compaction at a milestone the model chooses.**
 
 [![Claude Code plugin](https://img.shields.io/badge/Claude%20Code-plugin-D97757)](https://docs.claude.com/en/docs/claude-code/plugins)
-[![Version](https://img.shields.io/badge/version-0.4.0-blue)](./CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.5.0-blue)](./CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
-[![Tests](https://img.shields.io/badge/tests-130%20passing-brightgreen)](#development)
+[![Tests](https://img.shields.io/badge/tests-234%20passing-brightgreen)](#development)
 [![Built with Professor](https://img.shields.io/badge/built%20with-Professor-8A2BE2)](https://github.com/rezzminator/professor)
 
 **34% cheaper** than a sub-agent that never compacts · **52% less context** re-sent on every request
@@ -117,13 +117,20 @@ flowchart LR
    final answer left, it answers instead. Another note follows at each step
    past the first. The nudges start over after every compaction.
 2. **Handing off.** The main chat calls the `handoff` tool
-   (`mcp__sub-agent-compact__handoff`) with its own handoff: the task and
-   every value it fixed, verbatim; what is done, with evidence; the facts
-   the rest of the work uses, with their `file:line`; decisions and rejected
-   options; what is in flight and what is left; the next step. A sub-agent
-   whose definition has a `tools:` allowlist can't see a plugin's tool, so
-   it writes `<handoff>its handoff</handoff>` in a response that also calls
-   a tool.
+   (`mcp__sub-agent-compact__handoff`) with typed fields it fills while it
+   still holds the context: `goal` (the user's intent, fixed values
+   verbatim) and `next_step` (the exact first action) are required; the
+   optional `done_verified`, `in_flight`, `files` (`path:line` anchors to
+   reopen, never contents), `decisions`, `dead_ends`, `standing_rules` and
+   `notes` are short lists or lines, and an empty one is left out. A missing
+   required field comes back to the model as a tool error it reads on the
+   spot. `load_on_wake` names skills or commands the model will need again;
+   the plugin resolves each name at the call (an unknown name is refused
+   then, not at install) and inlines it at install, except a skill the
+   transcript shows was invoked, which Claude Code re-attaches itself. A
+   sub-agent whose definition has a `tools:` allowlist can't see a plugin's
+   tool, so it writes `<handoff>its handoff</handoff>` in a response that
+   also calls a tool.
 3. **Installing.** The plugin stores the handoff. The next time Claude Code
    asks to compact the party, the plugin answers the ask itself: the
    sub-agent's brief (verbatim, see below), then the handoff, then the
@@ -149,10 +156,31 @@ Guards keep this honest:
   throws away more working context than it saves, and when it is shorter
   than 200 characters. The model is told why and carries on; the latest
   handoff a party passes is the one installed.
+- A handoff is capped at 12000 characters (about 3k tokens): a longer one
+  is refused with the size, and the model is told to keep anchors, not
+  contents. A marker's text is held to the same minimum, maximum and
+  nudge-point checks as a tool call's.
 - A handoff whose call the plugin cannot find in the transcript at install
   time is not lost: the summarizer runs with the handoff as its
-  instructions. A person's `/compact` runs the summarizer as it always does
-  and drops a stored handoff.
+  instructions, and the handoff stays stored if the summarizer is skipped.
+  A handoff the plugin's memory lost (a reload, a restart) is read back from
+  the transcript's own `handoff` call before the compaction is judged.
+- A person's `/compact` runs the summarizer as it always does; over a stored
+  handoff it is logged and the user sees a notice that the handoff was
+  dropped.
+- Every failure a model can act on reaches the model: a notice (a refused
+  marker, a skipped compaction, a handoff that was not installed) is read
+  after the party's next tool result, the main chat's at its next prompt.
+  Each install writes one visible log line naming the party and the size it
+  cut. The tool failing to register is retried up to three times and, if it
+  still fails, logged once with what the model can no longer do; with both
+  `handoffTool` and `compactTool` off the plugin says so once.
+- A compaction event whose trigger or transcript shape the plugin does not
+  recognise (a Claude Code change) is treated as automatic and logged once
+  by name, never read as absence. A Haiku-class party is compacted at Claude
+  Code's own point and never held: its ask comes near 51k, below the 67k
+  the plugin assumes for others (measured on 255 non-Haiku sub-agent asks,
+  median 65.2k, p90 67.0k).
 - You can always call a handoff off. A message you send cancels a handoff
   the main chat stored, and the model is told not to hand off again until
   your ask is done. An interrupt (Esc or Ctrl+C) while one is stored, or a
@@ -206,7 +234,7 @@ name and replaced by the default, never ignored silently.
 | `subagentAutoCompactNudgeEvery` | `10%` | The step between a sub-agent's nudges. |
 | `subagentAutoCompactEnabled` | `true` | Off: sub-agents are never nudged or compacted automatically; their own requests still run. |
 | `subagentKeepBrief` | `true` | On: after each compaction a sub-agent's brief is seated again verbatim right after the summary. Off: the summary alone stands for it. |
-| `handoffTool` | `true` | On: models get the `handoff` tool. The text a model passes replaces its whole conversation so far, installed verbatim with no summarizer request; what it does after the call is kept. |
+| `handoffTool` | `true` | On: models get the `handoff` tool. Its typed fields (`goal` and `next_step` required) are rendered to short markdown sections that replace the model's whole conversation so far, installed with no summarizer request; what it does after the call is kept. |
 | `compactTool` | `false` | On: models also get the `compact` tool, whose focus a summarizer turns into a summary, and `<compact-now>` markers count. Off: the handoff replaces it. |
 | `agentDirs` | empty | Comma-separated extra directories of agent definitions. |
 | `logFile` | empty | Absolute path of the JSONL decision log. Each session writes its own file: `decisions.jsonl` becomes `decisions.{session-id}.jsonl`. |
@@ -353,9 +381,10 @@ Work lands on `develop`; `main` holds only releases, and each one is tagged `sub
 | `agents.ts` | Resolves an agent type to its policy |
 | `window.ts` | Model windows and Claude Code's ask point |
 | `nudge.ts` | Nudge levels and text, the `<compact-now>` marker, the compact tool's reply |
-| `handoff.ts` | The handoff tool's description, refusals, `<handoff>` marker and nudge, and the install that answers a compaction with the handoff and every message after it |
+| `handoff.ts` | The handoff tool's description and typed input, its validation and rendering to markdown, refusals, `<handoff>` marker and nudge, and the install that answers a compaction with the handoff and every message after it |
+| `wake.ts` | `load_on_wake`: resolves skill and command names to files, strips frontmatter, skips invoked skills, caps the inlined text |
 | `brief.ts` | Seats a sub-agent's brief back after the summary, once, up to 64k tokens |
-| `parties.ts` | Per-party state: readings, the armed focus, nudges sent, a refused stop |
+| `parties.ts` | Per-party state: readings (a base counts only from the session's first request), the armed focus, nudges sent, a refused stop, notices waiting for the model |
 | `decide.ts` | The decision for one compaction request |
 
 ## 🎓 Built with Professor
