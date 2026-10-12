@@ -1,7 +1,22 @@
 import type { EngineInterface, On, PluginOptions, Register } from 'claude-code';
-import { BRIEF_MAX_TOKENS, reseatBrief } from '../src/brief.ts';
+import { BRIEF_MAX_TOKENS, reseatBrief, seatedBrief } from '../src/brief.ts';
 import { AgentPolicies, AgentTypes } from '../src/agents.ts';
-import { compactionEnd, contextTokens, currentTokens, decide, personPrompt } from '../src/decide.ts';
+import { compactionEnd, contextTokens, currentTokens, decide, estimateTranscript, personPrompt } from '../src/decide.ts';
+import {
+  CONTINUE_AFTER_HANDOFF,
+  HANDOFF_INPUT_DESCRIPTION,
+  HANDOFF_TOOL,
+  HANDOFF_TOOL_DESCRIPTION,
+  handoffDisarmedText,
+  handoffMarkerRequest,
+  handoffNudgeText,
+  handoffProblem,
+  handoffRefusal,
+  handoffStopRequest,
+  handoffStoredText,
+  installHandoff,
+  type ArmedHandoff,
+} from '../src/handoff.ts';
 import { resolveOptions, sizeTokens, type Policy, type ResolvedOptions } from '../src/limits.ts';
 import { appendRows, sessionLogPath } from '../src/log.ts';
 import { armedText, CONTINUE_AFTER_MARKER, disarmedText, earlyArm, markerRequest, nudgeText, stopRequest } from '../src/nudge.ts';
@@ -33,6 +48,8 @@ type State = {
   mainWindow?: number;
   /** The compact tool's full name once registered. */
   toolName?: string;
+  /** The handoff tool's full name once registered. */
+  handoffToolName?: string;
   /** Each sub-agent's type: announced by SubagentStart or SubagentStop, else from `$.agent.list()`. */
   types: AgentTypes;
   /** Per party ("main" or an agent id): its model, from its last response. */
@@ -172,6 +189,19 @@ function askPointOf(st: State): number | undefined {
   return st.compactWindow === undefined ? undefined : engineAskPoint(st.compactWindow);
 }
 
+/** Stores the party's handoff; returns why it was refused (Haiku, unlisted, below its first nudge point), or undefined once stored. */
+function storeHandoff(st: State, $: EngineInterface, party: Party, handoff: ArmedHandoff, via: 'tool' | 'marker' | 'stop'): string | undefined {
+  const tokens = st.parties.reading(party.key);
+  const refused = handoffRefusal({ haiku: party.haiku, unlisted: party.unlisted, tokens, nudgeStart: sizeTokens(party.policy.nudgeStart, party.window) });
+  if (refused !== undefined) {
+    record(st, $, { event: 'handoff-refused', via, party: party.key, type: party.label, why: party.haiku ? 'haiku' : party.unlisted ? 'unlisted' : 'early', tokens: tokens ?? null });
+    return refused;
+  }
+  st.parties.armHandoff(party.key, handoff);
+  record(st, $, { event: 'handoff-stored', via, party: party.key, type: party.label, tokens: tokens ?? null, chars: handoff.text.length });
+  return undefined;
+}
+
 /** Records the party's own request to compact; returns why it was refused (Haiku, unlisted, below its first nudge point), or undefined once armed. */
 function arm(st: State, $: EngineInterface, party: Party, focus: string, via: 'tool' | 'marker' | 'stop'): string | undefined {
   const tokens = st.parties.reading(party.key);
@@ -193,13 +223,17 @@ function arm(st: State, $: EngineInterface, party: Party, focus: string, via: 't
 async function nudgeFor(st: State, $: EngineInterface, agentId: string | undefined): Promise<string | undefined> {
   const party = await partyOf(st, $, agentId);
   if (party.haiku || party.unlisted || !party.policy.enabled) return undefined;
+  if (!st.config.handoffTool && !st.config.compactTool) return undefined;
   const nudgeStart = sizeTokens(party.policy.nudgeStart, party.window);
   const nudgeEvery = sizeTokens(party.policy.nudgeEvery, party.window);
   const level = st.parties.nudgeDue(party.key, nudgeStart, nudgeEvery);
   const tokens = st.parties.reading(party.key);
   if (level === undefined || tokens === undefined) return undefined;
   const autoCompact = limitOf(party);
-  record(st, $, { event: 'nudge', party: party.key, type: party.label, tokens, level, nudgeStart, nudgeEvery, autoCompact, window: party.window });
+  record(st, $, { event: 'nudge', party: party.key, type: party.label, tokens, level, nudgeStart, nudgeEvery, autoCompact, window: party.window, tool: st.config.handoffTool ? 'handoff' : 'compact' });
+  if (st.config.handoffTool) {
+    return handoffNudgeText({ tokens, level, autoCompact, main: party.main, toolName: st.handoffToolName ?? `mcp__sub-agent-compact__${HANDOFF_TOOL}`, firstReading: st.parties.firstReading(party.key) });
+  }
   return nudgeText({ tokens, window: party.window, level, autoCompact, main: party.main, toolName: st.toolName ?? `mcp__sub-agent-compact__${COMPACT_TOOL}` });
 }
 
@@ -221,6 +255,38 @@ async function registerCompactTool(st: State, $: EngineInterface): Promise<void>
     $.ui.log(`sub-agent-compact: registering the ${COMPACT_TOOL} tool failed: ${message(error)}; models can still ask with <compact-now>`);
     record(st, $, { event: 'tool-register-failed', error: message(error) });
   }
+}
+
+async function registerHandoffTool(st: State, $: EngineInterface): Promise<void> {
+  try {
+    const { tool } = await $.tool.register({
+      name: HANDOFF_TOOL,
+      description: HANDOFF_TOOL_DESCRIPTION,
+      inputSchema: {
+        type: 'object',
+        properties: { handoff: { type: 'string', description: HANDOFF_INPUT_DESCRIPTION } },
+        required: ['handoff'],
+      },
+    });
+    st.handoffToolName = tool;
+    record(st, $, { event: 'tool-registered', tool });
+  } catch (error) {
+    $.ui.log(`sub-agent-compact: registering the ${HANDOFF_TOOL} tool failed: ${message(error)}; sub-agents can still hand off with <handoff>`);
+    record(st, $, { event: 'tool-register-failed', tool: HANDOFF_TOOL, error: message(error) });
+  }
+}
+
+async function answerHandoffTool(st: State, $: EngineInterface, agentId: string | undefined, text: unknown, toolUseId: unknown): Promise<string> {
+  const problem = handoffProblem(text);
+  if (problem !== undefined) return problem;
+  const party = await partyOf(st, $, agentId);
+  const handoff = (text as string).trim();
+  if (typeof toolUseId !== 'string' || toolUseId === '') {
+    $.ui.log(`sub-agent-compact: the ${HANDOFF_TOOL} call of ${party.label} carries no tool_use_id; its install falls back to a summary that keeps the handoff`);
+  }
+  const refused = storeHandoff(st, $, party, { text: handoff, anchor: { toolUseId: typeof toolUseId === 'string' ? toolUseId : '' } }, 'tool');
+  if (refused !== undefined) return refused;
+  return handoffStoredText({ chars: handoff.length });
 }
 
 async function answerCompactTool(st: State, $: EngineInterface, agentId: string | undefined, focus: unknown): Promise<string> {
@@ -247,16 +313,18 @@ export const register: Register = (on: On, options: PluginOptions) => {
 
   on('session.start', async ($, e, next) => {
     const result = await next(e);
-    await registerCompactTool(st, $);
+    if (st.config.compactTool) await registerCompactTool(st, $);
+    if (st.config.handoffTool) await registerHandoffTool(st, $);
     return result;
   });
 
   // The person's own message cancels a self-compaction the main chat's model armed; the model is told so.
   on('prompt.submit', async ($, e, next) => {
     try {
+      const handoff = st.parties.handoff('main') !== undefined;
       if (personPrompt(e.origin) && st.parties.disarm('main')) {
-        record(st, $, { event: 'disarmed', party: 'main', via: 'prompt', origin: e.origin.kind });
-        return next({ ...e, context: [...(e.context ?? []), disarmedText()] });
+        record(st, $, { event: 'disarmed', party: 'main', via: 'prompt', origin: e.origin.kind, what: handoff ? 'handoff' : 'compact' });
+        return next({ ...e, context: [...(e.context ?? []), handoff ? handoffDisarmedText() : disarmedText()] });
       }
     } catch (error) {
       $.ui.log(`sub-agent-compact: reading the prompt's origin failed: ${message(error)}`);
@@ -272,16 +340,28 @@ export const register: Register = (on: On, options: PluginOptions) => {
       st.models.set(key, e.model);
       const tokens = contextTokens(result.usage);
       if (tokens !== undefined) st.parties.read(key, tokens);
-      const focus = markerRequest({ answer: result.answer, toolCalls: result.toolUses.length, main: e.agentId === undefined });
-      if (focus !== undefined) arm(st, $, await partyOf(st, $, e.agentId), focus, 'marker');
+      const main = e.agentId === undefined;
+      const handoff = st.config.handoffTool ? handoffMarkerRequest({ answer: result.answer, toolCalls: result.toolUses.length, main }) : undefined;
+      const focus = st.config.compactTool && handoff === undefined ? markerRequest({ answer: result.answer, toolCalls: result.toolUses.length, main }) : undefined;
+      if (handoff !== undefined) storeHandoff(st, $, await partyOf(st, $, e.agentId), { text: handoff, anchor: { marker: true } }, 'marker');
+      else if (focus !== undefined) arm(st, $, await partyOf(st, $, e.agentId), focus, 'marker');
     } catch (error) {
       $.ui.log(`sub-agent-compact: reading turn.step for ${key} failed: ${message(error)}`);
     }
     return result;
   });
 
-  // Serve the compact tool; after any other tool, carry a nudge the party is owed.
+  // Serve the handoff and compact tools; after any other tool, carry a nudge the party is owed.
   on('tool.call', async ($, e, next) => {
+    if (st.handoffToolName !== undefined && e.tool === st.handoffToolName) {
+      try {
+        const input = e as Record<string, unknown>;
+        return { result: await answerHandoffTool(st, $, e.agentId, input.handoff, input.tool_use_id) };
+      } catch (error) {
+        $.ui.log(`sub-agent-compact: storing the handoff of ${e.agentId ?? 'main'} failed: ${message(error)}`);
+        return { result: `Not stored: ${message(error)}` };
+      }
+    }
     if (st.toolName !== undefined && e.tool === st.toolName) {
       try {
         return { result: await answerCompactTool(st, $, e.agentId, (e as Record<string, unknown>).focus) };
@@ -311,7 +391,17 @@ export const register: Register = (on: On, options: PluginOptions) => {
   on('classic.SubagentStop', async ($, e, next) => {
     st.types.learn(e.agent_id, e.agent_type);
     try {
-      const focus = stopRequest({ lastMessage: e.last_assistant_message, continued: st.parties.continued(e.agent_id) });
+      const continued = st.parties.continued(e.agent_id);
+      const handoff = st.config.handoffTool ? handoffStopRequest({ lastMessage: e.last_assistant_message, continued }) : undefined;
+      if (handoff !== undefined) {
+        const party = await partyOf(st, $, e.agent_id);
+        if (storeHandoff(st, $, party, { text: handoff, anchor: { marker: true } }, 'stop') === undefined) {
+          st.parties.markContinued(e.agent_id);
+          record(st, $, { event: 'stop-refused', party: e.agent_id, type: party.label, what: 'handoff' });
+          return { block: CONTINUE_AFTER_HANDOFF };
+        }
+      }
+      const focus = st.config.compactTool && handoff === undefined ? stopRequest({ lastMessage: e.last_assistant_message, continued }) : undefined;
       if (focus !== undefined) {
         const party = await partyOf(st, $, e.agent_id);
         if (arm(st, $, party, focus, 'stop') === undefined) {
@@ -343,6 +433,39 @@ export const register: Register = (on: On, options: PluginOptions) => {
     }
     const limit = limitOf(party);
     const askPoint = askPointOf(st);
+    const handoff = party.haiku || party.unlisted ? undefined : st.parties.handoff(key);
+    if (handoff !== undefined) {
+      // A precompute installs nothing and would keep a stale tail: the compaction it prepares installs the handoff instead.
+      if (e.trigger === 'precompute') {
+        record(st, $, { ...base, type: party.label, decision: 'skip', why: 'handoff-waits' });
+        return { skip: 'handoff waits for the compaction' };
+      }
+      if (e.trigger === 'manual') {
+        // The person's own /compact runs as they asked; the stored handoff is dropped.
+        st.parties.disarm(key);
+        record(st, $, { event: 'disarmed', party: key, via: 'manual', what: 'handoff' });
+      } else {
+        try {
+          const brief = agentId && st.config.keepBrief ? seatedBrief(e.messages, BRIEF_MAX_TOKENS) : undefined;
+          const installed = installHandoff(e.messages, { text: handoff.text, anchor: handoff.anchor, ...(brief !== undefined ? { brief } : {}) });
+          if (installed !== undefined) {
+            const tokensAfter = estimateTranscript(installed.messages);
+            if (e.trigger === 'auto') st.asked.add(key);
+            if (!agentId) st.mainCompactedThisTurn = true;
+            st.parties.compacted(key, tokensAfter);
+            record(st, $, { ...base, type: party.label, limit, tokens: tokens ?? null, messages: e.messages.length, decision: 'handoff', tail: installed.tail, siblings: installed.siblings, brief: brief !== undefined, chars: handoff.text.length, tokensAfter });
+            return { messages: installed.messages, ...(tokens !== undefined ? { tokensBefore: tokens } : {}), tokensAfter };
+          }
+          $.ui.log(`sub-agent-compact: the handoff of ${party.label} is not anchored in its transcript; a summary keeps it instead`);
+          record(st, $, { event: 'handoff-unanchored', party: key, type: party.label, anchor: 'toolUseId' in handoff.anchor ? 'tool' : 'marker' });
+        } catch (error) {
+          $.ui.log(`sub-agent-compact: installing the handoff of ${party.label} failed: ${message(error)}; a summary keeps it instead`);
+          record(st, $, { event: 'handoff-error', party: key, error: message(error) });
+        }
+        // Never hold a compaction: the summarizer runs with the handoff as what it keeps.
+        st.parties.arm(key, handoff.text);
+      }
+    }
     if (!party.main && !party.haiku && !party.unlisted && askPoint !== undefined && limit < askPoint) {
       warnOnce(st, $, `below-window:${party.label}`, `sub-agent-compact: ${party.label} limit ${limit} is below Claude Code's ask point ${askPoint} (CLAUDE_CODE_AUTO_COMPACT_WINDOW ${st.compactWindow}); it compacts at ${askPoint} — lower the window to hold this limit`);
     }
@@ -414,12 +537,13 @@ export const register: Register = (on: On, options: PluginOptions) => {
     try {
       const party = await partyOf(st, $, undefined);
       const focus = party.haiku ? undefined : st.parties.armed('main');
+      const handoff = party.haiku ? undefined : st.parties.handoff('main');
       const tokens = (await $.session.usage()).context.tokens;
       const limit = limitOf(party);
       const forced = party.policy.enabled && tokens !== undefined && tokens >= limit;
-      if (focus === undefined && !forced) return result;
+      if (focus === undefined && handoff === undefined && !forced) return result;
       st.mainCompacting = true;
-      record(st, $, { event: 'turn.complete', party: 'main', tokens: tokens ?? null, limit, action: 'compact', why: focus !== undefined ? 'self' : 'at-limit' });
+      record(st, $, { event: 'turn.complete', party: 'main', tokens: tokens ?? null, limit, action: 'compact', why: handoff !== undefined ? 'handoff' : focus !== undefined ? 'self' : 'at-limit' });
       const outcome = await $.session.compact(focus !== undefined ? { instructions: focus } : {});
       record(st, $, { event: 'turn.complete.compacted', party: 'main', skipped: 'skip' in outcome && outcome.skip ? outcome.skip : null });
     } catch (error) {

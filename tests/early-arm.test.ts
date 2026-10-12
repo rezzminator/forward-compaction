@@ -18,9 +18,9 @@ function engine() {
     fs: { exists: async () => false, read: async () => '', write: async () => {}, list: async () => [] },
     ui: { log: () => {} },
     agent: { list: async () => [] },
-    tool: { register: async () => ({ tool: TOOL }) },
+    tool: { register: async (spec: { name: string }) => ({ tool: `mcp__sub-agent-compact__${spec.name}` }) },
   };
-  register(on as never, {} as never);
+  register(on as never, { compactTool: true } as never);
   const dispatch = (event: string, e: unknown, impl: (e: any) => any) => {
     const next = Object.assign((input: unknown) => impl(input), { signal: new AbortController().signal });
     const hook = hooks.get(event);

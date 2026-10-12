@@ -1,13 +1,16 @@
+import type { ArmedHandoff } from './handoff.ts';
 import { nudgeLevel } from './nudge.ts';
 
 /**
- * Per-party state, keyed "main" or by agent id: the last context reading, the
- * focus its model armed, the last nudge level sent, and whether its stop on a
- * marker was refused.
+ * Per-party state, keyed "main" or by agent id: the first and the last context
+ * reading, the focus or the handoff its model armed (one at a time, the latest
+ * wins), the last nudge level sent, and whether its stop on a marker was refused.
  */
 export class Parties {
   private readonly readings = new Map<string, number>();
+  private readonly firstReadings = new Map<string, number>();
   private readonly focuses = new Map<string, string>();
+  private readonly handoffs = new Map<string, ArmedHandoff>();
   private readonly levels = new Map<string, number>();
   private readonly refused = new Set<string>();
 
@@ -17,6 +20,12 @@ export class Parties {
 
   read(key: string, tokens: number): void {
     this.readings.set(key, tokens);
+    if (!this.firstReadings.has(key)) this.firstReadings.set(key, tokens);
+  }
+
+  /** The party's first reading: its system prompt, tools and first message, about what a handoff cuts it back to. */
+  firstReading(key: string): number | undefined {
+    return this.firstReadings.get(key);
   }
 
   armed(key: string): string | undefined {
@@ -24,16 +33,28 @@ export class Parties {
   }
 
   arm(key: string, focus: string): void {
+    this.handoffs.delete(key);
     this.focuses.set(key, focus);
   }
 
+  handoff(key: string): ArmedHandoff | undefined {
+    return this.handoffs.get(key);
+  }
+
+  armHandoff(key: string, handoff: ArmedHandoff): void {
+    this.focuses.delete(key);
+    this.handoffs.set(key, handoff);
+  }
+
   /**
-   * Drops an armed focus without a compaction: the person cancelled it, or the
-   * compaction it armed did not finish. The nudges already sent stay sent, so
-   * none repeats at once. True when a focus was armed.
+   * Drops an armed focus or handoff without a compaction: the person cancelled
+   * it, or the compaction it armed did not finish. The nudges already sent stay
+   * sent, so none repeats at once. True when one was armed.
    */
   disarm(key: string): boolean {
-    return this.focuses.delete(key);
+    const focus = this.focuses.delete(key);
+    const handoff = this.handoffs.delete(key);
+    return focus || handoff;
   }
 
   continued(key: string): boolean {
@@ -44,10 +65,10 @@ export class Parties {
     this.refused.add(key);
   }
 
-  /** The nudge level owed at the last reading, recorded as sent; undefined when none is owed or the party is armed. */
+  /** The nudge level owed at the last reading, recorded as sent; undefined when none is owed or the party is armed or holds a handoff. */
   nudgeDue(key: string, start: number, every: number): number | undefined {
     const tokens = this.readings.get(key);
-    if (tokens === undefined || this.focuses.has(key)) return undefined;
+    if (tokens === undefined || this.focuses.has(key) || this.handoffs.has(key)) return undefined;
     const level = nudgeLevel(tokens, start, every);
     if (level < 0 || level <= (this.levels.get(key) ?? -1)) return undefined;
     this.levels.set(key, level);
@@ -62,6 +83,7 @@ export class Parties {
   compacted(key: string, tokensAfter: number | undefined): void {
     this.readings.set(key, tokensAfter ?? 0);
     this.focuses.delete(key);
+    this.handoffs.delete(key);
     this.levels.delete(key);
     this.refused.delete(key);
   }

@@ -15,7 +15,7 @@
         "ref": "main"
       },
       "description": "Smart auto-compact for Claude Code: a separate compaction point for every sub-agent, and self-compaction at a milestone the model chooses.",
-      "version": "0.3.1",
+      "version": "0.4.0-dev.6",
       "license": "MIT",
       "keywords": [
         "claude-code",
