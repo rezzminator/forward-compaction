@@ -2,6 +2,11 @@
  * What Claude Code keeps free below a window before it asks to compact: the
  * 13k auto-compact margin plus the 20k reserved for the summary's output.
  * The native ask point of a 1M window is therefore 967k, and of 200k, 167k.
+ * Measured against the callmeter store: Claude Code asks a non-Haiku sub-agent
+ * at 67k with `CLAUDE_CODE_AUTO_COMPACT_WINDOW=100000` (p10 59.5k, p50 65.2k,
+ * p90 67.0k, n=255), so this 33k holds there. It asks a Haiku loop near 51k
+ * (p10 49.2k, p50 51.4k, n=102) and a main chat on a 1M window at 51-54k; the
+ * plugin never holds a Haiku ask (`decide` `haiku`).
  */
 export const ENGINE_COMPACT_BUFFER = 33_000;
 

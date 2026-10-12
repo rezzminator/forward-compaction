@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { AgentPolicies, AgentTypes, type AgentFs } from '../plugins/sub-agent-compact/src/agents.ts';
-import { compactionEnd, contextTokens, decide, personPrompt } from '../plugins/sub-agent-compact/src/decide.ts';
+import { compactionEnd, contextTokens, decide, knownTrigger, personPrompt } from '../plugins/sub-agent-compact/src/decide.ts';
 import { parseFrontmatter } from '../plugins/sub-agent-compact/src/frontmatter.ts';
 import { DEFAULT_KEEP_BRIEF, DEFAULT_MAIN, DEFAULT_SUBAGENT, parseEnabled, parseSize, resolveOptions, sizeTokens } from '../plugins/sub-agent-compact/src/limits.ts';
 
@@ -290,5 +290,18 @@ describe('compactionEnd', () => {
   it('leaves a precompute alone: it installs nothing, and the compaction it prepares is still to come', () => {
     expect(compactionEnd({ trigger: 'precompute', skipped: false, aborted: false })).toBe('precompute');
     expect(compactionEnd({ trigger: 'precompute', skipped: true, aborted: true })).toBe('precompute');
+  });
+});
+
+describe('a Haiku loop and the triggers Claude Code may send', () => {
+  it('passes every Haiku ask, which Claude Code made at its own point (the logs show Haiku asked at 49.6k against a 167k limit)', () => {
+    expect(decide({ trigger: 'auto', label: 'worker', limit: 167_000, tokens: 49_600, haiku: true })).toEqual({ action: 'pass', why: 'haiku' });
+    expect(decide({ trigger: 'auto', label: 'worker', limit: 167_000, tokens: 49_600, haiku: true, enabled: false })).toEqual({ action: 'pass', why: 'haiku' });
+    expect(decide({ trigger: 'auto', label: 'worker', limit: 167_000, tokens: 49_600 })).toEqual({ action: 'skip', reason: 'worker 50k/167k' });
+  });
+
+  it('knows the four triggers and nothing else', () => {
+    for (const t of ['auto', 'manual', 'plugin', 'precompute']) expect(knownTrigger(t)).toBe(t);
+    for (const t of ['recompute', undefined, 42, '']) expect(knownTrigger(t)).toBeUndefined();
   });
 });

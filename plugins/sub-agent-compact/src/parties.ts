@@ -13,17 +13,23 @@ export class Parties {
   private readonly handoffs = new Map<string, ArmedHandoff>();
   private readonly levels = new Map<string, number>();
   private readonly refused = new Set<string>();
+  private readonly notices = new Map<string, string[]>();
 
   reading(key: string): number | undefined {
     return this.readings.get(key);
   }
 
-  read(key: string, tokens: number): void {
+  /**
+   * Records a reading. `fresh` says the reading came from the session's first
+   * request; only such a reading can become the first reading. A plugin
+   * reloaded mid-session reads its first at a late request, which is no base.
+   */
+  read(key: string, tokens: number, fresh = true): void {
     this.readings.set(key, tokens);
-    if (!this.firstReadings.has(key)) this.firstReadings.set(key, tokens);
+    if (fresh && !this.firstReadings.has(key)) this.firstReadings.set(key, tokens);
   }
 
-  /** The party's first reading: its system prompt, tools and first message, about what a handoff cuts it back to. */
+  /** The party's first reading when it came from the session's first request: its system prompt, tools and first message, about what a handoff cuts it back to. */
   firstReading(key: string): number | undefined {
     return this.firstReadings.get(key);
   }
@@ -55,6 +61,20 @@ export class Parties {
     const focus = this.focuses.delete(key);
     const handoff = this.handoffs.delete(key);
     return focus || handoff;
+  }
+
+  /** Queues a line the party's model reads on its next tool result (the main chat, on its next prompt). */
+  notify(key: string, line: string): void {
+    const queued = this.notices.get(key);
+    if (queued) queued.push(line);
+    else this.notices.set(key, [line]);
+  }
+
+  /** The queued lines, emptied. A compaction does not clear them: a notice about it is read after it. */
+  takeNotices(key: string): string[] {
+    const queued = this.notices.get(key) ?? [];
+    this.notices.delete(key);
+    return queued;
   }
 
   continued(key: string): boolean {

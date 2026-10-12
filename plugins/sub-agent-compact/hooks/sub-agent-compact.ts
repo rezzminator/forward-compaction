@@ -1,20 +1,26 @@
 import type { EngineInterface, On, PluginOptions, Register } from 'claude-code';
 import { BRIEF_MAX_TOKENS, reseatBrief, seatedBrief } from '../src/brief.ts';
 import { AgentPolicies, AgentTypes } from '../src/agents.ts';
-import { compactionEnd, contextTokens, currentTokens, decide, estimateTranscript, personPrompt } from '../src/decide.ts';
+import { compactionEnd, contextTokens, currentTokens, decide, estimateTranscript, knownTrigger, personPrompt, type Trigger } from '../src/decide.ts';
 import {
   CONTINUE_AFTER_HANDOFF,
-  HANDOFF_INPUT_DESCRIPTION,
+  HANDOFF_INPUT_SCHEMA,
   HANDOFF_TOOL,
   HANDOFF_TOOL_DESCRIPTION,
   handoffDisarmedText,
+  handoffInputOf,
   handoffMarkerRequest,
+  handoffNotice,
   handoffNudgeText,
   handoffProblem,
   handoffRefusal,
   handoffStopRequest,
   handoffStoredText,
   installHandoff,
+  installLine,
+  parseHandoff,
+  recoverHandoff,
+  transcriptShapeProblem,
   type ArmedHandoff,
 } from '../src/handoff.ts';
 import { resolveOptions, sizeTokens, type Policy, type ResolvedOptions } from '../src/limits.ts';
@@ -22,6 +28,7 @@ import { appendRows, sessionLogPath } from '../src/log.ts';
 import { armedText, CONTINUE_AFTER_MARKER, disarmedText, earlyArm, markerRequest, nudgeText, stopRequest } from '../src/nudge.ts';
 import { Parties } from '../src/parties.ts';
 import { engineAskPoint, isHaiku, modelWindow } from '../src/window.ts';
+import { invokedSkills, pluginPaths, renderWake, stripFrontmatter, wakeCandidates, type WakeEntry, type WakeRoots } from '../src/wake.ts';
 
 // Thin adapter: every decision lives in src/. Each hook catches its own
 // failures, logs them with context and lets the compaction through.
@@ -31,6 +38,10 @@ const COMPACT_TOOL = 'compact';
 const FALLBACK_WINDOW = 200_000;
 
 const LOG_CAP = 2000;
+/** A request counts as the session's first when it is step 0 of a turn that carries at most this many messages (the prompt and its context lines). */
+const FRESH_MAX_MESSAGES = 3;
+/** Registering a tool is tried on this many hook calls before it is given up on. */
+const REGISTER_TRIES = 3;
 
 type Row = Record<string, unknown>;
 
@@ -50,6 +61,15 @@ type State = {
   toolName?: string;
   /** The handoff tool's full name once registered. */
   handoffToolName?: string;
+  /** How many times registering each tool was tried. */
+  toolTries: { handoff: number; compact: number };
+  /** The registration in progress: hooks that need a tool wait on it, so none registers twice. */
+  registering?: Promise<void>;
+  /** The session's cwd and Claude config directory, where skills and commands are read from. */
+  cwd?: string;
+  configDir?: string;
+  /** `${party}:${tool_use_id}` of every handoff call this plugin installed, so one is never installed again from the transcript. */
+  settled: Set<string>;
   /** Each sub-agent's type: announced by SubagentStart or SubagentStop, else from `$.agent.list()`. */
   types: AgentTypes;
   /** Per party ("main" or an agent id): its model, from its last response. */
@@ -109,10 +129,17 @@ function start(st: State, $: EngineInterface): Promise<void> {
     } catch (error) {
       $.ui.log(`sub-agent-compact: reading the session cwd failed: ${message(error)}; using relative paths`);
     }
+    st.cwd = cwd;
     try {
       home = await $.env.get('HOME');
     } catch (error) {
       $.ui.log(`sub-agent-compact: reading HOME failed: ${message(error)}; skipping ~/.claude/agents`);
+    }
+    try {
+      st.configDir = (await $.env.get('CLAUDE_CONFIG_DIR')) || (home ? `${home}/.claude` : undefined);
+    } catch (error) {
+      $.ui.log(`sub-agent-compact: reading CLAUDE_CONFIG_DIR failed: ${message(error)}; load_on_wake reads ~/.claude only`);
+      st.configDir = home ? `${home}/.claude` : undefined;
     }
     try {
       st.mainWindow = (await $.session.usage()).context.window;
@@ -141,6 +168,9 @@ function start(st: State, $: EngineInterface): Promise<void> {
         record(st, $, { event: 'resolve-error', line });
       },
     );
+    if (!st.config.handoffTool && !st.config.compactTool) {
+      warnOnce(st, $, 'no-tools', 'sub-agent-compact: no self-compaction tool is on (handoffTool and compactTool are both off); parties are nudged by nobody and only compacted at their limits');
+    }
     record(st, $, { event: 'start', main: st.config.main, subagent: st.config.subagent, agentDirs: dirs, mainWindow: st.mainWindow ?? null, compactWindow: st.compactWindow ?? null });
   })();
   return st.started;
@@ -189,16 +219,30 @@ function askPointOf(st: State): number | undefined {
   return st.compactWindow === undefined ? undefined : engineAskPoint(st.compactWindow);
 }
 
-/** Stores the party's handoff; returns why it was refused (Haiku, unlisted, below its first nudge point), or undefined once stored. */
-function storeHandoff(st: State, $: EngineInterface, party: Party, handoff: ArmedHandoff, via: 'tool' | 'marker' | 'stop'): string | undefined {
+type Stored = { why: 'refused' | 'invalid'; text: string } | undefined;
+
+/**
+ * Stores the party's handoff. Undefined once stored; otherwise why it was not
+ * and the text the party reads: refused (Haiku, unlisted, below its first
+ * nudge point) or invalid (a marker's text outside the length rules; the
+ * tool's text was checked when it was parsed).
+ */
+function storeHandoff(st: State, $: EngineInterface, party: Party, handoff: ArmedHandoff, via: 'tool' | 'marker' | 'stop'): Stored {
   const tokens = st.parties.reading(party.key);
   const refused = handoffRefusal({ haiku: party.haiku, unlisted: party.unlisted, tokens, nudgeStart: sizeTokens(party.policy.nudgeStart, party.window) });
   if (refused !== undefined) {
     record(st, $, { event: 'handoff-refused', via, party: party.key, type: party.label, why: party.haiku ? 'haiku' : party.unlisted ? 'unlisted' : 'early', tokens: tokens ?? null });
-    return refused;
+    return { why: 'refused', text: refused };
+  }
+  if (via !== 'tool') {
+    const problem = handoffProblem(handoff.text);
+    if (problem !== undefined) {
+      record(st, $, { event: 'handoff-invalid', via, party: party.key, type: party.label, chars: handoff.text.length });
+      return { why: 'invalid', text: problem };
+    }
   }
   st.parties.armHandoff(party.key, handoff);
-  record(st, $, { event: 'handoff-stored', via, party: party.key, type: party.label, tokens: tokens ?? null, chars: handoff.text.length });
+  record(st, $, { event: 'handoff-stored', via, party: party.key, type: party.label, tokens: tokens ?? null, chars: handoff.text.length, loads: handoff.loads?.length ?? 0 });
   return undefined;
 }
 
@@ -224,6 +268,11 @@ async function nudgeFor(st: State, $: EngineInterface, agentId: string | undefin
   const party = await partyOf(st, $, agentId);
   if (party.haiku || party.unlisted || !party.policy.enabled) return undefined;
   if (!st.config.handoffTool && !st.config.compactTool) return undefined;
+  if (st.config.handoffTool && party.main && st.handoffToolName === undefined) {
+    // The main chat has no marker to fall back on: nudging it to a tool that is not there only wastes its turn.
+    warnOnce(st, $, 'main-no-handoff', 'sub-agent-compact: the main chat cannot hand off: the handoff tool is not registered, so it is not nudged');
+    return undefined;
+  }
   const nudgeStart = sizeTokens(party.policy.nudgeStart, party.window);
   const nudgeEvery = sizeTokens(party.policy.nudgeEvery, party.window);
   const level = st.parties.nudgeDue(party.key, nudgeStart, nudgeEvery);
@@ -232,7 +281,7 @@ async function nudgeFor(st: State, $: EngineInterface, agentId: string | undefin
   const autoCompact = limitOf(party);
   record(st, $, { event: 'nudge', party: party.key, type: party.label, tokens, level, nudgeStart, nudgeEvery, autoCompact, window: party.window, tool: st.config.handoffTool ? 'handoff' : 'compact' });
   if (st.config.handoffTool) {
-    return handoffNudgeText({ tokens, level, autoCompact, main: party.main, toolName: st.handoffToolName ?? `mcp__sub-agent-compact__${HANDOFF_TOOL}`, firstReading: st.parties.firstReading(party.key) });
+    return handoffNudgeText({ tokens, level, autoCompact, main: party.main, toolName: st.handoffToolName, firstReading: st.parties.firstReading(party.key) });
   }
   return nudgeText({ tokens, window: party.window, level, autoCompact, main: party.main, toolName: st.toolName ?? `mcp__sub-agent-compact__${COMPACT_TOOL}` });
 }
@@ -262,31 +311,99 @@ async function registerHandoffTool(st: State, $: EngineInterface): Promise<void>
     const { tool } = await $.tool.register({
       name: HANDOFF_TOOL,
       description: HANDOFF_TOOL_DESCRIPTION,
-      inputSchema: {
-        type: 'object',
-        properties: { handoff: { type: 'string', description: HANDOFF_INPUT_DESCRIPTION } },
-        required: ['handoff'],
-      },
+      inputSchema: HANDOFF_INPUT_SCHEMA,
     });
     st.handoffToolName = tool;
     record(st, $, { event: 'tool-registered', tool });
   } catch (error) {
-    $.ui.log(`sub-agent-compact: registering the ${HANDOFF_TOOL} tool failed: ${message(error)}; sub-agents can still hand off with <handoff>`);
-    record(st, $, { event: 'tool-register-failed', tool: HANDOFF_TOOL, error: message(error) });
+    warnOnce(st, $, 'register-failed:handoff', `sub-agent-compact: registering the ${HANDOFF_TOOL} tool failed: ${message(error)}; the main chat cannot hand off (sub-agents can still use <handoff>)`);
+    record(st, $, { event: 'tool-register-failed', tool: HANDOFF_TOOL, error: message(error), tries: st.toolTries.handoff });
   }
 }
 
-async function answerHandoffTool(st: State, $: EngineInterface, agentId: string | undefined, text: unknown, toolUseId: unknown): Promise<string> {
-  const problem = handoffProblem(text);
-  if (problem !== undefined) return problem;
+/**
+ * Registers each enabled tool that is not registered yet, up to REGISTER_TRIES
+ * hook calls each: `session.start` may not fire (a plugin loaded mid-session)
+ * or may run before the session can take a tool. Hooks that need a tool wait on it.
+ */
+async function ensureTools(st: State, $: EngineInterface): Promise<void> {
+  await start(st, $);
+  st.registering = (st.registering ?? Promise.resolve())
+    .then(async () => {
+      if (st.config.compactTool && st.toolName === undefined && st.toolTries.compact < REGISTER_TRIES) {
+        st.toolTries.compact++;
+        await registerCompactTool(st, $);
+      }
+      if (st.config.handoffTool && st.handoffToolName === undefined && st.toolTries.handoff < REGISTER_TRIES) {
+        st.toolTries.handoff++;
+        await registerHandoffTool(st, $);
+      }
+    })
+    .catch((error) => $.ui.log(`sub-agent-compact: registering the tools failed: ${message(error)}`));
+  await st.registering;
+}
+
+/** Where skills and commands are read from, with the install path of each plugin `installed_plugins.json` lists. */
+async function wakeRoots(st: State, $: EngineInterface): Promise<WakeRoots> {
+  const projectRoot = `${st.cwd ?? '.'}/.claude`;
+  const userRoot = st.configDir ?? projectRoot;
+  let plugins: Record<string, string> = {};
+  const file = `${userRoot}/plugins/installed_plugins.json`;
+  try {
+    if (await $.fs.exists(file)) {
+      const parsed = pluginPaths(await $.fs.read(file));
+      if ('problem' in parsed) warnOnce(st, $, 'installed-plugins', `sub-agent-compact: ${parsed.problem}; load_on_wake finds no plugin skill`);
+      else plugins = parsed.paths;
+    }
+  } catch (error) {
+    warnOnce(st, $, 'installed-plugins', `sub-agent-compact: reading ${file} failed: ${message(error)}; load_on_wake finds no plugin skill`);
+  }
+  return { projectRoot, userRoot, plugins };
+}
+
+/** One `load_on_wake` name read from the first file it resolves to, or why it does not. */
+async function resolveWakeEntry(st: State, $: EngineInterface, roots: WakeRoots, name: string): Promise<WakeEntry> {
+  const found = wakeCandidates(name, roots);
+  if ('problem' in found) return { name, problem: found.problem };
+  for (const path of found.paths) {
+    try {
+      if (!(await $.fs.exists(path))) continue;
+      return { name, path, content: stripFrontmatter(await $.fs.read(path)) };
+    } catch (error) {
+      return { name, path, problem: `reading ${path} failed: ${message(error)}` };
+    }
+  }
+  return { name, problem: `no file at any of: ${found.paths.join(', ')}` };
+}
+
+async function answerHandoffTool(st: State, $: EngineInterface, e: Record<string, unknown>): Promise<string> {
+  const agentId = typeof e.agentId === 'string' ? e.agentId : undefined;
+  const parsed = parseHandoff(handoffInputOf(e));
+  if ('problem' in parsed) {
+    record(st, $, { event: 'handoff-invalid', via: 'tool', party: agentId ?? 'main', problem: parsed.problem.slice(0, 300) });
+    return parsed.problem;
+  }
   const party = await partyOf(st, $, agentId);
-  const handoff = (text as string).trim();
-  if (typeof toolUseId !== 'string' || toolUseId === '') {
+  const toolUseId = typeof e.tool_use_id === 'string' ? e.tool_use_id : '';
+  if (toolUseId === '') {
     $.ui.log(`sub-agent-compact: the ${HANDOFF_TOOL} call of ${party.label} carries no tool_use_id; its install falls back to a summary that keeps the handoff`);
   }
-  const refused = storeHandoff(st, $, party, { text: handoff, anchor: { toolUseId: typeof toolUseId === 'string' ? toolUseId : '' } }, 'tool');
-  if (refused !== undefined) return refused;
-  return handoffStoredText({ chars: handoff.length });
+  // A name that resolves nowhere is refused now, while the agent can still correct it.
+  if (parsed.loads.length > 0) {
+    const roots = await wakeRoots(st, $);
+    const failed: string[] = [];
+    for (const name of parsed.loads) {
+      const entry = await resolveWakeEntry(st, $, roots, name);
+      if (entry.problem !== undefined) failed.push(`${name}: ${entry.problem}`);
+    }
+    if (failed.length > 0) {
+      record(st, $, { event: 'handoff-invalid', via: 'tool', party: party.key, type: party.label, problem: 'load_on_wake', names: parsed.loads });
+      return `Not stored: \`load_on_wake\` cannot be loaded: ${failed.join('; ')}. Correct or drop those entries and call the tool again.`;
+    }
+  }
+  const stored = storeHandoff(st, $, party, { text: parsed.text, anchor: { toolUseId }, loads: parsed.loads }, 'tool');
+  if (stored !== undefined) return stored.text;
+  return handoffStoredText({ chars: parsed.text.length, main: party.main, askPoint: askPointOf(st) });
 }
 
 async function answerCompactTool(st: State, $: EngineInterface, agentId: string | undefined, focus: unknown): Promise<string> {
@@ -309,12 +426,13 @@ export const register: Register = (on: On, options: PluginOptions) => {
     writing: Promise.resolve(),
     mainCompactedThisTurn: false,
     mainCompacting: false,
+    toolTries: { handoff: 0, compact: 0 },
+    settled: new Set(),
   };
 
   on('session.start', async ($, e, next) => {
     const result = await next(e);
-    if (st.config.compactTool) await registerCompactTool(st, $);
-    if (st.config.handoffTool) await registerHandoffTool(st, $);
+    await ensureTools(st, $);
     return result;
   });
 
@@ -322,10 +440,13 @@ export const register: Register = (on: On, options: PluginOptions) => {
   on('prompt.submit', async ($, e, next) => {
     try {
       const handoff = st.parties.handoff('main') !== undefined;
+      // What became of the main chat's handoff since its last turn (a skipped install, a fallback) is read with the next prompt.
+      const notices = st.parties.takeNotices('main');
       if (personPrompt(e.origin) && st.parties.disarm('main')) {
         record(st, $, { event: 'disarmed', party: 'main', via: 'prompt', origin: e.origin.kind, what: handoff ? 'handoff' : 'compact' });
-        return next({ ...e, context: [...(e.context ?? []), handoff ? handoffDisarmedText() : disarmedText()] });
+        return next({ ...e, context: [...(e.context ?? []), ...notices, handoff ? handoffDisarmedText() : disarmedText()] });
       }
+      if (notices.length > 0) return next({ ...e, context: [...(e.context ?? []), ...notices] });
     } catch (error) {
       $.ui.log(`sub-agent-compact: reading the prompt's origin failed: ${message(error)}`);
     }
@@ -334,17 +455,23 @@ export const register: Register = (on: On, options: PluginOptions) => {
 
   // Track each loop's context and model from its responses, and read a sub-agent's <compact-now> request in its text.
   on('turn.step', async function* ($, e, next) {
+    await ensureTools(st, $);
     const result = yield* next(e);
     const key = e.agentId ?? 'main';
     try {
       st.models.set(key, e.model);
       const tokens = contextTokens(result.usage);
-      if (tokens !== undefined) st.parties.read(key, tokens);
+      // Only a reading of the session's first request is the base a handoff cuts back to; a plugin reloaded mid-session reads its first at a late one.
+      const fresh = e.index === 0 && typeof e.messageCount === 'number' && e.messageCount <= FRESH_MAX_MESSAGES;
+      if (tokens !== undefined) st.parties.read(key, tokens, fresh);
       const main = e.agentId === undefined;
       const handoff = st.config.handoffTool ? handoffMarkerRequest({ answer: result.answer, toolCalls: result.toolUses.length, main }) : undefined;
       const focus = st.config.compactTool && handoff === undefined ? markerRequest({ answer: result.answer, toolCalls: result.toolUses.length, main }) : undefined;
-      if (handoff !== undefined) storeHandoff(st, $, await partyOf(st, $, e.agentId), { text: handoff, anchor: { marker: true } }, 'marker');
-      else if (focus !== undefined) arm(st, $, await partyOf(st, $, e.agentId), focus, 'marker');
+      if (handoff !== undefined) {
+        const stored = storeHandoff(st, $, await partyOf(st, $, e.agentId), { text: handoff, anchor: { marker: true } }, 'marker');
+        // The marker has no tool result to answer it: the agent reads the outcome on its next tool result.
+        st.parties.notify(key, stored === undefined ? handoffNotice('marker-stored', `${handoff.length} characters`) : handoffNotice('marker-refused', stored.text));
+      } else if (focus !== undefined) arm(st, $, await partyOf(st, $, e.agentId), focus, 'marker');
     } catch (error) {
       $.ui.log(`sub-agent-compact: reading turn.step for ${key} failed: ${message(error)}`);
     }
@@ -355,8 +482,7 @@ export const register: Register = (on: On, options: PluginOptions) => {
   on('tool.call', async ($, e, next) => {
     if (st.handoffToolName !== undefined && e.tool === st.handoffToolName) {
       try {
-        const input = e as Record<string, unknown>;
-        return { result: await answerHandoffTool(st, $, e.agentId, input.handoff, input.tool_use_id) };
+        return { result: await answerHandoffTool(st, $, e as Record<string, unknown>) };
       } catch (error) {
         $.ui.log(`sub-agent-compact: storing the handoff of ${e.agentId ?? 'main'} failed: ${message(error)}`);
         return { result: `Not stored: ${message(error)}` };
@@ -373,8 +499,10 @@ export const register: Register = (on: On, options: PluginOptions) => {
     const result = await next(e);
     if (result.deny !== undefined) return result;
     try {
+      // What became of this party's handoff since its last tool result comes first, then any nudge it is owed.
+      const notices = st.parties.takeNotices(e.agentId ?? 'main');
       const line = await nudgeFor(st, $, e.agentId);
-      if (line !== undefined) return { ...result, context: [...(result.context ?? []), line] };
+      if (notices.length > 0 || line !== undefined) return { ...result, context: [...(result.context ?? []), ...notices, ...(line !== undefined ? [line] : [])] };
     } catch (error) {
       $.ui.log(`sub-agent-compact: nudging ${e.agentId ?? 'main'} failed: ${message(error)}`);
     }
@@ -395,10 +523,17 @@ export const register: Register = (on: On, options: PluginOptions) => {
       const handoff = st.config.handoffTool ? handoffStopRequest({ lastMessage: e.last_assistant_message, continued }) : undefined;
       if (handoff !== undefined) {
         const party = await partyOf(st, $, e.agent_id);
-        if (storeHandoff(st, $, party, { text: handoff, anchor: { marker: true } }, 'stop') === undefined) {
+        const stored = storeHandoff(st, $, party, { text: handoff, anchor: { marker: true } }, 'stop');
+        if (stored === undefined) {
           st.parties.markContinued(e.agent_id);
           record(st, $, { event: 'stop-refused', party: e.agent_id, type: party.label, what: 'handoff' });
           return { block: CONTINUE_AFTER_HANDOFF };
+        }
+        if (stored.why === 'invalid') {
+          // The agent ends its run on a marker it believes was stored: stop it once with the reason, so it can write the handoff out.
+          st.parties.markContinued(e.agent_id);
+          record(st, $, { event: 'stop-refused', party: e.agent_id, type: party.label, what: 'handoff-invalid' });
+          return { block: stored.text };
         }
       }
       const focus = st.config.compactTool && handoff === undefined ? stopRequest({ lastMessage: e.last_assistant_message, continued }) : undefined;
@@ -419,79 +554,133 @@ export const register: Register = (on: On, options: PluginOptions) => {
   on('session.compact', async ($, e, next) => {
     const agentId = e.agentId;
     const key = agentId ?? 'main';
+    // A trigger a newer Claude Code may add is handled as an automatic ask, and said once.
+    const known = knownTrigger(e.trigger);
+    const kind: Trigger = known ?? 'auto';
+    if (known === undefined) {
+      warnOnce(st, $, `trigger:${String(e.trigger)}`, `sub-agent-compact: unknown trigger ${JSON.stringify(e.trigger)} in session.compact (Claude Code newer than this plugin?); treating it as "auto"`);
+    }
+    const messages = Array.isArray(e.messages) ? e.messages : [];
     const base: Row = { event: 'session.compact', trigger: e.trigger, party: agentId ? 'sub' : 'main', agentId: agentId ?? null };
     let party: Party;
     let tokens: number | undefined;
     try {
       party = await partyOf(st, $, agentId);
-      tokens = currentTokens(agentId ? st.parties.reading(agentId) : (await $.session.usage()).context.tokens, e.messages, st.asked.has(key));
+      tokens = currentTokens(agentId ? st.parties.reading(agentId) : (await $.session.usage()).context.tokens, messages, st.asked.has(key));
     } catch (error) {
-      const line = `sub-agent-compact: deciding ${agentId ? `sub-agent ${agentId}` : 'main'} ${e.trigger} compaction failed: ${message(error)}; letting it through`;
+      const line = `sub-agent-compact: deciding ${agentId ? `sub-agent ${agentId}` : 'main'} ${kind} compaction failed: ${message(error)}; letting it through`;
       $.ui.log(line);
       record(st, $, { ...base, decision: 'pass', why: 'error', error: message(error) });
+      if (st.parties.handoff(key) !== undefined) st.parties.notify(key, handoffNotice('fallback', `deciding failed: ${message(error)}`));
       return next(e);
     }
     const limit = limitOf(party);
     const askPoint = askPointOf(st);
-    const handoff = party.haiku || party.unlisted ? undefined : st.parties.handoff(key);
+    const shape = transcriptShapeProblem(e.messages);
+    if (shape !== undefined) {
+      warnOnce(st, $, `shape:${key}`, `sub-agent-compact: the transcript of ${party.label} has an unexpected shape (${shape}); handoffs cannot be installed verbatim`);
+    }
+    const tracked = !party.haiku && !party.unlisted;
+    let handoff: ArmedHandoff | undefined = tracked ? st.parties.handoff(key) : undefined;
+    let recovered = false;
+    // A handoff the plugin lost (a reload, a resume) still stands in the transcript as a stored call: take it back.
+    if (handoff === undefined && tracked && kind !== 'manual' && shape === undefined && st.handoffToolName !== undefined) {
+      const found = recoverHandoff(e.messages, st.handoffToolName);
+      if (found !== undefined && 'toolUseId' in found.anchor && !st.settled.has(`${key}:${found.anchor.toolUseId}`)) {
+        handoff = found;
+        recovered = true;
+      }
+    }
+    // Set when the handoff cannot be installed verbatim: the summarizer is told it for this call only, and the stored handoff is left as it is.
+    let fallback: string | undefined;
     if (handoff !== undefined) {
       // A precompute installs nothing and would keep a stale tail: the compaction it prepares installs the handoff instead.
-      if (e.trigger === 'precompute') {
+      if (kind === 'precompute') {
         record(st, $, { ...base, type: party.label, decision: 'skip', why: 'handoff-waits' });
         return { skip: 'handoff waits for the compaction' };
       }
-      if (e.trigger === 'manual') {
-        // The person's own /compact runs as they asked; the stored handoff is dropped.
+      if (kind === 'manual') {
+        // The person's own /compact runs as they asked; the stored handoff is dropped, and the model is told.
         st.parties.disarm(key);
         record(st, $, { event: 'disarmed', party: key, via: 'manual', what: 'handoff' });
+        $.ui.log(`sub-agent-compact: the person's /compact ran over the stored handoff of ${party.label}: the handoff was dropped and a summary ran`);
+        st.parties.notify(key, handoffNotice('manual'));
       } else {
-        try {
-          const brief = agentId && st.config.keepBrief ? seatedBrief(e.messages, BRIEF_MAX_TOKENS) : undefined;
-          const installed = installHandoff(e.messages, { text: handoff.text, anchor: handoff.anchor, ...(brief !== undefined ? { brief } : {}) });
-          if (installed !== undefined) {
-            const tokensAfter = estimateTranscript(installed.messages);
-            if (e.trigger === 'auto') st.asked.add(key);
-            if (!agentId) st.mainCompactedThisTurn = true;
-            st.parties.compacted(key, tokensAfter);
-            record(st, $, { ...base, type: party.label, limit, tokens: tokens ?? null, messages: e.messages.length, decision: 'handoff', tail: installed.tail, siblings: installed.siblings, brief: brief !== undefined, chars: handoff.text.length, tokensAfter });
-            return { messages: installed.messages, ...(tokens !== undefined ? { tokensBefore: tokens } : {}), tokensAfter };
+        let reason: { kind: 'shape' | 'fallback'; detail: string } | undefined;
+        if (shape !== undefined) reason = { kind: 'shape', detail: shape };
+        else {
+          try {
+            const brief = agentId && st.config.keepBrief ? seatedBrief(e.messages, BRIEF_MAX_TOKENS) : undefined;
+            const roots = handoff.loads !== undefined && handoff.loads.length > 0 ? await wakeRoots(st, $) : undefined;
+            const invoked = invokedSkills(e.messages);
+            const entries: WakeEntry[] = [];
+            for (const name of handoff.loads ?? []) entries.push(invoked.has(name) || roots === undefined ? { name, invoked: invoked.has(name) } : await resolveWakeEntry(st, $, roots, name));
+            const wake = renderWake(entries);
+            const text = wake.text === '' ? handoff.text : `${handoff.text}\n\n**Loaded on wake**\n${wake.text}`;
+            const installed = installHandoff(e.messages, { text, anchor: handoff.anchor, ...(brief !== undefined ? { brief } : {}) });
+            if (installed !== undefined) {
+              const tokensAfter = estimateTranscript(installed.messages);
+              if (kind === 'auto') st.asked.add(key);
+              if (!agentId) st.mainCompactedThisTurn = true;
+              if ('toolUseId' in handoff.anchor) st.settled.add(`${key}:${handoff.anchor.toolUseId}`);
+              st.parties.compacted(key, tokensAfter);
+              const line = installLine({ label: party.label, before: tokens, after: tokensAfter, tail: installed.tail, recovered });
+              $.ui.log(line.line);
+              if (recovered) {
+                $.ui.log(`sub-agent-compact: recovered the handoff of ${party.label} from its transcript`);
+                st.parties.notify(key, handoffNotice('recovered'));
+              }
+              for (const name of wake.failed) {
+                const entry = entries.find((x) => x.name === name);
+                $.ui.log(`sub-agent-compact: could not load ${name}: ${entry?.problem ?? 'the total size was reached'}`);
+              }
+              for (const name of wake.cut) $.ui.log(`sub-agent-compact: load_on_wake entry ${name} was cut at the per-entry cap`);
+              if (wake.failed.length > 0) {
+                st.parties.notify(key, `sub-agent-compact: load_on_wake entries not loaded: ${wake.failed.join(', ')} — the installed handoff names them as NOT LOADED; load them yourself.`);
+              }
+              record(st, $, { ...base, type: party.label, limit, tokens: tokens ?? null, messages: e.messages.length, decision: 'handoff', tail: installed.tail, siblings: installed.siblings, brief: brief !== undefined, chars: text.length, tokensAfter, recovered, loads: entries.length, loadsFailed: wake.failed.length, warn: line.warn });
+              return { messages: installed.messages, ...(tokens !== undefined ? { tokensBefore: tokens } : {}), tokensAfter };
+            }
+            reason = { kind: 'fallback', detail: 'its tool call is not in the transcript' };
+          } catch (error) {
+            reason = { kind: 'fallback', detail: `installing failed: ${message(error)}` };
           }
-          $.ui.log(`sub-agent-compact: the handoff of ${party.label} is not anchored in its transcript; a summary keeps it instead`);
-          record(st, $, { event: 'handoff-unanchored', party: key, type: party.label, anchor: 'toolUseId' in handoff.anchor ? 'tool' : 'marker' });
-        } catch (error) {
-          $.ui.log(`sub-agent-compact: installing the handoff of ${party.label} failed: ${message(error)}; a summary keeps it instead`);
-          record(st, $, { event: 'handoff-error', party: key, error: message(error) });
         }
-        // Never hold a compaction: the summarizer runs with the handoff as what it keeps.
-        st.parties.arm(key, handoff.text);
+        $.ui.log(`sub-agent-compact: the handoff of ${party.label} could not be installed verbatim (${reason.detail}); a summary that keeps it runs instead`);
+        record(st, $, { event: 'handoff-fallback', party: key, type: party.label, why: reason.kind, detail: reason.detail });
+        st.parties.notify(key, handoffNotice(reason.kind, reason.detail));
+        // Never hold a compaction: the summarizer runs with the handoff as what it keeps. Nothing is dropped: if the summary is skipped, the handoff stays stored.
+        fallback = handoff.text;
       }
     }
     if (!party.main && !party.haiku && !party.unlisted && askPoint !== undefined && limit < askPoint) {
       warnOnce(st, $, `below-window:${party.label}`, `sub-agent-compact: ${party.label} limit ${limit} is below Claude Code's ask point ${askPoint} (CLAUDE_CODE_AUTO_COMPACT_WINDOW ${st.compactWindow}); it compacts at ${askPoint} — lower the window to hold this limit`);
     }
-    const armed = party.haiku || party.unlisted ? undefined : st.parties.armed(key);
-    const decision = decide({ trigger: e.trigger, label: party.label, limit, tokens, enabled: party.haiku || party.policy.enabled, armed, unlisted: party.unlisted });
+    const heldArm = tracked ? st.parties.armed(key) : undefined;
+    const armed = fallback ?? heldArm;
+    const decision = decide({ trigger: kind, label: party.label, limit, tokens, enabled: party.haiku || party.policy.enabled, armed, unlisted: party.unlisted, haiku: party.haiku });
     record(st, $, { ...base, type: party.label, limit, source: party.haiku ? 'haiku' : party.source, tokens: tokens ?? null, lastResponseTokens: st.parties.reading(key) ?? null, messages: e.messages.length, decision: decision.action, ...(decision.action === 'pass' ? { why: decision.why } : {}) });
     if (decision.action === 'skip') {
-      if (e.trigger === 'auto') st.asked.add(key);
+      if (kind === 'auto') st.asked.add(key);
       return { skip: decision.reason };
     }
-    if (decision.why === 'no-reading') $.ui.log(`sub-agent-compact: no token reading for ${party.label} and no transcript estimate to trust; letting the ${e.trigger} compaction through`);
+    if (decision.why === 'no-reading') $.ui.log(`sub-agent-compact: no token reading for ${party.label} and no transcript estimate to trust; letting the ${kind} compaction through`);
     const firstAsk = !st.asked.has(key);
-    if (e.trigger === 'auto') st.asked.add(key);
+    if (kind === 'auto') st.asked.add(key);
     // With the window known, a first ask past the limit is one step's growth, not a window set too high.
-    if (e.trigger === 'auto' && firstAsk && !party.unlisted && st.compactWindow === undefined && tokens !== undefined && tokens > limit * 1.1) {
+    if (kind === 'auto' && firstAsk && !party.unlisted && st.compactWindow === undefined && tokens !== undefined && tokens > limit * 1.1) {
       warnOnce(st, $, `late:${party.label}`, `sub-agent-compact: ${party.label} was first asked to compact at ${tokens}, past its limit ${limit}; CLAUDE_CODE_AUTO_COMPACT_WINDOW is unset, so Claude Code's native window is likely above this limit — set it to your smallest sub-agent limit`);
     }
     if (!agentId) st.mainCompactedThisTurn = true;
     // A self-compaction's focus becomes what the summarizer is told; a person's or plugin's instructions come first.
-    const input = decision.why === 'self' && armed !== undefined ? { ...e, instructions: e.instructions ? `${e.instructions}\n\n${armed}` : armed } : e;
+    const input = (decision.why === 'self' || fallback !== undefined) && armed !== undefined ? { ...e, instructions: e.instructions ? `${e.instructions}\n\n${armed}` : armed } : e;
     // A compaction armed by the model that does not finish drops its focus: the person's interrupt, a skip beneath or a failure never leaves it to fire on the next request.
+    // A handoff held for a fallback is not an arm: disarming it would drop the handoff the next compaction can still install.
     const dropArm = (why: string): void => {
-      if (armed !== undefined && st.parties.disarm(key)) record(st, $, { event: 'disarmed', party: key, via: why, trigger: e.trigger });
+      if (fallback === undefined && heldArm !== undefined && st.parties.disarm(key)) record(st, $, { event: 'disarmed', party: key, via: why, trigger: e.trigger });
     };
     const onAbort = (): void => {
-      if (compactionEnd({ trigger: e.trigger, skipped: false, aborted: true }) === 'unfinished') dropArm('interrupt');
+      if (compactionEnd({ trigger: kind, skipped: false, aborted: true }) === 'unfinished') dropArm('interrupt');
     };
     next.signal.addEventListener('abort', onAbort, { once: true });
     // An interrupt that landed before this hook reached the compaction fires no event; read it now.
@@ -500,22 +689,30 @@ export const register: Register = (on: On, options: PluginOptions) => {
     try {
       outcome = await next(input);
     } catch (error) {
-      if (compactionEnd({ trigger: e.trigger, skipped: false, aborted: true }) === 'unfinished') dropArm('error');
+      if (compactionEnd({ trigger: kind, skipped: false, aborted: true }) === 'unfinished') dropArm('error');
       throw error;
     } finally {
       next.signal.removeEventListener('abort', onAbort);
     }
     // An outcome that came back is judged by its skip alone: a compaction that returned its messages ran.
-    const end = compactionEnd({ trigger: e.trigger, skipped: outcome.skip !== undefined, aborted: false });
-    if (end === 'compacted' && outcome.skip === undefined) st.parties.compacted(key, outcome.tokensAfter);
-    else if (end === 'unfinished') dropArm('skipped');
+    const end = compactionEnd({ trigger: kind, skipped: outcome.skip !== undefined, aborted: false });
+    if (end === 'compacted' && outcome.skip === undefined) {
+      st.parties.compacted(key, outcome.tokensAfter);
+      if (fallback !== undefined && handoff !== undefined && 'toolUseId' in handoff.anchor) st.settled.add(`${key}:${handoff.anchor.toolUseId}`);
+    } else if (end === 'unfinished') {
+      dropArm('skipped');
+      if (fallback !== undefined) {
+        $.ui.log(`sub-agent-compact: the summary that was to keep the handoff of ${party.label} was skipped (${outcome.skip ?? 'unfinished'}); the handoff stays stored`);
+        st.parties.notify(key, handoffNotice('skipped', outcome.skip ?? 'unfinished'));
+      }
+    }
     // A sub-agent's brief is its first message, which the summary replaces: seat it back right after the summary.
     if (agentId && st.config.keepBrief && outcome.skip === undefined) {
       try {
-        const messages = reseatBrief(e.messages, outcome.messages, BRIEF_MAX_TOKENS);
-        if (messages !== outcome.messages) {
-          record(st, $, { event: 'brief-seated', party: key, type: party.label, messages: messages.length, chars: messages[1]?.text.length ?? null });
-          return { ...outcome, messages };
+        const reseated = reseatBrief(e.messages, outcome.messages, BRIEF_MAX_TOKENS);
+        if (reseated !== outcome.messages) {
+          record(st, $, { event: 'brief-seated', party: key, type: party.label, messages: reseated.length, chars: reseated[1]?.text.length ?? null });
+          return { ...outcome, messages: reseated };
         }
       } catch (error) {
         $.ui.log(`sub-agent-compact: seating the brief of sub-agent ${agentId} failed: ${message(error)}; leaving the compaction as Claude Code made it`);
@@ -545,10 +742,17 @@ export const register: Register = (on: On, options: PluginOptions) => {
       st.mainCompacting = true;
       record(st, $, { event: 'turn.complete', party: 'main', tokens: tokens ?? null, limit, action: 'compact', why: handoff !== undefined ? 'handoff' : focus !== undefined ? 'self' : 'at-limit' });
       const outcome = await $.session.compact(focus !== undefined ? { instructions: focus } : {});
-      record(st, $, { event: 'turn.complete.compacted', party: 'main', skipped: 'skip' in outcome && outcome.skip ? outcome.skip : null });
+      const skipped = 'skip' in outcome && outcome.skip ? outcome.skip : null;
+      record(st, $, { event: 'turn.complete.compacted', party: 'main', skipped });
+      if (skipped !== null) {
+        // A skip beneath (a tool is running, another hook's veto) leaves the handoff stored: say so where the person and the model read it.
+        $.ui.log(`sub-agent-compact: the compaction between turns was skipped: ${skipped}${handoff !== undefined ? '; the stored handoff stays and installs at the next compaction' : ''}`);
+        if (handoff !== undefined) st.parties.notify('main', handoffNotice('skipped', skipped));
+      }
     } catch (error) {
       $.ui.log(`sub-agent-compact: compacting main between turns failed: ${message(error)}`);
       record(st, $, { event: 'turn.complete', party: 'main', error: message(error) });
+      if (st.parties.handoff('main') !== undefined) st.parties.notify('main', handoffNotice('skipped', `the compaction failed: ${message(error)}`));
     } finally {
       st.mainCompacting = false;
       st.mainCompactedThisTurn = false;

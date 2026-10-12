@@ -51,3 +51,28 @@ describe('Parties', () => {
     expect(new Parties().disarm('main')).toBe(false);
   });
 });
+
+describe('the first reading as a base for the size of a cut', () => {
+  it('is set only by a reading taken on the session\'s first request', () => {
+    const parties = new Parties();
+    parties.read('main', 208_000, false);
+    expect(parties.firstReading('main')).toBeUndefined();
+    parties.read('main', 40_000, true);
+    expect(parties.firstReading('main')).toBe(40_000);
+    parties.read('main', 90_000, true);
+    expect(parties.firstReading('main')).toBe(40_000);
+  });
+});
+
+describe('notices to a party\'s model', () => {
+  it('queue in order, are taken once, and survive a compaction', () => {
+    const parties = new Parties();
+    parties.notify('a1', 'first');
+    parties.notify('a1', 'second');
+    parties.notify('main', 'other');
+    parties.compacted('a1', 5_000);
+    expect(parties.takeNotices('a1')).toEqual(['first', 'second']);
+    expect(parties.takeNotices('a1')).toEqual([]);
+    expect(parties.takeNotices('main')).toEqual(['other']);
+  });
+});
