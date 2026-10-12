@@ -19,6 +19,12 @@ export const DEFAULT_SUBAGENT: Policy = { enabled: true, autoCompact: { percent:
 /** A sub-agent's brief is seated back after the summary at every compaction. */
 export const DEFAULT_KEEP_BRIEF = true;
 
+/** The `compact` tool, whose request a summarizer turns into a summary: off, so models hand off instead. */
+export const DEFAULT_COMPACT_TOOL = false;
+
+/** The `handoff` tool, whose text the plugin installs as the conversation's whole past: on. */
+export const DEFAULT_HANDOFF_TOOL = true;
+
 export type Parse<T> = { ok: true; value: T } | { ok: false; error: string };
 
 const SIZE = /^(\d+(?:\.\d+)?|\.\d+)\s*([km%])?$/i;
@@ -115,6 +121,10 @@ export type ResolvedOptions = {
   subagent: Policy;
   /** Seat a sub-agent's brief back after the summary at each of its compactions. */
   keepBrief: boolean;
+  /** Register the `compact` tool and read `<compact-now>` markers. */
+  compactTool: boolean;
+  /** Register the `handoff` tool and read `<handoff>` markers. */
+  handoffTool: boolean;
   agentDirs: string[];
   logFile?: string;
   /** One line per option that was invalid and fell back; empty when all were valid. */
@@ -142,12 +152,17 @@ export function resolveOptions(options: Record<string, unknown>): ResolvedOption
     ).policy;
   const main = party('main', DEFAULT_MAIN);
   const subagent = party('subagent', DEFAULT_SUBAGENT);
-  let keepBrief = DEFAULT_KEEP_BRIEF;
-  if (options.subagentKeepBrief !== undefined && options.subagentKeepBrief !== '') {
-    const parsed = parseEnabled(options.subagentKeepBrief);
-    if (parsed.ok) keepBrief = parsed.value;
-    else errors.push(`sub-agent-compact: option subagentKeepBrief is invalid (${parsed.error}); using the default ${DEFAULT_KEEP_BRIEF}`);
-  }
+  const flag = (name: string, fallback: boolean): boolean => {
+    const raw = options[name];
+    if (raw === undefined || raw === '') return fallback;
+    const parsed = parseEnabled(raw);
+    if (parsed.ok) return parsed.value;
+    errors.push(`sub-agent-compact: option ${name} is invalid (${parsed.error}); using the default ${fallback}`);
+    return fallback;
+  };
+  const keepBrief = flag('subagentKeepBrief', DEFAULT_KEEP_BRIEF);
+  const compactTool = flag('compactTool', DEFAULT_COMPACT_TOOL);
+  const handoffTool = flag('handoffTool', DEFAULT_HANDOFF_TOOL);
   const agentDirs = dirList(options.agentDirs, errors);
   let logFile: string | undefined;
   const rawLog = options.logFile;
@@ -155,5 +170,5 @@ export function resolveOptions(options: Record<string, unknown>): ResolvedOption
     if (rawLog.trim().startsWith('/')) logFile = rawLog.trim();
     else errors.push(`sub-agent-compact: option logFile must be an absolute path (got ${JSON.stringify(rawLog)}); logging off`);
   }
-  return { main, subagent, keepBrief, agentDirs, ...(logFile ? { logFile } : {}), errors };
+  return { main, subagent, keepBrief, compactTool, handoffTool, agentDirs, ...(logFile ? { logFile } : {}), errors };
 }

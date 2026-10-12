@@ -22,9 +22,9 @@ function engine() {
     fs: { exists: async () => false, read: async () => '', write: async () => {}, list: async () => [] },
     ui: { log: () => {} },
     agent: { list: async () => [] },
-    tool: { register: async () => ({ tool: TOOL }) },
+    tool: { register: async (spec: { name: string }) => ({ tool: `mcp__sub-agent-compact__${spec.name}` }) },
   };
-  register(on as never, {} as never);
+  register(on as never, { compactTool: true } as never);
 
   /** One dispatch of `event`; with no hook for it, the engine's own `impl` answers, as core would. */
   const dispatch = (event: string, e: unknown, impl: (e: any) => Promise<unknown>, signal = new AbortController().signal) => {

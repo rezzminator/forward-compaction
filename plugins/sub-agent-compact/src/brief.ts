@@ -2,6 +2,8 @@
 // Claude Code replaces it with the summary at a compaction, so the exact paths, acceptance rows and
 // standing rules fall to a paraphrase. This puts it back right after the summary, verbatim.
 
+import { HANDOFF_OPENING } from './handoff.ts';
+
 /** The parts of a transcript message this module reads (the plugin API's SessionMessage satisfies it). */
 export type BriefMessage = {
   role: 'user' | 'assistant';
@@ -36,6 +38,22 @@ function seatedText(brief: string, maxTokens: number): string {
   return `${BRIEF_MARKER}\n${head}\n[sub-agent-compact: the brief was cut at ${maxTokens} tokens (${head.length} characters) of ${brief.length} characters]`;
 }
 
+/** The brief to seat and the original text it came from; an earlier seated copy is carried over as it is. */
+function findBrief(input: readonly BriefMessage[], maxTokens: number): { seated: string; original?: string } | undefined {
+  const earlier = input.find(isSeated);
+  if (earlier) return { seated: earlier.text };
+  const first = input[0];
+  if (first && isPlainUser(first) && first.text.trim() !== '' && !first.text.startsWith(SUMMARY_OPENING) && !first.text.startsWith(HANDOFF_OPENING)) {
+    return { seated: seatedText(first.text, maxTokens), original: first.text };
+  }
+  return undefined;
+}
+
+/** The seated text of a sub-agent's brief (marker first), or undefined when its transcript holds none: what a handoff seats before itself. */
+export function seatedBrief(input: readonly BriefMessage[], maxTokens: number): string | undefined {
+  return findBrief(input, maxTokens)?.seated;
+}
+
 /**
  * The messages a sub-agent's compaction leaves, with its brief seated directly after the summary.
  *
@@ -46,17 +64,9 @@ function seatedText(brief: string, maxTokens: number): string {
  * to seat: no brief in the input, or no summary to follow.
  */
 export function reseatBrief<M extends BriefMessage>(input: readonly M[], output: readonly M[], maxTokens: number): readonly M[] {
-  let seated: string | undefined;
-  let original: string | undefined;
-  const earlier = input.find(isSeated);
-  if (earlier) seated = earlier.text;
-  else {
-    const first = input[0];
-    if (first && isPlainUser(first) && first.text.trim() !== '' && !first.text.startsWith(SUMMARY_OPENING)) {
-      original = first.text;
-      seated = seatedText(first.text, maxTokens);
-    }
-  }
+  const found = findBrief(input, maxTokens);
+  const seated = found?.seated;
+  const original = found?.original;
   const summary = output[0];
   if (seated === undefined || !summary || !isPlainUser(summary) || isSeated(summary)) return output;
   const kept = output.slice(1).filter((m) => !(isSeated(m) || (original !== undefined && isPlainUser(m) && m.text === original)));

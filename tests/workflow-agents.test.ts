@@ -24,7 +24,7 @@ function engine() {
     fs: { exists: async () => false, read: async () => '', write: async () => {}, list: async () => [] },
     ui: { log: (line: string) => void logs.push(line) },
     agent: { list: async () => [] },
-    tool: { register: async () => ({ tool: 'mcp__sub-agent-compact__compact' }) },
+    tool: { register: async (spec: { name: string }) => ({ tool: `mcp__sub-agent-compact__${spec.name}` }) },
   };
   register(on as never, {} as never);
 
