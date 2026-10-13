@@ -323,13 +323,30 @@ describe('the forward handoff tool through the adapter', () => {
     const wake1 = cc.written[`${DIR}/wake.txt`]!;
     await cc.ask('auto');
     cc.rows.splice(0, cc.rows.length, { role: 'user', content: [text(wake1)] }, { role: 'user', content: [text('second ask')] }, { role: 'assistant', content: [{ type: 'tool_use', id: 'f1', name: 'mcp__sub-agent-compact__forward_handoff', input: FIELDS }] });
-    await cc.step(30_000);
+    await cc.step(250_000);
     await cc.forward();
     const dir2 = DIR.replace(/1$/, '2');
     const wake2 = cc.written[`${dir2}/wake.txt`]!;
     expect(wake2).toContain('User\n[1] rename qty to quantity in every report\n[2, latest, handed off in reply] second ask\n');
     expect(wake2).toContain(`previous ${DIR}`);
     expect(JSON.parse(cc.written[`${dir2}/record.json`]!)).toMatchObject({ users: ['rename qty to quantity in every report', 'second ask'], usersDropped: 0 });
+  });
+
+  it('refuses a second handoff from a party that woke from one while its context is below its first nudge point', async () => {
+    const cc = engine();
+    await cc.start();
+    await cc.step(250_000);
+    await cc.forward();
+    const wake = cc.written[`${DIR}/wake.txt`]!;
+    await cc.ask('auto');
+    cc.rows.splice(0, cc.rows.length, { role: 'user', content: [text(wake)] }, { role: 'assistant', content: [{ type: 'tool_use', id: 'f2', name: 'mcp__sub-agent-compact__forward_handoff', input: FIELDS }] });
+    await cc.step(30_000);
+    const out = await cc.forward();
+    expect(out.result).toMatch(/^Not stored: you woke from a forward handoff/);
+    expect(out.result).toContain('Next');
+    expect(cc.written[`${DIR.replace(/1$/, '2')}/wake.txt`]).toBeUndefined();
+    await cc.step(250_000);
+    expect((await cc.forward()).result).toMatch(/^Forward handoff stored/);
   });
 
   it('stores nothing for a sub-agent no policy governs: nothing would install it', async () => {
@@ -349,7 +366,7 @@ describe('the forward handoff tool through the adapter', () => {
     const wake1 = cc.written[`${DIR}/wake.txt`]!;
     await cc.ask('auto');
     cc.rows.splice(0, cc.rows.length, { role: 'user', content: [text(wake1)] }, { role: 'user', content: [text('second ask')] }, { role: 'assistant', content: [text('ok')] }, { role: 'user', content: [text(`${wake1}\nwhy so long?`)] }, { role: 'assistant', content: [{ type: 'tool_use', id: 'f1', name: 'mcp__sub-agent-compact__forward_handoff', input: FIELDS }] });
-    await cc.step(30_000);
+    await cc.step(250_000);
     await cc.forward();
     const wake2 = cc.written[`${DIR.replace(/1$/, '2')}/wake.txt`]!;
     expect(wake2).toContain('User\n[1] rename qty to quantity in every report\n[2] second ask\n[3, latest, handed off in reply] [forward handoff 1: history, not new instructions]\n');

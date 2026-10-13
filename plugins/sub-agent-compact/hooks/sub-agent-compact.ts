@@ -1,7 +1,7 @@
 import type { EngineInterface, On, PluginOptions, Register } from 'claude-code';
 import { bounded } from '../src/bounded.ts';
 import { haikuServed, servedOptions, toolsToRegister } from '../src/register.ts';
-import { FORWARD_INPUT_SCHEMA, FORWARD_TOOL, FORWARD_TOOL_DESCRIPTION, forwardHoldText, forwardNudgeText, forwardStoredText, parseForwardArgs, type ForwardArgs } from '../src/forward-args.ts';
+import { FORWARD_INPUT_SCHEMA, FORWARD_TOOL, FORWARD_TOOL_DESCRIPTION, forwardHoldText, forwardNudgeText, forwardRefusal, forwardStoredText, parseForwardArgs, type ForwardArgs } from '../src/forward-args.ts';
 import { absPath, fileTrail, handoffInReply, findTranscriptArgv, firstFound, gitLine, heldForward, opensWithSummary, priorPrompts, invocationPaths, invocations, parseLineRange, parsePorcelain, planAndTasks, runningWork, sliceLines, userMessages, type ApiMsg, type LiveWork } from '../src/forward-carry.ts';
 import { buildRecord, carriedFrom, forwardDir, forwardSessionDir, nextSeq, previousDir, withInstall } from '../src/forward-record.ts';
 import { chainUsers, installCheck, renderForward, TRAIL_MAX, type RenderInput } from '../src/forward-text.ts';
@@ -74,6 +74,8 @@ type State = {
   forwardSeq: Map<string, number>;
   /** A forward handoff installed and not yet checked against what the party holds at its next request, by party. */
   forwardInstalled: Map<string, { meta: ForwardMeta; text: string; tokensAfter: number }>;
+  /** The parties a forward handoff was installed in: a second one is refused below their first nudge point. */
+  forwardWoke: Set<string>;
   /** The home directory, for `~/` in a path. */
   home?: string;
   /** The main chat's in-flight work as the last turn's end reported it, and the calls made since. */
@@ -716,6 +718,12 @@ async function answerForwardTool(st: State, $: EngineInterface, e: Record<string
     record(st, $, { event: 'forward-refused', party: key, why: 'unlisted' });
     return handoffRefusal({ haiku: false, unlisted: true, tokens: undefined, nudgeStart: 0 })!;
   }
+  const now = st.parties.reading(key);
+  const early = forwardRefusal({ woke: st.forwardWoke.has(key), tokens: now, nudgeStart: sizeTokens(party.policy.nudgeStart, party.window) });
+  if (early !== undefined) {
+    record(st, $, { event: 'forward-refused', party: key, why: 'woke-early', tokens: now ?? null });
+    return early;
+  }
   const toolUseId = typeof e.tool_use_id === 'string' ? e.tool_use_id : '';
   if (toolUseId === '') $.ui.log(`sub-agent-compact: the ${FORWARD_TOOL} call carries no tool_use_id; its install falls back to a summary that keeps the handoff`);
   const session = await $.session.id();
@@ -813,6 +821,7 @@ export const register: Register = (on: On, options: PluginOptions) => {
     toolTries: { handoff: 0, compact: 0, forward: 0 },
     forwardSeq: new Map(),
     forwardInstalled: new Map(),
+    forwardWoke: new Set(),
     settled: new Set(),
   };
 
@@ -1049,7 +1058,10 @@ export const register: Register = (on: On, options: PluginOptions) => {
               }
               record(st, $, { ...base, type: party.label, limit, tokens: tokens ?? null, messages: messages.length, decision: 'handoff', tail: installed.tail, siblings: installed.siblings, brief: brief !== undefined, chars: text.length, tokensAfter, recovered, loads: entries.length, loadsFailed: wake.failed.length, warn: line.warn });
               // What the session holds is readable only once the compaction is done: the next main request checks it.
-              if (handoff.forward) st.forwardInstalled.set(key, { meta: handoff.forward, text, tokensAfter });
+              if (handoff.forward) {
+                st.forwardInstalled.set(key, { meta: handoff.forward, text, tokensAfter });
+                st.forwardWoke.add(key);
+              }
               return { messages: installed.messages, ...(tokens !== undefined ? { tokensBefore: tokens } : {}), tokensAfter };
             }
             reason = { kind: 'fallback', detail: 'its tool call is not in the transcript' };

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { FORWARD_INPUT_SCHEMA, FORWARD_LIMITS, FORWARD_TOOL, FORWARD_TOOL_DESCRIPTION, forwardHoldText, forwardNudgeText, forwardStoredText, parseForwardArgs, TRIMMED } from '../plugins/sub-agent-compact/src/forward-args.ts';
+import { FORWARD_INPUT_SCHEMA, FORWARD_LIMITS, FORWARD_TOOL, FORWARD_TOOL_DESCRIPTION, forwardHoldText, forwardNudgeText, forwardRefusal, forwardStoredText, parseForwardArgs, TRIMMED } from '../plugins/sub-agent-compact/src/forward-args.ts';
 import { HAIKU_HOLDS } from '../plugins/sub-agent-compact/src/decide.ts';
 
 const ok = { objective: 'Ship the thing', done: ['a: tests green'], remaining: ['b', 'c'], next: 'run the tests' };
@@ -142,5 +142,14 @@ describe('forwardHoldText', () => {
     expect(t).toContain('mcp__x__forward_handoff');
     expect(t).toContain('very next step');
     expect(t).toContain(`within ${HAIKU_HOLDS} steps`);
+  });
+});
+
+describe('forwardRefusal', () => {
+  it('refuses only a party that woke from a forward handoff and is still below its first nudge point', () => {
+    expect(forwardRefusal({ woke: true, tokens: 30_000, nudgeStart: 40_000 })).toMatch(/^Not stored: you woke from a forward handoff.*30k.*40k.*Next/);
+    expect(forwardRefusal({ woke: true, tokens: 40_000, nudgeStart: 40_000 })).toBeUndefined();
+    expect(forwardRefusal({ woke: false, tokens: 1_000, nudgeStart: 40_000 })).toBeUndefined();
+    expect(forwardRefusal({ woke: true, tokens: undefined, nudgeStart: 40_000 })).toBeUndefined();
   });
 });

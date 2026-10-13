@@ -4,6 +4,11 @@ Every release of sub-agent-compact. Versions follow [semantic versioning](https:
 
 ## [Unreleased]
 
+## [0.7.0-dev.8] — 2026-10-13
+
+### Fixed
+- A party that woke from a forward handoff is refused a second one while its context is below its first nudge point (`Not stored: … continue its work from its Next block`). Woken Haiku probes called `forward_handoff` again in 6 of 8 runs; the in-reply tag alone did not stop them. A first handoff is never refused for size.
+
 ## [0.7.0-dev.7] — 2026-10-13
 
 ### Fixed

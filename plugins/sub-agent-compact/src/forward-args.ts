@@ -195,6 +195,15 @@ export function forwardStoredText({ tokens, dir, blocks }: { tokens: number; dir
   return `Forward handoff stored (${k(tokens)} tokens: ${sizes}).${dir !== undefined ? ` Saved to ${dir}.` : ''} It installs when this turn ends: end your turn now with one line to the person; do not call more tools.`;
 }
 
+/**
+ * The reply to a forward handoff from a party that woke from one and is still below its first nudge point: a second
+ * handoff there saves nothing, and a woken model that reads its handoff order as open would loop. Undefined otherwise.
+ */
+export function forwardRefusal({ woke, tokens, nudgeStart }: { woke: boolean; tokens: number | undefined; nudgeStart: number }): string | undefined {
+  if (!woke || tokens === undefined || tokens >= nudgeStart) return undefined;
+  return `Not stored: you woke from a forward handoff, and your context is ${k(tokens)}, below ${k(nudgeStart)}, where a handoff first pays. It is installed: continue its work from its Next block.`;
+}
+
 /** What a Haiku party reads when Claude Code's compaction of it is held for its forward handoff. */
 export function forwardHoldText(toolName: string): string {
   return `sub-agent-compact: Claude Code is compacting your context now. Call ${toolName} as your very next step (objective, done, remaining, next); within ${HAIKU_HOLDS} steps it compacts with or without it.`;
