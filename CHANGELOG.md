@@ -4,6 +4,12 @@ Every release of sub-agent-compact. Versions follow [semantic versioning](https:
 
 ## [Unreleased]
 
+## [0.7.0-dev.13] — 2026-10-13
+
+### Changed
+
+- A forward handoff whose `next` opens by re-reading a file its `load_files` already puts in the wake, or by checking git status, which the wake carries in its Git block, is sent back once per party with the reason, so the woken agent starts on the work. The same call sent again is stored.
+
 ## [0.7.0-dev.12] — 2026-10-13
 
 ### Added

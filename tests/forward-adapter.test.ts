@@ -387,6 +387,16 @@ describe('the forward handoff tool through the adapter', () => {
     expect(JSON.parse(cc.written[`${DIR}/record.json`]!).summary).toBe('Problem Solving:\n- b.sql uses qty only in views.');
   });
 
+  it('sends back once a next that opens by re-reading a loaded file, then stores the same call', async () => {
+    const cc = engine({ forwardHandoffTool: true }, { '/nowhere/reports/c.sql': 'select 1;' });
+    await cc.start();
+    await cc.step(250_000);
+    const fields = { ...FIELDS, next: 'Read reports/c.sql, then edit line 12', load_files: [{ path: 'reports/c.sql', why: 'the last report' }] };
+    expect((await cc.forward(fields)).result).toMatch(/^Not stored: `next` opens by reading reports\/c\.sql, which load_files/);
+    expect(cc.written[`${DIR}/wake.txt`]).toBeUndefined();
+    expect((await cc.forward(fields)).result).toMatch(/^Forward handoff stored/);
+  });
+
   it('refuses a second handoff from a party that woke from one while its context is below its first nudge point', async () => {
     const cc = engine();
     await cc.start();

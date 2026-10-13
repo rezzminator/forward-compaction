@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { FORWARD_INPUT_SCHEMA, FORWARD_LIMITS, FORWARD_TOOL, FORWARD_TOOL_DESCRIPTION, forwardHoldText, forwardNudgeText, forwardRefusal, forwardStoredText, parseForwardArgs, TRIMMED } from '../plugins/sub-agent-compact/src/forward-args.ts';
+import { FORWARD_INPUT_SCHEMA, FORWARD_LIMITS, FORWARD_TOOL, FORWARD_TOOL_DESCRIPTION, forwardHoldText, forwardNudgeText, forwardRefusal, forwardStoredText, parseForwardArgs, rereadNudge, TRIMMED } from '../plugins/sub-agent-compact/src/forward-args.ts';
 import { HAIKU_HOLDS } from '../plugins/sub-agent-compact/src/decide.ts';
 
 const ok = { objective: 'Ship the thing', done: ['a: tests green'], remaining: ['b', 'c'], next: 'run the tests' };
@@ -152,5 +152,26 @@ describe('forwardRefusal', () => {
     expect(forwardRefusal({ woke: true, tokens: 40_000, nudgeStart: 40_000 })).toBeUndefined();
     expect(forwardRefusal({ woke: false, tokens: 1_000, nudgeStart: 40_000 })).toBeUndefined();
     expect(forwardRefusal({ woke: true, tokens: undefined, nudgeStart: 40_000 })).toBeUndefined();
+  });
+});
+
+describe('rereadNudge', () => {
+  const loads = [{ path: '/f/tracer-loom/plan.md', why: 'design' }, { path: '/r/src/levels.ts', lines: '1-20', why: 'x' }];
+  it('sends back a next that opens by reading a file the wake already loads, naming it', () => {
+    expect(rereadNudge('Read plan.md, run git status, then write the tests', loads)).toBe(
+      'Not stored: `next` opens by reading /f/tracer-loom/plan.md, which load_files already puts in the wake. Make `next` the first action after that read, and call forward_handoff again with the same fields.',
+    );
+    expect(rereadNudge('Re-read /r/src/levels.ts and gate.ts; then fix clamp', loads)).toContain('/r/src/levels.ts, which load_files');
+  });
+  it('sends back a next that opens by checking git, which the wake carries in its Git block', () => {
+    expect(rereadNudge('Run `git -C /w status`, then grep the doors', [])).toBe(
+      'Not stored: `next` opens by checking git status, which the wake already carries in its Git block. Make `next` the first action after that check, and call forward_handoff again with the same fields.',
+    );
+    expect(rereadNudge('Check the git state and write run.md', [])).toContain('checking git status');
+  });
+  it('lets through a next whose first action is the work, or a read of a file not loaded', () => {
+    expect(rereadNudge('Grep the doors, then read plan.md', loads)).toBeUndefined();
+    expect(rereadNudge('Read design.md and tests/adapter.test.ts, then write the adapter', loads)).toBeUndefined();
+    expect(rereadNudge('Write GOAL/DECIDE to run.md; commit after git status is clean', loads)).toBeUndefined();
   });
 });

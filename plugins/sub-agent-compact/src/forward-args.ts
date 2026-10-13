@@ -1,6 +1,7 @@
 import { HAIKU_HOLDS } from './decide.ts';
 // The forward handoff tool's own part: what the model writes (its frontier) and how it is read.
-// Validation never refuses a call: a field over its limit is trimmed and marked, and only a missing required field is sent back.
+// Validation never refuses a call for its size: a field over its limit is trimmed and marked. A missing required field is sent
+// back, and once per party a `next` that opens by re-reading what the wake already carries (see rereadNudge).
 
 /** The tool's short name; the model calls it as `mcp__sub-agent-compact__forward_handoff`. */
 export const FORWARD_TOOL = 'forward_handoff';
@@ -43,7 +44,7 @@ export type ForwardArgs = {
 export type ForwardParse = { args: ForwardArgs } | { nudge: string };
 
 export const FORWARD_TOOL_DESCRIPTION =
-  "Hand off to yourself — compact at a clean point, never mid-edit. Code carries your user messages, skills, files, plan, git and running work; you write the frontier. `next` is the first action toward the user's latest explicit request. `done` holds verified items only; `findings` quote errors verbatim, nothing unconfirmed. Installs when your turn ends: end it then. Returns the stored size and saved path; a missing required field returns an error naming it. Example: forward_handoff({objective:'ship X', done:['a: tests pass'], remaining:['b'], next:'run c'})";
+  "Hand off to yourself — compact at a clean point, never mid-edit. Code carries your user messages, skills, files, plan, git and running work; you write the frontier. `next` is the first action toward the user's latest explicit request, never re-reading what the wake holds. `done` holds verified items only; `findings` quote errors verbatim, nothing unconfirmed. Installs when your turn ends: end it then. Returns the stored size and saved path; a missing required field returns an error naming it. Example: forward_handoff({objective:'ship X', done:['a: tests pass'], remaining:['b'], next:'run c'})";
 
 type Property = { type: string; description: string; items?: unknown };
 
@@ -55,7 +56,7 @@ export const FORWARD_INPUT_SCHEMA: { type: 'object'; properties: Record<string, 
     objective: { type: 'string', description: `The outcome now worked toward: which of the user's asks is current and what done means. At most ${FORWARD_LIMITS.objective} characters.` },
     done: list(`Finished pieces, each with how it was verified. At most ${FORWARD_LIMITS.doneItems} items, ${FORWARD_LIMITS.doneItems * FORWARD_LIMITS.doneChars} characters in all.`),
     remaining: list(`Every step left, in order. At most ${FORWARD_LIMITS.remainingItems} items, ${FORWARD_LIMITS.remainingItems * FORWARD_LIMITS.remainingChars} characters in all.`),
-    next: { type: 'string', description: `The first concrete action after the wake, in line with the user's latest explicit request. At most ${FORWARD_LIMITS.next} characters.` },
+    next: { type: 'string', description: `The first concrete action after the wake, in line with the user's latest explicit request; never re-reading a load_files file or checking git, which the wake already holds. At most ${FORWARD_LIMITS.next} characters.` },
     blocked: list(`What waits on whom. At most ${FORWARD_LIMITS.blockedItems} items, ${FORWARD_LIMITS.blockedItems * FORWARD_LIMITS.blockedChars} characters in all.`),
     findings: list(`Decisions with why, dead ends, discovered facts; errors verbatim; nothing unconfirmed. At most ${FORWARD_LIMITS.findingsItems} items, ${FORWARD_LIMITS.findingsItems * FORWARD_LIMITS.findingsChars} characters in all.`),
     load_files: {
@@ -207,4 +208,28 @@ export function forwardRefusal({ woke, tokens, nudgeStart }: { woke: boolean; to
 /** What a Haiku party reads when Claude Code's compaction of it is held for its forward handoff. */
 export function forwardHoldText(toolName: string): string {
   return `sub-agent-compact: Claude Code is compacting your context now. Call ${toolName} as your very next step (objective, done, remaining, next); within ${HAIKU_HOLDS} steps it compacts with or without it.`;
+}
+
+const READ_VERB = /^\s*(?:re-?read|read|reload|open|cat|view|skim|review|look at)\b/i;
+const GIT_CHECK = /\bgit\b.*\bstatus\b|\bcheck(?:ing)?\s+(?:the\s+)?git\b/i;
+const escapeRe = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/**
+ * Why a `next` must be written again, or undefined: its first action re-reads a file load_files puts in the wake, or
+ * checks git, which the wake carries in its Git block. Only the first clause counts (up to `;`, `,`, `. ` or `then`):
+ * re-reading as a later step is the model's call.
+ */
+export function rereadNudge(next: string, loads: readonly LoadFileArg[]): string | undefined {
+  const first = next.split(/;|,|\.\s|\bthen\b/i)[0] ?? '';
+  const again = (what: string, where: string, step: string): string =>
+    `Not stored: \`next\` opens by ${what}, which ${where}. Make \`next\` the first action after that ${step}, and call ${FORWARD_TOOL} again with the same fields.`;
+  if (READ_VERB.test(first)) {
+    const loaded = loads.find(({ path }) => {
+      const base = path.split('/').pop() ?? '';
+      return first.includes(path) || (base.length >= 4 && new RegExp(`(?:^|[\\s/\`'"])${escapeRe(base)}(?=$|[\\s\`'":])`).test(first));
+    });
+    if (loaded !== undefined) return again(`reading ${loaded.path}`, 'load_files already puts in the wake', 'read');
+  }
+  if (GIT_CHECK.test(first)) return again('checking git status', 'the wake already carries in its Git block', 'check');
+  return undefined;
 }

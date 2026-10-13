@@ -1,7 +1,7 @@
 import type { EngineInterface, On, PluginOptions, Register } from 'claude-code';
 import { bounded } from '../src/bounded.ts';
 import { haikuServed, servedOptions, toolsToRegister } from '../src/register.ts';
-import { FORWARD_INPUT_SCHEMA, FORWARD_TOOL, FORWARD_TOOL_DESCRIPTION, forwardHoldText, forwardNudgeText, forwardRefusal, forwardStoredText, parseForwardArgs, type ForwardArgs } from '../src/forward-args.ts';
+import { FORWARD_INPUT_SCHEMA, FORWARD_TOOL, FORWARD_TOOL_DESCRIPTION, forwardHoldText, forwardNudgeText, forwardRefusal, forwardStoredText, parseForwardArgs, rereadNudge, type ForwardArgs } from '../src/forward-args.ts';
 import { absPath, fileTrail, handoffInReply, findTranscriptArgv, firstFound, gitLine, heldForward, opensWithSummary, openingSummary, summaryKnowledge, outline, OUTLINE_FILE_MAX_BYTES, priorCalls, priorPrompts, mergeTrail, invocationPaths, invocations, parseLineRange, parsePorcelain, planAndTasks, runningWork, sliceLines, userMessages, type ApiMsg, type LiveWork, type TrailEntry } from '../src/forward-carry.ts';
 import { buildRecord, carriedFrom, forwardDir, forwardSessionDir, nextSeq, previousDir, withInstall } from '../src/forward-record.ts';
 import { chainUsers, forwardInstalledLine, installCheck, renderForward, TRAIL_MAX, type RenderInput } from '../src/forward-text.ts';
@@ -83,6 +83,8 @@ type State = {
   forwardInstalled: Map<string, { meta: ForwardMeta; text: string; tokensAfter: number; before: number | undefined; label: string }>;
   /** The parties a forward handoff was installed in: a second one is refused below their first nudge point. */
   forwardWoke: Set<string>;
+  /** Parties already sent back once for a `next` that re-reads what the wake carries. */
+  rereadNudged: Set<string>;
   /** The home directory, for `~/` in a path. */
   home?: string;
   /** The main chat's in-flight work as the last turn's end reported it, and the calls made since. */
@@ -752,6 +754,13 @@ async function answerForwardTool(st: State, $: EngineInterface, e: Record<string
     record(st, $, { event: 'forward-refused', party: key, why: 'woke-early', tokens: now ?? null });
     return early;
   }
+  // Once per party: a second identical call is stored, so a model that insists never loops.
+  const reread = st.rereadNudged.has(key) ? undefined : rereadNudge(parsed.args.next, parsed.args.loadFiles);
+  if (reread !== undefined) {
+    st.rereadNudged.add(key);
+    record(st, $, { event: 'forward-reread', party: key, next: parsed.args.next.slice(0, 300) });
+    return reread;
+  }
   const toolUseId = typeof e.tool_use_id === 'string' ? e.tool_use_id : '';
   if (toolUseId === '') say($, `sub-agent-compact: the ${FORWARD_TOOL} call carries no tool_use_id; its install falls back to a summary that keeps the handoff`);
   const session = await $.session.id();
@@ -846,6 +855,7 @@ export const register: Register = (on: On, options: PluginOptions) => {
     forwardSeq: new Map(),
     forwardInstalled: new Map(),
     forwardWoke: new Set(),
+    rereadNudged: new Set(),
     settled: new Set(),
   };
 
