@@ -72,6 +72,16 @@ describe('resolveOptions: the two tool flags', () => {
   });
 });
 
+describe('resolveOptions: forwardHandoffTool', () => {
+  it('is off by default, reads on/off, and names a bad value keeping the default', () => {
+    expect(resolveOptions({}).forwardHandoffTool).toBe(false);
+    expect(resolveOptions({ forwardHandoffTool: 'on' }).forwardHandoffTool).toBe(true);
+    const bad = resolveOptions({ forwardHandoffTool: 7 });
+    expect(bad.forwardHandoffTool).toBe(false);
+    expect(bad.errors.some((line) => line.includes('forwardHandoffTool'))).toBe(true);
+  });
+});
+
 describe('handoffProblem', () => {
   it('refuses a missing, empty or too short handoff, saying what it must carry', () => {
     for (const bad of [undefined, 42, '', '   ', 'next: c.sql']) {
@@ -219,6 +229,29 @@ describe('installHandoff', () => {
     expect(only!.text.startsWith(HANDOFF_OPENING)).toBe(true);
     expect(only!.text).toContain(HANDOFF);
     expect(out!.tail).toBe(0);
+  });
+
+  it('installs the text as the whole message when the caller frames it itself', () => {
+    const out = installHandoff(history(), { text: 'WAKE TEXT', anchor: { toolUseId: 'h1' }, frame: (text) => text })!;
+    expect(out.messages).toHaveLength(1);
+    expect(out.messages[0]!.text).toBe('WAKE TEXT');
+  });
+
+  it('keeps the results of calls made beside a self-framed handoff in a message of their own before its text, the text untouched', () => {
+    const input = [
+      user('task', 'm0'),
+      say('', 'm1', [handoffUse(), read('r9', 'reports/z.sql')]),
+      results('m2', ['h1', 'Handoff stored.'], ['r9', 'SELECT zebra FROM ledger']),
+    ];
+    const out = installHandoff(input, { text: 'WAKE TEXT', anchor: { toolUseId: 'h1' }, frame: (text) => text })!;
+    expect(out.siblings).toBe(1);
+    expect(out.messages).toHaveLength(2);
+    expect(out.messages[0]!.role).toBe('user');
+    expect(out.messages[0]!.text.startsWith(HANDOFF_OPENING)).toBe(true);
+    expect(out.messages[0]!.text).toContain('SELECT zebra FROM ledger');
+    expect(out.messages[0]!.text).toContain('reports/z.sql');
+    expect(out.messages[0]!.text).not.toContain('Handoff stored.');
+    expect(out.messages[1]!.text).toBe('WAKE TEXT');
   });
 
   it('keeps every message after the call, whole, with its handle', () => {

@@ -1,3 +1,6 @@
+import type { ForwardRecord } from './forward-record.ts';
+import type { BlockRecord } from './forward-text.ts';
+
 // A handoff is the model's own account of its work, installed in place of the conversation it covers.
 // No summarizer runs: the text the model passes is the past it keeps, so the tool and the nudges teach
 // what that text must hold, and the install keeps everything the model did after writing it.
@@ -372,7 +375,11 @@ export function installLine({ label, before, after, tail, recovered }: { label: 
 /** Where the handoff was written: the tool call that carried it, or the response that carried its marker. */
 export type HandoffAnchor = { toolUseId: string } | { marker: true };
 
-export type ArmedHandoff = { text: string; anchor: HandoffAnchor; loads?: string[] };
+/** What a stored forward handoff keeps for its install: where its files are and the blocks its text holds. */
+/** A forward handoff's own data; `dir` absent when its files were not saved. */
+export type ForwardMeta = { seq: number; dir?: string; blocks: readonly BlockRecord[]; record: ForwardRecord };
+
+export type ArmedHandoff = { text: string; anchor: HandoffAnchor; loads?: string[]; forward?: ForwardMeta };
 
 /** The parts of a transcript message an install reads (the plugin API's SessionMessage satisfies it). */
 export type HandoffMessage = {
@@ -390,12 +397,9 @@ function cut(text: string): string {
   return `${text.slice(0, SIBLING_MAX_CHARS)}\n[sub-agent-compact: cut at ${SIBLING_MAX_CHARS} of ${text.length} characters]`;
 }
 
-/** The installed message: what it is, the handoff verbatim, the results the handoff could not include, and whether its aftermath follows. */
-function framedHandoff(text: string, siblings: readonly Sibling[], extras: readonly string[], tail: number): string {
-  const parts = [
-    `${HANDOFF_OPENING} Your context was reset. Below is the handoff you wrote with the handoff tool right before the reset: it is now your whole memory of the work up to that point. The earlier messages, file contents and tool results are gone, and nothing else was kept or summarized. Treat what it records as known and do not re-read it; open a file again only for something it does not hold.`,
-    `=== handoff ===\n${text}\n=== end of handoff ===`,
-  ];
+/** The results of the calls made beside the handoff and the text delivered with them, one part each; none when there were none. */
+function besideParts(siblings: readonly Sibling[], extras: readonly string[]): string[] {
+  const parts: string[] = [];
   if (siblings.length > 0) {
     parts.push(
       [
@@ -405,6 +409,16 @@ function framedHandoff(text: string, siblings: readonly Sibling[], extras: reado
     );
   }
   if (extras.length > 0) parts.push(`Delivered with those results:\n${extras.join('\n')}`);
+  return parts;
+}
+
+/** The installed message: what it is, the handoff verbatim, the results the handoff could not include, and whether its aftermath follows. */
+function framedHandoff(text: string, siblings: readonly Sibling[], extras: readonly string[], tail: number): string {
+  const parts = [
+    `${HANDOFF_OPENING} Your context was reset. Below is the handoff you wrote with the handoff tool right before the reset: it is now your whole memory of the work up to that point. The earlier messages, file contents and tool results are gone, and nothing else was kept or summarized. Treat what it records as known and do not re-read it; open a file again only for something it does not hold.`,
+    `=== handoff ===\n${text}\n=== end of handoff ===`,
+  ];
+  parts.push(...besideParts(siblings, extras));
   parts.push(tail > 0 ? 'What you did after writing it follows as it happened: continue from where it leaves off.' : 'Continue from its next step.');
   return parts.join('\n\n');
 }
@@ -416,12 +430,13 @@ function framedHandoff(text: string, siblings: readonly Sibling[], extras: reado
  * assistant messages, one per content block; the run of them around the
  * anchor is that response, and the user messages right after it that answer
  * its tool calls are its results. Results of calls made beside the handoff
- * are carried as text inside the framed message, since their own call leaves
+ * are carried as text inside the framed message, or in a message of their
+ * own before a text the caller frames itself, since their own call leaves
  * with the response. Undefined when the anchor is not in the transcript.
  */
 export function installHandoff<M extends HandoffMessage>(
   input: readonly M[],
-  { text, anchor, brief }: { text: string; anchor: HandoffAnchor; brief?: string },
+  { text, anchor, brief, frame }: { text: string; anchor: HandoffAnchor; brief?: string; frame?: (text: string) => string },
 ): { messages: M[]; tail: number; siblings: number } | undefined {
   const isAnchor = (m: M): boolean =>
     m.role === 'assistant' && ('toolUseId' in anchor ? m.toolUses.some((u) => u.tool_use_id === anchor.toolUseId) : handoffMarker(m.text) !== undefined);
@@ -455,9 +470,12 @@ export function installHandoff<M extends HandoffMessage>(
     .filter((u) => u.tool_use_id !== own)
     .map((u) => ({ tool: u.tool ?? 'tool', input: u.input, text: results.get(u.tool_use_id) ?? u.text ?? '(no result recorded)' }));
   const tail = input.slice(next);
-  const framed = { role: 'user', text: framedHandoff(text, siblings, extras, tail.length), toolUses: [] } as HandoffMessage as M;
+  const framed = { role: 'user', text: frame ? frame(text) : framedHandoff(text, siblings, extras, tail.length), toolUses: [] } as HandoffMessage as M;
   const seated = brief === undefined ? [] : [{ role: 'user', text: brief, toolUses: [] } as HandoffMessage as M];
-  return { messages: [...seated, framed, ...tail], tail: tail.length, siblings: siblings.length };
+  // A self-framed text is installed untouched, so what was made beside it goes in a message of its own, before it: the text stays the freshest read.
+  const beside = frame ? besideParts(siblings, extras) : [];
+  const carried = beside.length === 0 ? [] : [{ role: 'user', text: [HANDOFF_OPENING, ...beside].join('\n\n'), toolUses: [] } as HandoffMessage as M];
+  return { messages: [...seated, ...carried, framed, ...tail], tail: tail.length, siblings: siblings.length };
 }
 
 /** The blocks the harness itself puts in a user message: a finished background task, a reminder, a local command's output. */

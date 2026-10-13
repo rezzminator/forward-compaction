@@ -1,6 +1,6 @@
 {
   "name": "sub-agent-compact",
-  "version": "0.5.1",
+  "version": "0.7.0-dev.1",
   "description": "Smart auto-compact for Claude Code: a separate compaction point for every sub-agent, and self-compaction at a milestone the model chooses.",
   "license": "MIT",
   "author": {
@@ -85,6 +85,12 @@
       "title": "Handoff tool",
       "description": "On: models get the handoff tool. The text a model passes replaces its whole conversation so far, installed verbatim with no summarizer request; what it does after the call is kept. A sub-agent without the tool writes <handoff>its handoff</handoff>.",
       "default": true
+    },
+    "forwardHandoffTool": {
+      "type": "boolean",
+      "title": "Forward handoff tool",
+      "description": "On: the main chat gets the forward_handoff tool. Code carries the user messages, skills, file trail, plan, running work and git state into the wake text; the model writes only its objective, done, remaining and next. Installed verbatim when its turn ends; the call's files are saved under the Claude config directory.",
+      "default": false
     },
     "compactTool": {
       "type": "boolean",

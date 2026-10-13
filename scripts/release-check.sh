@@ -11,7 +11,7 @@ v=$(read_json plugins/sub-agent-compact/.claude-plugin/plugin.json version)
 fail=0
 m=$(node -e 'const j = require("./.claude-plugin/marketplace.json"); process.stdout.write(j.plugins.find((p) => p.name === "sub-agent-compact")?.version ?? "")') || { echo "ERROR cannot read marketplace.json"; exit 2; }
 p=$(read_json package.json version)
-b=$(grep -oE 'badge/version-[0-9.]+-' README.md | sed -E 's/badge\/version-|-$//g')
+b=$(grep -oE 'badge/version-[0-9A-Za-z.-]+-blue' README.md | sed -E 's/badge\/version-|-blue$//g; s/--/-/g')
 [ "$m" = "$v" ] || { echo "FAIL marketplace.json says $m, plugin.json $v"; fail=1; }
 [ "$p" = "$v" ] || { echo "FAIL package.json says $p, plugin.json $v"; fail=1; }
 [ "$b" = "$v" ] || { echo "FAIL README badge says ${b:-nothing}, plugin.json $v"; fail=1; }

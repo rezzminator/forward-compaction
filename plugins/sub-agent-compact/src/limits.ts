@@ -25,6 +25,9 @@ export const DEFAULT_COMPACT_TOOL = false;
 /** The `handoff` tool, whose text the plugin installs as the conversation's whole past: on. */
 export const DEFAULT_HANDOFF_TOOL = true;
 
+/** The `forward_handoff` tool, whose wake text code mostly carries and the model only closes with its frontier: off. */
+export const DEFAULT_FORWARD_HANDOFF_TOOL = false;
+
 export type Parse<T> = { ok: true; value: T } | { ok: false; error: string };
 
 const SIZE = /^(\d+(?:\.\d+)?|\.\d+)\s*([km%])?$/i;
@@ -125,6 +128,8 @@ export type ResolvedOptions = {
   compactTool: boolean;
   /** Register the `handoff` tool and read `<handoff>` markers. */
   handoffTool: boolean;
+  /** Register the `forward_handoff` tool. */
+  forwardHandoffTool: boolean;
   agentDirs: string[];
   logFile?: string;
   /** One line per option that was invalid and fell back; empty when all were valid. */
@@ -163,6 +168,7 @@ export function resolveOptions(options: Record<string, unknown>): ResolvedOption
   const keepBrief = flag('subagentKeepBrief', DEFAULT_KEEP_BRIEF);
   const compactTool = flag('compactTool', DEFAULT_COMPACT_TOOL);
   const handoffTool = flag('handoffTool', DEFAULT_HANDOFF_TOOL);
+  const forwardHandoffTool = flag('forwardHandoffTool', DEFAULT_FORWARD_HANDOFF_TOOL);
   const agentDirs = dirList(options.agentDirs, errors);
   let logFile: string | undefined;
   const rawLog = options.logFile;
@@ -170,5 +176,5 @@ export function resolveOptions(options: Record<string, unknown>): ResolvedOption
     if (rawLog.trim().startsWith('/')) logFile = rawLog.trim();
     else errors.push(`sub-agent-compact: option logFile must be an absolute path (got ${JSON.stringify(rawLog)}); logging off`);
   }
-  return { main, subagent, keepBrief, compactTool, handoffTool, agentDirs, ...(logFile ? { logFile } : {}), errors };
+  return { main, subagent, keepBrief, compactTool, handoffTool, forwardHandoffTool, agentDirs, ...(logFile ? { logFile } : {}), errors };
 }

@@ -1,6 +1,10 @@
 import type { EngineInterface, On, PluginOptions, Register } from 'claude-code';
 import { bounded } from '../src/bounded.ts';
 import { toolsToRegister } from '../src/register.ts';
+import { FORWARD_INPUT_SCHEMA, FORWARD_TOOL, FORWARD_TOOL_DESCRIPTION, forwardNudgeText, forwardStoredText, parseForwardArgs, type ForwardArgs } from '../src/forward-args.ts';
+import { fileTrail, gitLine, heldForward, invocationPaths, invocations, parseLineRange, parsePorcelain, planAndTasks, relPath, runningWork, sliceLines, transcriptPath, userMessages, type ApiMsg } from '../src/forward-carry.ts';
+import { buildRecord, forwardDir, forwardSessionDir, nextSeq, previousDir, withInstall } from '../src/forward-record.ts';
+import { FORWARD_OPENING, installCheck, renderForward, TRAIL_MAX, type RenderInput } from '../src/forward-text.ts';
 import { BRIEF_MAX_TOKENS, reseatBrief, seatedBrief } from '../src/brief.ts';
 import { AgentPolicies, AgentTypes } from '../src/agents.ts';
 import { compactionEnd, contextTokens, currentTokens, decide, estimateTranscript, knownTrigger, personPrompt, type Trigger } from '../src/decide.ts';
@@ -24,13 +28,14 @@ import {
   recoverHandoff,
   transcriptShapeProblem,
   type ArmedHandoff,
+  type ForwardMeta,
 } from '../src/handoff.ts';
 import { resolveOptions, sizeTokens, type Policy, type ResolvedOptions } from '../src/limits.ts';
 import { appendRows, sessionLogPath } from '../src/log.ts';
 import { armedText, CONTINUE_AFTER_MARKER, disarmedText, earlyArm, markerRequest, nudgeText, stopRequest } from '../src/nudge.ts';
 import { FRESH_MAX_MESSAGES, isFirstRequest, Parties } from '../src/parties.ts';
 import { engineAskPoint, isHaiku, modelWindow } from '../src/window.ts';
-import { invokedSkills, pluginPaths, renderWake, stripFrontmatter, wakeCandidates, wakeFileProblem, type WakeEntry, type WakeRoots } from '../src/wake.ts';
+import { invokedSkills, pluginPaths, renderWake, stripFrontmatter, wakeCandidates, wakeFileProblem, WAKE_FILE_MAX_BYTES, type WakeEntry, type WakeRoots } from '../src/wake.ts';
 
 // Thin adapter: every decision lives in src/. Each hook catches its own
 // failures, logs them with context and lets the compaction through.
@@ -63,8 +68,14 @@ type State = {
   toolName?: string;
   /** The handoff tool's full name once registered. */
   handoffToolName?: string;
+  /** The forward handoff tool's full name once registered. */
+  forwardToolName?: string;
+  /** The last forward handoff number given out per session: two calls listing the directory together still get two numbers. */
+  forwardSeq: Map<string, number>;
+  /** A forward handoff installed and not yet checked against what the session holds at the next main request. */
+  forwardInstalled?: { meta: ForwardMeta; text: string; tokensAfter: number };
   /** How many times registering each tool was tried. */
-  toolTries: { handoff: number; compact: number };
+  toolTries: { handoff: number; compact: number; forward: number };
   /** The registration in progress: hooks that need a tool wait on it, so none registers twice. */
   registering?: Promise<void>;
   /** Registering the tools has not finished within ENSURE_TOOLS_TIMEOUT_MS: no hook waits on it until it settles, and a late finish still names the tools. */
@@ -174,8 +185,8 @@ function start(st: State, $: EngineInterface): Promise<void> {
         record(st, $, { event: 'resolve-error', line });
       },
     );
-    if (!st.config.handoffTool && !st.config.compactTool) {
-      warnOnce(st, $, 'no-tools', 'sub-agent-compact: no self-compaction tool is on (handoffTool and compactTool are both off); parties are nudged by nobody and only compacted at their limits');
+    if (!st.config.handoffTool && !st.config.compactTool && !st.config.forwardHandoffTool) {
+      warnOnce(st, $, 'no-tools', 'sub-agent-compact: no self-compaction tool is on (handoffTool, compactTool and forwardHandoffTool are all off); parties are nudged by nobody and only compacted at their limits');
     }
     record(st, $, { event: 'start', main: st.config.main, subagent: st.config.subagent, agentDirs: dirs, mainWindow: st.mainWindow ?? null, compactWindow: st.compactWindow ?? null });
   })();
@@ -273,8 +284,12 @@ function arm(st: State, $: EngineInterface, party: Party, focus: string, via: 't
 async function nudgeFor(st: State, $: EngineInterface, agentId: string | undefined): Promise<string | undefined> {
   const party = await partyOf(st, $, agentId);
   if (party.haiku || party.unlisted || !party.policy.enabled) return undefined;
-  if (!st.config.handoffTool && !st.config.compactTool) return undefined;
-  if (st.config.handoffTool && party.main && st.handoffToolName === undefined) {
+  if (!st.config.handoffTool && !st.config.compactTool && !st.config.forwardHandoffTool) return undefined;
+  // The main chat is steered to the forward handoff tool once it is registered; sub-agents keep the handoff tool's nudge.
+  const forward = party.main && st.forwardToolName !== undefined;
+  // Without the forward tool this party has only the handoff and compact tools: with both off there is nothing to nudge toward.
+  if (!forward && !st.config.handoffTool && !st.config.compactTool) return undefined;
+  if (!forward && st.config.handoffTool && party.main && st.handoffToolName === undefined) {
     // The main chat has no marker to fall back on: nudging it to a tool that is not there only wastes its turn.
     warnOnce(st, $, 'main-no-handoff', 'sub-agent-compact: the main chat cannot hand off: the handoff tool is not registered, so it is not nudged');
     return undefined;
@@ -285,7 +300,8 @@ async function nudgeFor(st: State, $: EngineInterface, agentId: string | undefin
   const tokens = st.parties.reading(party.key);
   if (level === undefined || tokens === undefined) return undefined;
   const autoCompact = limitOf(party);
-  record(st, $, { event: 'nudge', party: party.key, type: party.label, tokens, level, nudgeStart, nudgeEvery, autoCompact, window: party.window, tool: st.config.handoffTool ? 'handoff' : 'compact' });
+  record(st, $, { event: 'nudge', party: party.key, type: party.label, tokens, level, nudgeStart, nudgeEvery, autoCompact, window: party.window, tool: forward ? FORWARD_TOOL : st.config.handoffTool ? 'handoff' : 'compact' });
+  if (forward) return forwardNudgeText({ tokens, level, autoCompact, toolName: st.forwardToolName! });
   if (st.config.handoffTool) {
     return handoffNudgeText({ tokens, level, autoCompact, main: party.main, toolName: st.handoffToolName, firstReading: st.parties.firstReading(party.key) });
   }
@@ -309,6 +325,17 @@ async function registerCompactTool(st: State, $: EngineInterface): Promise<void>
   } catch (error) {
     warnOnce(st, $, 'register-failed:compact', `sub-agent-compact: registering the ${COMPACT_TOOL} tool failed: ${message(error)}; models can still ask with <compact-now>`);
     record(st, $, { event: 'tool-register-failed', tool: COMPACT_TOOL, error: message(error) });
+  }
+}
+
+async function registerForwardTool(st: State, $: EngineInterface): Promise<void> {
+  try {
+    const { tool } = await $.tool.register({ name: FORWARD_TOOL, description: FORWARD_TOOL_DESCRIPTION, inputSchema: FORWARD_INPUT_SCHEMA });
+    st.forwardToolName = tool;
+    record(st, $, { event: 'tool-registered', tool });
+  } catch (error) {
+    warnOnce(st, $, 'register-failed:forward', `sub-agent-compact: registering the ${FORWARD_TOOL} tool failed: ${message(error)}; the main chat cannot forward-hand-off`);
+    record(st, $, { event: 'tool-register-failed', tool: FORWARD_TOOL, error: message(error), tries: st.toolTries.forward });
   }
 }
 
@@ -349,8 +376,8 @@ async function ensureTools(st: State, $: EngineInterface): Promise<void> {
   if (st.toolsAbandoned || st.toolsSettled) return;
   const left = () =>
     toolsToRegister(
-      { compact: st.config.compactTool, handoff: st.config.handoffTool },
-      { compact: st.toolName !== undefined, handoff: st.handoffToolName !== undefined },
+      { compact: st.config.compactTool, handoff: st.config.handoffTool, forward: st.config.forwardHandoffTool },
+      { compact: st.toolName !== undefined, handoff: st.handoffToolName !== undefined, forward: st.forwardToolName !== undefined },
       st.toolTries,
       REGISTER_TRIES,
     );
@@ -366,6 +393,10 @@ async function ensureTools(st: State, $: EngineInterface): Promise<void> {
         if (todo.includes('handoff')) {
           st.toolTries.handoff++;
           await registerHandoffTool(st, $);
+        }
+        if (todo.includes('forward')) {
+          st.toolTries.forward++;
+          await registerForwardTool(st, $);
         }
       })
       .catch((error) => $.ui.log(`sub-agent-compact: registering the tools failed: ${message(error)}`));
@@ -466,6 +497,227 @@ async function answerHandoffTool(st: State, $: EngineInterface, e: Record<string
   return handoffStoredText({ chars: parsed.text.length, main: party.main, askPoint: askPointOf(st) });
 }
 
+type Read = { content: string } | { problem: string };
+
+/** One file read whole, or why not: missing, not a regular file, over the byte cap, unreadable. */
+async function readOne(st: State, $: EngineInterface, path: string, maxBytes: number): Promise<Read> {
+  try {
+    if (!(await $.fs.exists(path))) return { problem: 'not found' };
+    const stat = await $.fs.stat(path);
+    if (stat.kind !== 'file') return { problem: `not a regular file (${stat.kind})` };
+    if (stat.size > maxBytes) return { problem: `${stat.size} bytes, over the ${maxBytes} byte limit` };
+    return { content: await $.fs.read(path) };
+  } catch (error) {
+    return { problem: `unreadable: ${message(error)}` };
+  }
+}
+
+/** The first line of a process failure, or its exit code. */
+const failure = (out: { exitCode: number; stderr: string }): string => out.stderr.split('\n')[0]?.trim() || `exit ${out.exitCode}`;
+
+/**
+ * What code carries into a forward handoff, read at handoff time from the transcript, the disk, git and the
+ * live environment. A read that fails is a line in `problems`, never an absence.
+ */
+async function gatherForward(st: State, $: EngineInterface, args: ForwardArgs, at: { seq: number; dir?: string; session: string }): Promise<RenderInput> {
+  const cwd = st.cwd ?? '.';
+  const problems: string[] = [...(args.problems ?? [])];
+  let api: ApiMsg[] = [];
+  try {
+    api = (await $.session.messages({ as: 'api' })) as ApiMsg[];
+  } catch (error) {
+    problems.push(`transcript: unreadable (${message(error)})`);
+  }
+
+  const dropped = new Set(args.dropSkills);
+  const invoked = invocations(api);
+  for (const name of args.dropSkills) if (!invoked.some((x) => x.name === name)) problems.push(`drop_skills ${name}: not invoked`);
+  const roots = await wakeRoots(st, $);
+  const skills: RenderInput['skills'] = [];
+  for (const inv of invoked.filter((x) => !dropped.has(x.name))) {
+    const paths = invocationPaths(inv, roots);
+    let found: RenderInput['skills'][number] = { name: inv.name, problem: paths.length === 0 ? 'not a skill or command name' : `no file (tried ${paths.length} paths)` };
+    for (const path of paths) {
+      const read = await readOne(st, $, path, WAKE_FILE_MAX_BYTES);
+      if ('content' in read) {
+        found = { name: inv.name, body: stripFrontmatter(read.content) };
+        break;
+      }
+      if (read.problem !== 'not found') found = { name: inv.name, problem: `${path} ${read.problem}` };
+    }
+    skills.push(found);
+  }
+
+  const loaded: RenderInput['loaded'] = [];
+  for (const file of args.loadFiles) {
+    const abs = file.path.startsWith('/') ? file.path : `${cwd}/${file.path}`;
+    const range = file.lines !== undefined ? parseLineRange(file.lines) : undefined;
+    const label = `${relPath(abs, cwd)}${range ? `:${range.from}-${range.to}` : ''}`;
+    if (file.lines !== undefined && range === undefined) {
+      loaded.push({ label: relPath(abs, cwd), problem: `invalid lines ${JSON.stringify(file.lines)}` });
+      continue;
+    }
+    // The model asked for these bytes: they come in only where its Read tool would be let in without asking.
+    let allowed: { decision: string; reason?: string };
+    try {
+      allowed = await $.tool.check({ tool: 'Read', input: { file_path: abs } });
+    } catch (error) {
+      allowed = { decision: 'unchecked', reason: `the permission check failed: ${message(error)}` };
+    }
+    if (allowed.decision !== 'allow') {
+      loaded.push({ label, problem: `Read ${allowed.decision}${allowed.reason ? `: ${allowed.reason}` : ''}` });
+      continue;
+    }
+    const read = await readOne(st, $, abs, 4 * 1024 * 1024);
+    loaded.push('content' in read ? { label, body: range ? sliceLines(read.content, range) : read.content } : { label, problem: read.problem });
+  }
+
+  const paths: string[] = [];
+  const nested: string[] = [];
+  if (st.configDir === undefined) problems.push('transcript: no Claude config directory');
+  else {
+    const file = transcriptPath({ configDir: st.configDir, cwd, sessionId: at.session });
+    try {
+      if (!(await $.fs.exists(file))) problems.push(`transcript: not found at ${file}`);
+      else {
+        const count = await $.process.run(['grep', '-c', '', file], { timeoutMs: 15_000 });
+        if (count.exitCode === 0) paths.push(`transcript ${file}:${count.stdout.trim()}`);
+        else problems.push(`transcript: counting lines failed (${failure(count)})`);
+        const memory = await $.process.run(['grep', '-a', '-o', '"type":"nested_memory","path":"[^"]*"', file], { timeoutMs: 15_000 });
+        if (memory.exitCode === 0) {
+          for (const line of memory.stdout.split('\n')) {
+            const path = /"path":"([^"]*)"/.exec(line)?.[1];
+            const rel = path === undefined ? undefined : relPath(path, cwd);
+            if (rel === undefined) continue;
+            // The newest pickup of a file counts: an earlier one moves to the end.
+            const seen = nested.indexOf(rel);
+            if (seen >= 0) nested.splice(seen, 1);
+            nested.push(rel);
+          }
+        } else if (memory.exitCode !== 1) problems.push(`nested memory: scanning the transcript failed (${failure(memory)})`);
+      }
+    } catch (error) {
+      problems.push(`transcript: ${message(error)}`);
+    }
+  }
+  const previous = st.configDir === undefined ? undefined : previousDir(st.configDir, at.session, at.seq);
+  if (previous !== undefined) paths.push(`previous ${previous}`);
+  if (at.dir !== undefined) paths.push(`saved ${at.dir}`);
+
+  const trailAll = fileTrail(api, { cwd, max: TRAIL_MAX });
+  const kept = nested.filter((p) => !trailAll.some((t) => t.path === p)).slice(-5);
+  const trail = [...fileTrail(api, { cwd, max: TRAIL_MAX - kept.length }), ...kept.map((path) => ({ tag: 'R' as const, path }))];
+
+  const work = planAndTasks(api);
+  let plan = work.planText;
+  if (plan === undefined && work.planPath !== undefined) {
+    const read = await readOne(st, $, work.planPath, 256 * 1024);
+    if ('content' in read) plan = read.content;
+    else problems.push(`plan ${relPath(work.planPath, cwd)}: ${read.problem}`);
+  }
+
+  let git: string | undefined;
+  try {
+    const run = (argv: string[]) => $.process.run(argv, { cwd, timeoutMs: 15_000 });
+    const branch = await run(['git', 'rev-parse', '--abbrev-ref', 'HEAD']);
+    if (branch.exitCode !== 0) problems.push(`git: ${failure(branch)}`);
+    else {
+      const head = await run(['git', 'rev-parse', '--short', 'HEAD']);
+      // A cloned repo's fsmonitor hook is a program of its own: the status runs without it.
+      const status = await run(['git', '-c', 'core.fsmonitor=false', 'status', '--porcelain']);
+      if (head.exitCode !== 0 || status.exitCode !== 0) problems.push(`git: ${failure(head.exitCode !== 0 ? head : status)}`);
+      else git = gitLine({ branch: branch.stdout.trim(), head: head.stdout.trim(), dirty: parsePorcelain(status.stdout) });
+    }
+  } catch (error) {
+    problems.push(`git: ${message(error)}`);
+  }
+
+  return { seq: at.seq, users: userMessages(api), skills, trail, loaded, ...(plan !== undefined ? { plan } : {}), tasks: work.tasks, running: runningWork(api), ...(git !== undefined ? { git } : {}), paths: paths.length > 0 ? [paths.join(' · ')] : [], problems, args };
+}
+
+/** Stores a forward handoff: the text code carried and the model's frontier, and the call's files on disk. */
+async function answerForwardTool(st: State, $: EngineInterface, e: Record<string, unknown>): Promise<string> {
+  const agentId = typeof e.agentId === 'string' ? e.agentId : undefined;
+  if (agentId !== undefined) {
+    record(st, $, { event: 'forward-refused', party: agentId, why: 'sub-agent' });
+    return 'Not stored: forward_handoff is for the main chat; a sub-agent hands off with the handoff tool.';
+  }
+  const raw = handoffInputOf(e);
+  const parsed = parseForwardArgs(raw);
+  if ('nudge' in parsed) {
+    record(st, $, { event: 'forward-invalid', party: 'main', problem: parsed.nudge.slice(0, 300) });
+    return parsed.nudge;
+  }
+  const party = await partyOf(st, $, undefined);
+  if (party.haiku) return 'Not stored: handoffs are off for Haiku; Claude Code compacts it at its own point. Keep working.';
+  const toolUseId = typeof e.tool_use_id === 'string' ? e.tool_use_id : '';
+  if (toolUseId === '') $.ui.log(`sub-agent-compact: the ${FORWARD_TOOL} call carries no tool_use_id; its install falls back to a summary that keeps the handoff`);
+  const session = await $.session.id();
+  let saved = '';
+  let existing: string[] = [];
+  if (st.configDir === undefined) saved = ' Not saved to disk: no Claude config directory (neither CLAUDE_CONFIG_DIR nor HOME is set).';
+  else {
+    const sessionDir = forwardSessionDir(st.configDir, session);
+    try {
+      if (await $.fs.exists(sessionDir)) existing = (await $.fs.list(sessionDir)).map((entry) => entry.name);
+    } catch (error) {
+      // Unlisted, the next number is a guess: saving could overwrite an earlier call's files.
+      saved = ` Not saved to disk: listing ${sessionDir} failed: ${message(error)}.`;
+      $.ui.log(`sub-agent-compact: listing ${sessionDir} failed: ${message(error)}; the forward handoff is not saved, so no earlier call's files are overwritten`);
+    }
+  }
+  // Numbered from the directory and this process's own count, with no wait between the two reads and the claim.
+  const seq = Math.max(nextSeq(existing), (st.forwardSeq.get(session) ?? 0) + 1);
+  st.forwardSeq.set(session, seq);
+  let dir = st.configDir !== undefined && saved === '' ? forwardDir(st.configDir, session, seq) : undefined;
+  const input = await gatherForward(st, $, parsed.args, { seq, ...(dir !== undefined ? { dir } : {}), session });
+  const { text, blocks } = renderForward(input);
+  const base = buildRecord({ seq, session, dir: dir ?? '', text, blocks, ...(st.parties.reading('main') !== undefined ? { tokensBefore: st.parties.reading('main')! } : {}), trimmed: parsed.args.trimmed, at: new Date().toISOString() });
+  if (dir !== undefined) {
+    try {
+      await $.fs.write(`${dir}/args.json`, JSON.stringify(raw, null, 2));
+      await $.fs.write(`${dir}/wake.txt`, text);
+      await $.fs.write(`${dir}/record.json`, JSON.stringify(base, null, 2));
+    } catch (error) {
+      saved = ` Not saved to disk: ${message(error)}.`;
+      $.ui.log(`sub-agent-compact: saving forward handoff ${seq} to ${dir} failed: ${message(error)}`);
+      dir = undefined;
+    }
+  }
+  st.parties.armHandoff('main', { text, anchor: { toolUseId }, forward: { seq, ...(dir !== undefined ? { dir } : {}), blocks, record: base } });
+  const tokens = Math.ceil(text.length / 4);
+  $.ui.log(`sub-agent-compact: forward handoff ${seq} stored (${tokens} tokens)${dir !== undefined ? `, files in ${dir}` : ', not saved to disk'}`);
+  record(st, $, { event: 'forward-stored', party: 'main', seq, dir, chars: text.length, tokens, blocks: blocks.map((b) => ({ name: b.name, chars: b.chars, items: b.items })) });
+  return forwardStoredText({ tokens, ...(dir !== undefined ? { dir } : {}), blocks }) + saved;
+}
+
+/** At the first main request after a forward handoff installed: confirm each block is in what the session holds, write the record with the check, and tell the model of any that is not. */
+async function finishForward(st: State, $: EngineInterface, { meta, text, tokensAfter }: NonNullable<State['forwardInstalled']>): Promise<void> {
+  let held: string;
+  try {
+    held = heldForward((await $.session.messages({ as: 'api' })) as ApiMsg[]);
+  } catch (error) {
+    $.ui.log(`sub-agent-compact: reading the session to check forward handoff ${meta.seq} failed: ${message(error)}; its install is unchecked`);
+    record(st, $, { event: 'forward-unchecked', seq: meta.seq, error: message(error) });
+    return;
+  }
+  const check = installCheck(meta.blocks, held, text);
+  if (meta.dir !== undefined) {
+    try {
+      await $.fs.write(`${meta.dir}/record.json`, JSON.stringify(withInstall(meta.record, { tokensAfter, check }), null, 2));
+    } catch (error) {
+      $.ui.log(`sub-agent-compact: writing the install check of forward handoff ${meta.seq} to ${meta.dir} failed: ${message(error)}`);
+    }
+  }
+  record(st, $, { event: 'forward-installed', seq: meta.seq, tokensAfter, landed: check.landed, missing: check.missing, hash: check.hash });
+  if (check.ok) {
+    $.ui.log(`sub-agent-compact: forward handoff ${meta.seq} installed, all ${check.landed} blocks landed`);
+    return;
+  }
+  $.ui.log(`sub-agent-compact: forward handoff ${meta.seq} installed, blocks missing: ${check.missing.join(', ')}`);
+  st.parties.notify('main', `sub-agent-compact: forward handoff blocks did not land: ${check.missing.join(', ')}; ${meta.dir !== undefined ? `the full text is in ${meta.dir}/wake.txt` : 'the text was not saved to disk'}.`);
+}
+
 async function answerCompactTool(st: State, $: EngineInterface, agentId: string | undefined, focus: unknown): Promise<string> {
   if (typeof focus !== 'string' || focus.trim() === '') return 'Not armed: `focus` must name what the summary keeps (the plan or its file, what is done, what is left, the next step).';
   const party = await partyOf(st, $, agentId);
@@ -486,7 +738,8 @@ export const register: Register = (on: On, options: PluginOptions) => {
     writing: Promise.resolve(),
     mainCompactedThisTurn: false,
     mainCompacting: false,
-    toolTries: { handoff: 0, compact: 0 },
+    toolTries: { handoff: 0, compact: 0, forward: 0 },
+    forwardSeq: new Map(),
     settled: new Set(),
   };
 
@@ -527,6 +780,11 @@ export const register: Register = (on: On, options: PluginOptions) => {
       const mayBeFirst = e.index === 0 && typeof e.messageCount === 'number' && e.messageCount <= FRESH_MAX_MESSAGES && st.parties.firstReading(key) === undefined;
       const turns = main && tokens !== undefined && mayBeFirst ? await promptCount(st, $) : undefined;
       if (tokens !== undefined) st.parties.read(key, tokens, isFirstRequest({ index: e.index, messageCount: e.messageCount, main, turns }));
+      if (main && st.forwardInstalled !== undefined) {
+        const installed = st.forwardInstalled;
+        st.forwardInstalled = undefined;
+        await finishForward(st, $, installed);
+      }
       const handoff = st.config.handoffTool ? handoffMarkerRequest({ answer: result.answer, toolCalls: result.toolUses.length, main }) : undefined;
       const focus = st.config.compactTool && handoff === undefined ? markerRequest({ answer: result.answer, toolCalls: result.toolUses.length, main }) : undefined;
       if (handoff !== undefined) {
@@ -547,6 +805,14 @@ export const register: Register = (on: On, options: PluginOptions) => {
         return { result: await answerHandoffTool(st, $, e as Record<string, unknown>) };
       } catch (error) {
         $.ui.log(`sub-agent-compact: storing the handoff of ${e.agentId ?? 'main'} failed: ${message(error)}`);
+        return { result: `Not stored: ${message(error)}` };
+      }
+    }
+    if (st.forwardToolName !== undefined && e.tool === st.forwardToolName) {
+      try {
+        return { result: await answerForwardTool(st, $, e as Record<string, unknown>) };
+      } catch (error) {
+        $.ui.log(`sub-agent-compact: storing the forward handoff failed: ${message(error)}`);
         return { result: `Not stored: ${message(error)}` };
       }
     }
@@ -679,7 +945,7 @@ export const register: Register = (on: On, options: PluginOptions) => {
             for (const name of handoff.loads ?? []) entries.push(invoked.has(name) || roots === undefined ? { name, invoked: invoked.has(name) } : await resolveWakeEntry(st, $, roots, name));
             const wake = renderWake(entries);
             const text = wake.text === '' ? handoff.text : `${handoff.text}\n\n**Loaded on wake**\n${wake.text}`;
-            const installed = installHandoff(e.messages, { text, anchor: handoff.anchor, ...(brief !== undefined ? { brief } : {}) });
+            const installed = installHandoff(e.messages, { text, anchor: handoff.anchor, ...(brief !== undefined ? { brief } : {}), ...(handoff.forward ? { frame: (verbatim: string) => verbatim } : {}) });
             if (installed !== undefined) {
               const tokensAfter = estimateTranscript(installed.messages);
               if (kind === 'auto') st.asked.add(key);
@@ -701,6 +967,8 @@ export const register: Register = (on: On, options: PluginOptions) => {
                 st.parties.notify(key, `sub-agent-compact: load_on_wake entries not loaded: ${wake.failed.join(', ')} — the installed handoff names them as NOT LOADED; load them yourself.`);
               }
               record(st, $, { ...base, type: party.label, limit, tokens: tokens ?? null, messages: messages.length, decision: 'handoff', tail: installed.tail, siblings: installed.siblings, brief: brief !== undefined, chars: text.length, tokensAfter, recovered, loads: entries.length, loadsFailed: wake.failed.length, warn: line.warn });
+              // What the session holds is readable only once the compaction is done: the next main request checks it.
+              if (handoff.forward) st.forwardInstalled = { meta: handoff.forward, text, tokensAfter };
               return { messages: installed.messages, ...(tokens !== undefined ? { tokensBefore: tokens } : {}), tokensAfter };
             }
             reason = { kind: 'fallback', detail: 'its tool call is not in the transcript' };

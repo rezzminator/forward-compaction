@@ -4,6 +4,13 @@ Every release of sub-agent-compact. Versions follow [semantic versioning](https:
 
 ## [Unreleased]
 
+## [0.7.0-dev.1] — 2026-10-13
+
+### Added
+- `forward_handoff`, behind the new option `forwardHandoffTool` (default `false`): the main chat compacts itself at a moment it picks, and the installed text is carried by code. One header line, then only non-empty blocks: the user's messages verbatim (about 8k tokens), the skills and commands invoked reloaded from disk (about 3k tokens each, 12k total), the file trail as `E|R|C path`, `load_files` read at handoff time (a `lines` range exactly), plan and task state, running work, one git line, the transcript path with the line of the cut and the previous handoff's path, and what could not be read. The model writes only the objective, done, remaining, blocked, findings and next, with `next` last. A field over its limit is trimmed and marked, never refused; only a missing required field returns an error.
+- Per call, `args.json`, `wake.txt` and `record.json` (the size of every block, the context before and after, and an install check that each block landed) are saved under the Claude config directory.
+- The `handoff` tool and `handoffTool` are unchanged.
+
 ## [0.5.1] — 2026-10-13
 
 ### Fixed
