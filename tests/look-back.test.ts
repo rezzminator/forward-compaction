@@ -115,15 +115,13 @@ describe('look_back public documentation and oversized queries', () => {
     expect(out.text).toContain('[query cut]');
     expect(out.text).toContain('fewer or other words');
   });
-  it('documents look_back and counted misses in tools prose and Unreleased (R10)', () => {
+  it('documents look_back and counted misses in tools prose and the changelog (R10)', () => {
     const readme = readFileSync(new URL('../README.md', import.meta.url), 'utf8');
     expect(readme).toContain('### Look back');
     expect(readme).toContain('Every call is a counted compaction miss');
     expect(readme).toContain('look-back-manual');
     const changelog = readFileSync(new URL('../CHANGELOG.md', import.meta.url), 'utf8');
-    const unreleased = changelog.split('## [Unreleased]')[1]!.split('\n## [')[0]!;
-    expect(unreleased).toContain('`look_back`');
-    expect(unreleased).toContain('shown to the person');
+    expect(changelog.split('\n## [').some((section) => section.includes('`look_back`') && section.includes('shown to the person'))).toBe(true);
   });
 });
 
@@ -224,5 +222,17 @@ describe('look_back miss notices and manual detection (R6–R7)', () => {
     expect(notice('main', { why: 'lost text' }, { hits: 2 })).toBe('look back (main): lost text — 2 hits');
     expect(notice('reviewer', { why: 'lost text', entry: 4 }, {})).toBe('look back (reviewer): lost text — entry 4');
     expect(notice('main', { why: 'lost text' }, { error: 'denied\nretry' })).toBe('look back (main): lost text — failed: denied retry');
+  });
+});
+
+describe('look_back on lines holding a raw line separator', () => {
+  it('reads an entry and a boundary whose JSON carries U+2028 or U+2029 unescaped, as Claude Code writes them', () => {
+    const line = row(105, [text('run 20261010-141759-c0ef next line end')]);
+    expect(line).toContain(' ');
+    const [entry] = entries(line);
+    expect(entry.line).toBe(105);
+    expect(entry.text).toContain('20261010-141759-c0ef');
+    const boundary = `145:${JSON.stringify({ type: 'system', subtype: 'compact_boundary', content: 'x y' })}`;
+    expect(api('boundaryLine')(boundary)).toBe(145);
   });
 });

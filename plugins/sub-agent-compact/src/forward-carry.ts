@@ -531,7 +531,7 @@ export function heldForward(msgs: readonly ApiMsg[], recorded?: (text: string) =
 export function priorPrompts(grepLines: string, boundaryLine: number): ApiMsg[] {
   const out: ApiMsg[] = [];
   for (const line of grepLines.split('\n')) {
-    const m = /^(\d+):(.*)$/.exec(line);
+    const m = /^(\d+):([\s\S]*)$/.exec(line);
     if (m === null || Number(m[1]) >= boundaryLine) continue;
     let entry: { type?: unknown; isMeta?: unknown; isCompactSummary?: unknown; message?: { role?: unknown; content?: unknown } };
     try {
@@ -555,7 +555,7 @@ export function priorPrompts(grepLines: string, boundaryLine: number): ApiMsg[] 
 export function priorCalls(grepLines: string, boundaryLine: number): ApiMsg[] {
   const out: ApiMsg[] = [];
   for (const line of grepLines.split('\n')) {
-    const m = /^(\d+):(.*)$/.exec(line);
+    const m = /^(\d+):([\s\S]*)$/.exec(line);
     if (m === null || Number(m[1]) >= boundaryLine) continue;
     let entry: { type?: unknown; message?: { content?: unknown } };
     try {

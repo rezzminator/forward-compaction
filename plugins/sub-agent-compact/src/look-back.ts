@@ -90,7 +90,7 @@ export function processOutput(out: { exitCode: number; stdout: string; stderr: s
 export function boundaryLine(stdout: string): number | undefined {
   for (const line of stdout.trim().split('\n').reverse()) {
     if (!line) continue;
-    const match = line.match(/^(\d+):(.*)$/);
+    const match = line.match(/^(\d+):([\s\S]*)$/);
     const n = Number(match?.[1]);
     if (!Number.isSafeInteger(n) || n < 1) throw new Error('invalid compaction boundary output');
     let data: unknown;
@@ -129,7 +129,7 @@ function readable(content: unknown, uses: ToolUse[], results: string[], warnings
 }
 export function parseEntries(stdout: string): LookBackEntry[] {
   return stdout.split('\n').filter(Boolean).map((line) => {
-    const m = line.match(/^(\d+):(.*)$/);
+    const m = line.match(/^(\d+):([\s\S]*)$/);
     if (!m || !Number.isSafeInteger(Number(m[1])) || Number(m[1]) < 1) throw new Error('invalid numbered transcript output');
     const e: LookBackEntry = { line: Number(m[1]), time: 'unknown time', kind: 'raw', text: m[2]!, uses: [], results: [], warnings: [] };
     let data: unknown;

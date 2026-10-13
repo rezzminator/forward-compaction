@@ -667,3 +667,12 @@ describe('bashWrites after a relative cd', () => {
     expect(bashWrites('cd pfm && echo x > out.log').map((w) => w.path)).toEqual(['pfm/out.log']);
   });
 });
+
+describe('transcript lines holding a raw line separator', () => {
+  it('carries a prompt and a call whose JSON holds U+2028 unescaped, as Claude Code writes them', () => {
+    const prompt = `3:${JSON.stringify({ type: 'user', message: { role: 'user', content: 'first second' } })}`;
+    expect(userMessages(priorPrompts(prompt, 10))).toEqual(['first second']);
+    const call = `4:${JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 't', name: 'Read', input: { file_path: '/r/a .md' } }] } })}`;
+    expect(priorCalls(call, 10)).toHaveLength(1);
+  });
+});

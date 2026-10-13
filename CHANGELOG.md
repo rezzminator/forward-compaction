@@ -4,6 +4,14 @@ Every release of sub-agent-compact. Versions follow [semantic versioning](https:
 
 ## [Unreleased]
 
+## [0.7.0-dev.18] — 2026-10-13
+
+### Fixed
+
+- A transcript line whose JSON holds a raw U+2028 or U+2029 (Claude Code writes them unescaped) no longer fails `look_back` with `invalid numbered transcript output`, and is no longer skipped when a forward handoff carries the prompts and files from before Claude Code's own summary.
+
+## [0.7.0-dev.17] — 2026-10-13
+
 ### Added
 
 - Always-on `look_back` for the main chat and every sub-agent: search or fetch readable transcript entries before the latest compaction. Every call is a compaction miss shown to the person and recorded in the decision log; manual transcript reads count too. Forward handoffs carry a checked hint naming the tool.
