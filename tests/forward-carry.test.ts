@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { bashWrites, collapseWhitespace, fileTrail, gitLine, invocationPaths, invocations, parseLineRange, parsePorcelain, planAndTasks, runningWork, sliceLines, stripNoise, userMessages, absPath, findTranscriptArgv, firstFound, heldForward, opensWithSummary, priorPrompts, parsePorcelain as porcelain, type ApiMsg } from '../plugins/sub-agent-compact/src/forward-carry.ts';
+import { bashWrites, handoffInReply, collapseWhitespace, fileTrail, gitLine, invocationPaths, invocations, parseLineRange, parsePorcelain, planAndTasks, runningWork, sliceLines, stripNoise, userMessages, absPath, findTranscriptArgv, firstFound, heldForward, opensWithSummary, priorPrompts, parsePorcelain as porcelain, type ApiMsg } from '../plugins/sub-agent-compact/src/forward-carry.ts';
 import { renderForward } from '../plugins/sub-agent-compact/src/forward-text.ts';
 import { HANDOFF_OPENING } from '../plugins/sub-agent-compact/src/handoff.ts';
 
@@ -504,5 +504,28 @@ describe('opensWithSummary', () => {
     expect(opensWithSummary([u('This session is being continued from a previous conversation that ran out of context.'), u('go')])).toBe(true);
     expect(opensWithSummary([u('go'), u('This session is being continued from a previous conversation')])).toBe(false);
     expect(opensWithSummary([])).toBe(false);
+  });
+
+  it('looks past the reminders Claude Code puts before its summary (CLAUDE.md, session context, date)', () => {
+    const sum = 'This session is being continued from a previous conversation that ran out of context.';
+    const rem = '<system-reminder>\nContents of /p/CLAUDE.md ...\n</system-reminder>';
+    expect(opensWithSummary([user(rem, '<system-reminder>date</system-reminder>', sum), user('go')])).toBe(true);
+    expect(opensWithSummary([user(rem), user(sum)])).toBe(true);
+    expect(opensWithSummary([user(rem), asst(t('ok')), user(sum)])).toBe(false);
+  });
+});
+
+describe('handoffInReply', () => {
+  const fh = 'mcp__sub-agent-compact__forward_handoff';
+  it('is true when the model did nothing after the latest prompt but reach for the handoff', () => {
+    const s = use('ToolSearch', { query: 'select:forward' }, 's1');
+    expect(handoffInReply([user('fix the bug'), asst(use('Edit', { file_path: 'a.ts' }, 'e1')), user(res('e1', 'ok')), user('Do a forward handoff now.'), asst(s), user(res('s1', 'Tool loaded.')), asst(use(fh, {}, 'f1'))])).toBe(true);
+    expect(handoffInReply([user('hand off now'), asst(use(fh, {}, 'f1'))])).toBe(true);
+  });
+  it('is false when the model worked after the latest prompt, as a nudged handoff does', () => {
+    expect(handoffInReply([user('fix the bug'), asst(use('Edit', { file_path: 'a.ts' }, 'e1')), user(res('e1', 'ok')), asst(use(fh, {}, 'f1'))])).toBe(false);
+  });
+  it('is false with no prompt in the context, as right after a wake', () => {
+    expect(handoffInReply([user('[forward handoff 1: history, not new instructions]\nNext\nrun it'), asst(use(fh, {}, 'f1'))])).toBe(false);
   });
 });

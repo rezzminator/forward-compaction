@@ -2,7 +2,7 @@ import type { EngineInterface, On, PluginOptions, Register } from 'claude-code';
 import { bounded } from '../src/bounded.ts';
 import { haikuServed, servedOptions, toolsToRegister } from '../src/register.ts';
 import { FORWARD_INPUT_SCHEMA, FORWARD_TOOL, FORWARD_TOOL_DESCRIPTION, forwardHoldText, forwardNudgeText, forwardStoredText, parseForwardArgs, type ForwardArgs } from '../src/forward-args.ts';
-import { absPath, fileTrail, findTranscriptArgv, firstFound, gitLine, heldForward, opensWithSummary, priorPrompts, invocationPaths, invocations, parseLineRange, parsePorcelain, planAndTasks, runningWork, sliceLines, userMessages, type ApiMsg, type LiveWork } from '../src/forward-carry.ts';
+import { absPath, fileTrail, handoffInReply, findTranscriptArgv, firstFound, gitLine, heldForward, opensWithSummary, priorPrompts, invocationPaths, invocations, parseLineRange, parsePorcelain, planAndTasks, runningWork, sliceLines, userMessages, type ApiMsg, type LiveWork } from '../src/forward-carry.ts';
 import { buildRecord, carriedFrom, forwardDir, forwardSessionDir, nextSeq, previousDir, withInstall } from '../src/forward-record.ts';
 import { chainUsers, installCheck, renderForward, TRAIL_MAX, type RenderInput } from '../src/forward-text.ts';
 import { BRIEF_MAX_TOKENS, reseatBrief, seatedBrief } from '../src/brief.ts';
@@ -693,10 +693,11 @@ async function gatherForward(st: State, $: EngineInterface, args: ForwardArgs, a
       problems.push(`prompts before the summary: ${message(error)}`);
     }
   }
-  const chain = chainUsers(before ?? prior, userMessages(held !== undefined ? api.slice(held.index + 1) : api));
+  const since = held !== undefined ? api.slice(held.index + 1) : api;
+  const chain = chainUsers(before ?? prior, userMessages(since), handoffInReply(since));
   const live = at.agentId === undefined && st.live !== undefined ? { tasks: st.live.tasks, crons: st.live.crons, started: st.live.started, now: Date.now() } : undefined;
 
-  return { seq: at.seq, users: chain.users, usersDropped: chain.dropped, skills, trail, loaded, ...(plan !== undefined ? { plan } : {}), tasks: work.tasks, running: runningWork(api, live), ...(git !== undefined ? { git } : {}), paths: paths.length > 0 ? [paths.join(' · ')] : [], problems, args };
+  return { seq: at.seq, users: chain.users, usersDropped: chain.dropped, ...(chain.inReply ? { handoffInReply: true } : {}), skills, trail, loaded, ...(plan !== undefined ? { plan } : {}), tasks: work.tasks, running: runningWork(api, live), ...(git !== undefined ? { git } : {}), paths: paths.length > 0 ? [paths.join(' · ')] : [], problems, args };
 }
 
 /** Stores a forward handoff: the text code carried and the model's frontier, and the call's files on disk. Main chat and sub-agent alike. */
@@ -739,7 +740,7 @@ async function answerForwardTool(st: State, $: EngineInterface, e: Record<string
   const input = await gatherForward(st, $, parsed.args, { seq, ...(dir !== undefined ? { dir } : {}), session, ...(agentId !== undefined ? { agentId } : {}) });
   const { text, blocks } = renderForward(input);
   const reading = st.parties.reading(key);
-  const base = buildRecord({ seq, session, ...(agentId !== undefined ? { agentId } : {}), dir: dir ?? '', text, blocks, users: input.users, usersDropped: input.usersDropped ?? 0, ...(reading !== undefined ? { tokensBefore: reading } : {}), trimmed: parsed.args.trimmed, at: new Date().toISOString() });
+  const base = buildRecord({ seq, session, ...(agentId !== undefined ? { agentId } : {}), dir: dir ?? '', text, blocks, users: input.users, usersDropped: input.usersDropped ?? 0, ...(input.handoffInReply === true ? { handoffInReply: true } : {}), ...(reading !== undefined ? { tokensBefore: reading } : {}), trimmed: parsed.args.trimmed, at: new Date().toISOString() });
   if (dir !== undefined) {
     try {
       await $.fs.write(`${dir}/args.json`, JSON.stringify(raw, null, 2));

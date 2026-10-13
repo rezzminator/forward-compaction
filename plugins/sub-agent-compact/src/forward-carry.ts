@@ -1,5 +1,6 @@
 // What code carries into a forward handoff, read from the transcript in the Messages API form.
 import { FORWARD_OPENING, oneLineLabel } from './forward-text.ts';
+import { FORWARD_TOOL } from './forward-args.ts';
 import { HANDOFF_OPENING, WAKE_NAME } from './handoff.ts';
 import { wakeCandidates, type WakeRoots } from './wake.ts';
 
@@ -534,10 +535,33 @@ export function priorPrompts(grepLines: string, boundaryLine: number): ApiMsg[] 
   return out;
 }
 
-/** Whether the context opens with Claude Code's own summary: the prompts before it are then only in the transcript file. */
+/** The calls a model makes to reach the forward handoff itself: they do no work on a request. */
+const reachesHandoff = (name: unknown): boolean => name === 'ToolSearch' || (typeof name === 'string' && name.endsWith(FORWARD_TOOL));
+
+/**
+ * Whether the forward handoff call is the reply to the latest prompt: after it the model did nothing but reach for the
+ * handoff. A nudged handoff comes after work on the prompt, so it is not one.
+ */
+export function handoffInReply(msgs: readonly ApiMsg[]): boolean {
+  let worked = -1;
+  for (let i = msgs.length - 1; i >= 0 && worked < 0; i--) {
+    const m = msgs[i]!;
+    if (m.role === 'assistant' && blocksOf(m).some((b) => b.type === 'tool_use' && !reachesHandoff(b.name))) worked = i;
+  }
+  return userMessages(msgs.slice(worked + 1)).length > 0;
+}
+
+/**
+ * Whether the context opens with Claude Code's own summary: the prompts before it are then only in the transcript file.
+ * The reminders Claude Code re-sends after a compaction (CLAUDE.md, session context, date) come before it.
+ */
 export function opensWithSummary(msgs: readonly ApiMsg[]): boolean {
-  const first = msgs.find((m) => m.role === 'user');
-  if (first === undefined) return false;
-  const text = blocksOf(first).find((b) => b.type === 'text');
-  return text !== undefined && textOf(text).startsWith(SUMMARY_OPENING);
+  for (const m of msgs) {
+    if (m.role !== 'user') return false;
+    for (const b of blocksOf(m)) {
+      if (b.type !== 'text' || textOf(b).trimStart().startsWith('<system-reminder>')) continue;
+      return textOf(b).startsWith(SUMMARY_OPENING);
+    }
+  }
+  return false;
 }

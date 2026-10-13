@@ -37,6 +37,11 @@ describe('measurement record', () => {
     expect(done).toMatchObject({ tokensAfter: 4_000, install: { ok: true, missing: [], landed: rendered.blocks.length } });
     expect(record.tokensAfter).toBeUndefined();
   });
+
+  it('records that the handoff was the reply to the latest prompt only when it was', () => {
+    expect(record.handoffInReply).toBeUndefined();
+    expect(buildRecord({ seq: 1, session: 's1', dir: '/d', text: 'x', blocks: [], users: ['a'], usersDropped: 0, handoffInReply: true, trimmed: [] }).handoffInReply).toBe(true);
+  });
 });
 
 describe('carriedFrom', () => {
@@ -46,5 +51,6 @@ describe('carriedFrom', () => {
     expect(carriedFrom([rec('held', ['a'])], 'held')).toEqual({ users: ['a'], dropped: 0 });
     expect(carriedFrom([rec('held', ['a', 7]), null, 'held', rec('held', 'a')], 'held')).toBeUndefined();
     expect(carriedFrom([rec('held', ['a'])], 'held, edited')).toBeUndefined();
+    expect(carriedFrom([{ ...rec('held', ['a']), handoffInReply: true }], 'held')).toEqual({ users: ['a'], dropped: 0, inReply: true });
   });
 });

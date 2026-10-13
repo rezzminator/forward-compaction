@@ -4,6 +4,12 @@ Every release of sub-agent-compact. Versions follow [semantic versioning](https:
 
 ## [Unreleased]
 
+## [0.7.0-dev.7] — 2026-10-13
+
+### Fixed
+- When the forward handoff is the model's reply to the latest prompt (it did nothing after that prompt but reach for the tool), the prompt's tag reads `[n, latest, handed off in reply]`, and the record keeps it across chained handoffs. A probe woken from a handoff ordered by its last prompt read the order as still open and called `forward_handoff` again.
+- The prompts from before Claude Code's own compaction are read again: the summary is found past the reminders Claude Code puts before it (CLAUDE.md, session context, date). In 0.7.0-dev.6 only a summary in the first text block was seen, so a context compacted once carried only its last prompt.
+
 ## [0.7.0-dev.6] — 2026-10-13
 
 ### Fixed

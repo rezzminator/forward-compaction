@@ -130,6 +130,14 @@ describe('renderUsers', () => {
     expect(dropped).toBe(30);
     expect(text).toBe('[30 older dropped]\n[31] a\n[32, latest] b');
   });
+
+  it('says on the latest prompt when the handoff was the reply to it', () => {
+    expect(renderUsers(['build X', 'hand off now'], USERS_MAX_CHARS, 0, true).text).toBe('[1] build X\n[2, latest, handed off in reply] hand off now');
+  });
+
+  it('escapes a carried line that reads like the in-reply tag', () => {
+    expect(escapeLine('[3, latest, handed off in reply] x')).toBe('\\[3, latest, handed off in reply] x');
+  });
 });
 
 describe('chained prompts', () => {
@@ -143,7 +151,7 @@ describe('chained prompts', () => {
   });
 
   it('starts from the new ones with no earlier handoff, and cuts a message over the cap', () => {
-    expect(chainUsers(undefined, ['a', 'b'])).toEqual({ users: ['a', 'b'], dropped: 0 });
+    expect(chainUsers(undefined, ['a', 'b'])).toEqual({ users: ['a', 'b'], dropped: 0, inReply: false });
     const big = chainUsers(undefined, ['z'.repeat(USERS_MAX_CHARS * 2)]).users[0]!;
     expect(big.length).toBeLessThanOrEqual(USERS_MAX_CHARS);
     expect(big.endsWith('[trimmed]')).toBe(true);
@@ -155,6 +163,12 @@ describe('chained prompts', () => {
     expect(state!.users[0]).toBe('r3-0');
     expect(state!.users.at(-1)).toBe('r3-24');
     expect(state!.dropped).toBe(75);
+  });
+
+  it('keeps the in-reply tag while no prompt came since, and takes the new call\'s when one did', () => {
+    expect(chainUsers({ users: ['a', 'hand off'], dropped: 0, inReply: true }, []).inReply).toBe(true);
+    expect(chainUsers({ users: ['a', 'hand off'], dropped: 0, inReply: true }, ['b']).inReply).toBe(false);
+    expect(chainUsers(undefined, ['b', 'hand off'], true).inReply).toBe(true);
   });
 });
 

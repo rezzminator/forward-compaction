@@ -21,7 +21,7 @@ const MIN_PARTIAL_CHARS = 200;
 export const USERS_KEEP = 25;
 
 /** A line that would read as the header, a block label or an item marker of this text. */
-const SPECIAL = /^\\*(?:(?:User|Files|Plan|Tasks|Running|Git|Paths|Unresolved|Objective|Done|Remaining|Blocked|Findings|Next)$|(?:Skill|Load) |\[\d+(?:, latest)?\] |\[\d+ older dropped\]$|\[forward handoff)/;
+const SPECIAL = /^\\*(?:(?:User|Files|Plan|Tasks|Running|Git|Paths|Unresolved|Objective|Done|Remaining|Blocked|Findings|Next)$|(?:Skill|Load) |\[\d+(?:, latest(?:, handed off in reply)?)?\] |\[\d+ older dropped\]$|\[forward handoff)/;
 
 /** A carried line made unable to read as structure: one more backslash in front when it would, so no two lines escape alike. */
 export const escapeLine = (line: string): string => (SPECIAL.test(line) ? `\\${line}` : line);
@@ -41,11 +41,14 @@ const item = (marker: string, text: string): string => {
 /** A name or label as one line, for a block label. */
 export const oneLineLabel = (text: string): string => text.replace(/[\u0000-\u001f\u007f\u2028\u2029]+/g, ' ').trim();
 
-/** The user messages carried: the earlier handoff's from its record, then those since, the last 25; how many went older than that. */
-export function chainUsers(previous: { users: readonly string[]; dropped: number } | undefined, fresh: readonly string[], keep = USERS_KEEP): { users: string[]; dropped: number } {
+/**
+ * The user messages carried: the earlier handoff's from its record, then those since, the last 25; how many went older
+ * than that; and whether a handoff was the reply to the newest (this call's when a prompt came since, else the earlier one's).
+ */
+export function chainUsers(previous: { users: readonly string[]; dropped: number; inReply?: boolean } | undefined, fresh: readonly string[], freshInReply = false, keep = USERS_KEEP): { users: string[]; dropped: number; inReply: boolean } {
   const all = [...(previous?.users ?? []), ...fresh];
   const over = Math.max(0, all.length - keep);
-  return { users: all.slice(over).map((u) => cut(u, USERS_MAX_CHARS)), dropped: (previous?.dropped ?? 0) + over };
+  return { users: all.slice(over).map((u) => cut(u, USERS_MAX_CHARS)), dropped: (previous?.dropped ?? 0) + over, inReply: fresh.length > 0 ? freshInReply : previous?.inReply === true };
 }
 
 export type BlockRecord = { name: string; start: number; chars: number; tokens: number; items: number; hash: string };
@@ -56,6 +59,8 @@ export type RenderInput = {
   users: string[];
   /** How many older ones earlier handoffs let go: the numbering and the dropped line continue from it. */
   usersDropped?: number;
+  /** The handoff call was the reply to the newest: its tag says so. */
+  handoffInReply?: boolean;
   /** The skills and commands to reload, oldest first: the body, or why there is none. */
   skills: { name: string; body?: string; problem?: string }[];
   trail: { tag: 'R' | 'E' | 'C'; path: string }[];
@@ -94,7 +99,10 @@ function cut(text: string, max: number): string {
   return text.length <= max ? text : `${text.slice(0, max - TRIMMED.length - 1).trimEnd()} ${TRIMMED}`;
 }
 
-const mark = (n: number, latest: boolean): string => `[${n}${latest ? ', latest' : ''}] `;
+/** The newest prompt's tag when the handoff was the reply to it: a woken model reads an order to hand off as carried out. */
+export const IN_REPLY = 'latest, handed off in reply';
+
+const mark = (n: number, tag?: string): string => `[${n}${tag !== undefined ? `, ${tag}` : ''}] `;
 
 /** A message under its marker: its first line follows the marker, so only the lines after it can read as structure. */
 const body = (text: string): string => {
@@ -102,13 +110,17 @@ const body = (text: string): string => {
   return [first, ...rest.map(escapeLine)].join('\n');
 };
 
-/** The user messages that fit the cap, newest first under it, only the oldest kept cut; rendered oldest first, numbered on from the `base` earlier handoffs let go. */
-export function renderUsers(msgs: readonly string[], max = USERS_MAX_CHARS, base = 0): { text: string; items: number; dropped: number } {
+/**
+ * The user messages that fit the cap, newest first under it, only the oldest kept cut; rendered oldest first, numbered on
+ * from the `base` earlier handoffs let go. The newest is tagged latest, and says so when the handoff was the reply to it.
+ */
+export function renderUsers(msgs: readonly string[], max = USERS_MAX_CHARS, base = 0, inReply = false): { text: string; items: number; dropped: number } {
+  const tag = (i: number): string | undefined => (i === msgs.length - 1 ? (inReply ? IN_REPLY : 'latest') : undefined);
   const kept: string[] = [];
   let left = max;
   let stopped = msgs.length;
   for (let i = msgs.length - 1; i >= 0; i--) {
-    const prefix = mark(base + i + 1, i === msgs.length - 1);
+    const prefix = mark(base + i + 1, tag(i));
     const entry = `${prefix}${body(msgs[i]!)}`;
     if (entry.length + 1 <= left) {
       kept.push(entry);
@@ -141,7 +153,7 @@ export function renderForward(i: RenderInput): { text: string; blocks: BlockReco
   };
 
   if (i.users.length > 0) {
-    const users = renderUsers(i.users, USERS_MAX_CHARS, i.usersDropped ?? 0);
+    const users = renderUsers(i.users, USERS_MAX_CHARS, i.usersDropped ?? 0, i.handoffInReply === true);
     add('User', users.text, users.items, true);
   }
 
