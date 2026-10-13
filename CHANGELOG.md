@@ -4,6 +4,12 @@ Every release of sub-agent-compact. Versions follow [semantic versioning](https:
 
 ## [Unreleased]
 
+## [0.7.0-dev.14] — 2026-10-13
+
+### Added
+
+- A forward handoff loads the party's own notes: the newest two Markdown or text files it made or edited outside the repo (a plan, a run log, a checkpoint), as `Load <path> (own notes)` blocks, whether or not `load_files` named them. A file inside the repo stays a Files line.
+
 ## [0.7.0-dev.13] — 2026-10-13
 
 ### Changed

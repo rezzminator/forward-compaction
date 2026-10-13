@@ -2,7 +2,7 @@ import type { EngineInterface, On, PluginOptions, Register } from 'claude-code';
 import { bounded } from '../src/bounded.ts';
 import { haikuServed, servedOptions, toolsToRegister } from '../src/register.ts';
 import { FORWARD_INPUT_SCHEMA, FORWARD_TOOL, FORWARD_TOOL_DESCRIPTION, forwardHoldText, forwardNudgeText, forwardRefusal, forwardStoredText, parseForwardArgs, rereadNudge, type ForwardArgs } from '../src/forward-args.ts';
-import { absPath, fileTrail, handoffInReply, findTranscriptArgv, firstFound, gitLine, heldForward, opensWithSummary, openingSummary, summaryKnowledge, outline, OUTLINE_FILE_MAX_BYTES, priorCalls, priorPrompts, mergeTrail, invocationPaths, invocations, parseLineRange, parsePorcelain, planAndTasks, runningWork, sliceLines, userMessages, type ApiMsg, type LiveWork, type TrailEntry } from '../src/forward-carry.ts';
+import { absPath, fileTrail, handoffInReply, findTranscriptArgv, firstFound, gitLine, heldForward, opensWithSummary, openingSummary, summaryKnowledge, outline, ownNotes, OUTLINE_FILE_MAX_BYTES, priorCalls, priorPrompts, mergeTrail, invocationPaths, invocations, parseLineRange, parsePorcelain, planAndTasks, runningWork, sliceLines, userMessages, type ApiMsg, type LiveWork, type TrailEntry } from '../src/forward-carry.ts';
 import { buildRecord, carriedFrom, forwardDir, forwardSessionDir, nextSeq, previousDir, withInstall } from '../src/forward-record.ts';
 import { chainUsers, forwardInstalledLine, installCheck, renderForward, TRAIL_MAX, type RenderInput } from '../src/forward-text.ts';
 import { BRIEF_MAX_TOKENS, reseatBrief, seatedBrief } from '../src/brief.ts';
@@ -660,6 +660,7 @@ async function gatherForward(st: State, $: EngineInterface, args: ForwardArgs, a
   }
 
   let git: string | undefined;
+  let repoTop: string | undefined;
   try {
     const run = (argv: string[]) => $.process.run(argv, { cwd, timeoutMs: 15_000 });
     const branch = await run(['git', 'rev-parse', '--abbrev-ref', 'HEAD']);
@@ -670,7 +671,10 @@ async function gatherForward(st: State, $: EngineInterface, args: ForwardArgs, a
       // A cloned repo's fsmonitor hook is a program of its own: the status runs without it.
       const status = await run(['git', '-c', 'core.fsmonitor=false', 'status', '--porcelain']);
       if (head.exitCode !== 0 || status.exitCode !== 0 || top.exitCode !== 0) problems.push(`git: ${failure(head.exitCode !== 0 ? head : top.exitCode !== 0 ? top : status)}`);
-      else git = gitLine({ branch: branch.stdout.trim(), head: head.stdout.trim(), dirty: parsePorcelain(status.stdout, top.stdout.trim()) });
+      else {
+        repoTop = top.stdout.trim();
+        git = gitLine({ branch: branch.stdout.trim(), head: head.stdout.trim(), dirty: parsePorcelain(status.stdout, repoTop) });
+      }
     }
   } catch (error) {
     problems.push(`git: ${message(error)}`);
@@ -719,6 +723,11 @@ async function gatherForward(st: State, $: EngineInterface, args: ForwardArgs, a
   const fresh = fileTrail(since, { cwd, home: st.home ?? '', max: TRAIL_MAX });
   const kept = nested.filter((p) => !mergeTrail(older, fresh, TRAIL_MAX).some((t) => t.path === p)).slice(-5);
   const trail = [...mergeTrail(older, fresh, TRAIL_MAX - kept.length), ...kept.map((path) => ({ tag: 'R' as const, path }))];
+  // The party's own notes, loaded whether or not load_files named them: a wake without its plan loses most of the work.
+  for (const note of ownNotes(trail, { repoTop, loaded: args.loadFiles.map((f) => abs(f.path)) })) {
+    const read = await readOne(st, $, note, WAKE_FILE_MAX_BYTES);
+    loaded.push('content' in read ? { label: `${note} (own notes)`, body: read.content } : { label: `${note} (own notes)`, problem: read.problem });
+  }
   // What each made or edited file holds now: read at handoff time, so a file changed since its edit shows as it stands.
   const outlines: Record<string, string> = {};
   for (const entry of trail.slice(0, TRAIL_MAX)) {

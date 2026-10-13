@@ -696,3 +696,16 @@ export function outline(path: string, text: string, max = OUTLINE_LINE_MAX): str
   }
   return body;
 }
+
+/**
+ * The party's own working notes: the Markdown and text files it made or edited outside the repo (a plan, a run log,
+ * a checkpoint), newest first, minus those load_files already loads. Code loads them so a handoff that names none
+ * still wakes with them; a file inside the repo is work, not a note, and stays a Files line.
+ */
+export function ownNotes(trail: readonly TrailEntry[], { repoTop, loaded, max = 2 }: { repoTop: string | undefined; loaded: readonly string[]; max?: number }): string[] {
+  return trail
+    .filter((e) => e.tag !== 'R' && /\.(?:md|markdown|txt)$/i.test(e.path) && !loaded.includes(e.path))
+    .filter((e) => repoTop === undefined || !(e.path === repoTop || e.path.startsWith(`${repoTop}/`)))
+    .slice(0, max)
+    .map((e) => e.path);
+}
