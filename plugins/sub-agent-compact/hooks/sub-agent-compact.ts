@@ -2,7 +2,7 @@ import type { EngineInterface, On, PluginOptions, Register } from 'claude-code';
 import { bounded } from '../src/bounded.ts';
 import { haikuServed, servedOptions, toolsToRegister } from '../src/register.ts';
 import { FORWARD_INPUT_SCHEMA, FORWARD_TOOL, FORWARD_TOOL_DESCRIPTION, forwardHoldText, forwardNudgeText, forwardStoredText, parseForwardArgs, type ForwardArgs } from '../src/forward-args.ts';
-import { absPath, fileTrail, findTranscriptArgv, firstFound, gitLine, heldForward, invocationPaths, invocations, parseLineRange, parsePorcelain, planAndTasks, runningWork, sliceLines, userMessages, type ApiMsg, type LiveWork } from '../src/forward-carry.ts';
+import { absPath, fileTrail, findTranscriptArgv, firstFound, gitLine, heldForward, opensWithSummary, priorPrompts, invocationPaths, invocations, parseLineRange, parsePorcelain, planAndTasks, runningWork, sliceLines, userMessages, type ApiMsg, type LiveWork } from '../src/forward-carry.ts';
 import { buildRecord, carriedFrom, forwardDir, forwardSessionDir, nextSeq, previousDir, withInstall } from '../src/forward-record.ts';
 import { chainUsers, installCheck, renderForward, TRAIL_MAX, type RenderInput } from '../src/forward-text.ts';
 import { BRIEF_MAX_TOKENS, reseatBrief, seatedBrief } from '../src/brief.ts';
@@ -605,12 +605,14 @@ async function gatherForward(st: State, $: EngineInterface, args: ForwardArgs, a
 
   const paths: string[] = [];
   const nested: string[] = [];
+  let transcript: string | undefined;
   if (st.configDir === undefined) problems.push('transcript: no Claude config directory');
   else {
     try {
       // Found by its session id: Claude Code names a long project directory by hashing it, so the name is never rebuilt here.
       const search = await $.process.run(findTranscriptArgv({ configDir: st.configDir, session: at.session, ...(at.agentId !== undefined ? { agentId: at.agentId } : {}) }), { timeoutMs: 15_000 });
       const file = firstFound(search.stdout);
+      transcript = file;
       if (file === undefined) problems.push(search.exitCode === 0 ? `transcript: no file for session ${at.session}` : `transcript: lookup failed (${failure(search)})`);
       else {
         const count = await $.process.run(['grep', '-c', '', file], { timeoutMs: 15_000 });
@@ -674,7 +676,24 @@ async function gatherForward(st: State, $: EngineInterface, args: ForwardArgs, a
   const held = heldForward(api, (t) => carriedFrom(records, t) !== undefined);
   const before = held?.recorded ? carriedFrom(records, held.text) : undefined;
   if (held !== undefined && !held.recorded) problems.push(`earlier handoff: its record is missing, so the prompts before it are not carried${unreadable.length > 0 ? ` (${unreadable.join('; ')})` : ''}`);
-  const chain = chainUsers(before, userMessages(held !== undefined ? api.slice(held.index + 1) : api));
+  // After Claude Code's own compaction the context opens with its summary: the prompts before it come from the transcript file.
+  let prior: { users: string[]; dropped: number } | undefined;
+  if (held === undefined && transcript !== undefined && opensWithSummary(api)) {
+    try {
+      const bounds = await $.process.run(['grep', '-a', '-n', '"subtype":"compact_boundary"', transcript], { timeoutMs: 15_000 });
+      const last = Number(bounds.stdout.trim().split('\n').pop()?.split(':')[0]);
+      if (bounds.exitCode !== 0 || !Number.isFinite(last) || last <= 0) problems.push(`prompts before the summary: no compaction found in the transcript (${failure(bounds)})`);
+      else {
+        // Tool results are user entries too: only the entries without one hold prompts.
+        const users = await $.process.run(['sh', '-c', 'grep -a -n \'"type":"user"\' "$1" | grep -v \'"tool_use_id"\'', 'sh', transcript], { timeoutMs: 30_000 });
+        if (users.exitCode !== 0 && users.exitCode !== 1) problems.push(`prompts before the summary: reading the transcript failed (${failure(users)})`);
+        else prior = { users: userMessages(priorPrompts(users.stdout, last)), dropped: 0 };
+      }
+    } catch (error) {
+      problems.push(`prompts before the summary: ${message(error)}`);
+    }
+  }
+  const chain = chainUsers(before ?? prior, userMessages(held !== undefined ? api.slice(held.index + 1) : api));
   const live = at.agentId === undefined && st.live !== undefined ? { tasks: st.live.tasks, crons: st.live.crons, started: st.live.started, now: Date.now() } : undefined;
 
   return { seq: at.seq, users: chain.users, usersDropped: chain.dropped, skills, trail, loaded, ...(plan !== undefined ? { plan } : {}), tasks: work.tasks, running: runningWork(api, live), ...(git !== undefined ? { git } : {}), paths: paths.length > 0 ? [paths.join(' · ')] : [], problems, args };

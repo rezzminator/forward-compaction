@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { bashWrites, collapseWhitespace, fileTrail, gitLine, invocationPaths, invocations, parseLineRange, parsePorcelain, planAndTasks, runningWork, sliceLines, stripNoise, userMessages, absPath, findTranscriptArgv, firstFound, heldForward, parsePorcelain as porcelain, type ApiMsg } from '../plugins/sub-agent-compact/src/forward-carry.ts';
+import { bashWrites, collapseWhitespace, fileTrail, gitLine, invocationPaths, invocations, parseLineRange, parsePorcelain, planAndTasks, runningWork, sliceLines, stripNoise, userMessages, absPath, findTranscriptArgv, firstFound, heldForward, opensWithSummary, priorPrompts, parsePorcelain as porcelain, type ApiMsg } from '../plugins/sub-agent-compact/src/forward-carry.ts';
 import { renderForward } from '../plugins/sub-agent-compact/src/forward-text.ts';
 import { HANDOFF_OPENING } from '../plugins/sub-agent-compact/src/handoff.ts';
 
@@ -466,5 +466,43 @@ describe('git, ranges, transcript', () => {
     expect(heldForward(m, (text) => text === wake)).toEqual({ text: wake, index: 0, recorded: true });
     expect(heldForward(m, () => false)).toEqual({ text: wake, index: 0, recorded: false });
     expect(heldForward([user('hi'), asst(t('ok') as never), user(pasted)], () => false)).toBeUndefined();
+  });
+});
+
+describe('user words carried whole', () => {
+  const u = (text: string): ApiMsg => ({ role: 'user', content: [{ type: 'text', text }] });
+  const a: ApiMsg = { role: 'assistant', content: [{ type: 'text', text: 'ok' }] };
+  it('keeps a message that wraps a slash command in more text, and the message after it', () => {
+    const envelope = '[Workflow harness — user request] The harness relays the request:\n  <command-message>ultimate</command-message>\n  <command-name>/ultimate</command-name>\n  <command-args>draw the graph</command-args>';
+    expect(userMessages([u(envelope), u('You are a data aggregator. STEP 1. Read b01.txt'), a])).toEqual([
+      '[Workflow harness — user request] The harness relays the request:\n  /ultimate draw the graph',
+      'You are a data aggregator. STEP 1. Read b01.txt',
+    ]);
+  });
+  it('still drops the expansion after a message that is only a slash command', () => {
+    const cmd = '<command-message>pcm</command-message>\n<command-name>/pcm</command-name>\n<command-args>fix x</command-args>';
+    expect(userMessages([u(cmd), u('# PCM body'), a])).toEqual(['/pcm fix x']);
+  });
+  it('reads the prompts before the last compaction from grep -n lines of the transcript, skipping expansions and summaries', () => {
+    const line = (n: number, o: Record<string, unknown>) => `${n}:${JSON.stringify(o)}`;
+    const out = [
+      line(3, { type: 'user', message: { role: 'user', content: 'You are a worker. STEP 1.' } }),
+      line(5, { type: 'user', message: { role: 'user', content: [{ type: 'text', text: '<command-name>/pcm</command-name><command-args>go</command-args>' }] } }),
+      line(6, { type: 'user', isMeta: true, message: { role: 'user', content: [{ type: 'text', text: '# PCM body' }] } }),
+      line(8, { type: 'user', message: { role: 'user', content: 'and then this' } }),
+      line(20, { type: 'user', isCompactSummary: true, message: { role: 'user', content: 'This session is being continued…' } }),
+      line(25, { type: 'user', message: { role: 'user', content: 'after the compaction' } }),
+      'not json',
+    ].join('\n');
+    expect(userMessages(priorPrompts(out, 19))).toEqual(['You are a worker. STEP 1.', '/pcm go', 'and then this']);
+  });
+});
+
+describe('opensWithSummary', () => {
+  it('is true only when the first user text is Claude Code\'s own summary', () => {
+    const u = (text: string): ApiMsg => ({ role: 'user', content: [{ type: 'text', text }] });
+    expect(opensWithSummary([u('This session is being continued from a previous conversation that ran out of context.'), u('go')])).toBe(true);
+    expect(opensWithSummary([u('go'), u('This session is being continued from a previous conversation')])).toBe(false);
+    expect(opensWithSummary([])).toBe(false);
   });
 });

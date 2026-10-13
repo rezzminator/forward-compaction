@@ -37,6 +37,10 @@ const SUMMARY_OPENING = 'This session is being continued from a previous convers
 const INTERRUPT = /^\[Request interrupted by user[^\]]*\]$/;
 const COMMAND_NAME = /<command-name>\s*\/?([^<\s]+)\s*<\/command-name>/;
 const COMMAND_ARGS = /<command-args>([\s\S]*?)<\/command-args>/;
+const COMMAND_TAGS = /<command-(message|name|args)>[\s\S]*?<\/command-\1>/g;
+const COMMAND_MESSAGE = /<command-message>[\s\S]*?<\/command-message>\s*/;
+const COMMAND_NAME_TAG = /<command-name>[\s\S]*?<\/command-name>\s*/;
+const COMMAND_ARGS_TAG = /<command-args>[\s\S]*?<\/command-args>/;
 const LOCAL_OUTPUT = /^\s*<local-command-(?:stdout|stderr)>/;
 /** The opening of every notice this plugin writes into a party's context. */
 const NOTICE_OPENING = 'sub-agent-compact: ';
@@ -94,18 +98,24 @@ export function userMessages(msgs: readonly ApiMsg[]): string[] {
       }
       if (HARNESS_TEXT.test(text.trim())) continue;
       const name = COMMAND_NAME.exec(text)?.[1];
+      let said = text;
       if (name !== undefined) {
         const args = COMMAND_ARGS.exec(text)?.[1]?.trim();
-        parts.push(`/${name}${args ? ` ${args}` : ''}`);
-        expansion = !BUILTIN.has(name);
-        continue;
-      }
-      if (expansion) {
+        const call = `/${name}${args ? ` ${args}` : ''}`;
+        // Only a message that is the command alone is followed by its expansion; one that wraps it in more text (a relay) is carried whole.
+        if (text.replace(COMMAND_TAGS, '').trim() === '') {
+          parts.push(call);
+          expansion = !BUILTIN.has(name);
+          continue;
+        }
+        said = text.replace(COMMAND_MESSAGE, '').replace(COMMAND_NAME_TAG, call).replace(COMMAND_ARGS_TAG, '');
+        expansion = false;
+      } else if (expansion) {
         expansion = false;
         continue;
       }
-      for (const found of text.matchAll(IMAGE_SOURCE)) sources.push(found[1]!.trim());
-      const clean = collapseWhitespace(stripNoise(text).replace(IMAGE_SOURCE, '').replace(IMAGE_TAG, '').replace(FOOTER, ''));
+      for (const found of said.matchAll(IMAGE_SOURCE)) sources.push(found[1]!.trim());
+      const clean = collapseWhitespace(stripNoise(said).replace(IMAGE_SOURCE, '').replace(IMAGE_TAG, '').replace(FOOTER, ''));
       if (clean !== '' && !INTERRUPT.test(clean)) parts.push(clean);
     }
     const markers = sources.map((x) => `[image ${x}]`);
@@ -497,4 +507,37 @@ export function heldForward(msgs: readonly ApiMsg[], recorded?: (text: string) =
     }
   }
   return leading;
+}
+
+/**
+ * The user entries of a transcript before its last compaction, from `grep -n` lines of the JSONL file, as messages
+ * userMessages reads: Claude Code's own summary replaced them in the context, the file still holds them. A command's
+ * or skill's expansion (isMeta) and a summary are left out; each entry stands alone, so none reads as another's expansion.
+ */
+export function priorPrompts(grepLines: string, boundaryLine: number): ApiMsg[] {
+  const out: ApiMsg[] = [];
+  for (const line of grepLines.split('\n')) {
+    const m = /^(\d+):(.*)$/.exec(line);
+    if (m === null || Number(m[1]) >= boundaryLine) continue;
+    let entry: { type?: unknown; isMeta?: unknown; isCompactSummary?: unknown; message?: { role?: unknown; content?: unknown } };
+    try {
+      entry = JSON.parse(m[2]!);
+    } catch {
+      continue;
+    }
+    if (entry.type !== 'user' || entry.isMeta === true || entry.isCompactSummary === true || entry.message === undefined) continue;
+    const content = entry.message.content;
+    if (typeof content !== 'string' && !Array.isArray(content)) continue;
+    out.push({ role: 'user', content: content as ApiMsg['content'] });
+    out.push({ role: 'assistant', content: [] });
+  }
+  return out;
+}
+
+/** Whether the context opens with Claude Code's own summary: the prompts before it are then only in the transcript file. */
+export function opensWithSummary(msgs: readonly ApiMsg[]): boolean {
+  const first = msgs.find((m) => m.role === 'user');
+  if (first === undefined) return false;
+  const text = blocksOf(first).find((b) => b.type === 'text');
+  return text !== undefined && textOf(text).startsWith(SUMMARY_OPENING);
 }

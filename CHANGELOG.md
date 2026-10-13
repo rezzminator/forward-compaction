@@ -4,6 +4,12 @@ Every release of sub-agent-compact. Versions follow [semantic versioning](https:
 
 ## [Unreleased]
 
+## [0.7.0-dev.6] — 2026-10-13
+
+### Fixed
+- The `User` block of a forward handoff carries the prompts from before Claude Code's own compaction: when the context opens with its summary, they are read from the session transcript (its user entries before the last compaction, without expansions or tool results). Haiku probes cut after one real compaction woke with only the last message; the worker's brief was gone.
+- A message that wraps a slash command in more text (a workflow relaying the person's request) is carried whole, with the command as `/name args`, and the message after it is no longer taken for the command's expansion: a Haiku worker's task, sent right after such a relay, was dropped.
+
 ## [0.7.0-dev.5] — 2026-10-13
 
 ### Added
