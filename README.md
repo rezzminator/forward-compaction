@@ -7,7 +7,7 @@
 [![Claude Code plugin](https://img.shields.io/badge/Claude%20Code-plugin-D97757)](https://docs.claude.com/en/docs/claude-code/plugins)
 [![Version](https://img.shields.io/badge/version-0.4.0-blue)](./CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
-[![Tests](https://img.shields.io/badge/tests-130%20passing-brightgreen)](#development)
+[![Tests](https://img.shields.io/badge/tests-171%20passing-brightgreen)](#development)
 [![Built with Professor](https://img.shields.io/badge/built%20with-Professor-8A2BE2)](https://github.com/rezzminator/professor)
 
 **34% cheaper** than a sub-agent that never compacts · **52% less context** re-sent on every request
@@ -101,21 +101,38 @@ and sub-agents from 20%, every 10% after that, and each is forced at 60%.
 flowchart LR
     A[Tool call] --> B{Context past<br/>a nudge point?}
     B -- no --> A
-    B -- yes --> C[Model reads a nudge:<br/>size, what a handoff saves,<br/>what goes in it]
-    C --> D[Model writes its handoff<br/>as its next call]
-    D --> E[Next compaction point:<br/>the handoff replaces the past,<br/>no summarizer request]
+    B -- yes --> C[Model reads a nudge:<br/>size, forced point, how to compact]
+    C --> D[Model finishes the step<br/>and asks with a focus]
+    D --> E[Next request:<br/>compaction runs, the focus<br/>tells the summarizer what to keep]
     E --> A
     B -- past the forced point --> F[Compaction forced]
     F --> A
 ```
 
 1. **Nudges.** After a tool call, once a party's context passes its first
-   nudge point, the model reads one note after the tool's result: how big
-   its context is, that every request re-sends all of it, what a handoff
-   would cut it to, and what a handoff must hold. Once that result closes a
-   step and work is still ahead, the handoff is its next call; with only its
-   final answer left, it answers instead. Another note follows at each step
-   past the first. The nudges start over after every compaction.
+   nudge point, the model reads one line after the tool's result: how full
+   it is, where it will be forced, and how to compact itself. Another line
+   follows at each step past the first. The nudges start over after every
+   compaction.
+2. **Asking.** The main chat calls the `compact` tool
+   (`mcp__sub-agent-compact__compact`) with a `focus`: the plan or its
+   file, what is done, what is left, the next step. A sub-agent whose
+   definition has a `tools:` allowlist can't see a plugin's tool, so it
+   writes `<compact-now>its focus</compact-now>` in a response that also
+   calls a tool.
+3. **Running.** The request arms the party. The next time Claude Code asks
+   to compact it, the plugin lets it through, and the focus becomes the
+   summarizer's instructions. A party that never asks is held until its
+   forced point, then compacted there.
+
+With `handoffTool` on, the model hands off instead of asking, and no
+summarizer request runs:
+
+1. **Nudges.** The note after the tool's result says how big its context
+   is, that every request re-sends all of it, what a handoff would cut it
+   to, and what a handoff must hold. Once that result closes a step and
+   work is still ahead, the handoff is its next call; with only its final
+   answer left, it answers instead.
 2. **Handing off.** The main chat calls the `handoff` tool
    (`mcp__sub-agent-compact__handoff`) with its own handoff: the task and
    every value it fixed, verbatim; what is done, with evidence; the facts
@@ -133,10 +150,8 @@ flowchart LR
    Code's own compaction point installs it when its turn ends. A party that
    never hands off is held until its forced point, then compacted there.
 
-With `compactTool` on, the older path is back beside it: the `compact` tool
-(`mcp__sub-agent-compact__compact`) and the `<compact-now>` marker arm the
-party with a focus, and at the next ask the focus becomes the summarizer's
-instructions. The nudges still name the handoff while `handoffTool` is on.
+With both on, the `compact` tool and the `<compact-now>` marker still arm
+the party, and the nudges name the handoff.
 
 Guards keep this honest:
 - A marker quoted in backticks, one in a final answer, or one in the main
@@ -144,23 +159,24 @@ Guards keep this honest:
 - A sub-agent that sends the marker alone would end its own run, because a
   response without a tool call is its final answer. The plugin refuses that
   stop once, and the agent carries on.
-- A handoff is refused below the party's first nudge point
-  (`mainAutoCompactNudgeStart`, `subagentAutoCompactNudgeStart`), where it
-  throws away more working context than it saves, and when it is shorter
-  than 200 characters. The model is told why and carries on; the latest
+- A self-compaction or a handoff is refused below the party's first nudge
+  point (`mainAutoCompactNudgeStart`, `subagentAutoCompactNudgeStart`),
+  where it throws away more working context than it saves, and a handoff
+  also when it is shorter than 200 characters. The model is told why and carries on; the latest
   handoff a party passes is the one installed.
 - A handoff whose call the plugin cannot find in the transcript at install
   time is not lost: the summarizer runs with the handoff as its
   instructions. A person's `/compact` runs the summarizer as it always does
   and drops a stored handoff.
-- You can always call a handoff off. A message you send cancels a handoff
-  the main chat stored, and the model is told not to hand off again until
-  your ask is done. An interrupt (Esc or Ctrl+C) while one is stored, or a
-  compaction that is skipped or fails, also drops it, so it never fires on
-  the next request instead. A notification
+- You can always call a self-compaction or a handoff off. A message you
+  send cancels a compaction the main chat armed or a handoff it stored, and
+  the model is told not to ask or hand off again until your ask is done. An
+  interrupt (Esc or Ctrl+C) while one is armed or stored, or a compaction
+  that is skipped or fails, also drops it, so it never fires on the next
+  request instead. A notification
   or a message from another chat cancels nothing.
 - The main chat's nudges tell its model that a person waiting on an answer
-  comes first: it never hands off while you wait.
+  comes first: it never compacts or hands off while you wait.
 - A Workflow run's agents get the sub-agent policy like any other: their
   type comes from Claude Code's `SubagentStart` hook, since
   `$.agent.list()` never names them.
@@ -206,8 +222,8 @@ name and replaced by the default, never ignored silently.
 | `subagentAutoCompactNudgeEvery` | `10%` | The step between a sub-agent's nudges. |
 | `subagentAutoCompactEnabled` | `true` | Off: sub-agents are never nudged or compacted automatically; their own requests still run. |
 | `subagentKeepBrief` | `true` | On: after each compaction a sub-agent's brief is seated again verbatim right after the summary. Off: the summary alone stands for it. |
-| `handoffTool` | `true` | On: models get the `handoff` tool. The text a model passes replaces its whole conversation so far, installed verbatim with no summarizer request; what it does after the call is kept. |
-| `compactTool` | `false` | On: models also get the `compact` tool, whose focus a summarizer turns into a summary, and `<compact-now>` markers count. Off: the handoff replaces it. |
+| `handoffTool` | `false` | On: models get the `handoff` tool. The text a model passes replaces its whole conversation so far, installed verbatim with no summarizer request; what it does after the call is kept. |
+| `compactTool` | `true` | On: models get the `compact` tool, whose focus a summarizer turns into a summary, and `<compact-now>` markers count; while `handoffTool` is also on, the nudges name the handoff. Off: no `compact` tool, and `<compact-now>` markers count for nothing. |
 | `agentDirs` | empty | Comma-separated extra directories of agent definitions. |
 | `logFile` | empty | Absolute path of the JSONL decision log. Each session writes its own file: `decisions.jsonl` becomes `decisions.{session-id}.jsonl`. |
 
