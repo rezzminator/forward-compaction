@@ -4,6 +4,12 @@ Every release of sub-agent-compact. Versions follow [semantic versioning](https:
 
 ## [Unreleased]
 
+## [0.7.0-dev.16] — 2026-10-13
+
+### Fixed
+
+- A file a shell command writes after `cd` (`cd pfm/internal && cat > doctor/a_test.go`, `(cd ~/x && … > out.log)`) is listed in the forward handoff's Files block where it landed, not under the session's working directory; after a `cd` it cannot place (`cd "$WT"`), a relative write is left out instead of named at a wrong path, which showed as `outline …: not found`.
+
 ## [0.7.0-dev.15] — 2026-10-13
 
 ### Removed

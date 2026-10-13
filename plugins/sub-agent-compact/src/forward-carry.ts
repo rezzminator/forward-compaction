@@ -233,18 +233,31 @@ export function bashWrites(command: string): { path: string; tag: 'E' | 'C'; cre
     .replace(/<<-?\s*(['"]?)(\w+)\1([^\n]*)\n[\s\S]*?\n\s*\2(?=\s|$)/g, ' $3')
     .replace(/"(?:[^"\\]|\\.)*"|'[^']*'/g, (m) => `${MASK}${quoted.push(m.slice(1, -1)) - 1}${MASK}`);
   const unmask = (token: string): string => token.replace(new RegExp(`${MASK}(\\d+)${MASK}`, 'g'), (_, n: string) => quoted[Number(n)] ?? '');
+  // Where a relative path lands after a `cd` in the same command: undefined before any, null after one it cannot place.
+  let dir: string | null | undefined;
   const push = (path: string | undefined, create: boolean): void => {
     if (path === undefined || !plainPath(path)) return;
-    out.push({ path, tag: create ? 'C' : 'E', create });
+    const relative = !path.startsWith('/') && !path.startsWith('~');
+    if (relative && dir === null) return;
+    const placed = relative && dir !== undefined ? `${dir}/${path.replace(/^\.\//, '')}` : path;
+    out.push({ path: placed, tag: create ? 'C' : 'E', create });
   };
   for (const segment of masked.split(/&&|\|\||;|\||\n/)) {
-    const t = segment.split(/\s+/).filter(Boolean);
+    const t = segment.replace(/^\s*\(+/, '').split(/\s+/).filter(Boolean);
+    if (t[0] === 'cd') {
+      const to = t[1] === undefined ? '~' : unmask(t[1]).replace(/\)+$/, '');
+      const placeable = /^[\w@+.\/~-]+$/.test(to);
+      if (to === '~' || to === '/' || (placeable && (to.startsWith('/') || to.startsWith('~/')))) dir = to.replace(/\/+$/, '') || '/';
+      else if (dir !== null && placeable) dir = `${dir === undefined ? '' : `${dir}/`}${to.replace(/^\.\//, '').replace(/\/+$/, '')}`;
+      else dir = null;
+      continue;
+    }
     const args: string[] = [];
     for (let i = 0; i < t.length; i++) {
       const m = /^\d?(>>?)(.*)$/.exec(t[i]!);
       if (m) {
         const target = m[2] !== '' ? m[2] : t[++i];
-        if (target !== undefined && !target.startsWith('&')) push(unmask(target), m[1] === '>');
+        if (target !== undefined && !target.startsWith('&')) push(unmask(target).replace(/\)+$/, ''), m[1] === '>');
       } else args.push(unmask(t[i]!));
     }
     const [cmd, ...rest] = args;

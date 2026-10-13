@@ -649,3 +649,21 @@ describe('outline', () => {
     expect(line.match(/name0\b/g)).toHaveLength(1);
   });
 });
+
+describe('bashWrites after a cd', () => {
+  it('places a relative write in the directory the command moved to', () => {
+    expect(bashWrites('cd /w/pfm/internal && cat > doctor/a_test.go <<EOF\npackage doctor\nEOF').map((w) => w.path)).toEqual(['/w/pfm/internal/doctor/a_test.go']);
+    expect(bashWrites('(cd ~/x && echo hi > out.log)').map((w) => w.path)).toEqual(['~/x/out.log']);
+    expect(bashWrites('cd /w && cd sub; tee -a notes.md').map((w) => w.path)).toEqual(['/w/sub/notes.md']);
+  });
+  it('drops a relative write after a cd it cannot place, and leaves absolute writes and a cd-free command as they were', () => {
+    expect(bashWrites('cd "$WT" && echo x > rel.txt && echo y > /abs/keep.txt').map((w) => w.path)).toEqual(['/abs/keep.txt']);
+    expect(bashWrites('echo x > rel.txt').map((w) => w.path)).toEqual(['rel.txt']);
+  });
+});
+
+describe('bashWrites after a relative cd', () => {
+  it('keeps the move relative, for the trail to place against the working directory', () => {
+    expect(bashWrites('cd pfm && echo x > out.log').map((w) => w.path)).toEqual(['pfm/out.log']);
+  });
+});
