@@ -19,11 +19,11 @@ export const DEFAULT_SUBAGENT: Policy = { enabled: true, autoCompact: { percent:
 /** A sub-agent's brief is seated back after the summary at every compaction. */
 export const DEFAULT_KEEP_BRIEF = true;
 
-/** The `compact` tool, whose request a summarizer turns into a summary: off, so models hand off instead. */
-export const DEFAULT_COMPACT_TOOL = false;
+/** The `compact` tool, whose request a summarizer turns into a summary: on. */
+export const DEFAULT_COMPACT_TOOL = true;
 
-/** The `handoff` tool, whose text the plugin installs as the conversation's whole past: on. */
-export const DEFAULT_HANDOFF_TOOL = true;
+/** The `handoff` tool, whose text the plugin installs as the conversation's whole past: off. */
+export const DEFAULT_HANDOFF_TOOL = false;
 
 export type Parse<T> = { ok: true; value: T } | { ok: false; error: string };
 

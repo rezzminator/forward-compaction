@@ -42,22 +42,22 @@ const handoffUse = (id = 'h1', text = HANDOFF): Use => ({ tool_use_id: id, tool:
 const read = (id: string, path: string): Use => ({ tool_use_id: id, tool: 'Read', input: { file_path: path } });
 
 describe('resolveOptions: the two tool flags', () => {
-  it('turns the compact tool off and the handoff tool on by default', () => {
+  it('turns the compact tool on and the handoff tool off by default', () => {
     const options = resolveOptions({});
-    expect(options.compactTool).toBe(false);
-    expect(options.handoffTool).toBe(true);
-  });
-
-  it('reads both as on/off values', () => {
-    const options = resolveOptions({ compactTool: 'on', handoffTool: false });
     expect(options.compactTool).toBe(true);
     expect(options.handoffTool).toBe(false);
   });
 
-  it('names a bad value and keeps the default', () => {
-    const options = resolveOptions({ compactTool: 'sometimes', handoffTool: 7 });
+  it('reads both as on/off values', () => {
+    const options = resolveOptions({ compactTool: 'off', handoffTool: true });
     expect(options.compactTool).toBe(false);
     expect(options.handoffTool).toBe(true);
+  });
+
+  it('names a bad value and keeps the default', () => {
+    const options = resolveOptions({ compactTool: 'sometimes', handoffTool: 7 });
+    expect(options.compactTool).toBe(true);
+    expect(options.handoffTool).toBe(false);
     expect(options.errors.some((line) => line.includes('compactTool'))).toBe(true);
     expect(options.errors.some((line) => line.includes('handoffTool'))).toBe(true);
   });

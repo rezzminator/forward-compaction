@@ -1,6 +1,6 @@
 {
   "name": "sub-agent-compact",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Smart auto-compact for Claude Code: a separate compaction point for every sub-agent, and self-compaction at a milestone the model chooses.",
   "license": "MIT",
   "author": {
@@ -84,13 +84,13 @@
       "type": "boolean",
       "title": "Handoff tool",
       "description": "On: models get the handoff tool. The text a model passes replaces its whole conversation so far, installed verbatim with no summarizer request; what it does after the call is kept. A sub-agent without the tool writes <handoff>its handoff</handoff>.",
-      "default": true
+      "default": false
     },
     "compactTool": {
       "type": "boolean",
       "title": "Compact tool",
-      "description": "On: models also get the compact tool, whose focus a summarizer turns into a summary, and <compact-now> markers count. Off: the handoff replaces it.",
-      "default": false
+      "description": "On: models get the compact tool, whose focus a summarizer turns into a summary, and <compact-now> markers count; while the handoff tool is also on, the nudges name the handoff. Off: no compact tool, and <compact-now> markers count for nothing.",
+      "default": true
     },
     "agentDirs": {
       "type": "string",

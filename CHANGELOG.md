@@ -4,6 +4,11 @@ Every release of sub-agent-compact. Versions follow [semantic versioning](https:
 
 ## [Unreleased]
 
+## [0.4.1] — 2026-10-13
+
+### Changed
+- The defaults are back to the compact-only behaviour of 0.3.1 and earlier: `compactTool` is `true` and `handoffTool` is `false`, so models get the `compact` tool and the `<compact-now>` marker, and the nudges say how to compact. 0.4.0 shipped them the other way round. To keep the 0.4.0 behaviour, set `handoffTool` to `true` (and `compactTool` to `false` to drop the `compact` tool beside it).
+
 ## [0.4.0] — 2026-10-13
 
 ### Added

@@ -4,9 +4,11 @@ import { HANDOFF_OPENING } from '../plugins/sub-agent-compact/src/handoff.ts';
 
 // The handoff path end to end through the adapter: the tool stores the text,
 // the next automatic ask installs it without calling the summarizer beneath,
-// and the compact tool stays unregistered unless its flag turns it on.
+// and each tool is registered only while its flag is on: by default the
+// compact tool alone.
 
 type AnyHook = (...args: any[]) => any;
+const HANDOFF_ONLY = { handoffTool: true, compactTool: false };
 const HANDOFF = 'Task (verbatim): "rename qty to quantity in every report". Done: a.sql, b.sql, npm test 41/41. Facts: reports/c.sql:12 reads `SELECT qty, price FROM ledger`. Next step: edit reports/c.sql:12, then npm test.';
 
 function engine(options: Record<string, unknown> = {}) {
@@ -73,14 +75,20 @@ function engine(options: Record<string, unknown> = {}) {
 }
 
 describe('the handoff tool through the adapter', () => {
-  it('registers the handoff tool and not the compact tool by default', async () => {
+  it('registers the compact tool and not the handoff tool by default', async () => {
     const cc = engine();
+    await cc.start();
+    expect(cc.registered).toEqual(['compact']);
+  });
+
+  it('registers the handoff tool alone when it is on and the compact tool off', async () => {
+    const cc = engine(HANDOFF_ONLY);
     await cc.start();
     expect(cc.registered).toEqual(['handoff']);
   });
 
   it('registers both when the compact tool is turned on, and neither nudges about compact while handoff is on', async () => {
-    const cc = engine({ compactTool: true });
+    const cc = engine({ compactTool: true, handoffTool: true });
     await cc.start();
     expect(cc.registered.sort()).toEqual(['compact', 'handoff']);
     await cc.step(250_000);
@@ -90,7 +98,7 @@ describe('the handoff tool through the adapter', () => {
   });
 
   it('stores the handoff, then installs it at the next automatic ask without the summarizer', async () => {
-    const cc = engine();
+    const cc = engine(HANDOFF_ONLY);
     await cc.start();
     await cc.step(250_000);
     expect(await cc.handoff()).toEqual({ result: expect.stringMatching(/^Handoff stored/) });
@@ -105,7 +113,7 @@ describe('the handoff tool through the adapter', () => {
   });
 
   it('refuses a handoff below the first nudge point, and a thin one, storing nothing', async () => {
-    const cc = engine();
+    const cc = engine(HANDOFF_ONLY);
     await cc.start();
     await cc.step(120_000);
     expect(await cc.handoff()).toEqual({ result: expect.stringMatching(/^Not stored: .*120k.*200k/) });
@@ -115,7 +123,7 @@ describe('the handoff tool through the adapter', () => {
   });
 
   it('waits out a precompute, and leaves a person /compact to the summarizer', async () => {
-    const cc = engine();
+    const cc = engine(HANDOFF_ONLY);
     await cc.start();
     await cc.step(250_000);
     await cc.handoff();
@@ -125,7 +133,7 @@ describe('the handoff tool through the adapter', () => {
   });
 
   it('installs a main handoff between turns when no automatic ask came', async () => {
-    const cc = engine();
+    const cc = engine(HANDOFF_ONLY);
     await cc.start();
     await cc.step(250_000);
     await cc.handoff();
@@ -135,7 +143,7 @@ describe('the handoff tool through the adapter', () => {
   });
 
   it('nudges nobody when both tools are off', async () => {
-    const cc = engine({ handoffTool: false });
+    const cc = engine({ handoffTool: false, compactTool: false });
     await cc.start();
     expect(cc.registered).toEqual([]);
     await cc.step(250_000);
