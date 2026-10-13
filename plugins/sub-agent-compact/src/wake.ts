@@ -104,7 +104,7 @@ export function renderWake(entries: readonly WakeEntry[]): { text: string; faile
 
 /** Why a path's stat rules it out as a skill or command file, or undefined: only a regular file within the byte cap is read. */
 export function wakeFileProblem(stat: { kind: string; size: number }): string | undefined {
-  if (stat.kind !== 'file') return `is not a regular file (it is a ${stat.kind})`;
+  if (stat.kind !== 'file') return `is not a regular file (kind: ${stat.kind})`;
   if (stat.size > WAKE_FILE_MAX_BYTES) return `is ${stat.size} bytes, past the ${WAKE_FILE_MAX_BYTES} bytes a skill or command may be`;
   return undefined;
 }

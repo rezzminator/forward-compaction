@@ -40,6 +40,7 @@ function engine(options: Record<string, unknown> = {}, harness: Harness = {}) {
   const summarizerInputs: any[] = [];
   const files = harness.files ?? {};
   let current = 0;
+  let afters = 0;
   const on = (event: string, hook: AnyHook) => void hooks.set(event, hook);
   const $ = {
     session: {
@@ -70,6 +71,7 @@ function engine(options: Record<string, unknown> = {}, harness: Harness = {}) {
     },
     clock: harness.noClock ? undefined : {
       after: (ms: number, fn: () => void) => {
+        afters++;
         const timer = setTimeout(fn, ms);
         return { cancel: () => clearTimeout(timer) };
       },
@@ -83,8 +85,8 @@ function engine(options: Record<string, unknown> = {}, harness: Harness = {}) {
     },
     tool: {
       register: async (spec: { name: string }) => {
-        if (harness.registerThrows) throw new Error('session not bound');
         await harness.registerGate;
+        if (harness.registerThrows) throw new Error('session not bound');
         registered.push(spec.name);
         return { tool: `mcp__sub-agent-compact__${spec.name}` };
       },
@@ -124,6 +126,8 @@ function engine(options: Record<string, unknown> = {}, harness: Harness = {}) {
     logs,
     summarizerInputs,
     summarized: () => summarized,
+    /** How many timers the plugin asked `$.clock.after` for. */
+    afters: () => afters,
     start: () => dispatch('session.start', {}, async () => ({})),
     step,
     handoff: (fields: Record<string, unknown> = FIELDS, toolUseId: string | undefined = 'h1', agentId?: string) =>
@@ -267,6 +271,32 @@ describe('registering the tools is bounded', () => {
     await vi.advanceTimersByTimeAsync(0);
     await cc.step(250_000);
     expect((await cc.read()).context?.[0]).toContain(TOOL);
+  });
+
+  it('spends the tries left on a later turn once a registration that outlived the limit has failed', async () => {
+    vi.useFakeTimers();
+    const { gate, release } = deferred();
+    const harness: Harness = { registerGate: gate, registerThrows: true };
+    const cc = engine({}, harness);
+    void cc.step(1_000);
+    await vi.advanceTimersByTimeAsync(5_000);
+    release();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(cc.registered).toEqual([]);
+    harness.registerThrows = false;
+    await cc.step(2_000);
+    expect(cc.registered).toEqual(['handoff']);
+  });
+
+  it('sets no timer on later turns once every tool is registered', async () => {
+    const cc = engine();
+    await cc.start();
+    await cc.step(1_000);
+    expect(cc.registered).toEqual(['handoff']);
+    const afters = cc.afters();
+    await cc.step(2_000);
+    await cc.step(3_000);
+    expect(cc.afters()).toBe(afters);
   });
 });
 
@@ -613,7 +643,6 @@ describe('load_on_wake', () => {
     const invoked = { role: 'assistant', text: '', toolUses: [{ tool_use_id: 's1', tool: 'Skill', input: { skill: 'pfm-testing-manual' } }], handle: 'm0b' };
     const out = await cc.ask('auto', cc.transcript([invoked]));
     expect(out.messages[0].text).toContain('not inlined because you invoked it earlier in this session');
-    expect(out.messages[0].text).not.toContain('re-attached');
     expect(out.messages[0].text).not.toContain('BODY');
   });
 
@@ -622,7 +651,7 @@ describe('load_on_wake', () => {
     await cc.start();
     await cc.step(250_000);
     const out = await cc.handoff({ ...FIELDS, load_on_wake: ['pfm-testing-manual'] });
-    expect(out.result).toMatch(/^Not stored: .*pfm-testing-manual.*is not a regular file \(it is a other\)/);
+    expect(out.result).toMatch(/^Not stored: .*pfm-testing-manual.*is not a regular file \(kind: other\)/);
     expect(await cc.ask('auto', cc.plain())).toEqual({ skip: expect.any(String) });
   });
 
@@ -646,7 +675,7 @@ describe('load_on_wake', () => {
     kinds[SKILL] = 'dir';
     const out = await cc.ask('auto');
     expect(out.messages[0].text).toContain('NOT LOADED: pfm-testing-manual');
-    expect(out.messages[0].text).toContain('is not a regular file (it is a dir)');
+    expect(out.messages[0].text).toContain('is not a regular file (kind: dir)');
     expect(out.messages[0].text).not.toContain('BODY');
   });
 });

@@ -1,5 +1,6 @@
 import type { EngineInterface, On, PluginOptions, Register } from 'claude-code';
 import { bounded } from '../src/bounded.ts';
+import { toolsToRegister } from '../src/register.ts';
 import { BRIEF_MAX_TOKENS, reseatBrief, seatedBrief } from '../src/brief.ts';
 import { AgentPolicies, AgentTypes } from '../src/agents.ts';
 import { compactionEnd, contextTokens, currentTokens, decide, estimateTranscript, knownTrigger, personPrompt, type Trigger } from '../src/decide.ts';
@@ -66,8 +67,10 @@ type State = {
   toolTries: { handoff: number; compact: number };
   /** The registration in progress: hooks that need a tool wait on it, so none registers twice. */
   registering?: Promise<void>;
-  /** Registering the tools did not finish within ENSURE_TOOLS_TIMEOUT_MS: no hook waits on it again, and a late finish still names the tools. */
+  /** Registering the tools has not finished within ENSURE_TOOLS_TIMEOUT_MS: no hook waits on it until it settles, and a late finish still names the tools. */
   toolsAbandoned?: boolean;
+  /** Every enabled tool is registered or out of tries: no hook registers or sets a timer again. */
+  toolsSettled?: boolean;
   /** The session's cwd and Claude config directory, where skills and commands are read from. */
   cwd?: string;
   configDir?: string;
@@ -324,7 +327,10 @@ async function registerHandoffTool(st: State, $: EngineInterface): Promise<void>
   }
 }
 
-/** `$.clock.after`, or, where the engine has none, a timer that never fires and a warning once: the wait is then unbounded, as it was. */
+/**
+ * `$.clock.after`, or, where the engine has none, a timer that never fires and a warning once: the wait is then unbounded, as it was.
+ * A call a hook refuses without throwing never fires either and is not reported: that wait is unbounded too.
+ */
 function afterOrNever(st: State, $: EngineInterface, ms: number, fn: () => void): { cancel: () => void } {
   try {
     return $.clock.after(ms, fn);
@@ -340,28 +346,40 @@ function afterOrNever(st: State, $: EngineInterface, ms: number, fn: () => void)
  * or may run before the session can take a tool. Hooks that need a tool wait on it.
  */
 async function ensureTools(st: State, $: EngineInterface): Promise<void> {
-  if (st.toolsAbandoned) return;
+  if (st.toolsAbandoned || st.toolsSettled) return;
+  const left = () =>
+    toolsToRegister(
+      { compact: st.config.compactTool, handoff: st.config.handoffTool },
+      { compact: st.toolName !== undefined, handoff: st.handoffToolName !== undefined },
+      st.toolTries,
+      REGISTER_TRIES,
+    );
   const registered = (async () => {
     await start(st, $);
     st.registering = (st.registering ?? Promise.resolve())
       .then(async () => {
-        if (st.config.compactTool && st.toolName === undefined && st.toolTries.compact < REGISTER_TRIES) {
+        const todo = left();
+        if (todo.includes('compact')) {
           st.toolTries.compact++;
           await registerCompactTool(st, $);
         }
-        if (st.config.handoffTool && st.handoffToolName === undefined && st.toolTries.handoff < REGISTER_TRIES) {
+        if (todo.includes('handoff')) {
           st.toolTries.handoff++;
           await registerHandoffTool(st, $);
         }
       })
       .catch((error) => $.ui.log(`sub-agent-compact: registering the tools failed: ${message(error)}`));
     await st.registering;
+    if (left().length === 0) st.toolsSettled = true;
   })();
   // A hang here would hold every turn of every chat: past the limit the turn goes on, and the person is told.
   const outcome = await bounded(registered, ENSURE_TOOLS_TIMEOUT_MS, (ms, fn) => afterOrNever(st, $, ms, fn));
   if (!outcome.timedOut) return;
   st.toolsAbandoned = true;
-  warnOnce(st, $, 'tools-timeout', `sub-agent-compact: registering the tools did not finish within ${ENSURE_TOOLS_TIMEOUT_MS / 1000}s; turns go on without waiting for it, and the model is not nudged about a tool that is not registered`);
+  // Once the slow registration settles, a later hook spends the tries left.
+  const resume = () => void (st.toolsAbandoned = false);
+  void registered.then(resume, resume);
+  warnOnce(st, $, 'tools-timeout', `sub-agent-compact: registering the tools did not finish within ${ENSURE_TOOLS_TIMEOUT_MS / 1000}s; turns go on without waiting for it`);
 }
 
 /** How many prompts the person has sent this session, or undefined (and a warning once) when it cannot be read. */
