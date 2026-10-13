@@ -4,6 +4,10 @@ Every release of sub-agent-compact. Versions follow [semantic versioning](https:
 
 ## [Unreleased]
 
+### Added
+
+- Always-on `look_back` for the main chat and every sub-agent: search or fetch readable transcript entries before the latest compaction. Every call is a compaction miss shown to the person and recorded in the decision log; manual transcript reads count too. Forward handoffs carry a checked hint naming the tool.
+
 ## [0.7.0-dev.13] — 2026-10-13
 
 ### Changed

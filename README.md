@@ -229,10 +229,18 @@ With `forwardHandoffTool` on, the main chat and every sub-agent a policy governs
 | `Files` | `E`/`R`/`C path` per file the tool calls edited, read or created, newest first, every path absolute, plus subdirectory `CLAUDE.md` files the session picked up | 15 lines |
 | `Load <path>` | the `load_files` the model named, read at handoff time, a `lines` range exactly; a path the `Read` tool would not be allowed to read without asking is not read, and named in `Unresolved` | about 3k tokens each, 12k total |
 | `Plan`, `Tasks`, `Running`, `Git`, `Paths` | the plan, the latest todo or task state, background shells, sub-agents, monitors, wakeups and crons still running (the engine's own in-flight list from the last turn's end, plus calls since), one git line, the transcript (found by its session id) with the line of the cut, the previous forward handoff and the saved files | one line per item; `Paths` is one line |
-| `Unresolved` | a skill or file that could not be read, an unknown `drop_skills` name, a failed git or transcript read | one line each |
+| `Unresolved` | a skill or file that could not be read, an unknown `drop_skills` name, a failed git or transcript read; ends with the `look_back` hint | one line each |
 | `Objective`, `Done`, `Remaining`, `Blocked`, `Findings`, `Next` | the model's arguments; an over-limit field is trimmed and marked `[trimmed]`, a missing required field returns one error naming it | per field, in characters: `objective` 600, `next` 400; items: `done` and `remaining` 15 of 200, `blocked` 10 of 200, `findings` 15 of 300 |
 
 Every call is saved under `<Claude config directory>/sub-agent-compact/forward-handoff/<session>/<n>/` (`<session>/agent-<id>/<n>/` for a sub-agent): `args.json` (the arguments as received), `wake.txt` (the installed text, literally) and `record.json` (the chars and estimated tokens of every block and of the total, the context before and after, and the install check that each block landed, made at the first request after the install against what the session then holds). The path is logged and named in the `Paths` block. With no Claude config directory, or when the session's directory cannot be listed, nothing is saved and the tool's reply says so. Results of tool calls made in the same response as `forward_handoff` are kept in a message of their own, before the installed text. Carried text cannot forge the structure: a line that reads as a block label, an item marker or the header gets a backslash in front.
+
+### Look back
+
+`look_back` is always available to the main chat and every sub-agent. It searches only the caller's own transcript before its latest compaction, including a forward handoff. Supply `why` (what the compaction lost) and `query` (all words must appear in one entry, case-insensitive; double quotes keep a phrase whole). Results are numbered, newest first, with readable snippets. Fetch an exact entry with `entry: N` instead of a query; entries already in context are refused.
+
+Every call is a counted compaction miss: the person sees one chat line explaining what was missed, and the decision log records `look-back` when `logFile` is configured. Manual `Read`, `Grep` or `Bash` calls naming the caller's transcript are also shown and logged as `look-back-manual`, without changing the call. No compaction yet, no matching entry, and lookup failures have distinct replies.
+
+Search keeps the newest 200 raw candidates, re-checks the words against readable text, and returns up to 20 hits / 12k characters; an entry fetch keeps up to 24k characters with a cut marker. Tool results name their tool when its call can be found; unavailable names and unsupported transcript shapes are explicit. Missing details beyond these bounds need a narrower query or an entry fetch.
 
 ## ⚙️ Configuration
 

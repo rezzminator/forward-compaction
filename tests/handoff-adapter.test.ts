@@ -147,13 +147,13 @@ describe('the handoff tool through the adapter', () => {
   it('registers the handoff tool and not the compact tool by default', async () => {
     const cc = engine();
     await cc.start();
-    expect(cc.registered).toEqual(['handoff']);
+    expect(cc.registered).toEqual(['handoff', 'look_back']);
   });
 
   it('registers both when the compact tool is turned on, and neither nudges about compact while handoff is on', async () => {
     const cc = engine({ compactTool: true });
     await cc.start();
-    expect(cc.registered.sort()).toEqual(['compact', 'handoff']);
+    expect(cc.registered.sort()).toEqual(['compact', 'handoff', 'look_back']);
     await cc.step(250_000);
     const nudged = await cc.read();
     expect(nudged.context?.[0]).toMatch(/mcp__sub-agent-compact__handoff/);
@@ -208,7 +208,7 @@ describe('the handoff tool through the adapter', () => {
   it('nudges nobody when both tools are off', async () => {
     const cc = engine({ handoffTool: false });
     await cc.start();
-    expect(cc.registered).toEqual([]);
+    expect(cc.registered).toEqual(['look_back']);
     await cc.step(250_000);
     expect((await cc.read()).context).toBeUndefined();
   });
@@ -255,7 +255,7 @@ describe('registering the tools is bounded', () => {
     await cc.start();
     await cc.step(1_000);
     await cc.step(2_000);
-    expect(cc.registered).toEqual(['handoff']);
+    expect(cc.registered).toEqual(['handoff', 'look_back']);
     expect(cc.logs.filter((line) => /\$\.clock\.after is unavailable/.test(line))).toHaveLength(1);
   });
 
@@ -285,14 +285,14 @@ describe('registering the tools is bounded', () => {
     expect(cc.registered).toEqual([]);
     harness.registerThrows = false;
     await cc.step(2_000);
-    expect(cc.registered).toEqual(['handoff']);
+    expect(cc.registered).toEqual(['handoff', 'look_back']);
   });
 
   it('sets no timer on later turns once every tool is registered', async () => {
     const cc = engine();
     await cc.start();
     await cc.step(1_000);
-    expect(cc.registered).toEqual(['handoff']);
+    expect(cc.registered).toEqual(['handoff', 'look_back']);
     const afters = cc.afters();
     await cc.step(2_000);
     await cc.step(3_000);
@@ -531,7 +531,7 @@ describe('a tool that is not registered', () => {
   it('registers on the first hook when session.start never fired (a plugin loaded mid-session)', async () => {
     const cc = engine();
     await cc.step(250_000);
-    expect(cc.registered).toEqual(['handoff']);
+    expect(cc.registered).toEqual(['handoff', 'look_back']);
     expect(await cc.handoff()).toEqual({ result: expect.stringMatching(/^Handoff stored/) });
   });
 

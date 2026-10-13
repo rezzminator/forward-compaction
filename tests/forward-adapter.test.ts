@@ -26,6 +26,9 @@ type Env = { denied?: string[]; listFails?: boolean; noHome?: boolean; noTranscr
 function engine(options: Record<string, unknown> = { forwardHandoffTool: true }, files: Record<string, string> = {}, apiRows: unknown[] = api(), git = true, refused: string[] = [], env: Env = {}) {
   const hooks = new Map<string, AnyHook>();
   const registered: string[] = [];
+  const specs: Record<string, any> = {};
+  const runCalls: string[][] = [];
+  const nextInputs: unknown[] = [];
   const written: Record<string, string> = {};
   const logs: string[] = [];
   let current = 0;
@@ -54,6 +57,7 @@ function engine(options: Record<string, unknown> = { forwardHandoffTool: true },
     },
     process: {
       run: async (argv: string[]) => {
+        runCalls.push(argv);
         const line = argv.join(' ');
         const scripted = env.run?.(argv);
         if (scripted !== undefined) return scripted;
@@ -74,6 +78,7 @@ function engine(options: Record<string, unknown> = { forwardHandoffTool: true },
       check: async (q: { tool: string; input: { file_path: string } }) =>
         env.denied?.includes(q.input.file_path) ? { decision: 'deny', reason: 'Permission to read this file has been denied.', rule: 'Read(.env)' } : { decision: 'allow' },
       register: async (spec: { name: string }) => {
+        specs[spec.name] = spec;
         if (refused.includes(spec.name)) throw new Error(`${spec.name} refused`);
         registered.push(spec.name);
         return { tool: `mcp__sub-agent-compact__${spec.name}` };
@@ -95,6 +100,14 @@ function engine(options: Record<string, unknown> = { forwardHandoffTool: true },
   return {
     rows: apiRows,
     registered,
+    specs,
+    runCalls,
+    nextInputs,
+    call: (e: Record<string, unknown>) => dispatch('tool.call', e, async (input) => { nextInputs.push(input); return { result: 'original result' }; }),
+    decisions: async () => {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      return Object.values(written).flatMap((body) => body.trim().split('\n').filter(Boolean).map((line) => JSON.parse(line)));
+    },
     written,
     logs,
     summarized: () => summarized,
@@ -122,10 +135,10 @@ describe('the forward handoff tool through the adapter', () => {
   it('is not registered unless forwardHandoffTool is on', async () => {
     const off = engine({});
     await off.start();
-    expect(off.registered).toEqual(['handoff']);
+    expect(off.registered).toEqual(['handoff', 'look_back']);
     const on = engine();
     await on.start();
-    expect(on.registered.sort()).toEqual(['forward_handoff', 'handoff']);
+    expect(on.registered.sort()).toEqual(['forward_handoff', 'handoff', 'look_back']);
   });
 
   it('stores the text code carried and persists the raw arguments, the literal text and the record', async () => {
@@ -146,7 +159,7 @@ describe('the forward handoff tool through the adapter', () => {
     expect(wake).not.toMatch(/\n\n/);
     const record = JSON.parse(cc.written[`${DIR}/record.json`]!);
     expect(record).toMatchObject({ seq: 1, session: 'session-1', tokensBefore: 250_000, total: { chars: wake.length, tokens: Math.ceil(wake.length / 4) } });
-    expect(record.blocks.map((b: { name: string }) => b.name)).toEqual(['User', 'Files', 'Git', 'Paths', 'Objective', 'Done', 'Remaining', 'Next']);
+    expect(record.blocks.map((b: { name: string }) => b.name)).toEqual(['User', 'Files', 'Git', 'Paths', 'Unresolved', 'Objective', 'Done', 'Remaining', 'Next']);
     expect(cc.logs.filter((line) => line.includes('forward handoff'))).toEqual([]);
   });
 
@@ -497,6 +510,164 @@ describe('the forward handoff tool through the adapter', () => {
     await cc.step(250_000);
     const nudged = await cc.read();
     expect(nudged.context ?? []).toEqual([]);
-    expect(cc.registered).toEqual([]);
+    expect(cc.registered).toEqual(['look_back']);
+  });
+});
+
+const LOOK_BACK = 'mcp__sub-agent-compact__look_back';
+const COMPLETE = '\n[look-back-complete]\n';
+const numbered = (n: number, content: unknown, type = 'user') => `${n}:${JSON.stringify({ type, timestamp: '2026-01-02T03:04:05Z', message: { role: type, content } })}\n`;
+const okProcess = (stdout: string) => ({ exitCode: 0, stdout, stderr: '' });
+const lookEngine = (over: Env = {}, search = numbered(8, 'Alpha beta error text')) => engine(
+  { logFile: '/logs/decisions.jsonl', handoffTool: false, forwardHandoffTool: false, compactTool: false }, {}, api(), true, [],
+  { run: (argv) => {
+    if (argv[0] === 'sh' && argv[2]!.includes('compact_boundary')) return okProcess('4:{"subtype":"compact_boundary"}\n10:{"subtype":"compact_boundary"}\n' + COMPLETE);
+    if (argv[0] === 'sh') return okProcess(search + COMPLETE);
+    return undefined;
+  }, ...over },
+);
+const lookRows = async (cc: ReturnType<typeof engine>, event = 'look-back') => (await cc.decisions()).filter((r: any) => r.event === event);
+const lookLines = (cc: ReturnType<typeof engine>) => cc.logs.filter((line) => line.startsWith('look back'));
+
+describe('look_back through the adapter (R1–R7, R9)', () => {
+  it('registers on load with all compaction options off, retries a failure three times, and records attempts', async () => {
+    const refused = ['look_back'];
+    const cc = engine({ handoffTool: false, forwardHandoffTool: false, compactTool: false, logFile: '/logs/decisions.jsonl' }, {}, api(), true, refused);
+    await cc.start();
+    expect(cc.specs.look_back).toMatchObject({ name: 'look_back', inputSchema: { additionalProperties: false, required: ['why'] } });
+    await cc.start(); await cc.start(); await cc.start();
+    const rows = (await cc.decisions()).filter((r: any) => r.event === 'tool-register-failed' && r.tool === 'look_back');
+    expect(rows.map((r: any) => r.tries)).toEqual([1, 2, 3]);
+    expect(cc.logs.filter((line) => line.includes('registering the look_back tool failed'))).toHaveLength(1);
+    const successful = lookEngine(); await successful.start();
+    expect(successful.registered).toEqual(['look_back']);
+  });
+  it('searches only before the latest boundary with positional terms and records one main-party miss and notice', async () => {
+    const cc = lookEngine(); await cc.start();
+    const out = await cc.call({ tool: LOOK_BACK, why: ' lost error ', query: 'alpha beta' });
+    expect(out.result).toContain('#8  2026-01-02 03:04  user\nAlpha beta error text');
+    const scan = cc.runCalls.find((argv) => argv[0] === 'sh' && argv.includes('alpha'))!;
+    expect(scan.slice(4)).toEqual([TRANSCRIPT, '10', 'alpha', 'beta']);
+    expect(scan[2]).toContain('1,$(($2 - 1))p');
+    expect(scan[2]).toContain('tail -n 200');
+    expect(cc.runCalls.find((a) => a[0] === 'find')).toEqual(['find', '-H', '/h/u/.claude/projects', '-maxdepth', '2', '-type', 'f', '-name', 'session-1.jsonl']);
+    expect(lookLines(cc)).toEqual(['look back (main): lost error — 1 hits']);
+    expect(await lookRows(cc)).toEqual([expect.objectContaining({ event: 'look-back', party: 'main', why: 'lost error', query: 'alpha beta', hits: 1, boundary: 10 })]);
+    expect(cc.nextInputs).toEqual([]);
+  });
+  it.each([true, false])('never treats a nested tool input as a boundary, real boundary=%s', async (compacted) => {
+    const fake = numbered(20, [{ type: 'tool_use', name: 'Example', input: { subtype: 'compact_boundary' } }], 'assistant');
+    const cc = lookEngine({ run: (argv) => {
+      if (argv[0] === 'sh' && argv[2]!.includes('compact_boundary')) return okProcess((compacted ? '10:{"subtype":"compact_boundary"}\n' : '') + fake + COMPLETE);
+      return undefined;
+    } }); await cc.start();
+    const out = await cc.call({ tool: LOOK_BACK, why: 'exact value', entry: 15 });
+    expect(out.result).toContain(compacted ? 'already in context' : 'Nothing has been compacted yet');
+    expect(cc.runCalls.filter((a) => a[0] === 'sh')).toHaveLength(1);
+    expect((await lookRows(cc))[0]).toMatchObject({ boundary: compacted ? 10 : null });
+    expect(lookLines(cc)).toHaveLength(1);
+  });
+  it('answers no boundary without searching and still counts the call', async () => {
+    const cc = lookEngine({ run: (argv) => argv[0] === 'sh' ? okProcess(COMPLETE) : undefined }); await cc.start();
+    const out = await cc.call({ tool: LOOK_BACK, why: 'exact value', query: 'value' });
+    expect(out.result).toMatch(/Nothing has been compacted yet.*still in context/);
+    expect(cc.runCalls.filter((a) => a[0] === 'sh')).toHaveLength(1);
+    expect(lookLines(cc)).toEqual(['look back (main): exact value — 0 hits']);
+    expect(await lookRows(cc)).toEqual([expect.objectContaining({ boundary: null, hits: 0 })]);
+  });
+  it.each([
+    ['missing file', { noTranscript: true }, 'no transcript file for session session-1'],
+    ['no config directory', { noHome: true }, 'no Claude config directory'],
+    ['find error', { run: (argv: string[]) => argv[0] === 'find' ? { exitCode: 1, stdout: TRANSCRIPT, stderr: 'find: permission denied' } : undefined }, 'permission denied'],
+    ['boundary error', { run: (argv: string[]) => argv[0] === 'sh' ? { exitCode: 0, stdout: COMPLETE, stderr: 'grep: permission denied' } : undefined }, 'permission denied'],
+    ['truncated output', { run: (argv: string[]) => argv[0] === 'sh' ? okProcess('8:partial') : undefined }, 'completion marker'],
+  ])('reports %s as failure rather than zero matches', async (_, env, reason) => {
+    const cc = lookEngine(env); await cc.start();
+    const out = await cc.call({ tool: LOOK_BACK, why: 'lost text', query: 'needle' });
+    expect(out.result).toContain(reason);
+    expect(out.result).not.toContain('No entry before');
+    expect(lookLines(cc)).toHaveLength(1);
+    expect(lookLines(cc)[0]).toContain(' — failed:');
+    expect((await lookRows(cc))[0]).toMatchObject({ party: 'main', why: 'lost text', boundary: null, error: expect.stringContaining(reason) });
+  });
+  it('returns a useful zero-match answer and logs zero hits', async () => {
+    const cc = lookEngine({}, numbered(8, 'alpha other')); await cc.start();
+    const out = await cc.call({ tool: LOOK_BACK, why: 'lost text', query: 'alpha beta' });
+    expect(out.result).toContain('No entry before the compaction at line 10 matches: alpha, beta');
+    expect(out.result).toContain('fewer or other words');
+    expect((await lookRows(cc))[0]).toMatchObject({ boundary: 10, hits: 0 });
+    expect(lookLines(cc)).toEqual(['look back (main): lost text — 0 hits']);
+  });
+  it('chooses the calling sub-agent transcript by agentId, including an unlisted party', async () => {
+    for (const [agents, label] of [[[{ id: 'a1', type: 'reviewer' }], 'reviewer'], [[], 'unlisted']] as const) {
+      const agentFile = '/h/u/.claude/projects/-nowhere/session-1/subagents/agent-a1.jsonl';
+      const cc = lookEngine({ agents: [...agents], run: (argv) => {
+        if (argv[0] === 'find') return okProcess(agentFile + '\n');
+        if (argv[0] === 'sh' && argv[2]!.includes('compact_boundary')) return okProcess('10:{"subtype":"compact_boundary"}\n' + COMPLETE);
+        if (argv[0] === 'sh') return okProcess(numbered(3, 'agent detail') + COMPLETE);
+        return undefined;
+      } }); await cc.start();
+      const out = await cc.call({ tool: LOOK_BACK, agentId: 'a1', why: 'lost detail', query: 'detail' });
+      expect(out.result).toContain('agent detail');
+      expect(cc.runCalls.find((a) => a[0] === 'find')!.slice(-2)).toEqual(['-path', '*/session-1/subagents/agent-a1.jsonl']);
+      expect(cc.runCalls.filter((a) => a[0] === 'sh').every((a) => a[4] === agentFile)).toBe(true);
+      expect(lookLines(cc)).toEqual([`look back (${label}): lost detail — 1 hits`]);
+      expect((await lookRows(cc))[0]).toMatchObject({ party: 'a1', hits: 1 });
+    }
+  });
+  it('fetches one whole entry, correlates tool results with tool-use names, and refuses a current-context entry without fetching', async () => {
+    let namesFail = false;
+    const cc = lookEngine({ run: (argv) => {
+      if (argv[0] === 'sh' && argv[2]!.includes('compact_boundary')) return okProcess('10:{"subtype":"compact_boundary"}\n' + COMPLETE);
+      if (argv[0] === 'sh' && argv[2]!.includes('"tool_use"')) return namesFail ? { exitCode: 0, stdout: COMPLETE, stderr: 'grep: transcript unavailable' } : okProcess(numbered(2, [{ type: 'tool_use', id: 'r1', name: 'Bash', input: { command: 'run' } }], 'assistant') + COMPLETE);
+      if (argv[0] === 'sh') return okProcess(numbered(8, [{ type: 'tool_result', tool_use_id: 'r1', content: 'full output' }]) + COMPLETE);
+      return undefined;
+    } }); await cc.start();
+    const fetched = await cc.call({ tool: LOOK_BACK, why: 'lost output', entry: 8 });
+    expect(fetched.result).toBe('#8  2026-01-02 03:04  result of Bash\nfull output');
+    expect(lookLines(cc)).toEqual(['look back (main): lost output — entry 8']);
+    expect((await lookRows(cc))[0]).toMatchObject({ entry: 8, boundary: 10 });
+    const before = cc.runCalls.length;
+    const held = await cc.call({ tool: LOOK_BACK, why: 'lost output', entry: 10 });
+    expect(held.result).toContain('already in context');
+    expect(cc.runCalls.slice(before).filter((a) => a[0] === 'sh')).toHaveLength(1);
+    expect((await lookRows(cc))[1]).toMatchObject({ entry: 10, boundary: 10, error: expect.stringContaining('already in context') });
+    namesFail = true;
+    const failed = await cc.call({ tool: LOOK_BACK, why: 'lost output', entry: 8 });
+    expect(failed.result).toBe('Look back failed: tool name lookup: grep: transcript unavailable');
+    expect(lookLines(cc)).toHaveLength(3);
+    expect(lookLines(cc)[2]).toBe('look back (main): lost output — failed: tool name lookup: grep: transcript unavailable');
+    expect(await lookRows(cc)).toHaveLength(3);
+    expect((await lookRows(cc))[2]).toMatchObject({ entry: 8, boundary: 10, error: 'tool name lookup: grep: transcript unavailable' });
+  });
+  it('counts an invalid call with one failed notice and row, with no transcript process', async () => {
+    const cc = lookEngine(); await cc.start();
+    const out = await cc.call({ tool: LOOK_BACK, why: 'lost detail' });
+    expect(out.result).toContain('query or entry');
+    expect(cc.runCalls).toEqual([]);
+    expect(lookLines(cc)).toEqual(['look back (main): lost detail — failed: query or entry is required']);
+    expect((await lookRows(cc))[0]).toMatchObject({ why: 'lost detail', boundary: null, error: 'query or entry is required' });
+  });
+  it.each([
+    [{ tool: 'Read', file_path: '/any/session-1.jsonl' }, 'main', 'main'],
+    [{ tool: 'Grep', path: '/any/session-1.jsonl', pattern: 'error' }, 'main', 'main'],
+    [{ tool: 'Bash', command: 'tail -n 10 /any/session-1.jsonl' }, 'main', 'main'],
+    [{ tool: 'Read', file_path: '/any/agent-a1.jsonl', agentId: 'a1' }, 'a1', 'reviewer'],
+  ])('observes manual %s without running a process or changing next()', async (input, party, label) => {
+    const cc = lookEngine({ agents: [{ id: 'a1', type: 'reviewer' }] }); await cc.start();
+    const out = await cc.call(input);
+    expect(out.result).toBe('original result');
+    expect(cc.nextInputs).toEqual([input]);
+    expect(cc.runCalls).toEqual([]);
+    expect(lookLines(cc)).toEqual([`look back by hand (${label}): ${input.tool} on the transcript`]);
+    expect(await lookRows(cc, 'look-back-manual')).toEqual([expect.objectContaining({ event: 'look-back-manual', party, tool: input.tool })]);
+  });
+  it('does not count another party file, a similarly named file, or Write', async () => {
+    const cc = lookEngine(); await cc.start();
+    expect(cc.registered).toEqual(['look_back']);
+    for (const input of [{ tool: 'Read', file_path: '/any/agent-a2.jsonl', agentId: 'a1' }, { tool: 'Read', file_path: '/any/old-session-1.jsonl.bak' }, { tool: 'Write', file_path: '/any/session-1.jsonl' }]) expect((await cc.call(input)).result).toBe('original result');
+    expect(lookLines(cc)).toEqual([]);
+    expect(await lookRows(cc, 'look-back-manual')).toEqual([]);
+    expect(cc.runCalls).toEqual([]);
   });
 });
