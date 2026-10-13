@@ -4,6 +4,12 @@ Every release of sub-agent-compact. Versions follow [semantic versioning](https:
 
 ## [Unreleased]
 
+## [0.7.0-dev.15] — 2026-10-13
+
+### Removed
+
+- The automatic load of a party's own notes (0.7.0-dev.14). In measured runs it never reached the notes it was for — they sat past the 15-entry file trail — and it loaded command output saved as `.txt` instead. A wake loads what `load_files` names, as before.
+
 ## [0.7.0-dev.14] — 2026-10-13
 
 ### Added

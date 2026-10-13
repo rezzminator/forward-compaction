@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { bashWrites, handoffInReply, collapseWhitespace, fileTrail, gitLine, invocationPaths, invocations, parseLineRange, parsePorcelain, planAndTasks, runningWork, sliceLines, stripNoise, userMessages, absPath, findTranscriptArgv, firstFound, heldForward, opensWithSummary, priorPrompts, priorCalls, mergeTrail, openingSummary, summaryKnowledge, outline, ownNotes, parsePorcelain as porcelain, type ApiMsg } from '../plugins/sub-agent-compact/src/forward-carry.ts';
+import { bashWrites, handoffInReply, collapseWhitespace, fileTrail, gitLine, invocationPaths, invocations, parseLineRange, parsePorcelain, planAndTasks, runningWork, sliceLines, stripNoise, userMessages, absPath, findTranscriptArgv, firstFound, heldForward, opensWithSummary, priorPrompts, priorCalls, mergeTrail, openingSummary, summaryKnowledge, outline, parsePorcelain as porcelain, type ApiMsg } from '../plugins/sub-agent-compact/src/forward-carry.ts';
 import { renderForward } from '../plugins/sub-agent-compact/src/forward-text.ts';
 import { HANDOFF_OPENING } from '../plugins/sub-agent-compact/src/handoff.ts';
 
@@ -647,24 +647,5 @@ describe('outline', () => {
     expect(line.length).toBeLessThanOrEqual(120);
     expect(line).toMatch(/^81 lines: name0, name1, .*, \+\d+ more$/);
     expect(line.match(/name0\b/g)).toHaveLength(1);
-  });
-});
-
-describe('ownNotes', () => {
-  const trail = [
-    { tag: 'E' as const, path: '/state/flight/run.md' },
-    { tag: 'C' as const, path: '/repo/src/a.ts' },
-    { tag: 'R' as const, path: '/state/flight/requirements.md' },
-    { tag: 'C' as const, path: '/repo/docs/guide.md' },
-    { tag: 'C' as const, path: '/state/flight/plan.md' },
-    { tag: 'C' as const, path: '/tmp/x/notes.txt' },
-  ];
-  it('picks the markdown and text files the party wrote outside the repo, newest first, at most two', () => {
-    expect(ownNotes(trail, { repoTop: '/repo', loaded: [] })).toEqual(['/state/flight/run.md', '/state/flight/plan.md']);
-  });
-  it('skips a file load_files already loads, and without a repo takes any written note', () => {
-    expect(ownNotes(trail, { repoTop: '/repo', loaded: ['/state/flight/run.md'] })).toEqual(['/state/flight/plan.md', '/tmp/x/notes.txt']);
-    expect(ownNotes(trail, { repoTop: undefined, loaded: [], max: 3 })).toEqual(['/state/flight/run.md', '/repo/docs/guide.md', '/state/flight/plan.md']);
-    expect(ownNotes([], { repoTop: '/repo', loaded: [] })).toEqual([]);
   });
 });

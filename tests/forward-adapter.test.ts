@@ -364,17 +364,6 @@ describe('the forward handoff tool through the adapter', () => {
     expect(wake).toMatch(/Unresolved\n(?:.*\n)*outline \/nowhere\/src\/gone\.ts: not found\n/);
   });
 
-  it('loads the notes the party wrote outside the repo when load_files leaves them out', async () => {
-    const rows = [{ role: 'user', content: [text('build it')] }, { role: 'assistant', content: [{ type: 'tool_use', id: 'w1', name: 'Write', input: { file_path: '/h/u/state/plan.md', content: 'x' } }, { type: 'tool_use', id: 'w2', name: 'Write', input: { file_path: 'docs/guide.md', content: 'y' } }] }];
-    const cc = engine({ forwardHandoffTool: true }, { '/h/u/state/plan.md': '# Plan\nstep 2: tests first\n', '/nowhere/docs/guide.md': '# Guide\n' }, rows);
-    await cc.start();
-    await cc.step(250_000);
-    await cc.forward();
-    const wake = cc.written[`${DIR}/wake.txt`]!;
-    expect(wake).toContain('Load /h/u/state/plan.md (own notes)\n# Plan\nstep 2: tests first');
-    expect(wake).not.toContain('Load /nowhere/docs/guide.md');
-  });
-
   it("lists the files touched before Claude Code's own compaction, read from the transcript", async () => {
     const entry = (n: number, o: Record<string, unknown>) => `${n}:${JSON.stringify(o)}`;
     const run = (argv: string[]) => {
