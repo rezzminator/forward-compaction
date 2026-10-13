@@ -360,7 +360,7 @@ describe('the forward handoff tool through the adapter', () => {
       return undefined;
     };
     const rows = [
-      { role: 'user', content: [text('<system-reminder>\nAs you answer the user, you can use this context.\n</system-reminder>'), text('This session is being continued from a previous conversation that ran out of context.')] },
+      { role: 'user', content: [text('<system-reminder>\nAs you answer the user, you can use this context.\n</system-reminder>'), text('This session is being continued from a previous conversation that ran out of context.\n\nSummary:\n1. Primary Request and Intent:\n   Rename qty.\n\n5. Problem Solving:\n   - b.sql uses qty only in views.\n\n7. Pending Tasks:\n   - c.sql')] },
       ...api().slice(1),
     ];
     const cc = engine({ forwardHandoffTool: true }, {}, rows, true, [], { run });
@@ -368,6 +368,8 @@ describe('the forward handoff tool through the adapter', () => {
     await cc.step(250_000);
     await cc.forward();
     expect(cc.written[`${DIR}/wake.txt`]).toContain('Files\nR /nowhere/reports/a.sql\nR /nowhere/team/roster.md\n');
+    expect(cc.written[`${DIR}/wake.txt`]).toContain('Earlier summary\nProblem Solving:\n- b.sql uses qty only in views.\nFiles\n');
+    expect(JSON.parse(cc.written[`${DIR}/record.json`]!).summary).toBe('Problem Solving:\n- b.sql uses qty only in views.');
   });
 
   it('refuses a second handoff from a party that woke from one while its context is below its first nudge point', async () => {

@@ -201,7 +201,7 @@ export function forwardStoredText({ tokens, dir, blocks }: { tokens: number; dir
  */
 export function forwardRefusal({ woke, tokens, nudgeStart }: { woke: boolean; tokens: number | undefined; nudgeStart: number }): string | undefined {
   if (!woke || tokens === undefined || tokens >= nudgeStart) return undefined;
-  return `Not stored: you woke from a forward handoff, and your context is ${k(tokens)}, below ${k(nudgeStart)}, where a handoff first pays. It is installed: continue its work from its Next block.`;
+  return `Not stored: you woke from a forward handoff, and your context is ${Math.floor(tokens / 1000)}k, below ${k(nudgeStart)}, where a handoff first pays. It is installed: continue its work from its Next block.`;
 }
 
 /** What a Haiku party reads when Claude Code's compaction of it is held for its forward handoff. */

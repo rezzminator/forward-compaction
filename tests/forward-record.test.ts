@@ -42,6 +42,7 @@ describe('measurement record', () => {
     expect(record.handoffInReply).toBeUndefined();
     expect(buildRecord({ seq: 1, session: 's1', dir: '/d', text: 'x', blocks: [], users: ['a'], usersDropped: 0, handoffInReply: true, trimmed: [] }).handoffInReply).toBe(true);
     expect(buildRecord({ seq: 1, session: 's1', dir: '/d', text: 'x', blocks: [], users: ['a'], usersDropped: 0, trail: [{ tag: 'E', path: '/r/a' }], trimmed: [] }).trail).toEqual([{ tag: 'E', path: '/r/a' }]);
+    expect(buildRecord({ seq: 1, session: 's1', dir: '/d', text: 'x', blocks: [], users: ['a'], usersDropped: 0, summary: 'Problem Solving:\n- x', trimmed: [] }).summary).toBe('Problem Solving:\n- x');
   });
 });
 
@@ -54,6 +55,7 @@ describe('carriedFrom', () => {
     expect(carriedFrom([rec('held', ['a'])], 'held, edited')).toBeUndefined();
     expect(carriedFrom([{ ...rec('held', ['a']), handoffInReply: true }], 'held')).toEqual({ users: ['a'], dropped: 0, inReply: true });
     const trail = [{ tag: 'C', path: '/r/out.md' }, { tag: 'R', path: '/r/roster.md' }];
+    expect(carriedFrom([{ ...rec('held', ['a']), summary: 'Problem Solving:\n- x' }], 'held')).toEqual({ users: ['a'], dropped: 0, summary: 'Problem Solving:\n- x' });
     expect(carriedFrom([{ ...rec('held', ['a']), trail }], 'held')).toEqual({ users: ['a'], dropped: 0, trail });
     expect(carriedFrom([{ ...rec('held', ['a']), trail: [{ tag: 'X', path: '/r' }, 'junk'] }], 'held')).toEqual({ users: ['a'], dropped: 0 });
   });

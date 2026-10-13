@@ -148,6 +148,7 @@ describe('forwardHoldText', () => {
 describe('forwardRefusal', () => {
   it('refuses only a party that woke from a forward handoff and is still below its first nudge point', () => {
     expect(forwardRefusal({ woke: true, tokens: 30_000, nudgeStart: 40_000 })).toMatch(/^Not stored: you woke from a forward handoff.*30k.*40k.*Next/);
+    expect(forwardRefusal({ woke: true, tokens: 39_600, nudgeStart: 40_000 })).toContain('your context is 39k, below 40k');
     expect(forwardRefusal({ woke: true, tokens: 40_000, nudgeStart: 40_000 })).toBeUndefined();
     expect(forwardRefusal({ woke: false, tokens: 1_000, nudgeStart: 40_000 })).toBeUndefined();
     expect(forwardRefusal({ woke: true, tokens: undefined, nudgeStart: 40_000 })).toBeUndefined();

@@ -593,12 +593,39 @@ export function handoffInReply(msgs: readonly ApiMsg[]): boolean {
  * The reminders Claude Code re-sends after a compaction (CLAUDE.md, session context, date) come before it.
  */
 export function opensWithSummary(msgs: readonly ApiMsg[]): boolean {
+  return openingSummary(msgs) !== undefined;
+}
+
+/** Claude Code's own summary when the context opens with it (past the reminders it puts first), else undefined. */
+export function openingSummary(msgs: readonly ApiMsg[]): string | undefined {
   for (const m of msgs) {
-    if (m.role !== 'user') return false;
+    if (m.role !== 'user') return undefined;
     for (const b of blocksOf(m)) {
       if (b.type !== 'text' || textOf(b).trimStart().startsWith('<system-reminder>')) continue;
-      return textOf(b).startsWith(SUMMARY_OPENING);
+      return textOf(b).startsWith(SUMMARY_OPENING) ? textOf(b) : undefined;
     }
   }
-  return false;
+  return undefined;
+}
+
+/** The sections of Claude Code's summary that hold what it knew; the request, prompts, tasks, current work and next step are carried newer elsewhere. */
+const KNOWLEDGE = new Set(['Key Technical Concepts', 'Files and Code Sections', 'Errors and fixes', 'Problem Solving']);
+const SECTION = /^\d+\.\s+(.+?):\s*$/;
+const CLOSING = /^(?:If you need specific details from before compaction|Continue the conversation from where it left off|The messages after this summary are)/;
+
+/** What Claude Code's summary knew, as `Section:` then its lines, dedented, blank lines dropped; undefined when it has none of those sections. */
+export function summaryKnowledge(summary: string): string | undefined {
+  const out: string[] = [];
+  let keep = false;
+  for (const line of summary.replace(/\r\n?/g, '\n').split('\n')) {
+    if (CLOSING.test(line)) break;
+    const head = SECTION.exec(line);
+    if (head !== null) {
+      keep = KNOWLEDGE.has(head[1]!.trim());
+      if (keep) out.push(`${head[1]!.trim()}:`);
+      continue;
+    }
+    if (keep && line.trim() !== '') out.push(line.replace(/^ {1,3}/, '').trimEnd());
+  }
+  return out.length > 0 ? out.join('\n') : undefined;
 }

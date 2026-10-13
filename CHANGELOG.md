@@ -4,6 +4,14 @@ Every release of sub-agent-compact. Versions follow [semantic versioning](https:
 
 ## [Unreleased]
 
+## [0.7.0-dev.10] — 2026-10-13
+
+### Added
+- A forward handoff taken after Claude Code's own compaction carries what that summary knew, as an `Earlier summary` block: its Key Technical Concepts, Files and Code Sections, Errors and fixes and Problem Solving sections, dedented, at most 1.5k tokens. Its request, prompts, pending tasks, current work and next step are left out: the User block and the model's own fields carry them newer. A chained handoff carries the block on from its record (`summary`). A summary without those sections is named under `Unresolved`.
+
+### Fixed
+- The refusal of an early second handoff states the context size rounded down, so 39.6k reads `39k, below 40k`, not `40k, below 40k`.
+
 ## [0.7.0-dev.9] — 2026-10-13
 
 ### Fixed

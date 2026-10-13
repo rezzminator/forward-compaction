@@ -2,7 +2,7 @@ import type { EngineInterface, On, PluginOptions, Register } from 'claude-code';
 import { bounded } from '../src/bounded.ts';
 import { haikuServed, servedOptions, toolsToRegister } from '../src/register.ts';
 import { FORWARD_INPUT_SCHEMA, FORWARD_TOOL, FORWARD_TOOL_DESCRIPTION, forwardHoldText, forwardNudgeText, forwardRefusal, forwardStoredText, parseForwardArgs, type ForwardArgs } from '../src/forward-args.ts';
-import { absPath, fileTrail, handoffInReply, findTranscriptArgv, firstFound, gitLine, heldForward, opensWithSummary, priorCalls, priorPrompts, mergeTrail, invocationPaths, invocations, parseLineRange, parsePorcelain, planAndTasks, runningWork, sliceLines, userMessages, type ApiMsg, type LiveWork, type TrailEntry } from '../src/forward-carry.ts';
+import { absPath, fileTrail, handoffInReply, findTranscriptArgv, firstFound, gitLine, heldForward, opensWithSummary, openingSummary, summaryKnowledge, priorCalls, priorPrompts, mergeTrail, invocationPaths, invocations, parseLineRange, parsePorcelain, planAndTasks, runningWork, sliceLines, userMessages, type ApiMsg, type LiveWork, type TrailEntry } from '../src/forward-carry.ts';
 import { buildRecord, carriedFrom, forwardDir, forwardSessionDir, nextSeq, previousDir, withInstall } from '../src/forward-record.ts';
 import { chainUsers, installCheck, renderForward, TRAIL_MAX, type RenderInput } from '../src/forward-text.ts';
 import { BRIEF_MAX_TOKENS, reseatBrief, seatedBrief } from '../src/brief.ts';
@@ -700,6 +700,13 @@ async function gatherForward(st: State, $: EngineInterface, args: ForwardArgs, a
   }
   const since = held !== undefined ? api.slice(held.index + 1) : api;
   const chain = chainUsers(before ?? prior, userMessages(since), handoffInReply(since));
+  // What Claude Code's own summary knew: from the one the context opens with, else from the earlier handoff's record.
+  let summary = before?.summary;
+  const opening = held === undefined ? openingSummary(api) : undefined;
+  if (opening !== undefined) {
+    summary = summaryKnowledge(opening);
+    if (summary === undefined) problems.push("earlier summary: none of its sections found (concepts, files, errors, problem solving), so it is not carried");
+  }
   // The files: those touched since, then those the earlier handoff or the transcript before the summary carried.
   const older = before !== undefined ? before.trail : priorTrail;
   const fresh = fileTrail(since, { cwd, home: st.home ?? '', max: TRAIL_MAX });
@@ -707,7 +714,7 @@ async function gatherForward(st: State, $: EngineInterface, args: ForwardArgs, a
   const trail = [...mergeTrail(older, fresh, TRAIL_MAX - kept.length), ...kept.map((path) => ({ tag: 'R' as const, path }))];
   const live = at.agentId === undefined && st.live !== undefined ? { tasks: st.live.tasks, crons: st.live.crons, started: st.live.started, now: Date.now() } : undefined;
 
-  return { seq: at.seq, users: chain.users, usersDropped: chain.dropped, ...(chain.inReply ? { handoffInReply: true } : {}), skills, trail, loaded, ...(plan !== undefined ? { plan } : {}), tasks: work.tasks, running: runningWork(api, live), ...(git !== undefined ? { git } : {}), paths: paths.length > 0 ? [paths.join(' · ')] : [], problems, args };
+  return { seq: at.seq, users: chain.users, usersDropped: chain.dropped, ...(chain.inReply ? { handoffInReply: true } : {}), ...(summary !== undefined ? { summary } : {}), skills, trail, loaded, ...(plan !== undefined ? { plan } : {}), tasks: work.tasks, running: runningWork(api, live), ...(git !== undefined ? { git } : {}), paths: paths.length > 0 ? [paths.join(' · ')] : [], problems, args };
 }
 
 /** Stores a forward handoff: the text code carried and the model's frontier, and the call's files on disk. Main chat and sub-agent alike. */
@@ -756,7 +763,7 @@ async function answerForwardTool(st: State, $: EngineInterface, e: Record<string
   const input = await gatherForward(st, $, parsed.args, { seq, ...(dir !== undefined ? { dir } : {}), session, ...(agentId !== undefined ? { agentId } : {}) });
   const { text, blocks } = renderForward(input);
   const reading = st.parties.reading(key);
-  const base = buildRecord({ seq, session, ...(agentId !== undefined ? { agentId } : {}), dir: dir ?? '', text, blocks, users: input.users, usersDropped: input.usersDropped ?? 0, ...(input.handoffInReply === true ? { handoffInReply: true } : {}), trail: input.trail, ...(reading !== undefined ? { tokensBefore: reading } : {}), trimmed: parsed.args.trimmed, at: new Date().toISOString() });
+  const base = buildRecord({ seq, session, ...(agentId !== undefined ? { agentId } : {}), dir: dir ?? '', text, blocks, users: input.users, usersDropped: input.usersDropped ?? 0, ...(input.handoffInReply === true ? { handoffInReply: true } : {}), trail: input.trail, ...(input.summary !== undefined ? { summary: input.summary } : {}), ...(reading !== undefined ? { tokensBefore: reading } : {}), trimmed: parsed.args.trimmed, at: new Date().toISOString() });
   if (dir !== undefined) {
     try {
       await $.fs.write(`${dir}/args.json`, JSON.stringify(raw, null, 2));

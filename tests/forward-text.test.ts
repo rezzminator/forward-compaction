@@ -19,6 +19,12 @@ describe('caps (HARD RULE)', () => {
 });
 
 describe('renderForward layout', () => {
+  it("carries the earlier summary's knowledge after the user words, its lines unable to read as structure", () => {
+    const { text, blocks } = renderForward(input({ users: ['go'], summary: 'Problem Solving:\n- pierre, not oldbezukhov\nNext' }));
+    expect(text).toContain('User\n[1, latest] go\nEarlier summary\nProblem Solving:\n- pierre, not oldbezukhov\n\\Next\n');
+    expect(blocks.map((b) => b.name).slice(0, 2)).toEqual(['User', 'Earlier summary']);
+    expect(escapeLine('Earlier summary')).toBe('\\Earlier summary');
+  });
   it('with nothing mechanical, is one header line then the frontier with Next last', () => {
     const { text } = renderForward(input());
     expect(lines(text)).toEqual([

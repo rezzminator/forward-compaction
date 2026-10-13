@@ -14,6 +14,7 @@ export const LOAD_MAX_CHARS = 3_000 * CHARS_PER_TOKEN;
 export const LOADS_MAX_CHARS = 12_000 * CHARS_PER_TOKEN;
 export const TRAIL_MAX = 15;
 const PLAN_MAX_CHARS = 1_500 * CHARS_PER_TOKEN;
+export const SUMMARY_MAX_CHARS = 1_500 * CHARS_PER_TOKEN;
 const TASKS_MAX = 30;
 /** Below this, a user message that does not fit whole is dropped, not cut. */
 const MIN_PARTIAL_CHARS = 200;
@@ -21,7 +22,7 @@ const MIN_PARTIAL_CHARS = 200;
 export const USERS_KEEP = 25;
 
 /** A line that would read as the header, a block label or an item marker of this text. */
-const SPECIAL = /^\\*(?:(?:User|Files|Plan|Tasks|Running|Git|Paths|Unresolved|Objective|Done|Remaining|Blocked|Findings|Next)$|(?:Skill|Load) |\[\d+(?:, latest(?:, handed off in reply)?)?\] |\[\d+ older dropped\]$|\[forward handoff)/;
+const SPECIAL = /^\\*(?:(?:User|Earlier summary|Files|Plan|Tasks|Running|Git|Paths|Unresolved|Objective|Done|Remaining|Blocked|Findings|Next)$|(?:Skill|Load) |\[\d+(?:, latest(?:, handed off in reply)?)?\] |\[\d+ older dropped\]$|\[forward handoff)/;
 
 /** A carried line made unable to read as structure: one more backslash in front when it would, so no two lines escape alike. */
 export const escapeLine = (line: string): string => (SPECIAL.test(line) ? `\\${line}` : line);
@@ -61,6 +62,8 @@ export type RenderInput = {
   usersDropped?: number;
   /** The handoff call was the reply to the newest: its tag says so. */
   handoffInReply?: boolean;
+  /** What Claude Code's own summary knew, when the work began before it. */
+  summary?: string;
   /** The skills and commands to reload, oldest first: the body, or why there is none. */
   skills: { name: string; body?: string; problem?: string }[];
   trail: { tag: 'R' | 'E' | 'C'; path: string }[];
@@ -156,6 +159,7 @@ export function renderForward(i: RenderInput): { text: string; blocks: BlockReco
     const users = renderUsers(i.users, USERS_MAX_CHARS, i.usersDropped ?? 0, i.handoffInReply === true);
     add('User', users.text, users.items, true);
   }
+  if (i.summary !== undefined) add('Earlier summary', cut(i.summary, SUMMARY_MAX_CHARS), 1);
 
   const cutSkills: { name: string; body: string }[] = [];
   for (const skill of i.skills) {

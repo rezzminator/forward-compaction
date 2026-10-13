@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { bashWrites, handoffInReply, collapseWhitespace, fileTrail, gitLine, invocationPaths, invocations, parseLineRange, parsePorcelain, planAndTasks, runningWork, sliceLines, stripNoise, userMessages, absPath, findTranscriptArgv, firstFound, heldForward, opensWithSummary, priorPrompts, priorCalls, mergeTrail, parsePorcelain as porcelain, type ApiMsg } from '../plugins/sub-agent-compact/src/forward-carry.ts';
+import { bashWrites, handoffInReply, collapseWhitespace, fileTrail, gitLine, invocationPaths, invocations, parseLineRange, parsePorcelain, planAndTasks, runningWork, sliceLines, stripNoise, userMessages, absPath, findTranscriptArgv, firstFound, heldForward, opensWithSummary, priorPrompts, priorCalls, mergeTrail, openingSummary, summaryKnowledge, parsePorcelain as porcelain, type ApiMsg } from '../plugins/sub-agent-compact/src/forward-carry.ts';
 import { renderForward } from '../plugins/sub-agent-compact/src/forward-text.ts';
 import { HANDOFF_OPENING } from '../plugins/sub-agent-compact/src/handoff.ts';
 
@@ -512,6 +512,8 @@ describe('opensWithSummary', () => {
     expect(opensWithSummary([user(rem, '<system-reminder>date</system-reminder>', sum), user('go')])).toBe(true);
     expect(opensWithSummary([user(rem), user(sum)])).toBe(true);
     expect(opensWithSummary([user(rem), asst(t('ok')), user(sum)])).toBe(false);
+    expect(openingSummary([user(rem, sum), user('go')])).toBe(sum);
+    expect(openingSummary([user(rem), user('go')])).toBeUndefined();
   });
 });
 
@@ -557,5 +559,66 @@ describe('file trail across compactions', () => {
     ]);
     expect(mergeTrail(older, newer, 3).map((t) => t.path)).toEqual(['/a', '/b', '/e']);
     expect(mergeTrail(undefined, newer, 15)).toEqual(newer);
+  });
+});
+
+describe('summaryKnowledge', () => {
+  // The shape of Claude Code's own summary, copied from a real transcript; the content is invented.
+  const lines = [
+    'This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.',
+    '',
+    'Summary:',
+    '1. Primary Request and Intent:',
+    '   Extract the relations of chunk c21.',
+    '',
+    '2. Key Technical Concepts:',
+    '   - Records: ch, a, b; at most 14 pairs per chapter.',
+    '',
+    '3. Files and Code Sections:',
+    '   - `/w/meta/roster.md`',
+    '     - Read. About 75 ids.',
+    '',
+    '4. Errors and fixes:',
+    '   - None so far.',
+    '',
+    '5. Problem Solving:',
+    '   - Bezukhov in c21 is always `pierre`: the old count died before it.',
+    '',
+    '6. All user messages:',
+    '   - The relayed request.',
+    '',
+    '7. Pending Tasks:',
+    '   - Write c21.json.',
+    '',
+    '8. Current Work:',
+    '   No records written yet.',
+    '',
+    '9. Optional Next Step:',
+    '   Compose the JSON.',
+    '',
+    'If you need specific details from before compaction (like exact code snippets, error messages, or content you generated), read the full transcript at: /c/p/s.jsonl',
+    'Continue the conversation from where it left off without asking the user any further questions. Resume directly.',
+    '',
+    'The messages after this summary are the most recent messages from before compaction, kept verbatim.',
+  ];
+  it('keeps what the summary knows (concepts, files, errors, problems solved), never what it asked, planned or was doing', () => {
+    expect(summaryKnowledge(lines.join('\n'))).toBe(
+      [
+        'Key Technical Concepts:',
+        '- Records: ch, a, b; at most 14 pairs per chapter.',
+        'Files and Code Sections:',
+        '- `/w/meta/roster.md`',
+        '  - Read. About 75 ids.',
+        'Errors and fixes:',
+        '- None so far.',
+        'Problem Solving:',
+        '- Bezukhov in c21 is always `pierre`: the old count died before it.',
+      ].join('\n'),
+    );
+  });
+  it('stops a kept last section at the closing instructions, and keeps nothing from a text without its sections', () => {
+    const last = [...lines.slice(0, 3), '5. Problem Solving:', '   - Found it.', '', ...lines.slice(-4)].join('\n');
+    expect(summaryKnowledge(last)).toBe('Problem Solving:\n- Found it.');
+    expect(summaryKnowledge('This session is being continued from a previous conversation. Just prose.')).toBeUndefined();
   });
 });

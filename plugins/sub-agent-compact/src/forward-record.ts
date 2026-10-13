@@ -35,7 +35,7 @@ export function previousDir(configDir: string, session: string, seq: number, age
 export type ForwardRecord = Record<string, unknown>;
 
 /** The record of one call at handoff time: the size of every block and of the whole text. */
-export function buildRecord(i: { seq: number; session: string; agentId?: string; dir: string; text: string; blocks: readonly BlockRecord[]; users: readonly string[]; usersDropped: number; handoffInReply?: boolean; trail?: readonly TrailEntry[]; tokensBefore?: number; trimmed: readonly string[]; at?: string }): ForwardRecord {
+export function buildRecord(i: { seq: number; session: string; agentId?: string; dir: string; text: string; blocks: readonly BlockRecord[]; users: readonly string[]; usersDropped: number; handoffInReply?: boolean; trail?: readonly TrailEntry[]; summary?: string; tokensBefore?: number; trimmed: readonly string[]; at?: string }): ForwardRecord {
   return {
     seq: i.seq,
     session: i.session,
@@ -45,6 +45,7 @@ export function buildRecord(i: { seq: number; session: string; agentId?: string;
     users: [...i.users],
     usersDropped: i.usersDropped,
     ...(i.handoffInReply === true ? { handoffInReply: true } : {}),
+    ...(i.summary !== undefined ? { summary: i.summary } : {}),
     ...(i.trail !== undefined ? { trail: i.trail.map((t) => ({ tag: t.tag, path: t.path })) } : {}),
     ...(i.at !== undefined ? { at: i.at } : {}),
     ...(i.tokensBefore !== undefined ? { tokensBefore: i.tokensBefore } : {}),
@@ -59,14 +60,14 @@ export function withInstall(record: ForwardRecord, i: { tokensAfter: number; che
   return { ...record, tokensAfter: i.tokensAfter, install: i.check };
 }
 
-/** The prompts and file trail an earlier handoff carried, from its record: the one whose text is the one the session holds. Undefined when no record is. */
-export function carriedFrom(records: readonly unknown[], heldText: string): { users: string[]; dropped: number; inReply?: boolean; trail?: TrailEntry[] } | undefined {
+/** The prompts, file trail and summary knowledge an earlier handoff carried, from its record: the one whose text is the one the session holds. Undefined when no record is. */
+export function carriedFrom(records: readonly unknown[], heldText: string): { users: string[]; dropped: number; inReply?: boolean; trail?: TrailEntry[]; summary?: string } | undefined {
   const hash = fnv1a(heldText);
   for (const r of records) {
     if (r === null || typeof r !== 'object') continue;
     const rec = r as Record<string, unknown>;
     if (rec.textHash !== hash || !Array.isArray(rec.users) || !rec.users.every((u) => typeof u === 'string')) continue;
-    return { users: rec.users as string[], dropped: typeof rec.usersDropped === 'number' ? rec.usersDropped : 0, ...(rec.handoffInReply === true ? { inReply: true } : {}), ...(Array.isArray(rec.trail) && rec.trail.every(isTrailEntry) ? { trail: rec.trail as TrailEntry[] } : {}) };
+    return { users: rec.users as string[], dropped: typeof rec.usersDropped === 'number' ? rec.usersDropped : 0, ...(rec.handoffInReply === true ? { inReply: true } : {}), ...(Array.isArray(rec.trail) && rec.trail.every(isTrailEntry) ? { trail: rec.trail as TrailEntry[] } : {}), ...(typeof rec.summary === 'string' ? { summary: rec.summary } : {}) };
   }
   return undefined;
 }
