@@ -4,7 +4,7 @@ import { haikuServed, servedOptions, toolsToRegister } from '../src/register.ts'
 import { FORWARD_INPUT_SCHEMA, FORWARD_TOOL, FORWARD_TOOL_DESCRIPTION, forwardHoldText, forwardNudgeText, forwardRefusal, forwardStoredText, parseForwardArgs, type ForwardArgs } from '../src/forward-args.ts';
 import { absPath, fileTrail, handoffInReply, findTranscriptArgv, firstFound, gitLine, heldForward, opensWithSummary, openingSummary, summaryKnowledge, priorCalls, priorPrompts, mergeTrail, invocationPaths, invocations, parseLineRange, parsePorcelain, planAndTasks, runningWork, sliceLines, userMessages, type ApiMsg, type LiveWork, type TrailEntry } from '../src/forward-carry.ts';
 import { buildRecord, carriedFrom, forwardDir, forwardSessionDir, nextSeq, previousDir, withInstall } from '../src/forward-record.ts';
-import { chainUsers, installCheck, renderForward, TRAIL_MAX, type RenderInput } from '../src/forward-text.ts';
+import { chainUsers, forwardInstalledLine, installCheck, renderForward, TRAIL_MAX, type RenderInput } from '../src/forward-text.ts';
 import { BRIEF_MAX_TOKENS, reseatBrief, seatedBrief } from '../src/brief.ts';
 import { AgentPolicies, AgentTypes } from '../src/agents.ts';
 import { compactionEnd, contextTokens, currentTokens, decide, estimateTranscript, HAIKU_HOLDS, haikuHold, knownTrigger, personPrompt, type Trigger } from '../src/decide.ts';
@@ -45,6 +45,11 @@ const COMPACT_TOOL = 'compact';
 const FALLBACK_WINDOW = 200_000;
 
 const LOG_CAP = 2000;
+
+/** A line for the person: Claude Code already names the plugin in front of it, so the line never names it again. */
+function say($: EngineInterface, line: string): void {
+  $.ui.log(line.replace(/^sub-agent-compact: /, ''));
+}
 /** The model's tool-call lines of a transcript before line $2, the newest 400: sed cuts at the boundary, so no line's length matters. */
 const CALLS_BEFORE = `sed -n "1,$(($2 - 1))p" "$1" | grep -a -n '"type":"assistant"' | grep -a '"tool_use"' | tail -n 400`;
 /** Registering the tools holds a turn no longer than this: past it the turn goes on and the plugin stops waiting on registration. */
@@ -75,7 +80,7 @@ type State = {
   /** The last forward handoff number given out per session: two calls listing the directory together still get two numbers. */
   forwardSeq: Map<string, number>;
   /** A forward handoff installed and not yet checked against what the party holds at its next request, by party. */
-  forwardInstalled: Map<string, { meta: ForwardMeta; text: string; tokensAfter: number }>;
+  forwardInstalled: Map<string, { meta: ForwardMeta; text: string; tokensAfter: number; before: number | undefined; label: string }>;
   /** The parties a forward handoff was installed in: a second one is refused below their first nudge point. */
   forwardWoke: Set<string>;
   /** The home directory, for `~/` in a path. */
@@ -120,7 +125,7 @@ function record(st: State, $: EngineInterface, row: Row): void {
   st.logPath ??= $.session.id().then(
     (id) => sessionLogPath(file, id),
     (error) => {
-      $.ui.log(`sub-agent-compact: reading the session id failed: ${message(error)}; the decision log is off for this session`);
+      say($, `sub-agent-compact: reading the session id failed: ${message(error)}; the decision log is off for this session`);
       return undefined;
     },
   );
@@ -132,13 +137,13 @@ function record(st: State, $: EngineInterface, row: Row): void {
       const existing = (await $.fs.exists(path)) ? await $.fs.read(path) : '';
       await $.fs.write(path, appendRows(existing, rows, LOG_CAP));
     })
-    .catch((error) => $.ui.log(`sub-agent-compact: writing the decision log for ${file} failed: ${message(error)}`));
+    .catch((error) => say($, `sub-agent-compact: writing the decision log for ${file} failed: ${message(error)}`));
 }
 
 function warnOnce(st: State, $: EngineInterface, key: string, line: string): void {
   if (st.warned.has(key)) return;
   st.warned.add(key);
-  $.ui.log(line);
+  say($, line);
   record(st, $, { event: 'warning', key, line });
 }
 
@@ -146,7 +151,7 @@ function warnOnce(st: State, $: EngineInterface, key: string, line: string): voi
 function start(st: State, $: EngineInterface): Promise<void> {
   st.started ??= (async () => {
     for (const line of st.config.errors) {
-      $.ui.log(line);
+      say($, line);
       record(st, $, { event: 'option-error', line });
     }
     let cwd = '.';
@@ -154,32 +159,32 @@ function start(st: State, $: EngineInterface): Promise<void> {
     try {
       cwd = await $.session.cwd();
     } catch (error) {
-      $.ui.log(`sub-agent-compact: reading the session cwd failed: ${message(error)}; using relative paths`);
+      say($, `sub-agent-compact: reading the session cwd failed: ${message(error)}; using relative paths`);
     }
     st.cwd = cwd;
     try {
       home = await $.env.get('HOME');
       st.home = home;
     } catch (error) {
-      $.ui.log(`sub-agent-compact: reading HOME failed: ${message(error)}; skipping ~/.claude/agents`);
+      say($, `sub-agent-compact: reading HOME failed: ${message(error)}; skipping ~/.claude/agents`);
     }
     try {
       st.configDir = (await $.env.get('CLAUDE_CONFIG_DIR')) || (home ? `${home}/.claude` : undefined);
     } catch (error) {
-      $.ui.log(`sub-agent-compact: reading CLAUDE_CONFIG_DIR failed: ${message(error)}; load_on_wake reads ~/.claude only`);
+      say($, `sub-agent-compact: reading CLAUDE_CONFIG_DIR failed: ${message(error)}; load_on_wake reads ~/.claude only`);
       st.configDir = home ? `${home}/.claude` : undefined;
     }
     try {
       st.mainWindow = (await $.session.usage()).context.window;
     } catch (error) {
-      $.ui.log(`sub-agent-compact: reading the main chat's window failed: ${message(error)}; percentages use ${FALLBACK_WINDOW}`);
+      say($, `sub-agent-compact: reading the main chat's window failed: ${message(error)}; percentages use ${FALLBACK_WINDOW}`);
     }
     try {
       const raw = await $.env.get('CLAUDE_CODE_AUTO_COMPACT_WINDOW');
       const parsed = raw ? Number.parseInt(raw, 10) : NaN;
       if (Number.isFinite(parsed) && parsed > 0) st.compactWindow = parsed;
     } catch (error) {
-      $.ui.log(`sub-agent-compact: reading CLAUDE_CODE_AUTO_COMPACT_WINDOW failed: ${message(error)}`);
+      say($, `sub-agent-compact: reading CLAUDE_CODE_AUTO_COMPACT_WINDOW failed: ${message(error)}`);
     }
     const dirs = [`${cwd}/.claude/agents`, ...(home ? [`${home}/.claude/agents`] : []), ...st.config.agentDirs];
     st.policies = new AgentPolicies(
@@ -192,7 +197,7 @@ function start(st: State, $: EngineInterface): Promise<void> {
           (await $.fs.list(dir)).filter((entry) => entry.kind === 'file' && entry.name.endsWith('.md')).map((entry) => entry.name),
       },
       (line) => {
-        $.ui.log(line);
+        say($, line);
         record(st, $, { event: 'resolve-error', line });
       },
     );
@@ -410,7 +415,7 @@ async function ensureTools(st: State, $: EngineInterface): Promise<void> {
           await registerForwardTool(st, $);
         }
       })
-      .catch((error) => $.ui.log(`sub-agent-compact: registering the tools failed: ${message(error)}`));
+      .catch((error) => say($, `sub-agent-compact: registering the tools failed: ${message(error)}`));
     await st.registering;
     if (left().length === 0) st.toolsSettled = true;
   })();
@@ -488,7 +493,7 @@ async function answerHandoffTool(st: State, $: EngineInterface, e: Record<string
   const party = await partyOf(st, $, agentId);
   const toolUseId = typeof e.tool_use_id === 'string' ? e.tool_use_id : '';
   if (toolUseId === '') {
-    $.ui.log(`sub-agent-compact: the ${HANDOFF_TOOL} call of ${party.label} carries no tool_use_id; its install falls back to a summary that keeps the handoff`);
+    say($, `sub-agent-compact: the ${HANDOFF_TOOL} call of ${party.label} carries no tool_use_id; its install falls back to a summary that keeps the handoff`);
   }
   // A name that resolves nowhere is refused now, while the agent can still correct it.
   if (parsed.loads.length > 0) {
@@ -740,7 +745,7 @@ async function answerForwardTool(st: State, $: EngineInterface, e: Record<string
     return early;
   }
   const toolUseId = typeof e.tool_use_id === 'string' ? e.tool_use_id : '';
-  if (toolUseId === '') $.ui.log(`sub-agent-compact: the ${FORWARD_TOOL} call carries no tool_use_id; its install falls back to a summary that keeps the handoff`);
+  if (toolUseId === '') say($, `sub-agent-compact: the ${FORWARD_TOOL} call carries no tool_use_id; its install falls back to a summary that keeps the handoff`);
   const session = await $.session.id();
   let saved = '';
   let existing: string[] = [];
@@ -752,7 +757,7 @@ async function answerForwardTool(st: State, $: EngineInterface, e: Record<string
     } catch (error) {
       // Unlisted, the next number is a guess: saving could overwrite an earlier call's files.
       saved = ` Not saved to disk: listing ${sessionDir} failed: ${message(error)}.`;
-      $.ui.log(`sub-agent-compact: listing ${sessionDir} failed: ${message(error)}; the forward handoff is not saved, so no earlier call's files are overwritten`);
+      say($, `sub-agent-compact: listing ${sessionDir} failed: ${message(error)}; the forward handoff is not saved, so no earlier call's files are overwritten`);
     }
   }
   // Numbered from the directory and this process's own count, with no wait between the two reads and the claim.
@@ -771,19 +776,18 @@ async function answerForwardTool(st: State, $: EngineInterface, e: Record<string
       await $.fs.write(`${dir}/record.json`, JSON.stringify(base, null, 2));
     } catch (error) {
       saved = ` Not saved to disk: ${message(error)}.`;
-      $.ui.log(`sub-agent-compact: saving forward handoff ${seq} to ${dir} failed: ${message(error)}`);
+      say($, `sub-agent-compact: saving forward handoff ${seq} to ${dir} failed: ${message(error)}`);
       dir = undefined;
     }
   }
   st.parties.armHandoff(key, { text, anchor: { toolUseId }, forward: { seq, ...(dir !== undefined ? { dir } : {}), blocks, record: base } });
   const tokens = Math.ceil(text.length / 4);
-  $.ui.log(`sub-agent-compact: forward handoff ${seq} of ${party.label} stored (${tokens} tokens)${dir !== undefined ? `, files in ${dir}` : ', not saved to disk'}`);
   record(st, $, { event: 'forward-stored', party: key, seq, dir, chars: text.length, tokens, blocks: blocks.map((b) => ({ name: b.name, chars: b.chars, items: b.items })) });
   return forwardStoredText({ tokens, ...(dir !== undefined ? { dir } : {}), blocks }) + saved;
 }
 
 /** At the first request of a party after its forward handoff installed: confirm each block is in what it holds, write the record with the check, and tell it of any that is not. */
-async function finishForward(st: State, $: EngineInterface, { meta, text, tokensAfter }: NonNullable<State['forwardInstalled']> extends Map<string, infer V> ? V : never, agentId?: string): Promise<void> {
+async function finishForward(st: State, $: EngineInterface, { meta, text, tokensAfter, before, label }: NonNullable<State['forwardInstalled']> extends Map<string, infer V> ? V : never, agentId?: string): Promise<void> {
   const key = agentId ?? 'main';
   let held: string;
   try {
@@ -791,7 +795,7 @@ async function finishForward(st: State, $: EngineInterface, { meta, text, tokens
     if (!Array.isArray(got)) throw new Error(`messages: ${JSON.stringify(got).slice(0, 120)}`);
     held = heldForward(got as ApiMsg[])?.text ?? '';
   } catch (error) {
-    $.ui.log(`sub-agent-compact: reading ${key} to check forward handoff ${meta.seq} failed: ${message(error)}; its install is unchecked`);
+    say($, `sub-agent-compact: reading ${key} to check forward handoff ${meta.seq} failed: ${message(error)}; its install is unchecked`);
     record(st, $, { event: 'forward-unchecked', seq: meta.seq, error: message(error) });
     return;
   }
@@ -800,15 +804,12 @@ async function finishForward(st: State, $: EngineInterface, { meta, text, tokens
     try {
       await $.fs.write(`${meta.dir}/record.json`, JSON.stringify(withInstall(meta.record, { tokensAfter, check }), null, 2));
     } catch (error) {
-      $.ui.log(`sub-agent-compact: writing the install check of forward handoff ${meta.seq} to ${meta.dir} failed: ${message(error)}`);
+      say($, `sub-agent-compact: writing the install check of forward handoff ${meta.seq} to ${meta.dir} failed: ${message(error)}`);
     }
   }
   record(st, $, { event: 'forward-installed', party: key, seq: meta.seq, tokensAfter, landed: check.landed, missing: check.missing, hash: check.hash });
-  if (check.ok) {
-    $.ui.log(`sub-agent-compact: forward handoff ${meta.seq} installed, all ${check.landed} blocks landed`);
-    return;
-  }
-  $.ui.log(`sub-agent-compact: forward handoff ${meta.seq} installed, blocks missing: ${check.missing.join(', ')}`);
+  say($, forwardInstalledLine({ seq: meta.seq, label, before, after: tokensAfter, landed: check.landed, missing: check.missing, ...(meta.dir !== undefined ? { dir: meta.dir } : {}) }));
+  if (check.ok) return;
   st.parties.notify(key, `sub-agent-compact: forward handoff blocks did not land: ${check.missing.join(', ')}; ${meta.dir !== undefined ? `the full text is in ${meta.dir}/wake.txt` : 'the text was not saved to disk'}.`);
 }
 
@@ -858,7 +859,7 @@ export const register: Register = (on: On, options: PluginOptions) => {
       }
       if (notices.length > 0) return next({ ...e, context: [...(e.context ?? []), ...notices] });
     } catch (error) {
-      $.ui.log(`sub-agent-compact: reading the prompt's origin failed: ${message(error)}`);
+      say($, `sub-agent-compact: reading the prompt's origin failed: ${message(error)}`);
     }
     return next(e);
   });
@@ -890,7 +891,7 @@ export const register: Register = (on: On, options: PluginOptions) => {
         st.parties.notify(key, stored === undefined ? handoffNotice('marker-stored', `${handoff.length} characters`) : handoffNotice('marker-refused', stored.text));
       } else if (focus !== undefined) arm(st, $, await partyOf(st, $, e.agentId), focus, 'marker');
     } catch (error) {
-      $.ui.log(`sub-agent-compact: reading turn.step for ${key} failed: ${message(error)}`);
+      say($, `sub-agent-compact: reading turn.step for ${key} failed: ${message(error)}`);
     }
     return result;
   });
@@ -903,7 +904,7 @@ export const register: Register = (on: On, options: PluginOptions) => {
       try {
         return { result: await answerHandoffTool(st, $, e as Record<string, unknown>) };
       } catch (error) {
-        $.ui.log(`sub-agent-compact: storing the handoff of ${e.agentId ?? 'main'} failed: ${message(error)}`);
+        say($, `sub-agent-compact: storing the handoff of ${e.agentId ?? 'main'} failed: ${message(error)}`);
         return { result: `Not stored: ${message(error)}` };
       }
     }
@@ -911,7 +912,7 @@ export const register: Register = (on: On, options: PluginOptions) => {
       try {
         return { result: await answerForwardTool(st, $, e as Record<string, unknown>) };
       } catch (error) {
-        $.ui.log(`sub-agent-compact: storing the forward handoff failed: ${message(error)}`);
+        say($, `sub-agent-compact: storing the forward handoff failed: ${message(error)}`);
         return { result: `Not stored: ${message(error)}` };
       }
     }
@@ -919,7 +920,7 @@ export const register: Register = (on: On, options: PluginOptions) => {
       try {
         return { result: await answerCompactTool(st, $, e.agentId, (e as Record<string, unknown>).focus) };
       } catch (error) {
-        $.ui.log(`sub-agent-compact: arming ${e.agentId ?? 'main'} failed: ${message(error)}`);
+        say($, `sub-agent-compact: arming ${e.agentId ?? 'main'} failed: ${message(error)}`);
         return { result: `Not armed: ${message(error)}` };
       }
     }
@@ -931,7 +932,7 @@ export const register: Register = (on: On, options: PluginOptions) => {
     try {
       line = await nudgeFor(st, $, e.agentId);
     } catch (error) {
-      $.ui.log(`sub-agent-compact: nudging ${e.agentId ?? 'main'} failed: ${message(error)}`);
+      say($, `sub-agent-compact: nudging ${e.agentId ?? 'main'} failed: ${message(error)}`);
     }
     if (notices.length > 0 || line !== undefined) return { ...result, context: [...(result.context ?? []), ...notices, ...(line !== undefined ? [line] : [])] };
     return result;
@@ -980,7 +981,7 @@ export const register: Register = (on: On, options: PluginOptions) => {
         }
       }
     } catch (error) {
-      $.ui.log(`sub-agent-compact: reading ${e.agent_id}'s stop failed: ${message(error)}; letting it stop`);
+      say($, `sub-agent-compact: reading ${e.agent_id}'s stop failed: ${message(error)}; letting it stop`);
     }
     return next(e);
   });
@@ -1003,7 +1004,7 @@ export const register: Register = (on: On, options: PluginOptions) => {
       tokens = currentTokens(agentId ? st.parties.reading(agentId) : (await $.session.usage()).context.tokens, messages, st.asked.has(key));
     } catch (error) {
       const line = `sub-agent-compact: deciding ${agentId ? `sub-agent ${agentId}` : 'main'} ${kind} compaction failed: ${message(error)}; letting it through`;
-      $.ui.log(line);
+      say($, line);
       record(st, $, { ...base, decision: 'pass', why: 'error', error: message(error) });
       if (st.parties.handoff(key) !== undefined) st.parties.notify(key, handoffNotice('fallback', `deciding failed: ${message(error)}`));
       return next(e);
@@ -1058,23 +1059,24 @@ export const register: Register = (on: On, options: PluginOptions) => {
               if ('toolUseId' in handoff.anchor) st.settled.add(`${key}:${handoff.anchor.toolUseId}`);
               st.parties.compacted(key, tokensAfter);
               const line = installLine({ label: party.label, before: tokens, after: tokensAfter, tail: installed.tail, recovered });
-              $.ui.log(line.line);
+              // A forward handoff's line waits for its install check, which tells all of it in one line.
+              if (handoff.forward === undefined || line.warn) say($, line.line);
               if (recovered) {
-                $.ui.log(`sub-agent-compact: recovered the handoff of ${party.label} from its transcript`);
+                say($, `sub-agent-compact: recovered the handoff of ${party.label} from its transcript`);
                 st.parties.notify(key, handoffNotice('recovered'));
               }
               for (const name of wake.failed) {
                 const entry = entries.find((x) => x.name === name);
-                $.ui.log(`sub-agent-compact: could not load ${name}: ${entry?.problem ?? 'the total size was reached'}`);
+                say($, `sub-agent-compact: could not load ${name}: ${entry?.problem ?? 'the total size was reached'}`);
               }
-              for (const name of wake.cut) $.ui.log(`sub-agent-compact: load_on_wake entry ${name} was cut at the per-entry cap`);
+              for (const name of wake.cut) say($, `sub-agent-compact: load_on_wake entry ${name} was cut at the per-entry cap`);
               if (wake.failed.length > 0) {
                 st.parties.notify(key, `sub-agent-compact: load_on_wake entries not loaded: ${wake.failed.join(', ')} — the installed handoff names them as NOT LOADED; load them yourself.`);
               }
               record(st, $, { ...base, type: party.label, limit, tokens: tokens ?? null, messages: messages.length, decision: 'handoff', tail: installed.tail, siblings: installed.siblings, brief: brief !== undefined, chars: text.length, tokensAfter, recovered, loads: entries.length, loadsFailed: wake.failed.length, warn: line.warn });
               // What the session holds is readable only once the compaction is done: the next main request checks it.
               if (handoff.forward) {
-                st.forwardInstalled.set(key, { meta: handoff.forward, text, tokensAfter });
+                st.forwardInstalled.set(key, { meta: handoff.forward, text, tokensAfter, before: tokens, label: party.label });
                 st.forwardWoke.add(key);
               }
               return { messages: installed.messages, ...(tokens !== undefined ? { tokensBefore: tokens } : {}), tokensAfter };
@@ -1084,7 +1086,7 @@ export const register: Register = (on: On, options: PluginOptions) => {
             reason = { kind: 'fallback', detail: `installing failed: ${message(error)}` };
           }
         }
-        $.ui.log(`sub-agent-compact: the handoff of ${party.label} could not be installed verbatim (${reason.detail}); a summary that keeps it runs instead`);
+        say($, `sub-agent-compact: the handoff of ${party.label} could not be installed verbatim (${reason.detail}); a summary that keeps it runs instead`);
         record(st, $, { event: 'handoff-fallback', party: key, type: party.label, why: reason.kind, detail: reason.detail });
         st.parties.notify(key, handoffNotice(reason.kind, reason.detail));
         // Never hold a compaction: the summarizer runs with the handoff as what it keeps. Nothing is dropped: if the summary is skipped, the handoff stays stored.
@@ -1110,7 +1112,7 @@ export const register: Register = (on: On, options: PluginOptions) => {
       if (kind === 'auto') st.asked.add(key);
       return { skip: decision.reason };
     }
-    if (decision.why === 'no-reading') $.ui.log(`sub-agent-compact: no token reading for ${party.label} and no transcript estimate to trust; letting the ${kind} compaction through`);
+    if (decision.why === 'no-reading') say($, `sub-agent-compact: no token reading for ${party.label} and no transcript estimate to trust; letting the ${kind} compaction through`);
     const firstAsk = !st.asked.has(key);
     if (kind === 'auto') st.asked.add(key);
     // With the window known, a first ask past the limit is one step's growth, not a window set too high.
@@ -1130,7 +1132,7 @@ export const register: Register = (on: On, options: PluginOptions) => {
     const manualUnfinished = (why: string): void => {
       if (manualTold) return;
       manualTold = true;
-      $.ui.log(`sub-agent-compact: the person's /compact over the stored handoff of ${party.label} was skipped (${why}); the handoff stays stored`);
+      say($, `sub-agent-compact: the person's /compact over the stored handoff of ${party.label} was skipped (${why}); the handoff stays stored`);
       st.parties.notify(key, handoffNotice('skipped', why));
     };
     const onAbort = (): void => {
@@ -1157,14 +1159,14 @@ export const register: Register = (on: On, options: PluginOptions) => {
       if (fallback !== undefined && handoff !== undefined && 'toolUseId' in handoff.anchor) st.settled.add(`${key}:${handoff.anchor.toolUseId}`);
       if (manualOver !== undefined) {
         record(st, $, { event: 'disarmed', party: key, via: 'manual', what: 'handoff' });
-        $.ui.log(`sub-agent-compact: the person's /compact ran over the stored handoff of ${party.label}: the handoff was dropped and a summary ran`);
+        say($, `sub-agent-compact: the person's /compact ran over the stored handoff of ${party.label}: the handoff was dropped and a summary ran`);
         st.parties.notify(key, handoffNotice('manual'));
       }
     } else if (end === 'unfinished') {
       dropArm('skipped');
       if (manualOver !== undefined) manualUnfinished(outcome.skip ?? 'unfinished');
       if (fallback !== undefined) {
-        $.ui.log(`sub-agent-compact: the summary that was to keep the handoff of ${party.label} was skipped (${outcome.skip ?? 'unfinished'}); the handoff stays stored`);
+        say($, `sub-agent-compact: the summary that was to keep the handoff of ${party.label} was skipped (${outcome.skip ?? 'unfinished'}); the handoff stays stored`);
         st.parties.notify(key, handoffNotice('skipped', outcome.skip ?? 'unfinished'));
       }
     }
@@ -1177,7 +1179,7 @@ export const register: Register = (on: On, options: PluginOptions) => {
           return { ...outcome, messages: reseated };
         }
       } catch (error) {
-        $.ui.log(`sub-agent-compact: seating the brief of sub-agent ${agentId} failed: ${message(error)}; leaving the compaction as Claude Code made it`);
+        say($, `sub-agent-compact: seating the brief of sub-agent ${agentId} failed: ${message(error)}; leaving the compaction as Claude Code made it`);
         record(st, $, { event: 'brief-error', party: key, error: message(error) });
       }
     }
@@ -1208,11 +1210,11 @@ export const register: Register = (on: On, options: PluginOptions) => {
       record(st, $, { event: 'turn.complete.compacted', party: 'main', skipped });
       if (skipped !== null) {
         // A skip beneath (a tool is running, another hook's veto) leaves the handoff stored: say so where the person and the model read it.
-        $.ui.log(`sub-agent-compact: the compaction between turns was skipped: ${skipped}${handoff !== undefined ? '; the stored handoff stays and installs at the next compaction' : ''}`);
+        say($, `sub-agent-compact: the compaction between turns was skipped: ${skipped}${handoff !== undefined ? '; the stored handoff stays and installs at the next compaction' : ''}`);
         if (handoff !== undefined) st.parties.notify('main', handoffNotice('skipped', skipped));
       }
     } catch (error) {
-      $.ui.log(`sub-agent-compact: compacting main between turns failed: ${message(error)}`);
+      say($, `sub-agent-compact: compacting main between turns failed: ${message(error)}`);
       record(st, $, { event: 'turn.complete', party: 'main', error: message(error) });
       if (st.parties.handoff('main') !== undefined) st.parties.notify('main', handoffNotice('skipped', `the compaction failed: ${message(error)}`));
     } finally {

@@ -147,7 +147,7 @@ describe('the forward handoff tool through the adapter', () => {
     const record = JSON.parse(cc.written[`${DIR}/record.json`]!);
     expect(record).toMatchObject({ seq: 1, session: 'session-1', tokensBefore: 250_000, total: { chars: wake.length, tokens: Math.ceil(wake.length / 4) } });
     expect(record.blocks.map((b: { name: string }) => b.name)).toEqual(['User', 'Files', 'Git', 'Paths', 'Objective', 'Done', 'Remaining', 'Next']);
-    expect(cc.logs.some((line) => line.includes(DIR))).toBe(true);
+    expect(cc.logs.filter((line) => line.includes('forward handoff'))).toEqual([]);
   });
 
   it('installs the stored text verbatim at the next automatic ask and records that every block landed', async () => {
@@ -166,6 +166,9 @@ describe('the forward handoff tool through the adapter', () => {
     const record = JSON.parse(cc.written[`${DIR}/record.json`]!);
     expect(record.tokensAfter).toBe(out.tokensAfter);
     expect(record.install).toMatchObject({ ok: true, missing: [], landed: record.blocks.length });
+    const after = out.tokensAfter < 1000 ? String(out.tokensAfter) : `${Math.round(out.tokensAfter / 1000)}k`;
+    expect(cc.logs.filter((line) => /handoff/.test(line))).toEqual([`forward handoff 1 of main: 250k -> ${after} tokens, all ${record.blocks.length} blocks landed, files in ${DIR}`]);
+    expect(cc.logs.filter((line) => line.startsWith('sub-agent-compact:'))).toEqual([]);
   });
 
   it('holds Claude Code\'s automatic ask of a Haiku main chat until its forward handoff is stored, telling it once', async () => {

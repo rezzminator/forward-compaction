@@ -4,6 +4,12 @@ Every release of sub-agent-compact. Versions follow [semantic versioning](https:
 
 ## [Unreleased]
 
+## [0.7.0-dev.11] — 2026-10-13
+
+### Changed
+- A forward handoff reads as one line for the person, once its install is checked: `forward handoff 6 of general-purpose: 245k -> 6k tokens, all 9 blocks landed, files in …` (or `blocks missing: …`). The separate stored and installed lines are gone; the decision log still records each step.
+- No line the plugin shows names the plugin again: Claude Code already puts `sub-agent-compact:` in front of it.
+
 ## [0.7.0-dev.10] — 2026-10-13
 
 ### Added
