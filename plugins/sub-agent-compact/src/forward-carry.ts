@@ -629,3 +629,70 @@ export function summaryKnowledge(summary: string): string | undefined {
   }
   return out.length > 0 ? out.join('\n') : undefined;
 }
+
+/** The longest outline line, and the per-language patterns whose first non-empty group names a symbol. */
+export const OUTLINE_LINE_MAX = 400;
+/** A file larger than this is named without an outline: reading it whole at every handoff costs more than its names give. */
+export const OUTLINE_FILE_MAX_BYTES = 1024 * 1024;
+const TS = [/^export\s+(?:default\s+)?(?:declare\s+)?(?:abstract\s+)?(?:async\s+)?(?:function\*?|const|let|var|class|type|interface|enum)\s+([A-Za-z_$][\w$]*)/, /^(?:async\s+)?function\*?\s+([A-Za-z_$][\w$]*)/, /^(?:abstract\s+)?(?:class|interface|type|enum)\s+([A-Za-z_$][\w$]*)/];
+const TESTS = [/^\s*(?:describe|it|test)(?:\.\w+)?\(\s*(['"`])(.+?)\1/];
+const OUTLINE_RULES: [RegExp, RegExp[]][] = [
+  [/\.(?:test|spec)\.[cm]?[jt]sx?$/, [...TESTS, ...TS]],
+  [/\.[cm]?[jt]sx?$/, TS],
+  [/\.go$/, [/^func\s+\(\s*\w*\s*\*?(\w+)[^)]*\)\s*(\w+)/, /^func\s+(\w+)/, /^type\s+(\w+)/]],
+  [/\.pyi?$/, [/^(?:async\s+)?def\s+(\w+)/, /^class\s+(\w+)/]],
+  [/\.rs$/, [/^(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?(?:fn|struct|enum|trait|type|mod)\s+(\w+)/]],
+  [/(?:\.(?:sh|bash|zsh)|\/[^/.]+)$/, [/^(?:function\s+)?([\w-]+)\s*\(\)\s*\{/, /^function\s+([\w-]+)\s*\{/]],
+  [/\.(?:md|mdx|markdown)$/, [/^#{1,3}\s+(.+?)\s*#*$/]],
+  [/\.ya?ml$/, [/^([\w.-]+):/]],
+  [/\.toml$/, [/^\[\[?([^\]]+)\]/]],
+];
+
+/**
+ * What a file defines, as one line: its line count, then the names it declares at top level, in order and once each —
+ * exports, functions, types and classes; Go methods as `Type.Name`; test names; Markdown headings to depth 3; top-level
+ * keys of JSON, YAML and TOML. A file of no known kind, or one whose names cannot be read, gives its line count alone.
+ */
+export function outline(path: string, text: string, max = OUTLINE_LINE_MAX): string {
+  const lines = text.replace(/\r\n?/g, '\n').split('\n');
+  if (lines.at(-1) === '') lines.pop();
+  const names: string[] = [];
+  const add = (name: string): void => {
+    const one = name.trim();
+    if (one !== '' && !names.includes(one)) names.push(one);
+  };
+  if (/\.json$/.test(path)) {
+    try {
+      const parsed: unknown = JSON.parse(text);
+      if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) Object.keys(parsed).forEach(add);
+    } catch {
+      // Not JSON as it stands: the line count alone says the file is there.
+    }
+  } else {
+    const rules = OUTLINE_RULES.find(([kind]) => kind.test(path))?.[1] ?? [];
+    const markdown = /\.(?:md|mdx|markdown)$/.test(path);
+    let fenced = false;
+    for (const line of lines) {
+      if (markdown && /^\s*(?:```|~~~)/.test(line)) fenced = !fenced;
+      if (fenced) continue;
+      for (const rule of rules) {
+        const m = rule.exec(line);
+        if (m === null) continue;
+        const groups = m.slice(1).filter((g): g is string => g !== undefined && g !== '' && !/^['"`]$/.test(g));
+        add(groups.length === 2 && rule.source.startsWith('^func') ? `${groups[0]}.${groups[1]}` : (groups[0] ?? ''));
+        break;
+      }
+    }
+  }
+  const head = `${lines.length} lines`;
+  if (names.length === 0) return head;
+  let body = `${head}: ${names[0]}`;
+  for (let n = 1; n < names.length; n++) {
+    const more = `, +${names.length - n} more`;
+    const next = `${body}, ${names[n]}`;
+    const last = n === names.length - 1;
+    if ((last ? next.length : next.length + `, +${names.length - n - 1} more`.length) > max) return `${body}${more}`;
+    body = next;
+  }
+  return body;
+}

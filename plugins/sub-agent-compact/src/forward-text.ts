@@ -13,6 +13,7 @@ export const SKILLS_MAX_CHARS = 12_000 * CHARS_PER_TOKEN;
 export const LOAD_MAX_CHARS = 3_000 * CHARS_PER_TOKEN;
 export const LOADS_MAX_CHARS = 12_000 * CHARS_PER_TOKEN;
 export const TRAIL_MAX = 15;
+export const OUTLINES_MAX_CHARS = 2_000 * CHARS_PER_TOKEN;
 const PLAN_MAX_CHARS = 1_500 * CHARS_PER_TOKEN;
 export const SUMMARY_MAX_CHARS = 1_500 * CHARS_PER_TOKEN;
 const TASKS_MAX = 30;
@@ -67,6 +68,8 @@ export type RenderInput = {
   /** The skills and commands to reload, oldest first: the body, or why there is none. */
   skills: { name: string; body?: string; problem?: string }[];
   trail: { tag: 'R' | 'E' | 'C'; path: string }[];
+  /** What each made or edited file holds now, by path: one outline line each. */
+  outlines?: Record<string, string>;
   /** The `load_files` read at handoff time, in the model's order. */
   loaded: { label: string; body?: string; problem?: string }[];
   plan?: string;
@@ -174,7 +177,14 @@ export function renderForward(i: RenderInput): { text: string; blocks: BlockReco
   }
   for (const s of cutSkills) add(`Skill ${s.name}`, s.body, 1);
 
-  add('Files', i.trail.slice(0, TRAIL_MAX).map((e) => `${e.tag} ${e.path}`).join('\n'), Math.min(i.trail.length, TRAIL_MAX));
+  let outlined = 0;
+  const fileLine = (e: { tag: 'R' | 'E' | 'C'; path: string }): string => {
+    const o = e.tag === 'R' ? undefined : i.outlines?.[e.path];
+    if (o === undefined || outlined + o.length > OUTLINES_MAX_CHARS) return `${e.tag} ${e.path}`;
+    outlined += o.length;
+    return `${e.tag} ${e.path} — ${o}`;
+  };
+  add('Files', i.trail.slice(0, TRAIL_MAX).map(fileLine).join('\n'), Math.min(i.trail.length, TRAIL_MAX));
 
   let loadTotal = 0;
   for (const file of i.loaded) {

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { ForwardArgs } from '../plugins/sub-agent-compact/src/forward-args.ts';
-import { estimateTokens, fnv1a, FORWARD_OPENING, installCheck, LOAD_MAX_CHARS, LOADS_MAX_CHARS, chainUsers, escapeLine, renderForward, renderUsers, SKILL_MAX_CHARS, SKILLS_MAX_CHARS, TRAIL_MAX, USERS_MAX_CHARS, type RenderInput } from '../plugins/sub-agent-compact/src/forward-text.ts';
+import { estimateTokens, fnv1a, FORWARD_OPENING, installCheck, LOAD_MAX_CHARS, LOADS_MAX_CHARS, chainUsers, escapeLine, renderForward, renderUsers, SKILL_MAX_CHARS, SKILLS_MAX_CHARS, TRAIL_MAX, USERS_MAX_CHARS, OUTLINES_MAX_CHARS, type RenderInput } from '../plugins/sub-agent-compact/src/forward-text.ts';
 
 const args: ForwardArgs = { objective: 'Ship it', done: ['a (npm test 3/3)'], remaining: ['b', 'c'], next: 'run npm test', blocked: [], findings: [], loadFiles: [], dropSkills: [], trimmed: [] };
 const input = (over: Partial<RenderInput> = {}): RenderInput => ({ seq: 1, users: [], skills: [], trail: [], loaded: [], tasks: [], running: [], paths: [], problems: [], args, ...over });
@@ -93,6 +93,14 @@ describe('renderForward layout', () => {
     const block = text.split('Files\n')[1]!.split('\nObjective')[0]!;
     expect(block.split('\n')).toHaveLength(15);
     expect(block.split('\n')[0]).toBe('R f0');
+  });
+
+  it("follows a made or edited file's path with its outline, until the outlines' total cap", () => {
+    const trail = [{ tag: 'C' as const, path: '/w/a.ts' }, { tag: 'R' as const, path: '/w/b.md' }, { tag: 'E' as const, path: '/w/c.ts' }, { tag: 'E' as const, path: '/w/d.ts' }];
+    const long = `9 lines: ${'x'.repeat(OUTLINES_MAX_CHARS - 40)}`;
+    const { text } = renderForward(input({ trail, outlines: { '/w/a.ts': '3 lines: LEVELS, rank', '/w/b.md': '2 lines: Title', '/w/c.ts': long, '/w/d.ts': '1 lines: late' } }));
+    const block = text.split('Files\n')[1]!.split('\nObjective')[0]!;
+    expect(block.split('\n')).toEqual(['C /w/a.ts — 3 lines: LEVELS, rank', 'R /w/b.md', `E /w/c.ts — ${long}`, 'E /w/d.ts']);
   });
 
   it('puts the unresolved problems in one block, one line each', () => {

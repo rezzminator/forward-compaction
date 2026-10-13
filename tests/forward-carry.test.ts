@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { bashWrites, handoffInReply, collapseWhitespace, fileTrail, gitLine, invocationPaths, invocations, parseLineRange, parsePorcelain, planAndTasks, runningWork, sliceLines, stripNoise, userMessages, absPath, findTranscriptArgv, firstFound, heldForward, opensWithSummary, priorPrompts, priorCalls, mergeTrail, openingSummary, summaryKnowledge, parsePorcelain as porcelain, type ApiMsg } from '../plugins/sub-agent-compact/src/forward-carry.ts';
+import { bashWrites, handoffInReply, collapseWhitespace, fileTrail, gitLine, invocationPaths, invocations, parseLineRange, parsePorcelain, planAndTasks, runningWork, sliceLines, stripNoise, userMessages, absPath, findTranscriptArgv, firstFound, heldForward, opensWithSummary, priorPrompts, priorCalls, mergeTrail, openingSummary, summaryKnowledge, outline, parsePorcelain as porcelain, type ApiMsg } from '../plugins/sub-agent-compact/src/forward-carry.ts';
 import { renderForward } from '../plugins/sub-agent-compact/src/forward-text.ts';
 import { HANDOFF_OPENING } from '../plugins/sub-agent-compact/src/handoff.ts';
 
@@ -620,5 +620,32 @@ describe('summaryKnowledge', () => {
     const last = [...lines.slice(0, 3), '5. Problem Solving:', '   - Found it.', '', ...lines.slice(-4)].join('\n');
     expect(summaryKnowledge(last)).toBe('Problem Solving:\n- Found it.');
     expect(summaryKnowledge('This session is being continued from a previous conversation. Just prose.')).toBeUndefined();
+  });
+});
+
+describe('outline', () => {
+  it('names what a TypeScript file defines: exports, top-level functions and types, with its line count', () => {
+    const ts = ['import x from "y";', 'export const LEVELS = [1];', 'export function isEffort(v: unknown) {', '  function inner() {}', '}', 'export default async function main() {}', 'function rank() {}', 'export type Gate = { a: 1 };', 'interface Local {}', 'export class Controller {}', 'export { a, b };'].join('\n');
+    expect(outline('/w/src/levels.ts', ts)).toBe('11 lines: LEVELS, isEffort, main, rank, Gate, Local, Controller');
+  });
+  it('names Go functions with their receiver, Python defs, shell functions, Markdown headings and test names', () => {
+    expect(outline('/w/a.go', 'package a\nfunc (m *Model) View() string {\n}\nfunc New() *Model {}\ntype Model struct {}')).toBe('5 lines: Model.View, New, Model');
+    expect(outline('/w/a.py', 'class Store:\n    def get(self):\n        pass\nasync def run():\n    pass')).toBe('5 lines: Store, run');
+    expect(outline('/w/run.sh', '#!/bin/sh\nusage() {\n}\nfunction main {\n}')).toBe('5 lines: usage, main');
+    expect(outline('/w/README.md', '# Title\ntext\n## Install\n#### deep\n```sh\n# not a heading\n```')).toBe('7 lines: Title, Install');
+    expect(outline('/w/tests/a.test.ts', "describe('gate', () => {\n  it('refuses a bad level', () => {});\n  test(\"clamps\", () => {});\n});")).toBe('4 lines: gate, refuses a bad level, clamps');
+  });
+  it('lists top-level keys of JSON and YAML, and only the line count where nothing is recognised', () => {
+    expect(outline('/w/p.json', '{"name":"x","scripts":{"t":"v"}}')).toBe('1 lines: name, scripts');
+    expect(outline('/w/c.yml', 'on:\n  push:\njobs:\n  a: 1')).toBe('4 lines: on, jobs');
+    expect(outline('/w/broken.json', '{"name":')).toBe('1 lines');
+    expect(outline('/w/notes.txt', 'a\nb\n')).toBe('2 lines');
+  });
+  it('keeps a symbol once and ends a long line with how many more there are', () => {
+    const many = Array.from({ length: 80 }, (_, n) => `export const name${n} = ${n};`).join('\n');
+    const line = outline('/w/many.ts', `${many}\nexport const name0 = 0;`, 120)!;
+    expect(line.length).toBeLessThanOrEqual(120);
+    expect(line).toMatch(/^81 lines: name0, name1, .*, \+\d+ more$/);
+    expect(line.match(/name0\b/g)).toHaveLength(1);
   });
 });

@@ -4,6 +4,12 @@ Every release of sub-agent-compact. Versions follow [semantic versioning](https:
 
 ## [Unreleased]
 
+## [0.7.0-dev.12] — 2026-10-13
+
+### Added
+
+- The Files block of a forward handoff outlines each file the party made or edited, read as it stands at handoff time: `C /…/levels.ts — 84 lines: LEVELS, isEffort, rank, clamp, stepUp`. Names come from top-level declarations (TypeScript and JavaScript, Go with `Type.Method`, Python, Rust, shell), test names, Markdown headings to depth 3, and the top-level keys of JSON, YAML and TOML; any other file gives its line count. One line holds at most 400 characters and all outlines at most 2k tokens; a file over 1 MiB, or one gone or unreadable, is named in Unresolved.
+
 ## [0.7.0-dev.11] — 2026-10-13
 
 ### Changed

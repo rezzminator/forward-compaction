@@ -2,7 +2,7 @@ import type { EngineInterface, On, PluginOptions, Register } from 'claude-code';
 import { bounded } from '../src/bounded.ts';
 import { haikuServed, servedOptions, toolsToRegister } from '../src/register.ts';
 import { FORWARD_INPUT_SCHEMA, FORWARD_TOOL, FORWARD_TOOL_DESCRIPTION, forwardHoldText, forwardNudgeText, forwardRefusal, forwardStoredText, parseForwardArgs, type ForwardArgs } from '../src/forward-args.ts';
-import { absPath, fileTrail, handoffInReply, findTranscriptArgv, firstFound, gitLine, heldForward, opensWithSummary, openingSummary, summaryKnowledge, priorCalls, priorPrompts, mergeTrail, invocationPaths, invocations, parseLineRange, parsePorcelain, planAndTasks, runningWork, sliceLines, userMessages, type ApiMsg, type LiveWork, type TrailEntry } from '../src/forward-carry.ts';
+import { absPath, fileTrail, handoffInReply, findTranscriptArgv, firstFound, gitLine, heldForward, opensWithSummary, openingSummary, summaryKnowledge, outline, OUTLINE_FILE_MAX_BYTES, priorCalls, priorPrompts, mergeTrail, invocationPaths, invocations, parseLineRange, parsePorcelain, planAndTasks, runningWork, sliceLines, userMessages, type ApiMsg, type LiveWork, type TrailEntry } from '../src/forward-carry.ts';
 import { buildRecord, carriedFrom, forwardDir, forwardSessionDir, nextSeq, previousDir, withInstall } from '../src/forward-record.ts';
 import { chainUsers, forwardInstalledLine, installCheck, renderForward, TRAIL_MAX, type RenderInput } from '../src/forward-text.ts';
 import { BRIEF_MAX_TOKENS, reseatBrief, seatedBrief } from '../src/brief.ts';
@@ -717,9 +717,17 @@ async function gatherForward(st: State, $: EngineInterface, args: ForwardArgs, a
   const fresh = fileTrail(since, { cwd, home: st.home ?? '', max: TRAIL_MAX });
   const kept = nested.filter((p) => !mergeTrail(older, fresh, TRAIL_MAX).some((t) => t.path === p)).slice(-5);
   const trail = [...mergeTrail(older, fresh, TRAIL_MAX - kept.length), ...kept.map((path) => ({ tag: 'R' as const, path }))];
+  // What each made or edited file holds now: read at handoff time, so a file changed since its edit shows as it stands.
+  const outlines: Record<string, string> = {};
+  for (const entry of trail.slice(0, TRAIL_MAX)) {
+    if (entry.tag === 'R') continue;
+    const read = await readOne(st, $, entry.path, OUTLINE_FILE_MAX_BYTES);
+    if ('content' in read) outlines[entry.path] = outline(entry.path, read.content);
+    else problems.push(`outline ${entry.path}: ${read.problem}`);
+  }
   const live = at.agentId === undefined && st.live !== undefined ? { tasks: st.live.tasks, crons: st.live.crons, started: st.live.started, now: Date.now() } : undefined;
 
-  return { seq: at.seq, users: chain.users, usersDropped: chain.dropped, ...(chain.inReply ? { handoffInReply: true } : {}), ...(summary !== undefined ? { summary } : {}), skills, trail, loaded, ...(plan !== undefined ? { plan } : {}), tasks: work.tasks, running: runningWork(api, live), ...(git !== undefined ? { git } : {}), paths: paths.length > 0 ? [paths.join(' · ')] : [], problems, args };
+  return { seq: at.seq, users: chain.users, usersDropped: chain.dropped, ...(chain.inReply ? { handoffInReply: true } : {}), ...(summary !== undefined ? { summary } : {}), skills, trail, outlines, loaded, ...(plan !== undefined ? { plan } : {}), tasks: work.tasks, running: runningWork(api, live), ...(git !== undefined ? { git } : {}), paths: paths.length > 0 ? [paths.join(' · ')] : [], problems, args };
 }
 
 /** Stores a forward handoff: the text code carried and the model's frontier, and the call's files on disk. Main chat and sub-agent alike. */

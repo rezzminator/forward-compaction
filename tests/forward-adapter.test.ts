@@ -352,6 +352,18 @@ describe('the forward handoff tool through the adapter', () => {
     expect(JSON.parse(cc.written[`${dir2}/record.json`]!).trail).toEqual([{ tag: 'E', path: '/nowhere/reports/c.sql' }, { tag: 'R', path: '/nowhere/reports/a.sql' }]);
   });
 
+  it('outlines each file the party made or edited from its content now, and names one it cannot read', async () => {
+    const rows = [{ role: 'user', content: [text('build it')] }, { role: 'assistant', content: [{ type: 'tool_use', id: 'w1', name: 'Write', input: { file_path: 'src/levels.ts', content: 'x' } }, { type: 'tool_use', id: 'e1', name: 'Edit', input: { file_path: 'src/gone.ts' } }] }];
+    const cc = engine({ forwardHandoffTool: true }, { '/nowhere/src/levels.ts': 'export const LEVELS = [1];\nexport function rank() {}\n' }, rows);
+    await cc.start();
+    await cc.step(250_000);
+    await cc.forward();
+    const wake = cc.written[`${DIR}/wake.txt`]!;
+    expect(wake).toContain('C /nowhere/src/levels.ts — 2 lines: LEVELS, rank\n');
+    expect(wake).toContain('E /nowhere/src/gone.ts\n');
+    expect(wake).toMatch(/Unresolved\n(?:.*\n)*outline \/nowhere\/src\/gone\.ts: not found\n/);
+  });
+
   it("lists the files touched before Claude Code's own compaction, read from the transcript", async () => {
     const entry = (n: number, o: Record<string, unknown>) => `${n}:${JSON.stringify(o)}`;
     const run = (argv: string[]) => {
