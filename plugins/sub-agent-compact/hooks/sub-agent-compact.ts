@@ -1,6 +1,6 @@
 import type { EngineInterface, On, PluginOptions, Register } from 'claude-code';
 import { bounded } from '../src/bounded.ts';
-import { toolsToRegister } from '../src/register.ts';
+import { haikuServed, servedOptions, toolsToRegister } from '../src/register.ts';
 import { FORWARD_INPUT_SCHEMA, FORWARD_TOOL, FORWARD_TOOL_DESCRIPTION, forwardNudgeText, forwardStoredText, parseForwardArgs, type ForwardArgs } from '../src/forward-args.ts';
 import { absPath, fileTrail, findTranscriptArgv, firstFound, gitLine, heldForward, invocationPaths, invocations, parseLineRange, parsePorcelain, planAndTasks, runningWork, sliceLines, userMessages, type ApiMsg, type LiveWork } from '../src/forward-carry.ts';
 import { buildRecord, carriedFrom, forwardDir, forwardSessionDir, nextSeq, previousDir, withInstall } from '../src/forward-record.ts';
@@ -288,7 +288,7 @@ function arm(st: State, $: EngineInterface, party: Party, focus: string, via: 't
 /** The nudge line owed after this tool call, once the party's context passed a nudge point it was not yet told about. */
 async function nudgeFor(st: State, $: EngineInterface, agentId: string | undefined): Promise<string | undefined> {
   const party = await partyOf(st, $, agentId);
-  if (party.haiku || party.unlisted || !party.policy.enabled) return undefined;
+  if (!haikuServed(party.haiku, st.forwardToolName !== undefined) || party.unlisted || !party.policy.enabled) return undefined;
   if (!st.config.handoffTool && !st.config.compactTool && !st.config.forwardHandoffTool) return undefined;
   // Every party is steered to the forward handoff tool once it is registered.
   const forward = st.forwardToolName !== undefined;
@@ -689,7 +689,6 @@ async function answerForwardTool(st: State, $: EngineInterface, e: Record<string
     return parsed.nudge;
   }
   const party = await partyOf(st, $, agentId);
-  if (party.haiku) return 'Not stored: handoffs are off for Haiku; Claude Code compacts it at its own point. Keep working.';
   // A loop no policy governs is never installed at its compaction: storing would tell it a handoff is coming that never lands.
   if (party.unlisted) {
     record(st, $, { event: 'forward-refused', party: key, why: 'unlisted' });
@@ -778,7 +777,7 @@ async function answerCompactTool(st: State, $: EngineInterface, agentId: string 
 
 export const register: Register = (on: On, options: PluginOptions) => {
   const st: State = {
-    config: resolveOptions(options as Record<string, unknown>),
+    config: servedOptions(resolveOptions(options as Record<string, unknown>)),
     types: new AgentTypes(),
     models: new Map(),
     parties: new Parties(),
@@ -968,7 +967,7 @@ export const register: Register = (on: On, options: PluginOptions) => {
     if (shape !== undefined) {
       warnOnce(st, $, `shape:${key}`, `sub-agent-compact: the transcript of ${party.label} has an unexpected shape (${shape}); handoffs cannot be installed verbatim`);
     }
-    const tracked = !party.haiku && !party.unlisted;
+    const tracked = haikuServed(party.haiku, st.forwardToolName !== undefined) && !party.unlisted;
     let handoff: ArmedHandoff | undefined = tracked ? st.parties.handoff(key) : undefined;
     let recovered = false;
     // A handoff the plugin lost (a reload, a resume) still stands in the transcript as a stored call: take it back.
@@ -1139,7 +1138,7 @@ export const register: Register = (on: On, options: PluginOptions) => {
     try {
       const party = await partyOf(st, $, undefined);
       const focus = party.haiku ? undefined : st.parties.armed('main');
-      const handoff = party.haiku ? undefined : st.parties.handoff('main');
+      const handoff = haikuServed(party.haiku, st.forwardToolName !== undefined) ? st.parties.handoff('main') : undefined;
       const tokens = (await $.session.usage()).context.tokens;
       const limit = limitOf(party);
       const forced = party.policy.enabled && tokens !== undefined && tokens >= limit;

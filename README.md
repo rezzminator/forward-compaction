@@ -5,7 +5,7 @@
 **Smart auto-compact for Claude Code: a separate compaction point for every sub-agent, and self-compaction at a milestone the model chooses.**
 
 [![Claude Code plugin](https://img.shields.io/badge/Claude%20Code-plugin-D97757)](https://docs.claude.com/en/docs/claude-code/plugins)
-[![Version](https://img.shields.io/badge/version-0.7.0--dev.2-blue)](./CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.7.0--dev.3-blue)](./CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
 [![Tests](https://img.shields.io/badge/tests-402%20passing-brightgreen)](#development)
 [![Built with Professor](https://img.shields.io/badge/built%20with-Professor-8A2BE2)](https://github.com/rezzminator/professor)
@@ -46,8 +46,9 @@ the model decide *when* to compact.
   and names what the summary must keep.
 - 🛟 **A forced point as the safety net.** A party whose model ignores the
   nudges is still compacted when it reaches its ceiling.
-- 🪶 **Haiku is left alone.** Small, fast agents compact only at Claude
-  Code's own point.
+- 🪶 **Haiku is left alone, except for the forward handoff.** Small, fast
+  agents compact at Claude Code's own point; with `forwardHandoffTool` on they
+  are nudged and can call `forward_handoff`, whose text installs at that point.
 - 📜 **Every decision logged** to a JSONL file per session, when you want to
   see why a compaction ran or was held.
 
@@ -256,7 +257,7 @@ name and replaced by the default, never ignored silently.
 | `subagentKeepBrief` | `true` | On: after each compaction a sub-agent's brief is seated again verbatim right after the summary. Off: the summary alone stands for it. |
 | `forwardHandoffTool` | `false` | On: every party gets the `forward_handoff` tool (see [Forward handoff](#forward-handoff)). Code carries the user messages, skills, file trail, plan and tasks, running work and git state; the model writes only its frontier. Installed verbatim when its turn ends. |
 | `handoffTool` | `true` | On: models get the `handoff` tool. Its typed fields (`goal` and `next_step` required) are rendered to short markdown sections that replace the model's whole conversation so far, installed with no summarizer request; what it does after the call is kept. |
-| `compactTool` | `false` | On: models also get the `compact` tool, whose focus a summarizer turns into a summary, and `<compact-now>` markers count. Off: the handoff replaces it. |
+| `compactTool` | `false` | On: models also get the `compact` tool (hidden while `forwardHandoffTool` is on: the forward handoff replaces it), whose focus a summarizer turns into a summary, and `<compact-now>` markers count. Off: the handoff replaces it. |
 | `agentDirs` | empty | Comma-separated extra directories of agent definitions. |
 | `logFile` | empty | Absolute path of the JSONL decision log. Each session writes its own file: `decisions.jsonl` becomes `decisions.{session-id}.jsonl`. |
 

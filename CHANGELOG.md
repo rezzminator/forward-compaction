@@ -4,6 +4,12 @@ Every release of sub-agent-compact. Versions follow [semantic versioning](https:
 
 ## [Unreleased]
 
+## [0.7.0-dev.3] — 2026-10-13
+
+### Changed
+- With `forwardHandoffTool` on, the `compact` tool is not offered and `<compact-now>` markers do not count: the forward handoff replaces it, so the model sees one way to hand off. Probes on 10 foremen showed a model passing `compact`'s `focus` to `forward_handoff` while both were offered.
+- Haiku parties are served by the forward handoff: with `forwardHandoffTool` on they are nudged, may call `forward_handoff`, and its text installs when Claude Code compacts them (a Haiku main chat between turns, as any main chat). Without it Haiku stays on Claude Code's own compaction, as before.
+
 ## [0.7.0-dev.2] — 2026-10-13
 
 ### Fixed

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { toolsToRegister } from '../plugins/sub-agent-compact/src/register.ts';
+import { haikuServed, servedOptions, toolsToRegister } from '../plugins/sub-agent-compact/src/register.ts';
 
 describe('toolsToRegister', () => {
   const both = { compact: true, handoff: true, forward: false };
@@ -20,5 +20,27 @@ describe('toolsToRegister', () => {
     expect(toolsToRegister(on, none, { compact: 0, handoff: 0, forward: 0 }, 3)).toEqual(['forward']);
     expect(toolsToRegister(on, { ...none, forward: true }, { compact: 0, handoff: 0, forward: 1 }, 3)).toEqual([]);
     expect(toolsToRegister(on, none, { compact: 0, handoff: 0, forward: 3 }, 3)).toEqual([]);
+  });
+});
+
+describe('servedOptions', () => {
+  const base = { compactTool: true, handoffTool: false, forwardHandoffTool: false, other: 1 };
+  it('hides the compact tool while the forward handoff is on, and keeps every other option', () => {
+    expect(servedOptions({ ...base, forwardHandoffTool: true })).toEqual({ ...base, forwardHandoffTool: true, compactTool: false });
+  });
+  it('leaves the compact tool as set while the forward handoff is off', () => {
+    expect(servedOptions(base)).toEqual(base);
+    expect(servedOptions({ ...base, compactTool: false })).toEqual({ ...base, compactTool: false });
+  });
+});
+
+describe('haikuServed', () => {
+  it('serves a Haiku party only through the forward handoff', () => {
+    expect(haikuServed(true, true)).toBe(true);
+    expect(haikuServed(true, false)).toBe(false);
+  });
+  it('serves every other party whatever the forward handoff', () => {
+    expect(haikuServed(false, false)).toBe(true);
+    expect(haikuServed(false, true)).toBe(true);
   });
 });
