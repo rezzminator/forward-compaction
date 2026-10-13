@@ -1,6 +1,7 @@
 // The forward handoff's installed text: one header line, then only the blocks that hold something
 // (what code carried, then the model's frontier), `Next` last. Every cap here is the HARD RULE's.
 import { TRIMMED, type ForwardArgs } from './forward-args.ts';
+import { LOOK_BACK_HINT } from './look-back.ts';
 
 /** What every installed forward handoff opens with: how a later carry tells it from a person's message. */
 export const FORWARD_OPENING = '[forward handoff';
@@ -207,7 +208,7 @@ export function renderForward(i: RenderInput): { text: string; blocks: BlockReco
   if (i.git !== undefined) add('Git', i.git, 1);
   add('Paths', i.paths.join('\n'), i.paths.length);
   const all = [...problems, ...i.problems];
-  add('Unresolved', all.join('\n'), all.length);
+  add('Unresolved', [...all, LOOK_BACK_HINT].join('\n'), all.length + 1);
 
   const a = i.args;
   add('Objective', a.objective, 1);

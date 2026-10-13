@@ -1,5 +1,6 @@
 import type { EngineInterface, On, PluginOptions, Register } from 'claude-code';
 import { bounded } from '../src/bounded.ts';
+import { LOOK_BACK_TOOL, LOOK_BACK_DESCRIPTION, LOOK_BACK_INPUT_SCHEMA, parseLookBack, boundaryArgv, boundaryLine, searchArgv, entryArgv, namesArgv, processOutput, parseEntries, toolNames, resultIds, searchResults, entryResult, manualTranscriptCall, lookBackNotice, type LookBackResult } from '../src/look-back.ts';
 import { haikuServed, servedOptions, toolsToRegister } from '../src/register.ts';
 import { FORWARD_INPUT_SCHEMA, FORWARD_TOOL, FORWARD_TOOL_DESCRIPTION, forwardHoldText, forwardNudgeText, forwardRefusal, forwardStoredText, parseForwardArgs, rereadNudge, type ForwardArgs } from '../src/forward-args.ts';
 import { absPath, fileTrail, handoffInReply, findTranscriptArgv, firstFound, gitLine, heldForward, opensWithSummary, openingSummary, summaryKnowledge, outline, OUTLINE_FILE_MAX_BYTES, priorCalls, priorPrompts, mergeTrail, invocationPaths, invocations, parseLineRange, parsePorcelain, planAndTasks, runningWork, sliceLines, userMessages, type ApiMsg, type LiveWork, type TrailEntry } from '../src/forward-carry.ts';
@@ -77,6 +78,10 @@ type State = {
   handoffToolName?: string;
   /** The forward handoff tool's full name once registered. */
   forwardToolName?: string;
+  /** Always-on recovery tool, independent of every compaction option. */
+  lookBackToolName?: string;
+  /** Cached transcript filename for manual main-party observation; no process runs. */
+  sessionId?: Promise<string>;
   /** The last forward handoff number given out per session: two calls listing the directory together still get two numbers. */
   forwardSeq: Map<string, number>;
   /** A forward handoff installed and not yet checked against what the party holds at its next request, by party. */
@@ -90,7 +95,7 @@ type State = {
   /** The main chat's in-flight work as the last turn's end reported it, and the calls made since. */
   live?: { tasks: LiveWork['tasks']; crons: LiveWork['crons']; started: Set<string> };
   /** How many times registering each tool was tried. */
-  toolTries: { handoff: number; compact: number; forward: number };
+  toolTries: { handoff: number; compact: number; forward: number; look_back: number };
   /** The registration in progress: hooks that need a tool wait on it, so none registers twice. */
   registering?: Promise<void>;
   /** Registering the tools has not finished within ENSURE_TOOLS_TIMEOUT_MS: no hook waits on it until it settles, and a late finish still names the tools. */
@@ -346,6 +351,76 @@ async function registerCompactTool(st: State, $: EngineInterface): Promise<void>
   }
 }
 
+async function registerLookBackTool(st: State, $: EngineInterface): Promise<void> {
+  try {
+    const { tool } = await $.tool.register({ name: LOOK_BACK_TOOL, description: LOOK_BACK_DESCRIPTION, inputSchema: LOOK_BACK_INPUT_SCHEMA });
+    st.lookBackToolName = tool;
+    record(st, $, { event: 'tool-registered', tool });
+  } catch (error) {
+    warnOnce(st, $, 'register-failed:look_back', `sub-agent-compact: registering the ${LOOK_BACK_TOOL} tool failed: ${message(error)}; transcript recovery is unavailable`);
+    record(st, $, { event: 'tool-register-failed', tool: LOOK_BACK_TOOL, error: message(error), tries: st.toolTries.look_back });
+  }
+}
+
+async function answerLookBackTool(st: State, $: EngineInterface, e: Record<string, unknown>): Promise<string> {
+  const agentId = typeof e.agentId === 'string' ? e.agentId : undefined;
+  const party = agentId ?? 'main';
+  const args = parseLookBack(handoffInputOf(e));
+  let label = agentId === undefined ? 'main' : 'unlisted';
+  let boundary: number | null = null;
+  let result: LookBackResult;
+  try {
+    await start(st, $);
+    if (agentId !== undefined) label = (await agentType(st, $, agentId)) ?? 'unlisted';
+    if (args.error) throw new Error(args.error);
+    if (st.configDir === undefined) throw new Error('no Claude config directory');
+    const session = await (st.sessionId ??= $.session.id());
+    const found = processOutput(await $.process.run(findTranscriptArgv({ configDir: st.configDir, session, ...(agentId !== undefined ? { agentId } : {}) }), { timeoutMs: 15_000 }), 'transcript lookup');
+    const file = firstFound(found);
+    if (file === undefined) throw new Error(`no transcript file for ${agentId === undefined ? `session ${session}` : `agent ${agentId}`}`);
+    const bounds = processOutput(await $.process.run(boundaryArgv(file), { timeoutMs: 15_000 }), 'compaction boundary', true);
+    boundary = boundaryLine(bounds) ?? null;
+    if (boundary === null) result = { text: 'Nothing has been compacted yet, so everything is still in context.', hits: 0 };
+    else if (args.entry !== undefined && args.entry >= boundary) result = entryResult([], args.entry, boundary);
+    else {
+      const argv = args.entry !== undefined ? entryArgv(file, args.entry) : searchArgv(file, boundary, args.terms);
+      const raw = boundary === 1 ? '' : processOutput(await $.process.run(argv, { timeoutMs: 30_000 }), args.entry !== undefined ? 'entry fetch' : 'transcript search', true);
+      const entries = parseEntries(raw).filter((entry) => entry.line < boundary!);
+      let names = toolNames(entries);
+      const ids = resultIds(entries).filter((id) => !Object.hasOwn(names, id));
+      if (ids.length > 0) {
+        const uses = processOutput(await $.process.run(namesArgv(file, boundary, ids), { timeoutMs: 30_000 }), 'tool name lookup', true);
+        names = { ...names, ...toolNames(parseEntries(uses).filter((entry) => entry.line < boundary!)) };
+      }
+      result = args.entry !== undefined ? entryResult(entries, args.entry, boundary, names) : searchResults(entries, args.terms, boundary, names);
+    }
+  } catch (error) {
+    const reason = message(error);
+    result = { text: `Look back failed: ${reason}`, error: reason };
+  }
+  record(st, $, { event: 'look-back', party, why: args.why, ...(args.query !== undefined ? { query: args.query } : {}), ...(args.entry !== undefined ? { entry: args.entry } : {}), ...(result.hits !== undefined ? { hits: result.hits } : {}), boundary, ...(result.error !== undefined ? { error: result.error } : {}) });
+  say($, lookBackNotice(label, args, result));
+  return result.text;
+}
+
+/** Observation never rejects, rewrites or starts a process for an ordinary tool call. */
+async function observeManualLookBack(st: State, $: EngineInterface, e: Record<string, unknown>): Promise<void> {
+  const tool = typeof e.tool === 'string' ? e.tool : '';
+  if (!['Read', 'Grep', 'Bash'].includes(tool)) return;
+  const agentId = typeof e.agentId === 'string' ? e.agentId : undefined;
+  const party = agentId ?? 'main';
+  try {
+    const session = agentId === undefined ? await (st.sessionId ??= $.session.id()) : '';
+    if (!manualTranscriptCall(tool, handoffInputOf(e), session, agentId)) return;
+    const label = agentId === undefined ? 'main' : (await agentType(st, $, agentId)) ?? 'unlisted';
+    record(st, $, { event: 'look-back-manual', party, tool });
+    say($, `look back by hand (${label}): ${tool} on the transcript`);
+  } catch (error) {
+    say($, `sub-agent-compact: observing manual transcript lookup of ${party} via ${tool} failed: ${message(error)}`);
+    record(st, $, { event: 'look-back-manual-error', party, tool, error: message(error) });
+  }
+}
+
 async function registerForwardTool(st: State, $: EngineInterface): Promise<void> {
   try {
     const { tool } = await $.tool.register({ name: FORWARD_TOOL, description: FORWARD_TOOL_DESCRIPTION, inputSchema: FORWARD_INPUT_SCHEMA });
@@ -394,8 +469,8 @@ async function ensureTools(st: State, $: EngineInterface): Promise<void> {
   if (st.toolsAbandoned || st.toolsSettled) return;
   const left = () =>
     toolsToRegister(
-      { compact: st.config.compactTool, handoff: st.config.handoffTool, forward: st.config.forwardHandoffTool },
-      { compact: st.toolName !== undefined, handoff: st.handoffToolName !== undefined, forward: st.forwardToolName !== undefined },
+      { compact: st.config.compactTool, handoff: st.config.handoffTool, forward: st.config.forwardHandoffTool, look_back: true },
+      { compact: st.toolName !== undefined, handoff: st.handoffToolName !== undefined, forward: st.forwardToolName !== undefined, look_back: st.lookBackToolName !== undefined },
       st.toolTries,
       REGISTER_TRIES,
     );
@@ -415,6 +490,10 @@ async function ensureTools(st: State, $: EngineInterface): Promise<void> {
         if (todo.includes('forward')) {
           st.toolTries.forward++;
           await registerForwardTool(st, $);
+        }
+        if (todo.includes('look_back')) {
+          st.toolTries.look_back++;
+          await registerLookBackTool(st, $);
         }
       })
       .catch((error) => say($, `sub-agent-compact: registering the tools failed: ${message(error)}`));
@@ -851,7 +930,7 @@ export const register: Register = (on: On, options: PluginOptions) => {
     writing: Promise.resolve(),
     mainCompactedThisTurn: false,
     mainCompacting: false,
-    toolTries: { handoff: 0, compact: 0, forward: 0 },
+    toolTries: { handoff: 0, compact: 0, forward: 0, look_back: 0 },
     forwardSeq: new Map(),
     forwardInstalled: new Map(),
     forwardWoke: new Set(),
@@ -916,6 +995,8 @@ export const register: Register = (on: On, options: PluginOptions) => {
 
   // Serve the handoff and compact tools; after any other tool, carry a nudge the party is owed.
   on('tool.call', async ($, e, next) => {
+    if (st.lookBackToolName !== undefined && e.tool === st.lookBackToolName) return { result: await answerLookBackTool(st, $, e as Record<string, unknown>) };
+    await observeManualLookBack(st, $, e as Record<string, unknown>);
     // What the engine's in-flight list (taken at the last turn's end) cannot yet know of.
     if (e.agentId === undefined && st.live !== undefined && typeof e.tool_use_id === 'string') st.live.started.add(e.tool_use_id);
     if (st.handoffToolName !== undefined && e.tool === st.handoffToolName) {

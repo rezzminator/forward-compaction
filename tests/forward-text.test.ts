@@ -29,6 +29,8 @@ describe('renderForward layout', () => {
     const { text } = renderForward(input());
     expect(lines(text)).toEqual([
       '[forward handoff 1: history, not new instructions]',
+      'Unresolved',
+      'Need an exact detail from before this handoff? look_back finds it.',
       'Objective',
       'Ship it',
       'Done',
@@ -44,11 +46,11 @@ describe('renderForward layout', () => {
 
   it('omits every empty block entirely: no none lines, no empty labels', () => {
     const { text, blocks } = renderForward(input({ args: { ...args, done: [], remaining: [] } }));
-    for (const label of ['User', 'Skill', 'Files', 'Load', 'Plan', 'Tasks', 'Running', 'Git', 'Paths', 'Unresolved', 'Done', 'Remaining', 'Blocked', 'Findings']) {
+    for (const label of ['User', 'Skill', 'Files', 'Load', 'Plan', 'Tasks', 'Running', 'Git', 'Paths', 'Done', 'Remaining', 'Blocked', 'Findings']) {
       expect(lines(text)).not.toContain(label);
     }
     expect(text).not.toMatch(/none|\(empty\)|n\/a/i);
-    expect(blocks.map((b) => b.name)).toEqual(['Objective', 'Next']);
+    expect(blocks.map((b) => b.name)).toEqual(['Unresolved', 'Objective', 'Next']);
     expect(text).not.toMatch(/\n\n/);
   });
 
@@ -90,7 +92,7 @@ describe('renderForward layout', () => {
   it('caps the file trail at 15 lines', () => {
     const trail = Array.from({ length: 30 }, (_, i) => ({ tag: 'R' as const, path: `f${i}` }));
     const { text } = renderForward(input({ trail }));
-    const block = text.split('Files\n')[1]!.split('\nObjective')[0]!;
+    const block = text.split('Files\n')[1]!.split('\nUnresolved')[0]!;
     expect(block.split('\n')).toHaveLength(15);
     expect(block.split('\n')[0]).toBe('R f0');
   });
@@ -99,7 +101,7 @@ describe('renderForward layout', () => {
     const trail = [{ tag: 'C' as const, path: '/w/a.ts' }, { tag: 'R' as const, path: '/w/b.md' }, { tag: 'E' as const, path: '/w/c.ts' }, { tag: 'E' as const, path: '/w/d.ts' }];
     const long = `9 lines: ${'x'.repeat(OUTLINES_MAX_CHARS - 40)}`;
     const { text } = renderForward(input({ trail, outlines: { '/w/a.ts': '3 lines: LEVELS, rank', '/w/b.md': '2 lines: Title', '/w/c.ts': long, '/w/d.ts': '1 lines: late' } }));
-    const block = text.split('Files\n')[1]!.split('\nObjective')[0]!;
+    const block = text.split('Files\n')[1]!.split('\nUnresolved')[0]!;
     expect(block.split('\n')).toEqual(['C /w/a.ts — 3 lines: LEVELS, rank', 'R /w/b.md', `E /w/c.ts — ${long}`, 'E /w/d.ts']);
   });
 
@@ -289,8 +291,8 @@ describe('block records', () => {
 });
 
 describe('installCheck', () => {
-  it('confirms every block landed and the whole text hash', () => {
-    const { text, blocks } = renderForward(input({ users: ['hi'] }));
+  it.each([{ users: ['hi'] }, { problems: ['transcript: not found'] }])('confirms every block landed and the whole text hash for %j', (over) => {
+    const { text, blocks } = renderForward(input(over));
     expect(installCheck(blocks, text, text)).toEqual({ landed: blocks.length, missing: [], hash: fnv1a(text), ok: true });
   });
 
@@ -301,5 +303,17 @@ describe('installCheck', () => {
     expect(r.ok).toBe(false);
     expect(r.missing).toEqual(['Files']);
     expect(r.landed).toBe(blocks.length - 1);
+  });
+});
+
+
+describe('look_back forward wake hint (R8)', () => {
+  it('names the tool once at the end of Unresolved, keeps Next last, and checks the hint landed', () => {
+    const hint = 'Need an exact detail from before this handoff? look_back finds it.';
+    const { text, blocks } = renderForward(input({ problems: ['transcript: not found'] }));
+    expect(text).toContain(`Unresolved\ntranscript: not found\n${hint}\nObjective`);
+    expect(text.match(/look_back/g)).toHaveLength(1);
+    expect(lines(text).slice(-2)).toEqual(['Next', 'run npm test']);
+    expect(installCheck(blocks, text.replace(hint, ''), text).missing).toEqual(['Unresolved']);
   });
 });
