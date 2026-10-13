@@ -43,20 +43,36 @@ describe('parseForwardArgs', () => {
     expect(FORWARD_LIMITS).toMatchObject({ objective: 600, doneItems: 15, doneChars: 200, remainingItems: 15, next: 400, blockedItems: 10, findingsItems: 15, findingsChars: 300, loadFiles: 8 });
   });
 
-  it('trims an over-long item and an over-long list, marking each', () => {
+  it('caps a list field by its total budget, never an item by itself: a long item stays whole while the field fits', () => {
+    const one = 'x'.repeat(621);
+    const a = parse({ ...ok, done: one, findings: ['f'.repeat(800)] });
+    expect(a.done).toEqual([one]);
+    expect(a.findings).toEqual(['f'.repeat(800)]);
+    expect(a.trimmed).toEqual([]);
+  });
+
+  it('cuts a list once, where it crosses its budget (items x chars) or its item count, and marks it', () => {
     const a = parse({
       ...ok,
       done: Array.from({ length: 20 }, (_, i) => `item ${i} ${'x'.repeat(300)}`),
       findings: Array.from({ length: 18 }, (_, i) => `f${i}`),
       blocked: Array.from({ length: 12 }, (_, i) => `b${i}`),
     });
-    expect(a.done).toHaveLength(15);
-    expect(a.done.every((d) => d.length <= 200 && d.endsWith(TRIMMED))).toBe(true);
+    const budget = FORWARD_LIMITS.doneItems * FORWARD_LIMITS.doneChars;
+    expect(a.done.join('').length).toBeLessThanOrEqual(budget);
+    expect(a.done.join('').length).toBeGreaterThan(budget - 400);
+    expect(a.done.at(-1)!.endsWith(TRIMMED)).toBe(true);
+    expect(a.done.slice(0, -1).every((d) => !d.endsWith(TRIMMED))).toBe(true);
     expect(a.findings).toHaveLength(15);
     expect(a.findings[14]).toBe(`f14 ${TRIMMED}`);
     expect(a.blocked).toHaveLength(10);
     expect(a.blocked[9]).toBe(`b9 ${TRIMMED}`);
     expect(a.trimmed).toEqual(['done', 'blocked', 'findings']);
+  });
+
+  it('carries the text of an unknown field into findings under its name, never dropping it', () => {
+    const a = parse({ ...ok, findings: ['known'], context: 'Key facts: X at a.go:3', mystery: 1 });
+    expect(a.findings).toEqual(['known', 'context: Key facts: X at a.go:3']);
   });
 
   it('reads a newline-separated string as a list and drops blank items', () => {

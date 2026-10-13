@@ -52,11 +52,11 @@ export const FORWARD_INPUT_SCHEMA: { type: 'object'; properties: Record<string, 
   type: 'object',
   properties: {
     objective: { type: 'string', description: `The outcome now worked toward: which of the user's asks is current and what done means. At most ${FORWARD_LIMITS.objective} characters.` },
-    done: list(`Finished pieces, each with how it was verified. At most ${FORWARD_LIMITS.doneItems} items of ${FORWARD_LIMITS.doneChars} characters.`),
-    remaining: list(`Every step left, in order. At most ${FORWARD_LIMITS.remainingItems} items.`),
+    done: list(`Finished pieces, each with how it was verified. At most ${FORWARD_LIMITS.doneItems} items, ${FORWARD_LIMITS.doneItems * FORWARD_LIMITS.doneChars} characters in all.`),
+    remaining: list(`Every step left, in order. At most ${FORWARD_LIMITS.remainingItems} items, ${FORWARD_LIMITS.remainingItems * FORWARD_LIMITS.remainingChars} characters in all.`),
     next: { type: 'string', description: `The first concrete action after the wake, in line with the user's latest explicit request. At most ${FORWARD_LIMITS.next} characters.` },
-    blocked: list(`What waits on whom. At most ${FORWARD_LIMITS.blockedItems} items.`),
-    findings: list(`Decisions with why, dead ends, discovered facts; errors verbatim; nothing unconfirmed. At most ${FORWARD_LIMITS.findingsItems} items of ${FORWARD_LIMITS.findingsChars} characters.`),
+    blocked: list(`What waits on whom. At most ${FORWARD_LIMITS.blockedItems} items, ${FORWARD_LIMITS.blockedItems * FORWARD_LIMITS.blockedChars} characters in all.`),
+    findings: list(`Decisions with why, dead ends, discovered facts; errors verbatim; nothing unconfirmed. At most ${FORWARD_LIMITS.findingsItems} items, ${FORWARD_LIMITS.findingsItems * FORWARD_LIMITS.findingsChars} characters in all.`),
     load_files: {
       type: 'array',
       description: `Files code reads from disk at handoff time into the wake text, at most ${FORWARD_LIMITS.loadFiles}: {path, lines?: "10-40", why}.`,
@@ -82,26 +82,47 @@ function stringField(value: unknown, max: number, name: string, trimmed: string[
   return trimText(text, max);
 }
 
-/** A list field: undefined when it is missing; blank items are dropped, a long item and a long list are cut and marked. */
+/**
+ * A list field: undefined when it is missing; blank items are dropped. The cap is the field's total budget
+ * (items x chars) and its item count, never an item alone: a model that writes one long line keeps it whole
+ * while the field fits. The list is cut once, where it crosses either, and marked.
+ */
 function listField(value: unknown, items: number, chars: number, name: string, trimmed: string[]): string[] | undefined {
   if (value === undefined || value === null) return undefined;
   let raw: unknown[];
   if (typeof value === 'string') raw = value.split('\n').map((line) => line.replace(/^\s*[-*•]\s+/, ''));
   else if (Array.isArray(value)) raw = value;
   else return undefined;
-  let out = raw.map((item) => (typeof item === 'string' ? item : item === undefined || item === null ? '' : String(item)).trim()).filter((item) => item !== '');
+  const all = raw.map((item) => (typeof item === 'string' ? item : item === undefined || item === null ? '' : String(item)).trim()).filter((item) => item !== '');
+  const budget = items * chars;
+  const out: string[] = [];
+  let used = 0;
   let cut = false;
-  if (out.length > items) {
-    out = out.slice(0, items);
-    out[items - 1] = `${out[items - 1]!} ${TRIMMED}`;
-    cut = true;
+  for (const item of all) {
+    if (out.length === items) {
+      out[items - 1] = `${out[items - 1]!} ${TRIMMED}`;
+      cut = true;
+      break;
+    }
+    if (used + item.length > budget) {
+      const room = budget - used;
+      if (room > TRIMMED.length + 20) out.push(trimText(item, room));
+      else if (out.length > 0) out[out.length - 1] = `${out[out.length - 1]!} ${TRIMMED}`;
+      cut = true;
+      break;
+    }
+    out.push(item);
+    used += item.length;
   }
-  const bounded = out.map((item) => {
-    if (item.length > chars) cut = true;
-    return trimText(item, chars);
-  });
   if (cut) trimmed.push(name);
-  return bounded;
+  return out;
+}
+
+/** The text of every field the tool does not define, as `name: text`: what a model wrote is never dropped silently. */
+function unknownFields(input: Record<string, unknown>): string[] {
+  return Object.entries(input)
+    .filter(([key, value]) => !(key in FORWARD_INPUT_SCHEMA.properties) && typeof value === 'string' && value.trim() !== '')
+    .map(([key, value]) => `${key}: ${(value as string).trim()}`);
 }
 
 function loadFiles(value: unknown, trimmed: string[], problems: string[]): LoadFileArg[] {
@@ -138,7 +159,7 @@ export function parseForwardArgs(input: Record<string, unknown>): ForwardParse {
   const missing = [['objective', objective], ['done', done], ['remaining', remaining], ['next', next]].filter(([, v]) => v === undefined).map(([k]) => k as string);
   if (missing.length > 0) return { nudge: `Not stored: required ${missing.length === 1 ? 'field' : 'fields'} missing: ${missing.join(', ')}. Call forward_handoff again with ${missing.length === 1 ? 'it' : 'them'}.` };
   const blocked = listField(input.blocked, FORWARD_LIMITS.blockedItems, FORWARD_LIMITS.blockedChars, 'blocked', trimmed) ?? [];
-  const findings = listField(input.findings, FORWARD_LIMITS.findingsItems, FORWARD_LIMITS.findingsChars, 'findings', trimmed) ?? [];
+  const findings = listField([...(listField(input.findings, Infinity, Infinity, 'findings', []) ?? []), ...unknownFields(input)], FORWARD_LIMITS.findingsItems, FORWARD_LIMITS.findingsChars, 'findings', trimmed) ?? [];
   const problems: string[] = [];
   const files = loadFiles(input.load_files, trimmed, problems);
   const dropSkills: string[] = [];

@@ -4,6 +4,12 @@ Every release of sub-agent-compact. Versions follow [semantic versioning](https:
 
 ## [Unreleased]
 
+## [0.7.0-dev.4] — 2026-10-13
+
+### Fixed
+- A `forward_handoff` list field is capped by its total budget (items × characters) and its item count, never an item by itself: a model that passes a list as one long line keeps it whole while the field fits. Probes on 10 foremen: 6 passed `done`/`remaining`/`findings` as single strings, which the per-item 200-character cap cut to a third of their text.
+- The text of a field the tool does not define (a model passing `context`) is carried into `findings` as `name: text` instead of being dropped.
+
 ## [0.7.0-dev.3] — 2026-10-13
 
 ### Changed
