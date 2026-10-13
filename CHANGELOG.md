@@ -4,6 +4,20 @@ Every release of sub-agent-compact. Versions follow [semantic versioning](https:
 
 ## [Unreleased]
 
+## [0.7.0-dev.2] — 2026-10-13
+
+### Fixed
+- A slash command or a skill the Skill tool loaded is in the `User` block only as `/name args`: its expanded body is in the transcript as a second user text, and was carried a second time next to the `Skill <name>` block. No content is in the text twice.
+- The `User` block holds only what a person or a parent wrote: `Tool loaded.` (the sibling text of a tool search), the image note lines, a plugin's message to the model, the note after an output cut (`Output token limit hit…`), what a sub-agent of the session sent back (`<agent-message from="a…">`) and a chat's reply footer (` — sid … · to reply: …`) are left out; a message a person wrote that opens like a forward handoff (a pasted `wake.txt`) is carried as theirs; an image is one marker, `[image <absolute path>]`; the `latest` mark sits on the last real message.
+- Every path in the text is absolute: the file trail, `load_files`, subdirectory `CLAUDE.md` files, the plan file, the git paths (under the repository top), the transcript and the saved directory.
+- Running work: with the engine's own list of background tasks and crons (taken at the end of the last turn) it lists exactly what is in flight, so a one-shot wakeup or cron whose fire time has passed, a deleted cron and an ended shell, monitor or agent are no longer listed; calls made since that list come from the transcript until they end. Before any turn has ended the transcript's endings decide, with `CronDelete` now one of them.
+- The transcript is found by its session id (`find -H`, so a `projects` directory that is a link is searched through), not by rebuilding Claude Code's directory name, so a project path over 200 characters (which Claude Code hashes) no longer shows as `transcript: not found`; the line appears only when no file exists for the session.
+- A carried line that reads as a block label, an item marker or the header is escaped with a backslash, in every block (in a list item, also a line that opens like `- `, `N. ` or a task mark), so user messages, skill bodies, loaded files and the model's arguments cannot forge the text's structure; a skill or file name with a line break stays one label line.
+
+### Changed
+- Chained handoffs carry the last 25 prompts: the next handoff reads the previous one's prompts from its `record.json` (`users`, `usersDropped`, `textHash`), never from the text, and adds those written since. The held handoff is the newest text a record of the party holds, else the one leading the context. The item numbers go on counting, with `[N older dropped]` for what went older.
+- `forward_handoff` also serves sub-agents: their prompts (the parent's task and messages) are carried the same way, and their files are saved under `<session>/agent-<id>/<n>/`. A sub-agent no policy governs is refused, as with `handoff`: nothing would install it. A sub-agent's running work is read from its transcript, as the engine's list is the session's.
+
 ## [0.7.0-dev.1] — 2026-10-13
 
 ### Added

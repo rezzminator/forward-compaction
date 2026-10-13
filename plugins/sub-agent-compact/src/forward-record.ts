@@ -1,16 +1,19 @@
 // What a forward handoff leaves on disk: where, and the measurement record the experiment reads.
-import { estimateTokens, type BlockRecord } from './forward-text.ts';
+import { estimateTokens, fnv1a, type BlockRecord } from './forward-text.ts';
 
 const ROOT = 'sub-agent-compact/forward-handoff';
 
-/** The directory of one session's calls. */
-export function forwardSessionDir(configDir: string, session: string): string {
-  return `${configDir}/${ROOT}/${session.replace(/[^A-Za-z0-9_-]/g, '_')}`;
+const safe = (id: string): string => id.replace(/[^A-Za-z0-9_-]/g, '_');
+
+/** The directory of one loop's calls: the session's for the main chat, `agent-<id>` inside it for a sub-agent. */
+export function forwardSessionDir(configDir: string, session: string, agentId?: string): string {
+  const dir = `${configDir}/${ROOT}/${safe(session)}`;
+  return agentId === undefined ? dir : `${dir}/agent-${safe(agentId)}`;
 }
 
-/** The directory of one call: `<config dir>/sub-agent-compact/forward-handoff/<session>/<n>`. */
-export function forwardDir(configDir: string, session: string, seq: number): string {
-  return `${forwardSessionDir(configDir, session)}/${seq}`;
+/** The directory of one call: `<config dir>/sub-agent-compact/forward-handoff/<session>[/agent-<id>]/<n>`. */
+export function forwardDir(configDir: string, session: string, seq: number, agentId?: string): string {
+  return `${forwardSessionDir(configDir, session, agentId)}/${seq}`;
 }
 
 /** The number of the next call, from the names already in the session's directory. */
@@ -21,18 +24,22 @@ export function nextSeq(names: readonly string[]): number {
 }
 
 /** The directory of the call before this one, undefined for the first. */
-export function previousDir(configDir: string, session: string, seq: number): string | undefined {
-  return seq > 1 ? forwardDir(configDir, session, seq - 1) : undefined;
+export function previousDir(configDir: string, session: string, seq: number, agentId?: string): string | undefined {
+  return seq > 1 ? forwardDir(configDir, session, seq - 1, agentId) : undefined;
 }
 
 export type ForwardRecord = Record<string, unknown>;
 
 /** The record of one call at handoff time: the size of every block and of the whole text. */
-export function buildRecord(i: { seq: number; session: string; dir: string; text: string; blocks: readonly BlockRecord[]; tokensBefore?: number; trimmed: readonly string[]; at?: string }): ForwardRecord {
+export function buildRecord(i: { seq: number; session: string; agentId?: string; dir: string; text: string; blocks: readonly BlockRecord[]; users: readonly string[]; usersDropped: number; tokensBefore?: number; trimmed: readonly string[]; at?: string }): ForwardRecord {
   return {
     seq: i.seq,
     session: i.session,
+    ...(i.agentId !== undefined ? { agentId: i.agentId } : {}),
     dir: i.dir,
+    textHash: fnv1a(i.text),
+    users: [...i.users],
+    usersDropped: i.usersDropped,
     ...(i.at !== undefined ? { at: i.at } : {}),
     ...(i.tokensBefore !== undefined ? { tokensBefore: i.tokensBefore } : {}),
     trimmed: [...i.trimmed],
@@ -44,4 +51,16 @@ export function buildRecord(i: { seq: number; session: string; dir: string; text
 /** The record once installed: the size after, and what the install check found. */
 export function withInstall(record: ForwardRecord, i: { tokensAfter: number; check: { landed: number; missing: string[]; hash: string; ok: boolean } }): ForwardRecord {
   return { ...record, tokensAfter: i.tokensAfter, install: i.check };
+}
+
+/** The prompts an earlier handoff carried, from its record: the one whose text is the one the session holds. Undefined when no record is. */
+export function carriedFrom(records: readonly unknown[], heldText: string): { users: string[]; dropped: number } | undefined {
+  const hash = fnv1a(heldText);
+  for (const r of records) {
+    if (r === null || typeof r !== 'object') continue;
+    const rec = r as Record<string, unknown>;
+    if (rec.textHash !== hash || !Array.isArray(rec.users) || !rec.users.every((u) => typeof u === 'string')) continue;
+    return { users: rec.users as string[], dropped: typeof rec.usersDropped === 'number' ? rec.usersDropped : 0 };
+  }
+  return undefined;
 }

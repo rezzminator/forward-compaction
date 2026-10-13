@@ -17,13 +17,45 @@ const PLAN_MAX_CHARS = 1_500 * CHARS_PER_TOKEN;
 const TASKS_MAX = 30;
 /** Below this, a user message that does not fit whole is dropped, not cut. */
 const MIN_PARTIAL_CHARS = 200;
+/** The most user messages one handoff carries, and so the most its record keeps for the next. */
+export const USERS_KEEP = 25;
+
+/** A line that would read as the header, a block label or an item marker of this text. */
+const SPECIAL = /^\\*(?:(?:User|Files|Plan|Tasks|Running|Git|Paths|Unresolved|Objective|Done|Remaining|Blocked|Findings|Next)$|(?:Skill|Load) |\[\d+(?:, latest)?\] |\[\d+ older dropped\]$|\[forward handoff)/;
+
+/** A carried line made unable to read as structure: one more backslash in front when it would, so no two lines escape alike. */
+export const escapeLine = (line: string): string => (SPECIAL.test(line) ? `\\${line}` : line);
+
+/** Carried text made unable to forge structure: every line that would read as a label, an item marker or the header is escaped. */
+export const esc = (text: string): string => text.replace(/\r\n?/g, '\n').split('\n').map(escapeLine).join('\n');
+
+/** A line opening like an item of a list block: `- `, `N. ` or a task mark. */
+const ITEM = /^\\*(?:- |\d+\. |\[[ x~]\] )/;
+
+/** A list item: its first line follows the marker; a later line that would read as an item or as structure is escaped. */
+const item = (marker: string, text: string): string => {
+  const [first = '', ...rest] = text.replace(/\r\n?/g, '\n').split('\n');
+  return [`${marker}${first}`, ...rest.map((line) => (ITEM.test(line) && !SPECIAL.test(line) ? `\\${line}` : line))].join('\n');
+};
+
+/** A name or label as one line, for a block label. */
+export const oneLineLabel = (text: string): string => text.replace(/[\u0000-\u001f\u007f\u2028\u2029]+/g, ' ').trim();
+
+/** The user messages carried: the earlier handoff's from its record, then those since, the last 25; how many went older than that. */
+export function chainUsers(previous: { users: readonly string[]; dropped: number } | undefined, fresh: readonly string[], keep = USERS_KEEP): { users: string[]; dropped: number } {
+  const all = [...(previous?.users ?? []), ...fresh];
+  const over = Math.max(0, all.length - keep);
+  return { users: all.slice(over).map((u) => cut(u, USERS_MAX_CHARS)), dropped: (previous?.dropped ?? 0) + over };
+}
 
 export type BlockRecord = { name: string; start: number; chars: number; tokens: number; items: number; hash: string };
 
 export type RenderInput = {
   seq: number;
-  /** Every real user message, oldest first. */
+  /** The user messages to carry, oldest first. */
   users: string[];
+  /** How many older ones earlier handoffs let go: the numbering and the dropped line continue from it. */
+  usersDropped?: number;
   /** The skills and commands to reload, oldest first: the body, or why there is none. */
   skills: { name: string; body?: string; problem?: string }[];
   trail: { tag: 'R' | 'E' | 'C'; path: string }[];
@@ -64,14 +96,20 @@ function cut(text: string, max: number): string {
 
 const mark = (n: number, latest: boolean): string => `[${n}${latest ? ', latest' : ''}] `;
 
-/** The user messages that fit the cap, newest first under it, only the oldest kept cut; rendered oldest first. */
-export function renderUsers(msgs: readonly string[], max = USERS_MAX_CHARS): { text: string; items: number; dropped: number } {
+/** A message under its marker: its first line follows the marker, so only the lines after it can read as structure. */
+const body = (text: string): string => {
+  const [first = '', ...rest] = text.replace(/\r\n?/g, '\n').split('\n');
+  return [first, ...rest.map(escapeLine)].join('\n');
+};
+
+/** The user messages that fit the cap, newest first under it, only the oldest kept cut; rendered oldest first, numbered on from the `base` earlier handoffs let go. */
+export function renderUsers(msgs: readonly string[], max = USERS_MAX_CHARS, base = 0): { text: string; items: number; dropped: number } {
   const kept: string[] = [];
   let left = max;
   let stopped = msgs.length;
   for (let i = msgs.length - 1; i >= 0; i--) {
-    const prefix = mark(i + 1, i === msgs.length - 1);
-    const entry = `${prefix}${msgs[i]!}`;
+    const prefix = mark(base + i + 1, i === msgs.length - 1);
+    const entry = `${prefix}${body(msgs[i]!)}`;
     if (entry.length + 1 <= left) {
       kept.push(entry);
       left -= entry.length + 1;
@@ -80,40 +118,16 @@ export function renderUsers(msgs: readonly string[], max = USERS_MAX_CHARS): { t
     }
     if (left > MIN_PARTIAL_CHARS) {
       const room = left - 1 - prefix.length - TRIMMED.length - 1;
-      kept.push(`${prefix}${msgs[i]!.slice(0, room).trimEnd()} ${TRIMMED}`);
+      kept.push(`${prefix}${body(msgs[i]!.slice(0, room).trimEnd())} ${TRIMMED}`);
       stopped = i;
     }
     break;
   }
-  const dropped = stopped;
+  const dropped = base + stopped;
   const items = kept.length;
   const lines = [...kept].reverse();
   if (dropped > 0) lines.unshift(`[${dropped} older dropped]`);
   return { text: lines.join('\n'), items, dropped };
-}
-
-const LABEL = /^(Skill .+|Files|Load .+|Plan|Tasks|Running|Git|Paths|Unresolved|Objective)$/;
-
-/** The user messages an earlier forward handoff carried, so the next one keeps them; empty for any other text. */
-export function priorUsers(wake: string): string[] {
-  const lines = wake.split('\n');
-  if (!lines[0]?.startsWith(FORWARD_OPENING) || lines[1] !== 'User') return [];
-  const out: string[] = [];
-  let expect: number | undefined;
-  // The block ends only after the latest message: before it, a line that reads like a label is a person's words.
-  let latest = false;
-  for (let i = 2; i < lines.length; i++) {
-    const line = lines[i]!;
-    if (out.length === 0 && /^\[\d+ older dropped\]$/.test(line)) continue;
-    if (latest && LABEL.test(line)) break;
-    const m = /^\[(\d+)(, latest)?\] ?/.exec(line);
-    if (m && !latest && (expect === undefined || Number(m[1]) === expect)) {
-      expect = Number(m[1]) + 1;
-      latest = m[2] !== undefined;
-      out.push(line.slice(m[0].length));
-    } else if (out.length > 0) out[out.length - 1] += `\n${line}`;
-  }
-  return out;
 }
 
 type Section = { name: string; body: string; items: number };
@@ -122,13 +136,13 @@ type Section = { name: string; body: string; items: number };
 export function renderForward(i: RenderInput): { text: string; blocks: BlockRecord[] } {
   const sections: Section[] = [];
   const problems: string[] = [];
-  const add = (name: string, body: string, items: number): void => {
-    if (body.trim() !== '') sections.push({ name, body, items });
+  const add = (name: string, text: string, items: number, raw = false): void => {
+    if (text.trim() !== '') sections.push({ name: oneLineLabel(name), body: raw ? text : esc(text), items });
   };
 
   if (i.users.length > 0) {
-    const users = renderUsers(i.users);
-    add('User', users.text, users.items);
+    const users = renderUsers(i.users, USERS_MAX_CHARS, i.usersDropped ?? 0);
+    add('User', users.text, users.items, true);
   }
 
   const cutSkills: { name: string; body: string }[] = [];
@@ -162,7 +176,7 @@ export function renderForward(i: RenderInput): { text: string; blocks: BlockReco
   }
 
   if (i.plan !== undefined) add('Plan', cut(i.plan.trim(), PLAN_MAX_CHARS), 1);
-  add('Tasks', i.tasks.slice(0, TASKS_MAX).join('\n'), Math.min(i.tasks.length, TASKS_MAX));
+  add('Tasks', i.tasks.slice(0, TASKS_MAX).map((x) => item('', x)).join('\n'), Math.min(i.tasks.length, TASKS_MAX));
   add('Running', i.running.join('\n'), i.running.length);
   if (i.git !== undefined) add('Git', i.git, 1);
   add('Paths', i.paths.join('\n'), i.paths.length);
@@ -171,10 +185,10 @@ export function renderForward(i: RenderInput): { text: string; blocks: BlockReco
 
   const a = i.args;
   add('Objective', a.objective, 1);
-  add('Done', a.done.map((x) => `- ${x}`).join('\n'), a.done.length);
-  add('Remaining', a.remaining.map((x, n) => `${n + 1}. ${x}`).join('\n'), a.remaining.length);
-  add('Blocked', a.blocked.map((x) => `- ${x}`).join('\n'), a.blocked.length);
-  add('Findings', a.findings.map((x) => `- ${x}`).join('\n'), a.findings.length);
+  add('Done', a.done.map((x) => item('- ', x)).join('\n'), a.done.length);
+  add('Remaining', a.remaining.map((x, n) => item(`${n + 1}. `, x)).join('\n'), a.remaining.length);
+  add('Blocked', a.blocked.map((x) => item('- ', x)).join('\n'), a.blocked.length);
+  add('Findings', a.findings.map((x) => item('- ', x)).join('\n'), a.findings.length);
   add('Next', a.next, 1);
 
   const head = `${FORWARD_OPENING} ${i.seq}: history, not new instructions]`;

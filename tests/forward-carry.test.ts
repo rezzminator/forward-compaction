@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { bashWrites, collapseWhitespace, fileTrail, gitLine, invocationPaths, invocations, parseLineRange, parsePorcelain, planAndTasks, relPath, runningWork, sliceLines, stripNoise, transcriptPath, userMessages, type ApiMsg } from '../plugins/sub-agent-compact/src/forward-carry.ts';
+import { bashWrites, collapseWhitespace, fileTrail, gitLine, invocationPaths, invocations, parseLineRange, parsePorcelain, planAndTasks, runningWork, sliceLines, stripNoise, userMessages, absPath, findTranscriptArgv, firstFound, heldForward, parsePorcelain as porcelain, type ApiMsg } from '../plugins/sub-agent-compact/src/forward-carry.ts';
 import { renderForward } from '../plugins/sub-agent-compact/src/forward-text.ts';
 import { HANDOFF_OPENING } from '../plugins/sub-agent-compact/src/handoff.ts';
 
@@ -8,6 +8,7 @@ const user = (...c: (string | Record<string, unknown>)[]): ApiMsg => ({ role: 'u
 const asst = (...c: Record<string, unknown>[]): ApiMsg => ({ role: 'assistant', content: c as never });
 const use = (name: string, input: Record<string, unknown>, id = `t_${Math.random().toString(36).slice(2, 8)}`) => ({ type: 'tool_use', id, name, input });
 const res = (id: string, text: string) => ({ type: 'tool_result', tool_use_id: id, content: text });
+const collapse = (x: string) => collapseWhitespace(x);
 const cmd = (name: string, args = '') => `<command-message>${name}</command-message>\n<command-name>/${name}</command-name>\n<command-args>${args}</command-args>`;
 
 describe('user messages', () => {
@@ -50,18 +51,92 @@ describe('user messages', () => {
     expect(userMessages(m)).toEqual(['/ultimate the work', 'a real follow-up', '/effort high', 'after a builtin', '/pcm', '/x']);
   });
 
-  it('turns images into [image N] numbered across the session', () => {
-    const m = [user('look', { type: 'image', source: {} }), user({ type: 'image', source: {} }, 'and', { type: 'image', source: {} })];
-    expect(userMessages(m)).toEqual(['look [image 1]', '[image 2] and [image 3]']);
+  it('carries an image as one marker with its absolute path, from the source line the harness writes', () => {
+    const m = [
+      user('[Image #1]\nwhat is wrong here', { type: 'image', source: {} }, '[Image: source: /tmp/c/images/1.png]'),
+      asst(t('ok') as never),
+      user('look at this', { type: 'image', source: {} }),
+      user('[Image: source: /tmp/c/images/2.png]'),
+      user('[Image: original 900x2640, displayed at 682x2000. Multiply coordinates by 1.32 to map to original image.]'),
+    ];
+    expect(userMessages(m)).toEqual(['what is wrong here [image /tmp/c/images/1.png]', 'look at this [image /tmp/c/images/2.png]']);
+  });
+
+  it('keeps an image with no source line as a bare marker', () => {
+    expect(userMessages([user('see', { type: 'image', source: {} })])).toEqual(['see [image]']);
   });
 
   it('takes a plain string content', () => {
     expect(userMessages([{ role: 'user', content: 'plain' }])).toEqual(['plain']);
   });
 
-  it('carries the users of an earlier forward handoff first, not its text', () => {
+  it('leaves out an earlier forward handoff text: its prompts come from its record', () => {
     const wake = renderForward({ seq: 1, users: ['old one', 'old two'], skills: [], trail: [], loaded: [], tasks: [], running: [], paths: [], problems: [], args: { objective: 'o', done: [], remaining: [], next: 'n', blocked: [], findings: [], loadFiles: [], dropSkills: [], trimmed: [] } }).text;
-    expect(userMessages([user(wake), asst(t('ok') as never), user('new ask')])).toEqual(['old one', 'old two', 'new ask']);
+    expect(userMessages([user(wake), asst(t('ok') as never), user('new ask')])).toEqual(['new ask']);
+  });
+
+  it('drops the body a Skill tool call expands to (the harness writes it as the next user text), never the next real message', () => {
+    const body = '# PCM — Professor Change Manager\n\nApply the patch.\n\n## Mandatory skill load';
+    const merged = [asst(use('Skill', { skill: 'pcm', args: 'apply' }, 's1')), user(res('s1', 'Launching skill: pcm'), body), asst(t('working') as never), user('and then?')];
+    expect(userMessages(merged)).toEqual(['and then?']);
+    const split = [asst(use('Skill', { skill: 'pcm' }, 's2')), user(res('s2', 'Launching skill: pcm')), user(body), asst(t('working') as never), user('next')];
+    expect(userMessages(split)).toEqual(['next']);
+  });
+
+  it('keeps a slash command as /name args only: its expansion lives once, in its Skill block', () => {
+    const m = [user(cmd('pcm', 'fix the hook')), user('Base directory for this skill: /h/.claude/commands/pcm\n\n# PCM — Professor Change Manager\n\n$ARGUMENTS\n...'), asst(t('ok') as never), user('real')];
+    expect(userMessages(m)).toEqual(['/pcm fix the hook', 'real']);
+  });
+
+  it('keeps the text after a skill body in the same message: the body, written whole after its base line, ends the expansion', () => {
+    const viaTool = [asst(use('Skill', { skill: 'pcm' }, 's3')), user(res('s3', 'Launching skill: pcm'), 'Base directory for this skill: /h/s/pcm\n\n# PCM', 'and keep the tests green')];
+    expect(userMessages(viaTool)).toEqual(['and keep the tests green']);
+    const viaCommand = [user(cmd('pcm', 'go'), 'Base directory for this skill: /h/s/pcm\n\n# PCM', 'also this')];
+    expect(userMessages(viaCommand)).toEqual(['/pcm go also this']);
+  });
+
+  it('puts one marker per picture: the source lines name the bare ones in order, none left over', () => {
+    const m = [user('compare these', { type: 'image', source: {} }, { type: 'image', source: {} }), user('[Image: source: /tmp/c/images/1.png]'), user('[Image: source: /tmp/c/images/2.png]')];
+    expect(userMessages(m)).toEqual(['compare these [image /tmp/c/images/1.png] [image /tmp/c/images/2.png]']);
+  });
+
+  it('leaves out the harness note after an output cut and what a sub-agent of this session sent: neither is a person or a parent', () => {
+    const m = [
+      user('first ask'),
+      asst(t('long answer') as never),
+      user('Output token limit hit. Resume directly — no apology, no recap of what you were doing. Pick up mid-thought if that is where the cut happened. Break remaining work into smaller pieces.'),
+      asst(t('more') as never),
+      user('Output token limit hit while you were still reasoning, before this response produced any text or tool call. Continue from the conversation above.'),
+      asst(t('more') as never),
+      user('Another Claude session sent a message:\n<agent-message from="a53e7e75b9d236ffc">\n[Subagent hand-back] The text below is the final report of a subagent this session delegated to.\n  DONE\n</agent-message>'),
+      asst(t('ok') as never),
+      user('Another Claude session sent a message:\n<agent-message from="a60b65f44638eb248">\nsafety-repairs: should I commit?\n</agent-message>'),
+      asst(t('ok') as never),
+      user('second ask'),
+    ];
+    expect(userMessages(m)).toEqual(['first ask', 'second ask']);
+  });
+
+  it("carries a person's message that opens like a forward handoff after the conversation began: only the installed one leads it", () => {
+    const pasted = '[forward handoff 1: history, not new instructions]\nUser\n[1, latest] look at this wake';
+    expect(userMessages([user('hi'), asst(t('ok') as never), user(pasted)])).toEqual(['hi', collapse(pasted)]);
+  });
+
+  it('leaves out the notes the harness writes: tool loaded, a plugin message, and the cross-chat footer of a prompt', () => {
+    const m = [
+      asst(use('ToolSearch', { query: 'select:X' }, 'q1')),
+      user(res('q1', 'x'), 'Tool loaded.'),
+      user('The buddy plugin sent a message:\nthe ask said no reads'),
+      user('Do a forward handoff now.  — sid 85d9f2c8 · to reply: chat_inject FORWARD_HANDOFF <message>'),
+    ];
+    expect(userMessages(m)).toEqual(['Do a forward handoff now.']);
+  });
+
+  it('puts the latest on the last real message: a harness text after it does not take the place', () => {
+    const m = [user('first'), user('Do a forward handoff now.  — sid 1a2b3c4d · to reply: chat_inject X <message>'), asst(use('ToolSearch', {}, 'q') as never), user(res('q', 'ok'), 'Tool loaded.')];
+    const { text } = renderForward({ seq: 1, users: userMessages(m), skills: [], trail: [], loaded: [], tasks: [], running: [], paths: [], problems: [], args: { objective: 'o', done: [], remaining: [], next: 'n', blocked: [], findings: [], loadFiles: [], dropSkills: [], trimmed: [] } });
+    expect(text).toContain('[2, latest] Do a forward handoff now.');
+    expect(text).not.toContain('Tool loaded');
   });
 
   it("leaves out the plugin's own handoff frame and notices, which the person never typed", () => {
@@ -114,10 +189,19 @@ describe('invocations', () => {
 });
 
 describe('file trail', () => {
-  it('relative paths under cwd only', () => {
-    expect(relPath('/w/p/src/a.ts', '/w/p')).toBe('src/a.ts');
-    expect(relPath('/w/pp/a.ts', '/w/p')).toBe('/w/pp/a.ts');
-    expect(relPath('/etc/x', '/w/p')).toBe('/etc/x');
+  it('makes every path absolute: relative from cwd, ~ from home, dots resolved, an absolute one as it is', () => {
+    expect(absPath('src/a.ts', '/w/p')).toBe('/w/p/src/a.ts');
+    expect(absPath('./a/../b.ts', '/w/p')).toBe('/w/p/b.ts');
+    expect(absPath('~/x/y.md', '/w/p', '/h/me')).toBe('/h/me/x/y.md');
+    expect(absPath('/etc/x', '/w/p')).toBe('/etc/x');
+    expect(absPath('file:///tmp/m/large.html', '/w/p')).toBe('/tmp/m/large.html');
+    expect(absPath('a.ts', '.')).toBe('a.ts');
+    expect(absPath('~/a', '/w/p')).toBe('~/a');
+  });
+
+  it('resolves a relative path of a tool call against cwd', () => {
+    const m = [asst(use('Read', { file_path: 'docs/a.md' }), use('Edit', { file_path: '~/n.md' }), use('Bash', { command: 'echo hi > out.txt' }))];
+    expect(fileTrail(m, { cwd: '/w/p', home: '/h/me' })).toEqual([{ tag: 'C', path: '/w/p/out.txt' }, { tag: 'E', path: '/h/me/n.md' }, { tag: 'R', path: '/w/p/docs/a.md' }]);
   });
 
   it('tags read, edited and created, merges duplicates, orders by last touch (newest first)', () => {
@@ -130,25 +214,25 @@ describe('file trail', () => {
       asst(use('MultiEdit', { file_path: '/w/p/c.ts', edits: [] })),
     ];
     expect(fileTrail(m, { cwd: '/w/p' })).toEqual([
-      { tag: 'E', path: 'c.ts' },
-      { tag: 'E', path: 'n.ipynb' },
-      { tag: 'R', path: 'b.ts' },
-      { tag: 'C', path: 'new.md' },
-      { tag: 'E', path: 'a.ts' },
+      { tag: 'E', path: '/w/p/c.ts' },
+      { tag: 'E', path: '/w/p/n.ipynb' },
+      { tag: 'R', path: '/w/p/b.ts' },
+      { tag: 'C', path: '/w/p/new.md' },
+      { tag: 'E', path: '/w/p/a.ts' },
     ]);
   });
 
   it('a Write over a file already seen is an edit, a created file stays created after edits', () => {
     const m = [asst(use('Read', { file_path: '/w/p/a.ts' })), asst(use('Write', { file_path: '/w/p/a.ts' })), asst(use('Write', { file_path: '/w/p/n.ts' })), asst(use('Edit', { file_path: '/w/p/n.ts' }))];
-    expect(fileTrail(m, { cwd: '/w/p' })).toEqual([{ tag: 'C', path: 'n.ts' }, { tag: 'E', path: 'a.ts' }]);
+    expect(fileTrail(m, { cwd: '/w/p' })).toEqual([{ tag: 'C', path: '/w/p/n.ts' }, { tag: 'E', path: '/w/p/a.ts' }]);
   });
 
   it('caps at 15, keeping the most recent', () => {
     const m = Array.from({ length: 25 }, (_, i) => asst(use('Read', { file_path: `/w/p/f${i}` })));
     const trail = fileTrail(m, { cwd: '/w/p' });
     expect(trail).toHaveLength(15);
-    expect(trail[0]).toEqual({ tag: 'R', path: 'f24' });
-    expect(trail[14]).toEqual({ tag: 'R', path: 'f10' });
+    expect(trail[0]).toEqual({ tag: 'R', path: '/w/p/f24' });
+    expect(trail[14]).toEqual({ tag: 'R', path: '/w/p/f10' });
   });
 
   it('reads clear Bash writes only', () => {
@@ -178,7 +262,7 @@ describe('file trail', () => {
 
   it('counts a Bash write in the trail', () => {
     const m = [asst(use('Bash', { command: 'echo hi > /w/p/out.txt' }))];
-    expect(fileTrail(m, { cwd: '/w/p' })).toEqual([{ tag: 'C', path: 'out.txt' }]);
+    expect(fileTrail(m, { cwd: '/w/p' })).toEqual([{ tag: 'C', path: '/w/p/out.txt' }]);
   });
 });
 
@@ -276,6 +360,63 @@ describe('running work', () => {
   });
 });
 
+describe('running work from the engine list', () => {
+  const live = (over: Record<string, unknown>) => ({ tasks: [], crons: [], started: new Set<string>(), ...over }) as never;
+  const old = [
+    asst(use('Bash', { command: 'serve', run_in_background: true }, 'b1')),
+    user(res('b1', 'Command running in background with ID: bg_a.')),
+    asst(use('Monitor', { description: 'watch ci' }, 'm1')),
+    user(res('m1', 'Monitor started (task mon1, timeout 600s)')),
+    asst(use('ScheduleWakeup', { delaySeconds: 60, reason: 'check build' }, 'w1')),
+    asst(use('CronCreate', { cron: '*/5 * * * *', prompt: 'poll' }, 'c1')),
+    user(res('c1', 'Scheduled recurring task cr0n0001 (*/5 * * * *).')),
+  ];
+
+  it('is the engine list for everything started before it: a shell, a wakeup or a cron it no longer holds is not running', () => {
+    const l = live({ tasks: [{ id: 'mon1', type: 'monitor', description: 'watch ci' }], crons: [{ id: 'cr0n0001', schedule: '*/5 * * * *', recurring: true, prompt: 'poll' }] });
+    expect(runningWork(old, l)).toEqual(['monitor mon1: watch ci', 'cron cr0n0001: */5 * * * * poll']);
+    expect(runningWork(old, live({}))).toEqual([]);
+  });
+
+  it('drops a one-shot cron whose fire time has passed since the list was taken: it fired, it is not armed', () => {
+    const now = new Date(2026, 9, 13, 10, 30).getTime();
+    const l = live({ now, crons: [{ id: 'gone', schedule: '20 10 13 10 *', recurring: false, prompt: 'wake' }, { id: 'soon', schedule: '45 10 13 10 *', recurring: false, prompt: 'later' }, { id: 'loop', schedule: '*/5 * * * *', recurring: true, prompt: 'poll' }] });
+    expect(runningWork([], l)).toEqual(['cron soon once: 45 10 13 10 * later', 'cron loop: */5 * * * * poll']);
+    // across the new year: a time in early January is still ahead on 31 December
+    const eve = new Date(2026, 11, 31, 23, 50).getTime();
+    expect(runningWork([], live({ now: eve, crons: [{ id: 'ny', schedule: '5 0 1 1 *', recurring: false, prompt: 'p' }] }))).toEqual(['cron ny once: 5 0 1 1 * p']);
+  });
+
+  it('names a one-shot cron and each task kind from the engine list alone', () => {
+    const l = live({ tasks: [{ id: 'sh1', type: 'shell', description: 'd', command: 'npm run dev' }, { id: 'ag1', type: 'subagent', description: 'review the diff' }], crons: [{ id: 'k1', schedule: '14 8 25 9 *', recurring: false, prompt: 'continue' }] });
+    expect(runningWork([], l)).toEqual(['shell sh1: npm run dev', 'agent ag1: review the diff', 'cron k1 once: 14 8 25 9 * continue']);
+  });
+
+  it('adds what was started since the list from the transcript, until it ends; the list reports a task once', () => {
+    const since = [
+      ...old,
+      asst(use('Bash', { command: 'tail -f x.log', run_in_background: true }, 'b2')),
+      user(res('b2', 'Command running in background with ID: bg_new.')),
+      asst(use('Bash', { command: 'sleep 99', run_in_background: true }, 'b3')),
+      user(res('b3', 'Command running in background with ID: bg_dead.')),
+      asst(use('KillShell', { shell_id: 'bg_dead' })),
+    ];
+    const l = live({ tasks: [{ id: 'bg_a', type: 'shell', description: 'serve', command: 'serve' }], started: new Set(['b2', 'b3']) });
+    expect(runningWork(since, l)).toEqual(['shell bg_a: serve', 'shell bg_new: tail -f x.log, 4 msgs ago']);
+  });
+
+  it('drops a task the engine holds when a terminal notification came since, and a cron deleted since', () => {
+    const since = [...old, user('<task-notification>\n<task-id>ag1</task-id>\n<status>completed</status>\n</task-notification>'), asst(use('CronDelete', { id: 'k9' }))];
+    const l = live({ tasks: [{ id: 'ag1', type: 'subagent', description: 'review' }], crons: [{ id: 'k9', schedule: '* * * * *', recurring: true, prompt: 'p' }] });
+    expect(runningWork(since, l)).toEqual([]);
+  });
+
+  it('without the engine list, a cron deleted by id is not running', () => {
+    const m = [asst(use('CronCreate', { cron: '14 8 25 9 *', prompt: 'later' }, 'c1')), user(res('c1', 'Scheduled one-shot task e0ae8491 (14 8 25 9 *). It will fire once then auto-delete.')), asst(use('CronDelete', { id: 'e0ae8491' }))];
+    expect(runningWork(m)).toEqual([]);
+  });
+});
+
 describe('git, ranges, transcript', () => {
   it('reads dirty paths from porcelain, a rename as its target', () => {
     expect(parsePorcelain(' M src/a.ts\n?? new file.md\nR  old.ts -> new.ts\n')).toEqual(['src/a.ts', 'new file.md', 'new.ts']);
@@ -299,7 +440,31 @@ describe('git, ranges, transcript', () => {
     expect(sliceLines('a\nb', { from: 2, to: 9 })).toBe('b');
   });
 
-  it('puts the transcript where Claude Code does', () => {
-    expect(transcriptPath({ configDir: '/c', cwd: '/work/me/.proj', sessionId: 's-1' })).toBe('/c/projects/-work-me--proj/s-1.jsonl');
+  it('finds the transcript by its session id, never by a rebuilt directory name, and reports only a find that printed nothing', () => {
+    expect(findTranscriptArgv({ configDir: '/c', session: 's-1' })).toEqual(['find', '-H', '/c/projects', '-maxdepth', '2', '-type', 'f', '-name', 's-1.jsonl']);
+    expect(findTranscriptArgv({ configDir: '/c', session: 's-1', agentId: 'a9' })).toEqual(['find', '-H', '/c/projects', '-maxdepth', '4', '-type', 'f', '-path', '*/s-1/subagents/agent-a9.jsonl']);
+    // a project path over 200 chars is hashed by Claude Code: the real directory is whatever find prints
+    expect(firstFound('/c/projects/-very-long-0a1b2c/s-1.jsonl\n')).toBe('/c/projects/-very-long-0a1b2c/s-1.jsonl');
+    expect(firstFound('')).toBeUndefined();
+    expect(firstFound('find: /c/projects/x: Permission denied\n')).toBeUndefined();
+  });
+
+  it('makes the dirty paths absolute under the repository top', () => {
+    expect(porcelain(' M src/a.ts\nR  old -> new/b.ts\n', '/w/repo')).toEqual(['/w/repo/src/a.ts', '/w/repo/new/b.ts']);
+  });
+
+  it('finds the held forward handoff and the message it is in', () => {
+    const wake = renderForward({ seq: 2, users: ['x'], skills: [], trail: [], loaded: [], tasks: [], running: [], paths: [], problems: [], args: { objective: 'o', done: [], remaining: [], next: 'n', blocked: [], findings: [], loadFiles: [], dropSkills: [], trimmed: [] } }).text;
+    expect(heldForward([user('a'), user(wake), asst(t('ok') as never)])).toEqual({ text: wake, index: 1, recorded: false });
+    expect(heldForward([user('a')])).toBeUndefined();
+  });
+
+  it("takes a later text that opens like a handoff as held only when a record holds it; a person's paste is not held", () => {
+    const wake = renderForward({ seq: 1, users: ['x'], skills: [], trail: [], loaded: [], tasks: [], running: [], paths: [], problems: [], args: { objective: 'o', done: [], remaining: [], next: 'n', blocked: [], findings: [], loadFiles: [], dropSkills: [], trimmed: [] } }).text;
+    const pasted = `${wake}\nwhy is this so long?`;
+    const m = [user(wake), asst(t('ok') as never), user('ask'), asst(t('ok') as never), user(pasted)];
+    expect(heldForward(m, (text) => text === wake)).toEqual({ text: wake, index: 0, recorded: true });
+    expect(heldForward(m, () => false)).toEqual({ text: wake, index: 0, recorded: false });
+    expect(heldForward([user('hi'), asst(t('ok') as never), user(pasted)], () => false)).toBeUndefined();
   });
 });

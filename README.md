@@ -5,9 +5,9 @@
 **Smart auto-compact for Claude Code: a separate compaction point for every sub-agent, and self-compaction at a milestone the model chooses.**
 
 [![Claude Code plugin](https://img.shields.io/badge/Claude%20Code-plugin-D97757)](https://docs.claude.com/en/docs/claude-code/plugins)
-[![Version](https://img.shields.io/badge/version-0.7.0--dev.1-blue)](./CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.7.0--dev.2-blue)](./CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
-[![Tests](https://img.shields.io/badge/tests-370%20passing-brightgreen)](#development)
+[![Tests](https://img.shields.io/badge/tests-402%20passing-brightgreen)](#development)
 [![Built with Professor](https://img.shields.io/badge/built%20with-Professor-8A2BE2)](https://github.com/rezzminator/professor)
 
 **34% cheaper** than a sub-agent that never compacts · **52% less context** re-sent on every request
@@ -216,19 +216,19 @@ Guards keep this honest:
 
 ### Forward handoff
 
-With `forwardHandoffTool` on, the main chat can call `forward_handoff` at a moment it picks (never mid-edit). The installed text is one header line, then only the blocks that hold something, then the model's frontier with `Next` last:
+With `forwardHandoffTool` on, the main chat and every sub-agent a policy governs can call `forward_handoff` at a moment they pick (never mid-edit). The installed text is one header line, then only the blocks that hold something, then the model's frontier with `Next` last:
 
 | Block | Source | Cap |
 |---|---|---|
-| `User` | every real user message, verbatim, whitespace collapsed, harness noise stripped, the latest marked, images as `[image N]` | about 8k tokens, the oldest cut first |
+| `User` | the last 25 prompts a person or a parent wrote, verbatim, whitespace collapsed, the latest marked; a slash command is `/name args` (its body is in its `Skill` block), an image is `[image <absolute path>]`; what the harness writes (tool-loaded notes, image notes, reminders, notifications, the note after an output cut, a sub-agent's message back, a chat's reply footer) is left out. A chained handoff reads the earlier one's prompts from its `record.json`, never from the text | about 8k tokens, the oldest cut first |
 | `Skill <name>` | each skill and command invoked, once, reloaded from disk (the directory Claude Code printed for it, then the project, user and plugin directories) minus `drop_skills`, frontmatter stripped | about 3k tokens each, 12k total |
-| `Files` | `E`/`R`/`C path` per file the tool calls edited, read or created, newest first, relative to the working directory, plus subdirectory `CLAUDE.md` files the session picked up | 15 lines |
+| `Files` | `E`/`R`/`C path` per file the tool calls edited, read or created, newest first, every path absolute, plus subdirectory `CLAUDE.md` files the session picked up | 15 lines |
 | `Load <path>` | the `load_files` the model named, read at handoff time, a `lines` range exactly; a path the `Read` tool would not be allowed to read without asking is not read, and named in `Unresolved` | about 3k tokens each, 12k total |
-| `Plan`, `Tasks`, `Running`, `Git`, `Paths` | the plan, the latest todo or task state, background shells, sub-agents, monitors, wakeups and crons still running, one git line, the transcript with the line of the cut, the previous forward handoff and the saved files | one line per item; `Paths` is one line |
+| `Plan`, `Tasks`, `Running`, `Git`, `Paths` | the plan, the latest todo or task state, background shells, sub-agents, monitors, wakeups and crons still running (the engine's own in-flight list from the last turn's end, plus calls since), one git line, the transcript (found by its session id) with the line of the cut, the previous forward handoff and the saved files | one line per item; `Paths` is one line |
 | `Unresolved` | a skill or file that could not be read, an unknown `drop_skills` name, a failed git or transcript read | one line each |
 | `Objective`, `Done`, `Remaining`, `Blocked`, `Findings`, `Next` | the model's arguments; an over-limit field is trimmed and marked `[trimmed]`, a missing required field returns one error naming it | per field, in characters: `objective` 600, `next` 400; items: `done` and `remaining` 15 of 200, `blocked` 10 of 200, `findings` 15 of 300 |
 
-Every call is saved under `<Claude config directory>/sub-agent-compact/forward-handoff/<session>/<n>/`: `args.json` (the arguments as received), `wake.txt` (the installed text, literally) and `record.json` (the chars and estimated tokens of every block and of the total, the context before and after, and the install check that each block landed, made at the first request after the install against what the session then holds). The path is logged and named in the `Paths` block. With no Claude config directory, or when the session's directory cannot be listed, nothing is saved and the tool's reply says so. Results of tool calls made in the same response as `forward_handoff` are kept in a message of their own, before the installed text. Sub-agents keep the `handoff` tool; `forward_handoff` is the main chat's.
+Every call is saved under `<Claude config directory>/sub-agent-compact/forward-handoff/<session>/<n>/` (`<session>/agent-<id>/<n>/` for a sub-agent): `args.json` (the arguments as received), `wake.txt` (the installed text, literally) and `record.json` (the chars and estimated tokens of every block and of the total, the context before and after, and the install check that each block landed, made at the first request after the install against what the session then holds). The path is logged and named in the `Paths` block. With no Claude config directory, or when the session's directory cannot be listed, nothing is saved and the tool's reply says so. Results of tool calls made in the same response as `forward_handoff` are kept in a message of their own, before the installed text. Carried text cannot forge the structure: a line that reads as a block label, an item marker or the header gets a backslash in front.
 
 ## ⚙️ Configuration
 
@@ -254,7 +254,7 @@ name and replaced by the default, never ignored silently.
 | `subagentAutoCompactNudgeEvery` | `10%` | The step between a sub-agent's nudges. |
 | `subagentAutoCompactEnabled` | `true` | Off: sub-agents are never nudged or compacted automatically; their own requests still run. |
 | `subagentKeepBrief` | `true` | On: after each compaction a sub-agent's brief is seated again verbatim right after the summary. Off: the summary alone stands for it. |
-| `forwardHandoffTool` | `false` | On: the main chat gets the `forward_handoff` tool (see [Forward handoff](#forward-handoff)). Code carries the user messages, skills, file trail, plan and tasks, running work and git state; the model writes only its frontier. Installed verbatim when its turn ends. |
+| `forwardHandoffTool` | `false` | On: every party gets the `forward_handoff` tool (see [Forward handoff](#forward-handoff)). Code carries the user messages, skills, file trail, plan and tasks, running work and git state; the model writes only its frontier. Installed verbatim when its turn ends. |
 | `handoffTool` | `true` | On: models get the `handoff` tool. Its typed fields (`goal` and `next_step` required) are rendered to short markdown sections that replace the model's whole conversation so far, installed with no summarizer request; what it does after the call is kept. |
 | `compactTool` | `false` | On: models also get the `compact` tool, whose focus a summarizer turns into a summary, and `<compact-now>` markers count. Off: the handoff replaces it. |
 | `agentDirs` | empty | Comma-separated extra directories of agent definitions. |

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { buildRecord, forwardDir, nextSeq, previousDir, withInstall } from '../plugins/sub-agent-compact/src/forward-record.ts';
-import { installCheck, renderForward } from '../plugins/sub-agent-compact/src/forward-text.ts';
+import { buildRecord, carriedFrom, forwardDir, nextSeq, previousDir, withInstall } from '../plugins/sub-agent-compact/src/forward-record.ts';
+import { fnv1a, installCheck, renderForward } from '../plugins/sub-agent-compact/src/forward-text.ts';
 
 const rendered = renderForward({ seq: 2, users: ['hi'], skills: [], trail: [{ tag: 'R', path: 'a' }], loaded: [], tasks: [], running: [], paths: [], problems: [], args: { objective: 'o', done: ['d'], remaining: [], next: 'n', blocked: [], findings: [], loadFiles: [], dropSkills: [], trimmed: ['done'] } });
 
@@ -22,7 +22,7 @@ describe('per-call files', () => {
 });
 
 describe('measurement record', () => {
-  const record = buildRecord({ seq: 2, session: 's1', dir: '/c/x/2', text: rendered.text, blocks: rendered.blocks, tokensBefore: 90_000, trimmed: ['done'] });
+  const record = buildRecord({ seq: 2, session: 's1', dir: '/c/x/2', text: rendered.text, blocks: rendered.blocks, users: ['a', 'b'], usersDropped: 3, tokensBefore: 90_000, trimmed: ['done'] });
 
   it('logs the chars and estimated tokens of every block and of the total', () => {
     expect(record).toMatchObject({ seq: 2, session: 's1', dir: '/c/x/2', tokensBefore: 90_000, trimmed: ['done'], total: { chars: rendered.text.length, tokens: Math.ceil(rendered.text.length / 4) } });
@@ -36,5 +36,15 @@ describe('measurement record', () => {
     const done = withInstall(record, { tokensAfter: 4_000, check: installCheck(rendered.blocks, rendered.text, rendered.text) });
     expect(done).toMatchObject({ tokensAfter: 4_000, install: { ok: true, missing: [], landed: rendered.blocks.length } });
     expect(record.tokensAfter).toBeUndefined();
+  });
+});
+
+describe('carriedFrom', () => {
+  it('takes the prompts of the record whose text is the held one, and none from a record that is not a record', () => {
+    const rec = (text: string, users: unknown, dropped?: unknown) => ({ textHash: fnv1a(text), users, ...(dropped !== undefined ? { usersDropped: dropped } : {}) });
+    expect(carriedFrom([rec('other', ['x']), rec('held', ['a', 'b'], 3)], 'held')).toEqual({ users: ['a', 'b'], dropped: 3 });
+    expect(carriedFrom([rec('held', ['a'])], 'held')).toEqual({ users: ['a'], dropped: 0 });
+    expect(carriedFrom([rec('held', ['a', 7]), null, 'held', rec('held', 'a')], 'held')).toBeUndefined();
+    expect(carriedFrom([rec('held', ['a'])], 'held, edited')).toBeUndefined();
   });
 });

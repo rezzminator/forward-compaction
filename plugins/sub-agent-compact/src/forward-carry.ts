@@ -1,5 +1,5 @@
 // What code carries into a forward handoff, read from the transcript in the Messages API form.
-import { FORWARD_OPENING, priorUsers } from './forward-text.ts';
+import { FORWARD_OPENING, oneLineLabel } from './forward-text.ts';
 import { HANDOFF_OPENING, WAKE_NAME } from './handoff.ts';
 import { wakeCandidates, type WakeRoots } from './wake.ts';
 
@@ -43,33 +43,56 @@ const NOTICE_OPENING = 'sub-agent-compact: ';
 /** Commands the client itself runs: no skill or command file stands behind them. */
 const BUILTIN = new Set(['clear', 'compact', 'model', 'help', 'config', 'status', 'cost', 'context', 'exit', 'quit', 'resume', 'login', 'logout', 'doctor', 'memory', 'mcp', 'agents', 'hooks', 'plugin', 'plugins', 'reload-plugins', 'permissions', 'vim', 'ide', 'init', 'bug', 'usage', 'rewind', 'export', 'theme', 'terminal-setup', 'add-dir', 'effort']);
 
-/** The real user messages of the transcript, oldest first: prompts and slash commands with their arguments, images as `[image N]`. */
+/** The cross-chat footer another chat's message carries: not the person's words. */
+const FOOTER = /\s+[—–-]\s+sid\s+\S+\s+·\s+to reply:[^\n]*$/;
+const IMAGE_TAG = /\[Image #\d+\]\s*/g;
+const IMAGE_SOURCE = /\[Image: source: ([^\]\n]+)\]/g;
+/** Texts only the harness writes: a tool search's sibling text, an image's size note, a plugin's message to the model, the note after an output cut, and what a sub-agent of this session (an `a` + 16 hex id) sent back. */
+const HARNESS_TEXT = /^(?:Tool loaded\.?|\[Image: original [^\]]*\]|The \S+ plugin sent a message:[\s\S]*|Output token limit hit[\s\S]*|Another Claude session sent a message:\s*<agent-message from="a[0-9a-f]{16}">[\s\S]*)$/;
+
+/**
+ * The words of the people and parents of the transcript, oldest first: prompts and slash commands with their arguments,
+ * an image as `[image <path>]`. What the harness writes into a user message (skill bodies, tool-search notes, image
+ * notes, reminders, notifications, a chat's reply footer) is not carried.
+ */
 export function userMessages(msgs: readonly ApiMsg[]): string[] {
   const out: string[] = [];
-  let images = 0;
-  // A command's expansion (its prompt body) is written as a user message right after the command: not the person's words.
+  const skillCalls = new Set<string>();
+  // The text the harness writes next is a command's or a skill's expansion (its prompt body): not the person's words.
   let expansion = false;
+  // An installed handoff leads the context: only the user messages before the first answer can hold one.
+  let leading = true;
   for (const m of msgs) {
     if (m.role !== 'user') {
+      leading = false;
       expansion = false;
+      for (const b of blocksOf(m)) if (b.type === 'tool_use' && b.name === 'Skill' && typeof b.id === 'string') skillCalls.add(b.id);
       continue;
     }
     const parts: string[] = [];
+    const sources: string[] = [];
+    let pictures = 0;
     for (const b of blocksOf(m)) {
       if (b.type === 'image') {
-        parts.push(`[image ${++images}]`);
+        pictures++;
+        continue;
+      }
+      if (b.type === 'tool_result') {
+        if (typeof b.tool_use_id === 'string' && skillCalls.has(b.tool_use_id)) expansion = true;
         continue;
       }
       if (b.type !== 'text') continue;
       const text = textOf(b);
-      if (text.startsWith(FORWARD_OPENING)) {
-        out.push(...priorUsers(text));
-        continue;
-      }
-      if (text.startsWith(SKILL_BASE) || text.startsWith(SUMMARY_OPENING) || text.startsWith(HANDOFF_OPENING) || text.startsWith(NOTICE_OPENING)) {
+      if (text.startsWith(SKILL_BASE)) {
+        // The harness writes a skill's base line and its body as one text: the expansion is over.
         expansion = false;
         continue;
       }
+      if ((leading && text.startsWith(FORWARD_OPENING)) || text.startsWith(SUMMARY_OPENING) || text.startsWith(HANDOFF_OPENING) || text.startsWith(NOTICE_OPENING) || text.startsWith('[sub-agent-compact')) {
+        expansion = false;
+        continue;
+      }
+      if (HARNESS_TEXT.test(text.trim())) continue;
       const name = COMMAND_NAME.exec(text)?.[1];
       if (name !== undefined) {
         const args = COMMAND_ARGS.exec(text)?.[1]?.trim();
@@ -81,11 +104,25 @@ export function userMessages(msgs: readonly ApiMsg[]): string[] {
         expansion = false;
         continue;
       }
-      const clean = collapseWhitespace(stripNoise(text));
+      for (const found of text.matchAll(IMAGE_SOURCE)) sources.push(found[1]!.trim());
+      const clean = collapseWhitespace(stripNoise(text).replace(IMAGE_SOURCE, '').replace(IMAGE_TAG, '').replace(FOOTER, ''));
       if (clean !== '' && !INTERRUPT.test(clean)) parts.push(clean);
     }
-    const joined = collapseWhitespace(parts.join(' '));
-    if (joined !== '') out.push(joined);
+    const markers = sources.map((x) => `[image ${x}]`);
+    for (let i = sources.length; i < pictures; i++) markers.push('[image]');
+    const joined = collapseWhitespace([...parts, ...markers].join(' '));
+    if (parts.length === 0 && markers.length > 0 && out.length > 0 && sources.length > 0) {
+      // The source line of a picture arrives as a message of its own, after the prompt that holds the picture.
+      // Each named picture takes the place of the first bare marker left, in order; one with none left is added.
+      let last = out[out.length - 1]!;
+      const extra: string[] = [];
+      for (const named of markers) {
+        const at = last.indexOf('[image]');
+        if (at >= 0) last = `${last.slice(0, at)}${named}${last.slice(at + '[image]'.length)}`;
+        else extra.push(named);
+      }
+      out[out.length - 1] = extra.length > 0 ? `${last} ${extra.join(' ')}` : last;
+    } else if (joined !== '') out.push(joined);
   }
   return out;
 }
@@ -99,7 +136,7 @@ export function invocations(msgs: readonly ApiMsg[]): Invocation[] {
   /** A command first seen just now: the client's own output after it means the client ran it, and no file stands behind it. */
   let fresh: Invocation | undefined;
   const invoke = (raw: string, command: boolean): void => {
-    const name = raw.startsWith('/') ? raw.slice(1) : raw;
+    const name = oneLineLabel(raw.startsWith('/') ? raw.slice(1) : raw);
     fresh = skillId = undefined;
     if (name === '' || BUILTIN.has(name)) {
       last = undefined;
@@ -150,10 +187,23 @@ export function invocationPaths(inv: Invocation, roots: WakeRoots): string[] {
   return paths;
 }
 
-/** The path relative to cwd when it is under it. */
-export function relPath(path: string, cwd: string): string {
-  const root = cwd.endsWith('/') ? cwd : `${cwd}/`;
-  return cwd !== '' && path.startsWith(root) ? path.slice(root.length) : path;
+/** The absolute form of a path: `~/` from home, a relative one from cwd, `.` and `..` resolved. A path that cannot be made absolute stays as it is. */
+export function absPath(path: string, cwd: string, home = ''): string {
+  let p = path.startsWith('file://') ? path.slice('file://'.length) : path;
+  if (p === '~' || p.startsWith('~/')) {
+    if (!home.startsWith('/')) return p;
+    p = `${home}${p.slice(1)}`;
+  } else if (!p.startsWith('/')) {
+    if (!cwd.startsWith('/')) return p;
+    p = `${cwd}/${p}`;
+  }
+  const out: string[] = [];
+  for (const part of p.split('/')) {
+    if (part === '' || part === '.') continue;
+    if (part === '..') out.pop();
+    else out.push(part);
+  }
+  return `/${out.join('/')}`;
 }
 
 const MASK = '\u0001';
@@ -197,12 +247,12 @@ export function bashWrites(command: string): { path: string; tag: 'E' | 'C'; cre
 }
 
 /** The files the tool calls touched, merged, newest touch first, at most `max`. */
-export function fileTrail(msgs: readonly ApiMsg[], { cwd, max = 15 }: { cwd: string; max?: number }): TrailEntry[] {
+export function fileTrail(msgs: readonly ApiMsg[], { cwd, home = '', max = 15 }: { cwd: string; home?: string; max?: number }): TrailEntry[] {
   const seen = new Map<string, { tag: 'R' | 'E' | 'C'; last: number }>();
   let n = 0;
   const touch = (raw: string | undefined, how: 'read' | 'edit' | 'write'): void => {
     if (raw === undefined) return;
-    const path = relPath(raw, cwd);
+    const path = absPath(raw, cwd, home);
     const old = seen.get(path);
     let tag: 'R' | 'E' | 'C';
     if (how === 'read') tag = old?.tag ?? 'R';
@@ -272,8 +322,37 @@ const RUNNING_MAX = 10;
 
 const oneLine = (s: string): string => s.replace(/\s+/g, ' ').trim().slice(0, 80);
 
-/** One line per piece of work still running: background shells without an end, sub-agents without a return, monitors, the wakeup and crons armed. */
-export function runningWork(msgs: readonly ApiMsg[]): string[] {
+/** The engine's own list of what is in flight, as the last turn's end (`classic.Stop`) reported it, and the calls made since. */
+export type LiveWork = {
+  tasks: { id: string; type: string; description: string; command?: string }[];
+  crons: { id: string; schedule: string; recurring: boolean; prompt: string }[];
+  /** The `tool_use` ids of every call made since that snapshot: what it could not yet know. */
+  started: ReadonlySet<string>;
+  /** The time now, in ms: a one-shot cron whose fire time has passed since the snapshot fired and is gone. */
+  now?: number;
+};
+
+/**
+ * Whether a one-shot cron (`minute hour day month *`, local time) has fired by `now`: its fire time is the
+ * occurrence nearest to now, so a January time on 31 December is still ahead. False for any other shape.
+ */
+export function oneShotFired(schedule: string, now: number): boolean {
+  const f = /^(\d{1,2}) (\d{1,2}) (\d{1,2}) (\d{1,2}) \*$/.exec(schedule.trim());
+  if (!f) return false;
+  const year = new Date(now).getFullYear();
+  const at = [year - 1, year, year + 1].map((y) => new Date(y, Number(f[4]) - 1, Number(f[3]), Number(f[2]), Number(f[1])).getTime());
+  const nearest = at.reduce((a, b) => (Math.abs(b - now) < Math.abs(a - now) ? b : a));
+  return nearest <= now;
+}
+
+const TASK_LABEL: Record<string, string> = { shell: 'shell', subagent: 'agent', monitor: 'monitor', workflow: 'workflow' };
+
+/**
+ * One line per piece of work still running: background shells, sub-agents, monitors, the wakeup and crons armed.
+ * With the engine's `live` list, that list is the truth for everything started before it was taken, and the transcript
+ * speaks only for the calls since; without it (no turn has ended yet) the transcript alone decides, by the endings it holds.
+ */
+export function runningWork(msgs: readonly ApiMsg[], live?: LiveWork): string[] {
   const results = new Map<string, string>();
   const ended = new Set<string>();
   let notices = '';
@@ -287,7 +366,7 @@ export function runningWork(msgs: readonly ApiMsg[]): string[] {
         if (DONE.test(resultText(b))) finishes.push({ at, answers: b.tool_use_id, text: resultText(b) });
       } else if (m.role === 'user' && b.type === 'text' && textOf(b).includes('<task-notification')) notices += `${textOf(b)}\n`;
       else if (m.role === 'user' && b.type === 'text' && DONE.test(textOf(b))) finishes.push({ at, text: textOf(b) });
-      else if (m.role === 'assistant' && b.type === 'tool_use' && (b.name === 'KillShell' || b.name === 'TaskStop')) {
+      else if (m.role === 'assistant' && b.type === 'tool_use' && (b.name === 'KillShell' || b.name === 'TaskStop' || b.name === 'CronDelete')) {
         const input = inputOf(b);
         for (const key of ['shell_id', 'task_id', 'id']) if (str(input[key])) ended.add(String(input[key]));
       }
@@ -299,7 +378,9 @@ export function runningWork(msgs: readonly ApiMsg[]): string[] {
   const finished = (id: string, at: number, useId: string): boolean => finishes.some((f) => f.at > at && f.answers !== useId && f.text.includes(id));
   const total = msgs.length;
   const out: { at: number; line: string }[] = [];
-  let wakeup: { at: number; line: string } | undefined;
+  /** The ids the transcript lists, so the engine's list adds only what the transcript did not. */
+  const listed = new Set<string>();
+  let wakeup: { at: number; line: string; id: string } | undefined;
   msgs.forEach((m, at) => {
     if (m.role !== 'assistant') return;
     const age = `${total - 1 - at} msgs ago`;
@@ -307,39 +388,58 @@ export function runningWork(msgs: readonly ApiMsg[]): string[] {
       if (b.type !== 'tool_use') continue;
       const input = inputOf(b);
       const id = String(b.id ?? '');
+      // Before the engine's list was taken, the list answers; only a call made since it speaks through the transcript.
+      if (live !== undefined && !live.started.has(id)) continue;
       const result = results.get(id);
+      const push = (key: string, line: string): void => {
+        listed.add(key);
+        out.push({ at, line });
+      };
       if (b.name === 'Bash' && input.run_in_background === true) {
         const shell = /background with ID:\s*([A-Za-z0-9_-]+)/.exec(result ?? '')?.[1] ?? id.slice(-8);
-        if (!over(shell, id) && !finished(shell, at, id)) out.push({ at, line: `shell ${shell}: ${oneLine(String(input.command ?? ''))}, ${age}` });
+        if (!over(shell, id) && !finished(shell, at, id)) push(shell, `shell ${shell}: ${oneLine(String(input.command ?? ''))}, ${age}`);
       } else if (b.name === 'Agent' || b.name === 'Task') {
         const background = input.run_in_background === true;
         if (!background && result !== undefined) continue;
         const agent = /agentId:\s*([A-Za-z0-9]+)/.exec(result ?? '')?.[1] ?? id.slice(-8);
-        if (!over(agent, id) && !(background && finished(agent, at, id))) out.push({ at, line: `agent ${agent}: ${oneLine(String(input.description ?? input.prompt ?? ''))}, ${age}` });
+        if (!over(agent, id) && !(background && finished(agent, at, id))) push(agent, `agent ${agent}: ${oneLine(String(input.description ?? input.prompt ?? ''))}, ${age}`);
       } else if (b.name === 'Monitor') {
         const task = /\(task ([A-Za-z0-9]+)/.exec(result ?? '')?.[1] ?? id.slice(-8);
-        if (!over(task, id)) out.push({ at, line: `monitor ${task}: ${oneLine(String(input.description ?? input.command ?? ''))}, ${age}` });
+        if (!over(task, id)) push(task, `monitor ${task}: ${oneLine(String(input.description ?? input.command ?? ''))}, ${age}`);
+      } else if (b.name === 'ScheduleWakeup') {
+        const cron = /(?:task|job)\s+([A-Za-z0-9]{6,})/.exec(result ?? '')?.[1] ?? '';
+        if (cron === '' || !over(cron)) wakeup = { at, line: `wakeup: ${oneLine(String(input.reason ?? input.prompt ?? ''))}, ${age}`, id: cron };
+      } else if (b.name === 'CronCreate') {
+        const cron = /(?:task|job)\s+([A-Za-z0-9]{6,})/.exec(result ?? '')?.[1] ?? '';
+        if (cron === '' || !over(cron)) push(cron, `cron${cron !== '' ? ` ${cron}` : ''}: ${oneLine(`${String(input.cron ?? '')} ${String(input.prompt ?? '')}`)}, ${age}`);
       }
-      else if (b.name === 'ScheduleWakeup') wakeup = { at, line: `wakeup: ${oneLine(String(input.reason ?? input.prompt ?? ''))}, ${age}` };
-      else if (b.name === 'CronCreate') out.push({ at, line: `cron: ${oneLine(`${String(input.cron ?? '')} ${String(input.prompt ?? '')}`)}, ${age}` });
     }
   });
-  if (wakeup) out.push(wakeup);
-  return out
-    .sort((a, b) => a.at - b.at)
-    .slice(-RUNNING_MAX)
-    .map((x) => x.line);
+  if (wakeup) {
+    out.push({ at: wakeup.at, line: wakeup.line });
+    listed.add(wakeup.id);
+  }
+  const lines = out.sort((a, b) => a.at - b.at).map((x) => x.line);
+  if (live !== undefined) {
+    const mine = [
+      ...live.tasks.filter((t) => !listed.has(t.id) && !over(t.id)).map((t) => `${TASK_LABEL[t.type] ?? t.type} ${t.id}: ${oneLine(t.command ?? t.description)}`),
+      ...live.crons.filter((c) => !listed.has(c.id) && !over(c.id) && (c.recurring || live.now === undefined || !oneShotFired(c.schedule, live.now))).map((c) => `cron ${c.id}${c.recurring ? '' : ' once'}: ${oneLine(`${c.schedule} ${c.prompt}`)}`),
+    ];
+    return [...mine, ...lines].slice(-RUNNING_MAX);
+  }
+  return lines.slice(-RUNNING_MAX);
 }
 
-/** The paths of `git status --porcelain`, a rename as its target. */
-export function parsePorcelain(out: string): string[] {
+/** The paths of `git status --porcelain`, a rename as its target, absolute under `root` (the repository's top, where porcelain paths start). */
+export function parsePorcelain(out: string, root = ''): string[] {
   const paths: string[] = [];
   for (const line of out.split('\n')) {
     if (line.length < 4) continue;
     let path = line.slice(3);
     const arrow = path.indexOf(' -> ');
     if (arrow >= 0) path = path.slice(arrow + 4);
-    paths.push(path.replace(/^"(.*)"$/, '$1'));
+    path = path.replace(/^"(.*)"$/, '$1');
+    paths.push(root !== '' ? absPath(path, root) : path);
   }
   return paths;
 }
@@ -365,18 +465,36 @@ export function sliceLines(text: string, range: { from: number; to: number }): s
   return text.split('\n').slice(range.from - 1, range.to).join('\n');
 }
 
-/** Where Claude Code writes the session's transcript. */
-export function transcriptPath({ configDir, cwd, sessionId }: { configDir: string; cwd: string; sessionId: string }): string {
-  return `${configDir}/projects/${cwd.replace(/[^A-Za-z0-9]/g, '-')}/${sessionId}.jsonl`;
+/** The command that finds a transcript by its session id, the way Claude Code placed it: the project directory is whatever Claude Code named it. `-H`: a `projects` that is a link to the real directory is searched through. */
+export function findTranscriptArgv({ configDir, session, agentId }: { configDir: string; session: string; agentId?: string }): string[] {
+  const projects = `${configDir}/projects`;
+  return agentId === undefined
+    ? ['find', '-H', projects, '-maxdepth', '2', '-type', 'f', '-name', `${session}.jsonl`]
+    : ['find', '-H', projects, '-maxdepth', '4', '-type', 'f', '-path', `*/${session}/subagents/agent-${agentId}.jsonl`];
 }
 
-/** The forward handoff text a transcript holds: the newest user text block that opens like one, or '' when none does. */
-export function heldForward(msgs: readonly ApiMsg[]): string {
+/** The path `find` printed first, or undefined when it printed none. */
+export function firstFound(stdout: string): string | undefined {
+  return stdout.split('\n').find((line) => line.startsWith('/'));
+}
+
+/**
+ * The forward handoff the party holds, with the message it is in: the newest text a record of this party holds
+ * (`recorded`), else the one leading the context, where an install puts it. A text opening like one anywhere else
+ * is a person's message. Undefined when there is none.
+ */
+export function heldForward(msgs: readonly ApiMsg[], recorded?: (text: string) => boolean): { text: string; index: number; recorded: boolean } | undefined {
+  const firstAnswer = msgs.findIndex((m) => m.role === 'assistant');
+  const leadEnd = firstAnswer < 0 ? msgs.length : firstAnswer;
+  let leading: { text: string; index: number; recorded: boolean } | undefined;
   for (let i = msgs.length - 1; i >= 0; i--) {
     const m = msgs[i]!;
     if (m.role !== 'user') continue;
-    const found = blocksOf(m).find((b) => b.type === 'text' && textOf(b).startsWith(FORWARD_OPENING));
-    if (found !== undefined) return textOf(found);
+    for (const b of blocksOf(m)) {
+      if (b.type !== 'text' || !textOf(b).startsWith(FORWARD_OPENING)) continue;
+      if (recorded?.(textOf(b))) return { text: textOf(b), index: i, recorded: true };
+      if (i < leadEnd && leading === undefined) leading = { text: textOf(b), index: i, recorded: false };
+    }
   }
-  return '';
+  return leading;
 }
