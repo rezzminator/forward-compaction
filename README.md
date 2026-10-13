@@ -5,7 +5,7 @@
 **Smart auto-compact for Claude Code: a separate compaction point for every sub-agent, and self-compaction at a milestone the model chooses.**
 
 [![Claude Code plugin](https://img.shields.io/badge/Claude%20Code-plugin-D97757)](https://docs.claude.com/en/docs/claude-code/plugins)
-[![Version](https://img.shields.io/badge/version-0.5.0-blue)](./CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.5.1-blue)](./CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
 [![Tests](https://img.shields.io/badge/tests-242%20passing-brightgreen)](#development)
 [![Built with Professor](https://img.shields.io/badge/built%20with-Professor-8A2BE2)](https://github.com/rezzminator/professor)
@@ -127,7 +127,9 @@ flowchart LR
    spot. `load_on_wake` names skills or commands the model will need again;
    the plugin resolves each name at the call (an unknown name is refused
    then, not at install) and inlines it at install, except a skill the
-   transcript shows was invoked, which Claude Code re-attaches itself. A
+   transcript shows was invoked, which is not inlined again (the model is
+   told it invoked it, and to invoke it again if its text is gone). Only a
+   regular file of at most 256 KiB is read. A
    sub-agent whose definition has a `tools:` allowlist can't see a plugin's
    tool, so it writes `<handoff>its handoff</handoff>` in a response that
    also calls a tool.
@@ -384,9 +386,10 @@ Work lands on `develop`; `main` holds only releases, and each one is tagged `sub
 | `window.ts` | Model windows and Claude Code's ask point |
 | `nudge.ts` | Nudge levels and text, the `<compact-now>` marker, the compact tool's reply |
 | `handoff.ts` | The handoff tool's description and typed input, its validation and rendering to markdown, refusals, `<handoff>` marker and nudge, and the install that answers a compaction with the handoff and every message after it |
-| `wake.ts` | `load_on_wake`: resolves skill and command names to files, strips frontmatter, skips invoked skills, caps the inlined text |
+| `wake.ts` | `load_on_wake`: resolves skill and command names to files, refuses a path that is not a regular file or is past 256 KiB, strips frontmatter, skips invoked skills, caps the inlined text |
+| `bounded.ts` | Bounds a promise with a timer passed in (the hooks have no `setTimeout`): tool registration holds a turn at most 5s |
 | `brief.ts` | Seats a sub-agent's brief back after the summary, once, up to 64k tokens |
-| `parties.ts` | Per-party state: readings (a base counts only from the session's first request), the armed focus, nudges sent, a refused stop, notices waiting for the model |
+| `parties.ts` | Per-party state: readings (a base counts only from the session's first request, the main chat's also its first prompt), the armed focus, nudges sent, a refused stop, notices waiting for the model |
 | `decide.ts` | The decision for one compaction request |
 
 ## 🎓 Built with Professor

@@ -4,6 +4,15 @@ Every release of sub-agent-compact. Versions follow [semantic versioning](https:
 
 ## [Unreleased]
 
+## [0.5.1] — 2026-10-13
+
+### Fixed
+- Registering the tools no longer holds a turn without limit: past 5 seconds the turn goes on, a warning says so once, the plugin stops waiting on registration, and a registration that finishes late still names the tools. (`session.start` or its first call hanging before registration is not bounded.)
+- After a plugin reload, a main-chat step with at most three messages is read as the session's first request only when the session has sent exactly one prompt (`$.session.turns()`), so the step after a CLI compaction (a summary and the prompt) no longer yields a false "cutting each later request to about …" claim. The prompt count unreadable leaves the claim out, with a warning.
+- A handoff stored in the transcript is no longer dropped because a task notification, a system reminder or a local command's output (text the harness wrote) came after it; a person's message, an interrupt included, still cancels it.
+- `load_on_wake` reads a file only after `$.fs.stat` shows a regular file of at most 256 KiB; a directory, a pipe, a device, a larger file or a stat that fails is refused at the call and named `NOT LOADED` at install, where the read used to run up to its 4 MiB limit.
+- The install text no longer says Claude Code re-attaches an invoked skill. That is read from Claude Code's own compaction in the 2.1.296 bundle and not shown for a compaction a plugin installs; the text now says the skill was invoked earlier and is to be invoked again if its text is not in context.
+
 ## [0.5.0] — 2026-10-13
 
 ### Added
