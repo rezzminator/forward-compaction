@@ -1,3 +1,4 @@
+import { HAIKU_HOLDS } from './decide.ts';
 // The forward handoff tool's own part: what the model writes (its frontier) and how it is read.
 // Validation never refuses a call: a field over its limit is trimmed and marked, and only a missing required field is sent back.
 
@@ -192,4 +193,9 @@ export function forwardNudgeText({ tokens, level, autoCompact, toolName }: { tok
 export function forwardStoredText({ tokens, dir, blocks }: { tokens: number; dir?: string; blocks: { name: string; tokens: number }[] }): string {
   const sizes = blocks.map((b) => `${b.name} ${k(b.tokens)}`).join(', ');
   return `Forward handoff stored (${k(tokens)} tokens: ${sizes}).${dir !== undefined ? ` Saved to ${dir}.` : ''} It installs when this turn ends: end your turn now with one line to the person; do not call more tools.`;
+}
+
+/** What a Haiku party reads when Claude Code's compaction of it is held for its forward handoff. */
+export function forwardHoldText(toolName: string): string {
+  return `sub-agent-compact: Claude Code is compacting your context now. Call ${toolName} as your very next step (objective, done, remaining, next); within ${HAIKU_HOLDS} steps it compacts with or without it.`;
 }

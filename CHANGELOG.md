@@ -4,6 +4,11 @@ Every release of sub-agent-compact. Versions follow [semantic versioning](https:
 
 ## [Unreleased]
 
+## [0.7.0-dev.5] — 2026-10-13
+
+### Added
+- A Haiku party with `forwardHandoffTool` on gets the steps to hand off before Claude Code's own summary replaces its context: Claude Code's automatic ask is held up to 3 times while no forward handoff is stored, and the model is told once to call `forward_handoff` as its very next step. The ask passes once the handoff is stored (and installs it) or after the third hold. A live probe showed Claude Code compacting a Haiku main chat at 77k between the model loading the tool and calling it.
+
 ## [0.7.0-dev.4] — 2026-10-13
 
 ### Fixed

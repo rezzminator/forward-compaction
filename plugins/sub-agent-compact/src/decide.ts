@@ -137,3 +137,15 @@ export function compactionEnd({ trigger, skipped, aborted }: { trigger: Trigger;
   if (trigger === 'precompute') return 'precompute';
   return skipped || aborted ? 'unfinished' : 'compacted';
 }
+
+/** How many automatic asks a Haiku party's compaction is held for its forward handoff: its notice reaches the model only with the next tool result, after one more ask. */
+export const HAIKU_HOLDS = 3;
+
+/**
+ * Whether Claude Code's automatic ask to compact a Haiku party is held: only with the forward handoff on,
+ * none stored yet, and fewer than HAIKU_HOLDS asks held, so the model gets the steps to hand off before
+ * Claude Code's own summary replaces its context. Requested compactions and every other party pass as before.
+ */
+export function haikuHold({ haiku, forwardOn, trigger, stored, held }: { haiku: boolean; forwardOn: boolean; trigger: Trigger; stored: boolean; held: number }): boolean {
+  return haiku && forwardOn && trigger === 'auto' && !stored && held < HAIKU_HOLDS;
+}

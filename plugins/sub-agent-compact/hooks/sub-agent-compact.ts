@@ -1,13 +1,13 @@
 import type { EngineInterface, On, PluginOptions, Register } from 'claude-code';
 import { bounded } from '../src/bounded.ts';
 import { haikuServed, servedOptions, toolsToRegister } from '../src/register.ts';
-import { FORWARD_INPUT_SCHEMA, FORWARD_TOOL, FORWARD_TOOL_DESCRIPTION, forwardNudgeText, forwardStoredText, parseForwardArgs, type ForwardArgs } from '../src/forward-args.ts';
+import { FORWARD_INPUT_SCHEMA, FORWARD_TOOL, FORWARD_TOOL_DESCRIPTION, forwardHoldText, forwardNudgeText, forwardStoredText, parseForwardArgs, type ForwardArgs } from '../src/forward-args.ts';
 import { absPath, fileTrail, findTranscriptArgv, firstFound, gitLine, heldForward, invocationPaths, invocations, parseLineRange, parsePorcelain, planAndTasks, runningWork, sliceLines, userMessages, type ApiMsg, type LiveWork } from '../src/forward-carry.ts';
 import { buildRecord, carriedFrom, forwardDir, forwardSessionDir, nextSeq, previousDir, withInstall } from '../src/forward-record.ts';
 import { chainUsers, installCheck, renderForward, TRAIL_MAX, type RenderInput } from '../src/forward-text.ts';
 import { BRIEF_MAX_TOKENS, reseatBrief, seatedBrief } from '../src/brief.ts';
 import { AgentPolicies, AgentTypes } from '../src/agents.ts';
-import { compactionEnd, contextTokens, currentTokens, decide, estimateTranscript, knownTrigger, personPrompt, type Trigger } from '../src/decide.ts';
+import { compactionEnd, contextTokens, currentTokens, decide, estimateTranscript, HAIKU_HOLDS, haikuHold, knownTrigger, personPrompt, type Trigger } from '../src/decide.ts';
 import {
   CONTINUE_AFTER_HANDOFF,
   HANDOFF_INPUT_SCHEMA,
@@ -97,6 +97,8 @@ type State = {
   models: Map<string, string>;
   parties: Parties;
   asked: Set<string>;
+  /** Automatic asks held per Haiku party while it is told to call the forward handoff. */
+  haikuHeld: Map<string, number>;
   warned: Set<string>;
   pending: string[];
   logPath?: Promise<string | undefined>;
@@ -782,6 +784,7 @@ export const register: Register = (on: On, options: PluginOptions) => {
     models: new Map(),
     parties: new Parties(),
     asked: new Set(),
+    haikuHeld: new Map(),
     warned: new Set(),
     pending: [],
     writing: Promise.resolve(),
@@ -1046,7 +1049,15 @@ export const register: Register = (on: On, options: PluginOptions) => {
     }
     const heldArm = tracked ? st.parties.armed(key) : undefined;
     const armed = fallback ?? heldArm;
+    const held = st.haikuHeld.get(key) ?? 0;
+    if (haikuHold({ haiku: party.haiku, forwardOn: st.forwardToolName !== undefined, trigger: kind, stored: handoff !== undefined, held })) {
+      st.haikuHeld.set(key, held + 1);
+      record(st, $, { ...base, type: party.label, limit, source: 'haiku', tokens: tokens ?? null, messages: messages.length, decision: 'skip', why: 'haiku-hold', held: held + 1 });
+      if (held === 0) st.parties.notify(key, forwardHoldText(st.forwardToolName!));
+      return { skip: `${party.label}: held for its forward handoff (${held + 1}/${HAIKU_HOLDS})` };
+    }
     const decision = decide({ trigger: kind, label: party.label, limit, tokens, enabled: party.haiku || party.policy.enabled, armed, unlisted: party.unlisted, haiku: party.haiku });
+    if (decision.action === 'pass') st.haikuHeld.delete(key);
     record(st, $, { ...base, type: party.label, limit, source: party.haiku ? 'haiku' : party.source, tokens: tokens ?? null, lastResponseTokens: st.parties.reading(key) ?? null, messages: messages.length, decision: decision.action, ...(decision.action === 'pass' ? { why: decision.why } : {}) });
     if (decision.action === 'skip') {
       if (kind === 'auto') st.asked.add(key);

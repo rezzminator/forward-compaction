@@ -5,7 +5,7 @@
 **Smart auto-compact for Claude Code: a separate compaction point for every sub-agent, and self-compaction at a milestone the model chooses.**
 
 [![Claude Code plugin](https://img.shields.io/badge/Claude%20Code-plugin-D97757)](https://docs.claude.com/en/docs/claude-code/plugins)
-[![Version](https://img.shields.io/badge/version-0.7.0--dev.4-blue)](./CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.7.0--dev.5-blue)](./CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
 [![Tests](https://img.shields.io/badge/tests-402%20passing-brightgreen)](#development)
 [![Built with Professor](https://img.shields.io/badge/built%20with-Professor-8A2BE2)](https://github.com/rezzminator/professor)
@@ -49,6 +49,9 @@ the model decide *when* to compact.
 - 🪶 **Haiku is left alone, except for the forward handoff.** Small, fast
   agents compact at Claude Code's own point; with `forwardHandoffTool` on they
   are nudged and can call `forward_handoff`, whose text installs at that point.
+  When Claude Code asks to compact a Haiku party that has not handed off yet,
+  the ask is held up to 3 times and the model is told to call it now; then it
+  compacts with or without it.
 - 📜 **Every decision logged** to a JSONL file per session, when you want to
   see why a compaction ran or was held.
 

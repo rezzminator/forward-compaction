@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { AgentPolicies, AgentTypes, type AgentFs } from '../plugins/sub-agent-compact/src/agents.ts';
-import { compactionEnd, contextTokens, decide, knownTrigger, personPrompt } from '../plugins/sub-agent-compact/src/decide.ts';
+import { compactionEnd, contextTokens, decide, HAIKU_HOLDS, haikuHold, knownTrigger, personPrompt } from '../plugins/sub-agent-compact/src/decide.ts';
 import { parseFrontmatter } from '../plugins/sub-agent-compact/src/frontmatter.ts';
 import { DEFAULT_KEEP_BRIEF, DEFAULT_MAIN, DEFAULT_SUBAGENT, parseEnabled, parseSize, resolveOptions, sizeTokens } from '../plugins/sub-agent-compact/src/limits.ts';
 
@@ -305,4 +305,23 @@ describe('a Haiku loop and the triggers Claude Code may send', () => {
     for (const t of ['auto', 'manual', 'plugin', 'precompute']) expect(knownTrigger(t)).toBe(t);
     for (const t of ['recompute', undefined, 42, '']) expect(knownTrigger(t)).toBeUndefined();
   });
+});
+
+describe('haikuHold', () => {
+  const ask = { haiku: true, forwardOn: true, trigger: 'auto' as const, stored: false, held: 0 };
+  it('holds an automatic ask of a Haiku party with no forward handoff stored, up to HAIKU_HOLDS times', () => {
+    expect(haikuHold(ask)).toBe(true);
+    expect(haikuHold({ ...ask, held: HAIKU_HOLDS - 1 })).toBe(true);
+    expect(haikuHold({ ...ask, held: HAIKU_HOLDS })).toBe(false);
+  });
+  it('lets the ask through once the forward handoff is stored', () => {
+    expect(haikuHold({ ...ask, stored: true })).toBe(false);
+  });
+  it('never holds a requested compaction, a non-Haiku party, or Haiku without the forward handoff', () => {
+    expect(haikuHold({ ...ask, trigger: 'manual' })).toBe(false);
+    expect(haikuHold({ ...ask, trigger: 'plugin' })).toBe(false);
+    expect(haikuHold({ ...ask, haiku: false })).toBe(false);
+    expect(haikuHold({ ...ask, forwardOn: false })).toBe(false);
+  });
+  it('holds at most three asks', () => expect(HAIKU_HOLDS).toBe(3));
 });

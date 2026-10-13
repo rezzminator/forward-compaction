@@ -97,9 +97,9 @@ function engine(options: Record<string, unknown> = { forwardHandoffTool: true },
     logs,
     summarized: () => summarized,
     start: () => dispatch('session.start', {}, async () => ({})),
-    step: async (tokens: number) => {
+    step: async (tokens: number, model = 'claude-opus-4-5[1m]') => {
       current = tokens;
-      const gen = dispatch('turn.step', { model: 'claude-opus-4-5[1m]' }, async function* () {
+      const gen = dispatch('turn.step', { model }, async function* () {
         return { usage: { input_tokens: tokens }, answer: 'working', toolUses: [{}] };
       });
       for (;;) if ((await gen.next()).done) break;
@@ -164,6 +164,30 @@ describe('the forward handoff tool through the adapter', () => {
     const record = JSON.parse(cc.written[`${DIR}/record.json`]!);
     expect(record.tokensAfter).toBe(out.tokensAfter);
     expect(record.install).toMatchObject({ ok: true, missing: [], landed: record.blocks.length });
+  });
+
+  it('holds Claude Code\'s automatic ask of a Haiku main chat until its forward handoff is stored, telling it once', async () => {
+    const cc = engine();
+    await cc.start();
+    await cc.step(60_000, 'claude-haiku-4-5');
+    expect(await cc.ask('auto')).toEqual({ skip: expect.stringContaining('held for its forward handoff (1/3)') });
+    const told = await cc.read();
+    expect((told.context ?? []).filter((line: string) => line.includes('very next step'))).toHaveLength(1);
+    expect(await cc.ask('auto')).toEqual({ skip: expect.stringContaining('(2/3)') });
+    expect(((await cc.read()).context ?? []).some((line: string) => line.includes('very next step'))).toBe(false);
+    expect((await cc.forward()).result).toMatch(/^Forward handoff stored/);
+    const out = await cc.ask('auto');
+    expect(cc.summarized()).toBe(0);
+    expect(out.messages[0].text).toBe(cc.written[`${DIR}/wake.txt`]);
+  });
+
+  it('lets a Haiku main chat\'s ask through to Claude Code\'s own summary after three holds without a forward handoff', async () => {
+    const cc = engine();
+    await cc.start();
+    await cc.step(60_000, 'claude-haiku-4-5');
+    for (let i = 1; i <= 3; i++) expect(await cc.ask('auto')).toEqual({ skip: expect.stringContaining(`(${i}/3)`) });
+    await cc.ask('auto');
+    expect(cc.summarized()).toBe(1);
   });
 
   it('checks the install against what the session holds at the next step, and names a block that did not land', async () => {

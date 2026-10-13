@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { FORWARD_INPUT_SCHEMA, FORWARD_LIMITS, FORWARD_TOOL, FORWARD_TOOL_DESCRIPTION, forwardNudgeText, forwardStoredText, parseForwardArgs, TRIMMED } from '../plugins/sub-agent-compact/src/forward-args.ts';
+import { FORWARD_INPUT_SCHEMA, FORWARD_LIMITS, FORWARD_TOOL, FORWARD_TOOL_DESCRIPTION, forwardHoldText, forwardNudgeText, forwardStoredText, parseForwardArgs, TRIMMED } from '../plugins/sub-agent-compact/src/forward-args.ts';
+import { HAIKU_HOLDS } from '../plugins/sub-agent-compact/src/decide.ts';
 
 const ok = { objective: 'Ship the thing', done: ['a: tests green'], remaining: ['b', 'c'], next: 'run the tests' };
 const parse = (input: Record<string, unknown>) => {
@@ -132,5 +133,14 @@ describe('tool text', () => {
     expect(t).toContain('/c/x/1');
     expect(t).toContain('User 4k');
     expect(t).toMatch(/end your turn/i);
+  });
+});
+
+describe('forwardHoldText', () => {
+  it('tells a held Haiku party to call the tool now and how many steps it has', () => {
+    const t = forwardHoldText('mcp__x__forward_handoff');
+    expect(t).toContain('mcp__x__forward_handoff');
+    expect(t).toContain('very next step');
+    expect(t).toContain(`within ${HAIKU_HOLDS} steps`);
   });
 });
