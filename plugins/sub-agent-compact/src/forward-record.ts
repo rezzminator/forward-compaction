@@ -1,6 +1,10 @@
 // What a forward handoff leaves on disk: where, and the measurement record the experiment reads.
 import { estimateTokens, fnv1a, type BlockRecord } from './forward-text.ts';
 
+type TrailEntry = { tag: 'R' | 'E' | 'C'; path: string };
+const isTrailEntry = (t: unknown): t is TrailEntry =>
+  t !== null && typeof t === 'object' && ['R', 'E', 'C'].includes((t as TrailEntry).tag) && typeof (t as TrailEntry).path === 'string';
+
 const ROOT = 'sub-agent-compact/forward-handoff';
 
 const safe = (id: string): string => id.replace(/[^A-Za-z0-9_-]/g, '_');
@@ -31,7 +35,7 @@ export function previousDir(configDir: string, session: string, seq: number, age
 export type ForwardRecord = Record<string, unknown>;
 
 /** The record of one call at handoff time: the size of every block and of the whole text. */
-export function buildRecord(i: { seq: number; session: string; agentId?: string; dir: string; text: string; blocks: readonly BlockRecord[]; users: readonly string[]; usersDropped: number; handoffInReply?: boolean; tokensBefore?: number; trimmed: readonly string[]; at?: string }): ForwardRecord {
+export function buildRecord(i: { seq: number; session: string; agentId?: string; dir: string; text: string; blocks: readonly BlockRecord[]; users: readonly string[]; usersDropped: number; handoffInReply?: boolean; trail?: readonly TrailEntry[]; tokensBefore?: number; trimmed: readonly string[]; at?: string }): ForwardRecord {
   return {
     seq: i.seq,
     session: i.session,
@@ -41,6 +45,7 @@ export function buildRecord(i: { seq: number; session: string; agentId?: string;
     users: [...i.users],
     usersDropped: i.usersDropped,
     ...(i.handoffInReply === true ? { handoffInReply: true } : {}),
+    ...(i.trail !== undefined ? { trail: i.trail.map((t) => ({ tag: t.tag, path: t.path })) } : {}),
     ...(i.at !== undefined ? { at: i.at } : {}),
     ...(i.tokensBefore !== undefined ? { tokensBefore: i.tokensBefore } : {}),
     trimmed: [...i.trimmed],
@@ -54,14 +59,14 @@ export function withInstall(record: ForwardRecord, i: { tokensAfter: number; che
   return { ...record, tokensAfter: i.tokensAfter, install: i.check };
 }
 
-/** The prompts an earlier handoff carried, from its record: the one whose text is the one the session holds. Undefined when no record is. */
-export function carriedFrom(records: readonly unknown[], heldText: string): { users: string[]; dropped: number; inReply?: boolean } | undefined {
+/** The prompts and file trail an earlier handoff carried, from its record: the one whose text is the one the session holds. Undefined when no record is. */
+export function carriedFrom(records: readonly unknown[], heldText: string): { users: string[]; dropped: number; inReply?: boolean; trail?: TrailEntry[] } | undefined {
   const hash = fnv1a(heldText);
   for (const r of records) {
     if (r === null || typeof r !== 'object') continue;
     const rec = r as Record<string, unknown>;
     if (rec.textHash !== hash || !Array.isArray(rec.users) || !rec.users.every((u) => typeof u === 'string')) continue;
-    return { users: rec.users as string[], dropped: typeof rec.usersDropped === 'number' ? rec.usersDropped : 0, ...(rec.handoffInReply === true ? { inReply: true } : {}) };
+    return { users: rec.users as string[], dropped: typeof rec.usersDropped === 'number' ? rec.usersDropped : 0, ...(rec.handoffInReply === true ? { inReply: true } : {}), ...(Array.isArray(rec.trail) && rec.trail.every(isTrailEntry) ? { trail: rec.trail as TrailEntry[] } : {}) };
   }
   return undefined;
 }

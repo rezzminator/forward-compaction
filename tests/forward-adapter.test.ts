@@ -21,7 +21,7 @@ const api = (extra: unknown[] = []) => [
   { role: 'assistant', content: [{ type: 'tool_use', id: 'f1', name: 'mcp__sub-agent-compact__forward_handoff', input: FIELDS }] },
 ];
 
-type Env = { denied?: string[]; listFails?: boolean; noHome?: boolean; noTranscript?: boolean; agentRows?: Record<string, unknown[]>; agents?: { id: string; type: string }[] };
+type Env = { denied?: string[]; listFails?: boolean; noHome?: boolean; noTranscript?: boolean; agentRows?: Record<string, unknown[]>; agents?: { id: string; type: string }[]; run?: (argv: string[]) => { exitCode: number; stdout: string; stderr: string } | undefined };
 
 function engine(options: Record<string, unknown> = { forwardHandoffTool: true }, files: Record<string, string> = {}, apiRows: unknown[] = api(), git = true, refused: string[] = [], env: Env = {}) {
   const hooks = new Map<string, AnyHook>();
@@ -55,6 +55,8 @@ function engine(options: Record<string, unknown> = { forwardHandoffTool: true },
     process: {
       run: async (argv: string[]) => {
         const line = argv.join(' ');
+        const scripted = env.run?.(argv);
+        if (scripted !== undefined) return scripted;
         if (!git && argv[0] === 'git') return { exitCode: 128, stdout: '', stderr: 'fatal: not a git repository' };
         if (line === 'git rev-parse --abbrev-ref HEAD') return { exitCode: 0, stdout: 'main\n', stderr: '' };
         if (line === 'git rev-parse --show-toplevel') return { exitCode: 0, stdout: '/nowhere\n', stderr: '' };
@@ -330,6 +332,42 @@ describe('the forward handoff tool through the adapter', () => {
     expect(wake2).toContain('User\n[1] rename qty to quantity in every report\n[2, latest, handed off in reply] second ask\n');
     expect(wake2).toContain(`previous ${DIR}`);
     expect(JSON.parse(cc.written[`${dir2}/record.json`]!)).toMatchObject({ users: ['rename qty to quantity in every report', 'second ask'], usersDropped: 0 });
+  });
+
+  it('chains the file trail: the second handoff lists the files touched since, then those the first one carried', async () => {
+    const cc = engine();
+    await cc.start();
+    await cc.step(250_000);
+    await cc.forward();
+    const wake1 = cc.written[`${DIR}/wake.txt`]!;
+    await cc.ask('auto');
+    cc.rows.splice(0, cc.rows.length, { role: 'user', content: [text(wake1)] }, { role: 'assistant', content: [{ type: 'tool_use', id: 'e1', name: 'Edit', input: { file_path: 'reports/c.sql' } }] }, { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'e1', content: 'ok' }] }, { role: 'assistant', content: [{ type: 'tool_use', id: 'f1', name: 'mcp__sub-agent-compact__forward_handoff', input: FIELDS }] });
+    await cc.step(250_000);
+    await cc.forward();
+    const dir2 = DIR.replace(/1$/, '2');
+    expect(cc.written[`${dir2}/wake.txt`]).toContain('Files\nE /nowhere/reports/c.sql\nR /nowhere/reports/a.sql\n');
+    expect(JSON.parse(cc.written[`${dir2}/record.json`]!).trail).toEqual([{ tag: 'E', path: '/nowhere/reports/c.sql' }, { tag: 'R', path: '/nowhere/reports/a.sql' }]);
+  });
+
+  it("lists the files touched before Claude Code's own compaction, read from the transcript", async () => {
+    const entry = (n: number, o: Record<string, unknown>) => `${n}:${JSON.stringify(o)}`;
+    const run = (argv: string[]) => {
+      if (argv[0] === 'grep' && argv.includes('"subtype":"compact_boundary"')) return { exitCode: 0, stdout: '40:{"type":"system","subtype":"compact_boundary"}\n', stderr: '' };
+      if (argv[0] === 'sh' && argv[2]!.includes('"type":"assistant"')) {
+        expect(argv.slice(4)).toEqual([TRANSCRIPT, '40']);
+        return { exitCode: 0, stdout: `${entry(12, { type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', id: 'r0', name: 'Read', input: { file_path: '/nowhere/team/roster.md' } }] } })}\n`, stderr: '' };
+      }
+      return undefined;
+    };
+    const rows = [
+      { role: 'user', content: [text('<system-reminder>\nAs you answer the user, you can use this context.\n</system-reminder>'), text('This session is being continued from a previous conversation that ran out of context.')] },
+      ...api().slice(1),
+    ];
+    const cc = engine({ forwardHandoffTool: true }, {}, rows, true, [], { run });
+    await cc.start();
+    await cc.step(250_000);
+    await cc.forward();
+    expect(cc.written[`${DIR}/wake.txt`]).toContain('Files\nR /nowhere/reports/a.sql\nR /nowhere/team/roster.md\n');
   });
 
   it('refuses a second handoff from a party that woke from one while its context is below its first nudge point', async () => {

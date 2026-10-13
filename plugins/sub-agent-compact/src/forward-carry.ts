@@ -535,6 +535,43 @@ export function priorPrompts(grepLines: string, boundaryLine: number): ApiMsg[] 
   return out;
 }
 
+/**
+ * The model's tool calls before a transcript's last compaction, from `grep -n` lines of the JSONL file, as messages
+ * fileTrail reads: Claude Code's own summary replaced them in the context, the file still holds them.
+ */
+export function priorCalls(grepLines: string, boundaryLine: number): ApiMsg[] {
+  const out: ApiMsg[] = [];
+  for (const line of grepLines.split('\n')) {
+    const m = /^(\d+):(.*)$/.exec(line);
+    if (m === null || Number(m[1]) >= boundaryLine) continue;
+    let entry: { type?: unknown; message?: { content?: unknown } };
+    try {
+      entry = JSON.parse(m[2]!);
+    } catch {
+      continue;
+    }
+    const content = entry.message?.content;
+    if (entry.type !== 'assistant' || !Array.isArray(content)) continue;
+    out.push({ role: 'assistant', content: content as ApiMsg['content'] });
+  }
+  return out;
+}
+
+/**
+ * Two trails as one, at most `max`: the newer one's files first, then the older one's it lacks. A file the older trail
+ * created stays created; one touched in both is edited unless both only read it.
+ */
+export function mergeTrail(older: readonly TrailEntry[] | undefined, newer: readonly TrailEntry[], max: number): TrailEntry[] {
+  const before = new Map((older ?? []).map((t) => [t.path, t.tag] as const));
+  const merged = newer.map((t): TrailEntry => {
+    const old = before.get(t.path);
+    if (old === undefined) return t;
+    return { tag: old === 'C' ? 'C' : old === 'R' && t.tag === 'R' ? 'R' : 'E', path: t.path };
+  });
+  for (const t of older ?? []) if (!newer.some((n) => n.path === t.path)) merged.push(t);
+  return merged.slice(0, max);
+}
+
 /** The calls a model makes to reach the forward handoff itself: they do no work on a request. */
 const reachesHandoff = (name: unknown): boolean => name === 'ToolSearch' || (typeof name === 'string' && name.endsWith(FORWARD_TOOL));
 

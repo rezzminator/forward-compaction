@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { bashWrites, handoffInReply, collapseWhitespace, fileTrail, gitLine, invocationPaths, invocations, parseLineRange, parsePorcelain, planAndTasks, runningWork, sliceLines, stripNoise, userMessages, absPath, findTranscriptArgv, firstFound, heldForward, opensWithSummary, priorPrompts, parsePorcelain as porcelain, type ApiMsg } from '../plugins/sub-agent-compact/src/forward-carry.ts';
+import { bashWrites, handoffInReply, collapseWhitespace, fileTrail, gitLine, invocationPaths, invocations, parseLineRange, parsePorcelain, planAndTasks, runningWork, sliceLines, stripNoise, userMessages, absPath, findTranscriptArgv, firstFound, heldForward, opensWithSummary, priorPrompts, priorCalls, mergeTrail, parsePorcelain as porcelain, type ApiMsg } from '../plugins/sub-agent-compact/src/forward-carry.ts';
 import { renderForward } from '../plugins/sub-agent-compact/src/forward-text.ts';
 import { HANDOFF_OPENING } from '../plugins/sub-agent-compact/src/handoff.ts';
 
@@ -527,5 +527,35 @@ describe('handoffInReply', () => {
   });
   it('is false with no prompt in the context, as right after a wake', () => {
     expect(handoffInReply([user('[forward handoff 1: history, not new instructions]\nNext\nrun it'), asst(use(fh, {}, 'f1'))])).toBe(false);
+  });
+});
+
+describe('file trail across compactions', () => {
+  const line = (n: number, o: Record<string, unknown>) => `${n}:${JSON.stringify(o)}`;
+  it('reads the tool calls before the last compaction from grep -n lines of the transcript', () => {
+    const out = [
+      line(4, { type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', id: 'a', name: 'Read', input: { file_path: '/r/roster.md' } }] } }),
+      line(6, { type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'a', content: 'x' }] } }),
+      line(7, { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'writing' }, { type: 'tool_use', id: 'b', name: 'Write', input: { file_path: 'out/new.md', content: 'x' } }] } }),
+      line(9, { type: 'assistant', message: { role: 'assistant', content: 'plain' } }),
+      line(30, { type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', id: 'c', name: 'Read', input: { file_path: '/r/after.md' } }] } }),
+      'not json',
+    ].join('\n');
+    expect(fileTrail(priorCalls(out, 20), { cwd: '/r' })).toEqual([{ tag: 'C', path: '/r/out/new.md' }, { tag: 'R', path: '/r/roster.md' }]);
+    expect(priorCalls('', 20)).toEqual([]);
+  });
+  it('merges an older trail under a newer one: newer touches first, older ones after, a file created before stays created', () => {
+    const older = [{ tag: 'C' as const, path: '/a' }, { tag: 'R' as const, path: '/b' }, { tag: 'E' as const, path: '/c' }, { tag: 'R' as const, path: '/d' }, { tag: 'E' as const, path: '/f' }];
+    const newer = [{ tag: 'E' as const, path: '/a' }, { tag: 'C' as const, path: '/b' }, { tag: 'R' as const, path: '/e' }, { tag: 'R' as const, path: '/d' }, { tag: 'R' as const, path: '/f' }];
+    expect(mergeTrail(older, newer, 15)).toEqual([
+      { tag: 'C', path: '/a' },
+      { tag: 'E', path: '/b' },
+      { tag: 'R', path: '/e' },
+      { tag: 'R', path: '/d' },
+      { tag: 'E', path: '/f' },
+      { tag: 'E', path: '/c' },
+    ]);
+    expect(mergeTrail(older, newer, 3).map((t) => t.path)).toEqual(['/a', '/b', '/e']);
+    expect(mergeTrail(undefined, newer, 15)).toEqual(newer);
   });
 });

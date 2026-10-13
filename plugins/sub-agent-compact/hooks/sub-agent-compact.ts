@@ -2,7 +2,7 @@ import type { EngineInterface, On, PluginOptions, Register } from 'claude-code';
 import { bounded } from '../src/bounded.ts';
 import { haikuServed, servedOptions, toolsToRegister } from '../src/register.ts';
 import { FORWARD_INPUT_SCHEMA, FORWARD_TOOL, FORWARD_TOOL_DESCRIPTION, forwardHoldText, forwardNudgeText, forwardRefusal, forwardStoredText, parseForwardArgs, type ForwardArgs } from '../src/forward-args.ts';
-import { absPath, fileTrail, handoffInReply, findTranscriptArgv, firstFound, gitLine, heldForward, opensWithSummary, priorPrompts, invocationPaths, invocations, parseLineRange, parsePorcelain, planAndTasks, runningWork, sliceLines, userMessages, type ApiMsg, type LiveWork } from '../src/forward-carry.ts';
+import { absPath, fileTrail, handoffInReply, findTranscriptArgv, firstFound, gitLine, heldForward, opensWithSummary, priorCalls, priorPrompts, mergeTrail, invocationPaths, invocations, parseLineRange, parsePorcelain, planAndTasks, runningWork, sliceLines, userMessages, type ApiMsg, type LiveWork, type TrailEntry } from '../src/forward-carry.ts';
 import { buildRecord, carriedFrom, forwardDir, forwardSessionDir, nextSeq, previousDir, withInstall } from '../src/forward-record.ts';
 import { chainUsers, installCheck, renderForward, TRAIL_MAX, type RenderInput } from '../src/forward-text.ts';
 import { BRIEF_MAX_TOKENS, reseatBrief, seatedBrief } from '../src/brief.ts';
@@ -45,6 +45,8 @@ const COMPACT_TOOL = 'compact';
 const FALLBACK_WINDOW = 200_000;
 
 const LOG_CAP = 2000;
+/** The model's tool-call lines of a transcript before line $2, the newest 400: sed cuts at the boundary, so no line's length matters. */
+const CALLS_BEFORE = `sed -n "1,$(($2 - 1))p" "$1" | grep -a -n '"type":"assistant"' | grep -a '"tool_use"' | tail -n 400`;
 /** Registering the tools holds a turn no longer than this: past it the turn goes on and the plugin stops waiting on registration. */
 const ENSURE_TOOLS_TIMEOUT_MS = 5_000;
 /** Registering a tool is tried on this many hook calls before it is given up on. */
@@ -641,10 +643,6 @@ async function gatherForward(st: State, $: EngineInterface, args: ForwardArgs, a
   if (previous !== undefined) paths.push(`previous ${previous}`);
   if (at.dir !== undefined) paths.push(`saved ${at.dir}`);
 
-  const trailAll = fileTrail(api, { cwd, home: st.home ?? '', max: TRAIL_MAX });
-  const kept = nested.filter((p) => !trailAll.some((t) => t.path === p)).slice(-5);
-  const trail = [...fileTrail(api, { cwd, home: st.home ?? '', max: TRAIL_MAX - kept.length }), ...kept.map((path) => ({ tag: 'R' as const, path }))];
-
   const work = planAndTasks(api);
   let plan = work.planText;
   if (plan === undefined && work.planPath !== undefined) {
@@ -680,6 +678,7 @@ async function gatherForward(st: State, $: EngineInterface, args: ForwardArgs, a
   if (held !== undefined && !held.recorded) problems.push(`earlier handoff: its record is missing, so the prompts before it are not carried${unreadable.length > 0 ? ` (${unreadable.join('; ')})` : ''}`);
   // After Claude Code's own compaction the context opens with its summary: the prompts before it come from the transcript file.
   let prior: { users: string[]; dropped: number } | undefined;
+  let priorTrail: TrailEntry[] | undefined;
   if (held === undefined && transcript !== undefined && opensWithSummary(api)) {
     try {
       const bounds = await $.process.run(['grep', '-a', '-n', '"subtype":"compact_boundary"', transcript], { timeoutMs: 15_000 });
@@ -690,6 +689,10 @@ async function gatherForward(st: State, $: EngineInterface, args: ForwardArgs, a
         const users = await $.process.run(['sh', '-c', 'grep -a -n \'"type":"user"\' "$1" | grep -v \'"tool_use_id"\'', 'sh', transcript], { timeoutMs: 30_000 });
         if (users.exitCode !== 0 && users.exitCode !== 1) problems.push(`prompts before the summary: reading the transcript failed (${failure(users)})`);
         else prior = { users: userMessages(priorPrompts(users.stdout, last)), dropped: 0 };
+        // The files touched before it: the calls' lines up to the boundary, the newest kept.
+        const calls = await $.process.run(['sh', '-c', CALLS_BEFORE, 'sh', transcript, String(last)], { timeoutMs: 30_000 });
+        if (calls.exitCode !== 0 || calls.stderr.trim() !== '') problems.push(`files before the summary: reading the transcript failed (${failure(calls)})`);
+        else priorTrail = fileTrail(priorCalls(calls.stdout, last), { cwd, home: st.home ?? '', max: TRAIL_MAX });
       }
     } catch (error) {
       problems.push(`prompts before the summary: ${message(error)}`);
@@ -697,6 +700,11 @@ async function gatherForward(st: State, $: EngineInterface, args: ForwardArgs, a
   }
   const since = held !== undefined ? api.slice(held.index + 1) : api;
   const chain = chainUsers(before ?? prior, userMessages(since), handoffInReply(since));
+  // The files: those touched since, then those the earlier handoff or the transcript before the summary carried.
+  const older = before !== undefined ? before.trail : priorTrail;
+  const fresh = fileTrail(since, { cwd, home: st.home ?? '', max: TRAIL_MAX });
+  const kept = nested.filter((p) => !mergeTrail(older, fresh, TRAIL_MAX).some((t) => t.path === p)).slice(-5);
+  const trail = [...mergeTrail(older, fresh, TRAIL_MAX - kept.length), ...kept.map((path) => ({ tag: 'R' as const, path }))];
   const live = at.agentId === undefined && st.live !== undefined ? { tasks: st.live.tasks, crons: st.live.crons, started: st.live.started, now: Date.now() } : undefined;
 
   return { seq: at.seq, users: chain.users, usersDropped: chain.dropped, ...(chain.inReply ? { handoffInReply: true } : {}), skills, trail, loaded, ...(plan !== undefined ? { plan } : {}), tasks: work.tasks, running: runningWork(api, live), ...(git !== undefined ? { git } : {}), paths: paths.length > 0 ? [paths.join(' · ')] : [], problems, args };
@@ -748,7 +756,7 @@ async function answerForwardTool(st: State, $: EngineInterface, e: Record<string
   const input = await gatherForward(st, $, parsed.args, { seq, ...(dir !== undefined ? { dir } : {}), session, ...(agentId !== undefined ? { agentId } : {}) });
   const { text, blocks } = renderForward(input);
   const reading = st.parties.reading(key);
-  const base = buildRecord({ seq, session, ...(agentId !== undefined ? { agentId } : {}), dir: dir ?? '', text, blocks, users: input.users, usersDropped: input.usersDropped ?? 0, ...(input.handoffInReply === true ? { handoffInReply: true } : {}), ...(reading !== undefined ? { tokensBefore: reading } : {}), trimmed: parsed.args.trimmed, at: new Date().toISOString() });
+  const base = buildRecord({ seq, session, ...(agentId !== undefined ? { agentId } : {}), dir: dir ?? '', text, blocks, users: input.users, usersDropped: input.usersDropped ?? 0, ...(input.handoffInReply === true ? { handoffInReply: true } : {}), trail: input.trail, ...(reading !== undefined ? { tokensBefore: reading } : {}), trimmed: parsed.args.trimmed, at: new Date().toISOString() });
   if (dir !== undefined) {
     try {
       await $.fs.write(`${dir}/args.json`, JSON.stringify(raw, null, 2));

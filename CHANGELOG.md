@@ -4,6 +4,11 @@ Every release of sub-agent-compact. Versions follow [semantic versioning](https:
 
 ## [Unreleased]
 
+## [0.7.0-dev.9] — 2026-10-13
+
+### Fixed
+- The forward handoff's `Files` block survives every compaction, as the prompts do: after Claude Code's own compaction it adds the files touched before it, read from the transcript; a chained handoff adds the files the earlier one listed, from its record (`trail`). Newer touches first, a file created earlier stays `C`. Haiku handoffs taken after Claude Code's own compaction listed none of the files read before it.
+
 ## [0.7.0-dev.8] — 2026-10-13
 
 ### Fixed
