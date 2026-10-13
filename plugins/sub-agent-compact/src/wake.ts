@@ -9,6 +9,8 @@ export type WakeEntry = { name: string; path?: string; content?: string; problem
 export const WAKE_MAX_ENTRIES = 8;
 export const WAKE_ENTRY_MAX_CHARS = 16_000;
 export const WAKE_TOTAL_MAX_CHARS = 40_000;
+/** A skill or command file past this is refused before it is read: the inlined text is cut far below it, so only a file that is not a skill reaches it. */
+export const WAKE_FILE_MAX_BYTES = 256 * 1024;
 
 /** The files a name may be read from, in the order Claude Code prefers them, or why the name is refused. */
 export function wakeCandidates(name: string, roots: WakeRoots): { paths: string[] } | { problem: string } {
@@ -33,7 +35,7 @@ export function stripFrontmatter(text: string): string {
   return text.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/, '');
 }
 
-/** The skills and commands a transcript's Skill tool calls invoked: Claude Code re-attaches those itself. */
+/** The skills and commands a transcript's Skill tool calls invoked: not inlined again, the model is told it invoked them. */
 export function invokedSkills(messages: readonly { toolUses: readonly { tool?: string; input?: unknown }[] }[]): Set<string> {
   const names = new Set<string>();
   for (const message of messages) {
@@ -75,7 +77,7 @@ export function renderWake(entries: readonly WakeEntry[]): { text: string; faile
   let total = 0;
   for (const entry of entries) {
     if (entry.invoked) {
-      blocks.push(`${entry.name}: already re-attached by Claude Code (you invoked it)`);
+      blocks.push(`${entry.name}: not inlined because you invoked it earlier in this session; if its text is not in your context after this wake, invoke it again`);
       continue;
     }
     if (entry.problem !== undefined || entry.content === undefined) {
@@ -98,4 +100,11 @@ export function renderWake(entries: readonly WakeEntry[]): { text: string; faile
     blocks.push(`=== loaded: ${entry.name} (${entry.path ?? 'unknown path'}) ===\n${content}\n=== end loaded: ${entry.name} ===`);
   }
   return { text: blocks.join('\n\n'), failed, cut };
+}
+
+/** Why a path's stat rules it out as a skill or command file, or undefined: only a regular file within the byte cap is read. */
+export function wakeFileProblem(stat: { kind: string; size: number }): string | undefined {
+  if (stat.kind !== 'file') return `is not a regular file (it is a ${stat.kind})`;
+  if (stat.size > WAKE_FILE_MAX_BYTES) return `is ${stat.size} bytes, past the ${WAKE_FILE_MAX_BYTES} bytes a skill or command may be`;
+  return undefined;
 }

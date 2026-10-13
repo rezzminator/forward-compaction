@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { Parties } from '../plugins/sub-agent-compact/src/parties.ts';
+import { isFirstRequest, Parties } from '../plugins/sub-agent-compact/src/parties.ts';
 
 describe('Parties', () => {
   it('owes each nudge level once, and none while armed', () => {
@@ -83,5 +83,27 @@ describe('notices to a party\'s model', () => {
     expect(parties.takeNotices('main')).toEqual(['skipped: busy']);
     parties.notify('main', 'skipped: busy');
     expect(parties.takeNotices('main')).toEqual(['skipped: busy']);
+  });
+});
+
+describe('isFirstRequest', () => {
+  it('takes a sub-agent\'s step 0 of a turn that carries at most the prompt and its context lines', () => {
+    expect(isFirstRequest({ index: 0, messageCount: 1, main: false })).toBe(true);
+    expect(isFirstRequest({ index: 0, messageCount: 3, main: false })).toBe(true);
+    expect(isFirstRequest({ index: 0, messageCount: 4, main: false })).toBe(false);
+    expect(isFirstRequest({ index: 1, messageCount: 1, main: false })).toBe(false);
+    expect(isFirstRequest({ index: 0, main: false })).toBe(false);
+  });
+
+  it('takes the main chat\'s only when it is also the session\'s first prompt: after a reload, the step after a CLI compaction (summary and prompt, 2 messages) is not', () => {
+    expect(isFirstRequest({ index: 0, messageCount: 1, main: true, turns: 1 })).toBe(true);
+    expect(isFirstRequest({ index: 0, messageCount: 2, main: true, turns: 5 })).toBe(false);
+    expect(isFirstRequest({ index: 0, messageCount: 1, main: true, turns: 2 })).toBe(false);
+    expect(isFirstRequest({ index: 0, messageCount: 1, main: true, turns: 0 })).toBe(false);
+  });
+
+  it('is not first for the main chat when the prompt count is unknown, rather than guessing', () => {
+    expect(isFirstRequest({ index: 0, messageCount: 1, main: true })).toBe(false);
+    expect(isFirstRequest({ index: 0, messageCount: 1, main: true, turns: Number.NaN })).toBe(false);
   });
 });

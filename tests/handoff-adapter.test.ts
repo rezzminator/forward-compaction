@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { register } from '../plugins/sub-agent-compact/hooks/sub-agent-compact.ts';
 import { HANDOFF_OPENING } from '../plugins/sub-agent-compact/src/handoff.ts';
 
@@ -14,7 +14,23 @@ const NEXT_STEP = '**Next step**\nEdit reports/c.sql:12, then run npm test.';
 const TOOL = 'mcp__sub-agent-compact__handoff';
 const MARKER = `<handoff>${HANDOFF}</handoff>`;
 
-type Harness = { registerThrows?: boolean; skipSummary?: boolean; compactResult?: unknown; files?: Record<string, string>; listThrows?: boolean };
+type Harness = {
+  registerThrows?: boolean;
+  /** Registering a tool waits for this, so a test holds it open and releases it. */
+  registerGate?: Promise<void>;
+  skipSummary?: boolean;
+  compactResult?: unknown;
+  files?: Record<string, string>;
+  /** What `$.fs.stat` says of a path (default: a file the size of its content). */
+  kinds?: Record<string, string>;
+  sizes?: Record<string, number>;
+  statThrows?: boolean;
+  /** The engine has no `$.clock` (an older Claude Code). */
+  noClock?: boolean;
+  listThrows?: boolean;
+  /** How many prompts the person has sent (default 1); `$.session.turns` fails when it is null. */
+  turns?: number | null;
+};
 
 function engine(options: Record<string, unknown> = {}, harness: Harness = {}) {
   const hooks = new Map<string, AnyHook>();
@@ -28,6 +44,10 @@ function engine(options: Record<string, unknown> = {}, harness: Harness = {}) {
   const $ = {
     session: {
       id: async () => 'session-1',
+      turns: async () => {
+        if (harness.turns === null) throw new Error('turns unavailable');
+        return harness.turns ?? 1;
+      },
       cwd: async () => '/nowhere',
       usage: async () => ({ context: { tokens: current, window: 1_000_000 } }),
       compact: async (args: unknown) => {
@@ -38,7 +58,22 @@ function engine(options: Record<string, unknown> = {}, harness: Harness = {}) {
       },
     },
     env: { get: async (key: string) => (key === 'HOME' ? '/h/u' : undefined) },
-    fs: { exists: async (path: string) => path in files, read: async (path: string) => files[path] ?? '', write: async () => {}, list: async () => [] },
+    fs: {
+      exists: async (path: string) => path in files,
+      read: async (path: string) => files[path] ?? '',
+      write: async () => {},
+      list: async () => [],
+      stat: async (path: string) => {
+        if (harness.statThrows) throw new Error('EACCES: permission denied');
+        return { kind: harness.kinds?.[path] ?? 'file', size: harness.sizes?.[path] ?? (files[path] ?? '').length, mtimeMs: 0, isLink: false };
+      },
+    },
+    clock: harness.noClock ? undefined : {
+      after: (ms: number, fn: () => void) => {
+        const timer = setTimeout(fn, ms);
+        return { cancel: () => clearTimeout(timer) };
+      },
+    },
     ui: { log: (line: string) => void logs.push(line) },
     agent: {
       list: async () => {
@@ -49,6 +84,7 @@ function engine(options: Record<string, unknown> = {}, harness: Harness = {}) {
     tool: {
       register: async (spec: { name: string }) => {
         if (harness.registerThrows) throw new Error('session not bound');
+        await harness.registerGate;
         registered.push(spec.name);
         return { tool: `mcp__sub-agent-compact__${spec.name}` };
       },
@@ -174,6 +210,66 @@ describe('the handoff tool through the adapter', () => {
   });
 });
 
+describe('registering the tools is bounded', () => {
+  afterEach(() => void vi.useRealTimers());
+  const deferred = () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    return { gate, release };
+  };
+
+  it('lets a turn go on after 5s when registering never finishes, says so once, and does not wait again on later turns', async () => {
+    vi.useFakeTimers();
+    const { gate } = deferred();
+    const cc = engine({}, { registerGate: gate });
+    let done = 0;
+    void cc.step(1_000).then(() => done++);
+    await vi.advanceTimersByTimeAsync(4_999);
+    expect(done).toBe(0);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(done).toBe(1);
+    expect(cc.logs.filter((line) => /registering the tools did not finish within 5s/.test(line))).toHaveLength(1);
+    void cc.step(2_000).then(() => done++);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(done).toBe(2);
+    expect(cc.logs.filter((line) => /registering the tools did not finish/.test(line))).toHaveLength(1);
+  });
+
+  it('bounds session.start the same way', async () => {
+    vi.useFakeTimers();
+    const { gate } = deferred();
+    const cc = engine({}, { registerGate: gate });
+    let started = false;
+    void cc.start().then(() => (started = true));
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(started).toBe(true);
+    expect(cc.logs.join('\n')).toMatch(/registering the tools did not finish within 5s/);
+  });
+
+  it('goes on, unbounded, with one warning when the engine has no clock to bound it with', async () => {
+    const cc = engine({}, { noClock: true });
+    await cc.start();
+    await cc.step(1_000);
+    await cc.step(2_000);
+    expect(cc.registered).toEqual(['handoff']);
+    expect(cc.logs.filter((line) => /\$\.clock\.after is unavailable/.test(line))).toHaveLength(1);
+  });
+
+  it('still names the tool in the nudge when the registration finishes after the timeout', async () => {
+    vi.useFakeTimers();
+    const { gate, release } = deferred();
+    const cc = engine({}, { registerGate: gate });
+    let went = false;
+    void cc.step(1_000).then(() => (went = true));
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(went).toBe(true);
+    release();
+    await vi.advanceTimersByTimeAsync(0);
+    await cc.step(250_000);
+    expect((await cc.read()).context?.[0]).toContain(TOOL);
+  });
+});
+
 describe('the size of the cut in the nudge', () => {
   it('is stated only from a reading taken on the session\'s first request, so a plugin reloaded mid-session leaves it out', async () => {
     const reloaded = engine();
@@ -188,6 +284,26 @@ describe('the size of the cut in the nudge', () => {
     await fresh.step(40_000, { index: 0, messageCount: 1 });
     await fresh.step(250_000, { index: 3, messageCount: 30 });
     expect((await fresh.read()).context?.[0]).toMatch(/cutting each later request to about 40k plus your handoff/);
+  });
+
+  it('is left out when a reloaded plugin first sees the step after a CLI compaction (a summary and the prompt, two messages) of a session with many prompts', async () => {
+    const cc = engine({}, { turns: 5 });
+    await cc.start();
+    await cc.step(40_000, { index: 0, messageCount: 2 });
+    await cc.step(250_000, { index: 3, messageCount: 30 });
+    const line = (await cc.read()).context?.[0];
+    expect(line).toMatch(/your context is 250k/);
+    expect(line).not.toMatch(/cutting each later request/);
+  });
+
+  it('is left out, with a warning once, when the prompt count cannot be read', async () => {
+    const cc = engine({}, { turns: null });
+    await cc.start();
+    await cc.step(40_000, { index: 0, messageCount: 1 });
+    await cc.step(41_000, { index: 0, messageCount: 1 });
+    await cc.step(250_000, { index: 3, messageCount: 30 });
+    expect((await cc.read()).context?.[0]).not.toMatch(/cutting each later request/);
+    expect(cc.logs.filter((line) => /could not read how many prompts/.test(line))).toHaveLength(1);
   });
 });
 
@@ -441,6 +557,18 @@ describe('the typed handoff through the tool', () => {
   });
 });
 
+describe('a handoff the plugin no longer holds, after the harness spoke', () => {
+  it('is still installed when only a task notification followed it, which no person wrote', async () => {
+    const cc = engine();
+    await cc.start();
+    await cc.step(250_000);
+    const notice = { role: 'user', text: '<task-notification>\n<task-id>b1</task-id>\n<status>completed</status>\n</task-notification>', toolUses: [], handle: 'm3' };
+    const out = await cc.ask('auto', [...cc.transcript(), notice]);
+    expect(cc.summarized()).toBe(0);
+    expect(out.messages[0].text).toContain(NEXT_STEP);
+  });
+});
+
 describe('load_on_wake', () => {
   const SKILL = '/nowhere/.claude/commands/pfm-testing-manual.md';
 
@@ -477,14 +605,48 @@ describe('load_on_wake', () => {
     expect((await cc.read()).context?.join('\n')).toMatch(/not loaded: pfm-testing-manual/i);
   });
 
-  it('leaves out what the model invoked, which Claude Code re-attaches, and says so', async () => {
+  it('leaves out what the model invoked, and says it only invoked it', async () => {
     const cc = engine({}, { files: { [SKILL]: 'BODY' } });
     await cc.start();
     await cc.step(250_000);
     await cc.handoff({ ...FIELDS, load_on_wake: ['pfm-testing-manual'] });
     const invoked = { role: 'assistant', text: '', toolUses: [{ tool_use_id: 's1', tool: 'Skill', input: { skill: 'pfm-testing-manual' } }], handle: 'm0b' };
     const out = await cc.ask('auto', cc.transcript([invoked]));
-    expect(out.messages[0].text).toContain('already re-attached by Claude Code');
+    expect(out.messages[0].text).toContain('not inlined because you invoked it earlier in this session');
+    expect(out.messages[0].text).not.toContain('re-attached');
+    expect(out.messages[0].text).not.toContain('BODY');
+  });
+
+  it('refuses at the call a name whose file is a directory, a pipe or any other path that is not a regular file, reading nothing', async () => {
+    const cc = engine({}, { files: { [SKILL]: 'BODY' }, kinds: { [SKILL]: 'other' } });
+    await cc.start();
+    await cc.step(250_000);
+    const out = await cc.handoff({ ...FIELDS, load_on_wake: ['pfm-testing-manual'] });
+    expect(out.result).toMatch(/^Not stored: .*pfm-testing-manual.*is not a regular file \(it is a other\)/);
+    expect(await cc.ask('auto', cc.plain())).toEqual({ skip: expect.any(String) });
+  });
+
+  it('refuses at the call a file past the byte cap, before it is read', async () => {
+    const cc = engine({}, { files: { [SKILL]: 'BODY' }, sizes: { [SKILL]: 4 * 1024 * 1024 } });
+    await cc.start();
+    await cc.step(250_000);
+    expect((await cc.handoff({ ...FIELDS, load_on_wake: ['pfm-testing-manual'] })).result).toMatch(/^Not stored: .*pfm-testing-manual.*is 4194304 bytes, past the 262144 bytes/);
+  });
+
+  it('refuses at the call a file it cannot stat, and says NOT LOADED when the path stopped being a file by the install', async () => {
+    const unreadable = engine({}, { files: { [SKILL]: 'BODY' }, statThrows: true });
+    await unreadable.start();
+    await unreadable.step(250_000);
+    expect((await unreadable.handoff({ ...FIELDS, load_on_wake: ['pfm-testing-manual'] })).result).toMatch(/^Not stored: .*pfm-testing-manual.*could not stat .*EACCES/);
+    const kinds: Record<string, string> = {};
+    const cc = engine({}, { files: { [SKILL]: 'BODY' }, kinds });
+    await cc.start();
+    await cc.step(250_000);
+    await cc.handoff({ ...FIELDS, load_on_wake: ['pfm-testing-manual'] });
+    kinds[SKILL] = 'dir';
+    const out = await cc.ask('auto');
+    expect(out.messages[0].text).toContain('NOT LOADED: pfm-testing-manual');
+    expect(out.messages[0].text).toContain('is not a regular file (it is a dir)');
     expect(out.messages[0].text).not.toContain('BODY');
   });
 });

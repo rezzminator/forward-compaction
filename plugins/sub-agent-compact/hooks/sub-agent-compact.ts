@@ -1,4 +1,5 @@
 import type { EngineInterface, On, PluginOptions, Register } from 'claude-code';
+import { bounded } from '../src/bounded.ts';
 import { BRIEF_MAX_TOKENS, reseatBrief, seatedBrief } from '../src/brief.ts';
 import { AgentPolicies, AgentTypes } from '../src/agents.ts';
 import { compactionEnd, contextTokens, currentTokens, decide, estimateTranscript, knownTrigger, personPrompt, type Trigger } from '../src/decide.ts';
@@ -26,9 +27,9 @@ import {
 import { resolveOptions, sizeTokens, type Policy, type ResolvedOptions } from '../src/limits.ts';
 import { appendRows, sessionLogPath } from '../src/log.ts';
 import { armedText, CONTINUE_AFTER_MARKER, disarmedText, earlyArm, markerRequest, nudgeText, stopRequest } from '../src/nudge.ts';
-import { Parties } from '../src/parties.ts';
+import { FRESH_MAX_MESSAGES, isFirstRequest, Parties } from '../src/parties.ts';
 import { engineAskPoint, isHaiku, modelWindow } from '../src/window.ts';
-import { invokedSkills, pluginPaths, renderWake, stripFrontmatter, wakeCandidates, type WakeEntry, type WakeRoots } from '../src/wake.ts';
+import { invokedSkills, pluginPaths, renderWake, stripFrontmatter, wakeCandidates, wakeFileProblem, type WakeEntry, type WakeRoots } from '../src/wake.ts';
 
 // Thin adapter: every decision lives in src/. Each hook catches its own
 // failures, logs them with context and lets the compaction through.
@@ -38,8 +39,8 @@ const COMPACT_TOOL = 'compact';
 const FALLBACK_WINDOW = 200_000;
 
 const LOG_CAP = 2000;
-/** A request counts as the session's first when it is step 0 of a turn that carries at most this many messages (the prompt and its context lines). */
-const FRESH_MAX_MESSAGES = 3;
+/** Registering the tools holds a turn no longer than this: past it the turn goes on and the plugin stops waiting on registration. */
+const ENSURE_TOOLS_TIMEOUT_MS = 5_000;
 /** Registering a tool is tried on this many hook calls before it is given up on. */
 const REGISTER_TRIES = 3;
 
@@ -65,6 +66,8 @@ type State = {
   toolTries: { handoff: number; compact: number };
   /** The registration in progress: hooks that need a tool wait on it, so none registers twice. */
   registering?: Promise<void>;
+  /** Registering the tools did not finish within ENSURE_TOOLS_TIMEOUT_MS: no hook waits on it again, and a late finish still names the tools. */
+  toolsAbandoned?: boolean;
   /** The session's cwd and Claude config directory, where skills and commands are read from. */
   cwd?: string;
   configDir?: string;
@@ -321,26 +324,56 @@ async function registerHandoffTool(st: State, $: EngineInterface): Promise<void>
   }
 }
 
+/** `$.clock.after`, or, where the engine has none, a timer that never fires and a warning once: the wait is then unbounded, as it was. */
+function afterOrNever(st: State, $: EngineInterface, ms: number, fn: () => void): { cancel: () => void } {
+  try {
+    return $.clock.after(ms, fn);
+  } catch (error) {
+    warnOnce(st, $, 'no-clock', `sub-agent-compact: $.clock.after is unavailable (${message(error)}); registering the tools is not time-bounded`);
+    return { cancel: () => {} };
+  }
+}
+
 /**
  * Registers each enabled tool that is not registered yet, up to REGISTER_TRIES
  * hook calls each: `session.start` may not fire (a plugin loaded mid-session)
  * or may run before the session can take a tool. Hooks that need a tool wait on it.
  */
 async function ensureTools(st: State, $: EngineInterface): Promise<void> {
-  await start(st, $);
-  st.registering = (st.registering ?? Promise.resolve())
-    .then(async () => {
-      if (st.config.compactTool && st.toolName === undefined && st.toolTries.compact < REGISTER_TRIES) {
-        st.toolTries.compact++;
-        await registerCompactTool(st, $);
-      }
-      if (st.config.handoffTool && st.handoffToolName === undefined && st.toolTries.handoff < REGISTER_TRIES) {
-        st.toolTries.handoff++;
-        await registerHandoffTool(st, $);
-      }
-    })
-    .catch((error) => $.ui.log(`sub-agent-compact: registering the tools failed: ${message(error)}`));
-  await st.registering;
+  if (st.toolsAbandoned) return;
+  const registered = (async () => {
+    await start(st, $);
+    st.registering = (st.registering ?? Promise.resolve())
+      .then(async () => {
+        if (st.config.compactTool && st.toolName === undefined && st.toolTries.compact < REGISTER_TRIES) {
+          st.toolTries.compact++;
+          await registerCompactTool(st, $);
+        }
+        if (st.config.handoffTool && st.handoffToolName === undefined && st.toolTries.handoff < REGISTER_TRIES) {
+          st.toolTries.handoff++;
+          await registerHandoffTool(st, $);
+        }
+      })
+      .catch((error) => $.ui.log(`sub-agent-compact: registering the tools failed: ${message(error)}`));
+    await st.registering;
+  })();
+  // A hang here would hold every turn of every chat: past the limit the turn goes on, and the person is told.
+  const outcome = await bounded(registered, ENSURE_TOOLS_TIMEOUT_MS, (ms, fn) => afterOrNever(st, $, ms, fn));
+  if (!outcome.timedOut) return;
+  st.toolsAbandoned = true;
+  warnOnce(st, $, 'tools-timeout', `sub-agent-compact: registering the tools did not finish within ${ENSURE_TOOLS_TIMEOUT_MS / 1000}s; turns go on without waiting for it, and the model is not nudged about a tool that is not registered`);
+}
+
+/** How many prompts the person has sent this session, or undefined (and a warning once) when it cannot be read. */
+async function promptCount(st: State, $: EngineInterface): Promise<number | undefined> {
+  try {
+    const turns = await $.session.turns();
+    if (typeof turns === 'number' && Number.isFinite(turns)) return turns;
+    warnOnce(st, $, 'turns', `sub-agent-compact: could not read how many prompts this session has (got ${JSON.stringify(turns)}); the size of the cut is left out of the nudge`);
+  } catch (error) {
+    warnOnce(st, $, 'turns', `sub-agent-compact: could not read how many prompts this session has: ${message(error)}; the size of the cut is left out of the nudge`);
+  }
+  return undefined;
 }
 
 /** Where skills and commands are read from, with the install path of each plugin `installed_plugins.json` lists. */
@@ -368,6 +401,15 @@ async function resolveWakeEntry(st: State, $: EngineInterface, roots: WakeRoots,
   for (const path of found.paths) {
     try {
       if (!(await $.fs.exists(path))) continue;
+      // Only a regular file within the cap is read: `$.fs.read` takes a pipe or a device as it takes a file.
+      let stat;
+      try {
+        stat = await $.fs.stat(path);
+      } catch (error) {
+        return { name, path, problem: `could not stat ${path}: ${message(error)}` };
+      }
+      const refused = wakeFileProblem(stat);
+      if (refused !== undefined) return { name, path, problem: `${path} ${refused}` };
       return { name, path, content: stripFrontmatter(await $.fs.read(path)) };
     } catch (error) {
       return { name, path, problem: `reading ${path} failed: ${message(error)}` };
@@ -461,10 +503,12 @@ export const register: Register = (on: On, options: PluginOptions) => {
     try {
       st.models.set(key, e.model);
       const tokens = contextTokens(result.usage);
-      // Only a reading of the session's first request is the base a handoff cuts back to; a plugin reloaded mid-session reads its first at a late one.
-      const fresh = e.index === 0 && typeof e.messageCount === 'number' && e.messageCount <= FRESH_MAX_MESSAGES;
-      if (tokens !== undefined) st.parties.read(key, tokens, fresh);
       const main = e.agentId === undefined;
+      // Only a reading of the session's first request is the base a handoff cuts back to; a plugin reloaded mid-session reads its first at a late one.
+      // The main chat's prompt count is asked only when this could be that request.
+      const mayBeFirst = e.index === 0 && typeof e.messageCount === 'number' && e.messageCount <= FRESH_MAX_MESSAGES && st.parties.firstReading(key) === undefined;
+      const turns = main && tokens !== undefined && mayBeFirst ? await promptCount(st, $) : undefined;
+      if (tokens !== undefined) st.parties.read(key, tokens, isFirstRequest({ index: e.index, messageCount: e.messageCount, main, turns }));
       const handoff = st.config.handoffTool ? handoffMarkerRequest({ answer: result.answer, toolCalls: result.toolUses.length, main }) : undefined;
       const focus = st.config.compactTool && handoff === undefined ? markerRequest({ answer: result.answer, toolCalls: result.toolUses.length, main }) : undefined;
       if (handoff !== undefined) {

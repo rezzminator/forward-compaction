@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { invokedSkills, pluginPaths, renderWake, stripFrontmatter, wakeCandidates, WAKE_ENTRY_MAX_CHARS, WAKE_TOTAL_MAX_CHARS } from '../plugins/sub-agent-compact/src/wake.ts';
+import { invokedSkills, pluginPaths, renderWake, stripFrontmatter, wakeCandidates, wakeFileProblem, WAKE_ENTRY_MAX_CHARS, WAKE_FILE_MAX_BYTES, WAKE_TOTAL_MAX_CHARS } from '../plugins/sub-agent-compact/src/wake.ts';
 
 const roots = { projectRoot: '/proj/.claude', userRoot: '/h/u/.claude', plugins: { quality: '/cache/quality/1.0' } };
 const paths = (name: string): string[] => {
@@ -83,9 +83,10 @@ describe('renderWake', () => {
     expect(failed).toEqual(['gone']);
   });
 
-  it('does not inline what the model invoked: Claude Code re-attaches it, and the text says so', () => {
+  it('does not inline what the model invoked, and claims only that it invoked it: if its text is not in context after the wake, it invokes it again', () => {
     const { text, failed } = renderWake([{ name: 'quality:prompt', invoked: true, path: '/p', content: 'BODY' }]);
-    expect(text).toMatch(/quality:prompt: already re-attached by Claude Code/);
+    expect(text).toMatch(/quality:prompt: not inlined because you invoked it earlier in this session; if its text is not in your context after this wake, invoke it again/);
+    expect(text).not.toMatch(/re-attached/);
     expect(text).not.toContain('BODY');
     expect(failed).toEqual([]);
   });
@@ -103,5 +104,21 @@ describe('renderWake', () => {
 
   it('is empty without entries', () => {
     expect(renderWake([])).toEqual({ text: '', failed: [], cut: [] });
+  });
+});
+
+describe('wakeFileProblem', () => {
+  it('passes a regular file within the byte cap, the cap itself included', () => {
+    expect(wakeFileProblem({ kind: 'file', size: 0 })).toBeUndefined();
+    expect(wakeFileProblem({ kind: 'file', size: WAKE_FILE_MAX_BYTES })).toBeUndefined();
+  });
+
+  it('refuses a directory and any other kind of path, naming the kind, so a pipe or a device is never read', () => {
+    expect(wakeFileProblem({ kind: 'dir', size: 4096 })).toBe('is not a regular file (it is a dir)');
+    expect(wakeFileProblem({ kind: 'other', size: 0 })).toBe('is not a regular file (it is a other)');
+  });
+
+  it('refuses a file past the cap, naming its size and the cap, before it is read', () => {
+    expect(wakeFileProblem({ kind: 'file', size: WAKE_FILE_MAX_BYTES + 1 })).toBe(`is ${WAKE_FILE_MAX_BYTES + 1} bytes, past the ${WAKE_FILE_MAX_BYTES} bytes a skill or command may be`);
   });
 });

@@ -110,3 +110,18 @@ export class Parties {
     this.refused.delete(key);
   }
 }
+
+/** A request counts as the session's first when it is step 0 of a turn that carries at most this many messages (the prompt and its context lines). */
+export const FRESH_MAX_MESSAGES = 3;
+
+/**
+ * Whether a request is the session's first, the only one whose reading is the
+ * base a handoff cuts back to. A sub-agent's first request is step 0 of a
+ * short turn. The main chat's is that and also its first prompt: after a CLI
+ * compaction its first step a reloaded plugin sees is also short (a summary
+ * and the prompt), but the session has sent many prompts. An unknown prompt count is not first.
+ */
+export function isFirstRequest(args: { index?: number; messageCount?: number; main: boolean; turns?: number }): boolean {
+  if (args.index !== 0 || typeof args.messageCount !== 'number' || args.messageCount > FRESH_MAX_MESSAGES) return false;
+  return args.main ? args.turns === 1 : true;
+}
