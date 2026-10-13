@@ -7,7 +7,7 @@
 [![Claude Code plugin](https://img.shields.io/badge/Claude%20Code-plugin-D97757)](https://docs.claude.com/en/docs/claude-code/plugins)
 [![Version](https://img.shields.io/badge/version-0.5.0-blue)](./CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
-[![Tests](https://img.shields.io/badge/tests-234%20passing-brightgreen)](#development)
+[![Tests](https://img.shields.io/badge/tests-242%20passing-brightgreen)](#development)
 [![Built with Professor](https://img.shields.io/badge/built%20with-Professor-8A2BE2)](https://github.com/rezzminator/professor)
 
 **34% cheaper** than a sub-agent that never compacts · **52% less context** re-sent on every request
@@ -78,7 +78,7 @@ The fixed version hasn't been re-measured, so no figure is claimed for it.
 ## 🚀 Quick start
 
 ```sh
-# 1. Turn on function hooks, and let Claude Code ask to compact from about 65k
+# 1. Turn on function hooks, and let Claude Code ask to compact from about 67k
 export CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1
 export CLAUDE_CODE_AUTO_COMPACT_WINDOW=100000
 
@@ -153,8 +153,9 @@ Guards keep this honest:
   stop once, and the agent carries on.
 - A handoff is refused below the party's first nudge point
   (`mainAutoCompactNudgeStart`, `subagentAutoCompactNudgeStart`), where it
-  throws away more working context than it saves, and when it is shorter
-  than 200 characters. The model is told why and carries on; the latest
+  throws away more working context than it saves, and when it is too thin:
+  a `goal` or `next_step` under 20 characters, or a free-text or marker
+  handoff under 200. The model is told why and carries on; the latest
   handoff a party passes is the one installed.
 - A handoff is capped at 12000 characters (about 3k tokens): a longer one
   is refused with the size, and the model is told to keep anchors, not
@@ -166,8 +167,9 @@ Guards keep this honest:
   A handoff the plugin's memory lost (a reload, a restart) is read back from
   the transcript's own `handoff` call before the compaction is judged.
 - A person's `/compact` runs the summarizer as it always does; over a stored
-  handoff it is logged and the user sees a notice that the handoff was
-  dropped.
+  handoff it is logged and the model is told the handoff was dropped once
+  the summary ran. A `/compact` that is skipped or interrupted leaves the
+  handoff stored, and says so.
 - Every failure a model can act on reaches the model: a notice (a refused
   marker, a skipped compaction, a handoff that was not installed) is read
   after the party's next tool result, the main chat's at its next prompt.
@@ -289,7 +291,7 @@ chat's window.
 A plugin can hold a compaction back, but it can't make Claude Code ask
 sooner. Claude Code asks to compact a party only once it nears
 `CLAUDE_CODE_AUTO_COMPACT_WINDOW`: about 33k below that value, measured as
-about 65k for `100000`. So **set the window so Claude Code asks at or below
+about 67k for `100000`. So **set the window so Claude Code asks at or below
 your smallest nudge point.** `100000` suits the defaults. A request a model
 makes below that point waits until the party reaches it.
 

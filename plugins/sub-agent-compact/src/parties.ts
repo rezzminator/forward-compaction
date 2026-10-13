@@ -63,10 +63,12 @@ export class Parties {
     return focus || handoff;
   }
 
-  /** Queues a line the party's model reads on its next tool result (the main chat, on its next prompt). */
+  /** Queues a line the party's model reads on its next tool result (the main chat, on its next prompt); a line already waiting is not queued twice. */
   notify(key: string, line: string): void {
     const queued = this.notices.get(key);
-    if (queued) queued.push(line);
+    if (queued) {
+      if (!queued.includes(line)) queued.push(line);
+    }
     else this.notices.set(key, [line]);
   }
 

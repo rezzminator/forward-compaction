@@ -31,7 +31,7 @@ describe('wakeCandidates', () => {
   });
 
   it('refuses a name that could leave those directories, naming it', () => {
-    for (const bad of ['../x', 'a/b', '', 'x y', '.hidden', 'a\\b']) {
+    for (const bad of ['../x', 'a/b', '', 'x y', '.hidden', 'a\\b', 'x:..:..:etc:notes', 'x::y', 'p:..', 'p:.hidden']) {
       const found = wakeCandidates(bad, roots);
       expect('problem' in found && found.problem.includes(JSON.stringify(bad))).toBe(true);
     }

@@ -301,8 +301,8 @@ async function registerCompactTool(st: State, $: EngineInterface): Promise<void>
     st.toolName = tool;
     record(st, $, { event: 'tool-registered', tool });
   } catch (error) {
-    $.ui.log(`sub-agent-compact: registering the ${COMPACT_TOOL} tool failed: ${message(error)}; models can still ask with <compact-now>`);
-    record(st, $, { event: 'tool-register-failed', error: message(error) });
+    warnOnce(st, $, 'register-failed:compact', `sub-agent-compact: registering the ${COMPACT_TOOL} tool failed: ${message(error)}; models can still ask with <compact-now>`);
+    record(st, $, { event: 'tool-register-failed', tool: COMPACT_TOOL, error: message(error) });
   }
 }
 
@@ -498,14 +498,15 @@ export const register: Register = (on: On, options: PluginOptions) => {
     }
     const result = await next(e);
     if (result.deny !== undefined) return result;
+    // What became of this party's handoff since its last tool result comes first, then any nudge it is owed; a failed nudge never drops the notices taken.
+    const notices = st.parties.takeNotices(e.agentId ?? 'main');
+    let line: string | undefined;
     try {
-      // What became of this party's handoff since its last tool result comes first, then any nudge it is owed.
-      const notices = st.parties.takeNotices(e.agentId ?? 'main');
-      const line = await nudgeFor(st, $, e.agentId);
-      if (notices.length > 0 || line !== undefined) return { ...result, context: [...(result.context ?? []), ...notices, ...(line !== undefined ? [line] : [])] };
+      line = await nudgeFor(st, $, e.agentId);
     } catch (error) {
       $.ui.log(`sub-agent-compact: nudging ${e.agentId ?? 'main'} failed: ${message(error)}`);
     }
+    if (notices.length > 0 || line !== undefined) return { ...result, context: [...(result.context ?? []), ...notices, ...(line !== undefined ? [line] : [])] };
     return result;
   });
 
@@ -593,6 +594,8 @@ export const register: Register = (on: On, options: PluginOptions) => {
     }
     // Set when the handoff cannot be installed verbatim: the summarizer is told it for this call only, and the stored handoff is left as it is.
     let fallback: string | undefined;
+    // Set when the person's /compact runs over a stored handoff: its outcome decides whether the handoff went with the summary.
+    let manualOver: ArmedHandoff | undefined;
     if (handoff !== undefined) {
       // A precompute installs nothing and would keep a stale tail: the compaction it prepares installs the handoff instead.
       if (kind === 'precompute') {
@@ -600,11 +603,8 @@ export const register: Register = (on: On, options: PluginOptions) => {
         return { skip: 'handoff waits for the compaction' };
       }
       if (kind === 'manual') {
-        // The person's own /compact runs as they asked; the stored handoff is dropped, and the model is told.
-        st.parties.disarm(key);
-        record(st, $, { event: 'disarmed', party: key, via: 'manual', what: 'handoff' });
-        $.ui.log(`sub-agent-compact: the person's /compact ran over the stored handoff of ${party.label}: the handoff was dropped and a summary ran`);
-        st.parties.notify(key, handoffNotice('manual'));
+        // The person's own /compact runs as they asked; once its summary ran the stored handoff is gone with it, and both are told after the outcome.
+        manualOver = handoff;
       } else {
         let reason: { kind: 'shape' | 'fallback'; detail: string } | undefined;
         if (shape !== undefined) reason = { kind: 'shape', detail: shape };
@@ -638,7 +638,7 @@ export const register: Register = (on: On, options: PluginOptions) => {
               if (wake.failed.length > 0) {
                 st.parties.notify(key, `sub-agent-compact: load_on_wake entries not loaded: ${wake.failed.join(', ')} — the installed handoff names them as NOT LOADED; load them yourself.`);
               }
-              record(st, $, { ...base, type: party.label, limit, tokens: tokens ?? null, messages: e.messages.length, decision: 'handoff', tail: installed.tail, siblings: installed.siblings, brief: brief !== undefined, chars: text.length, tokensAfter, recovered, loads: entries.length, loadsFailed: wake.failed.length, warn: line.warn });
+              record(st, $, { ...base, type: party.label, limit, tokens: tokens ?? null, messages: messages.length, decision: 'handoff', tail: installed.tail, siblings: installed.siblings, brief: brief !== undefined, chars: text.length, tokensAfter, recovered, loads: entries.length, loadsFailed: wake.failed.length, warn: line.warn });
               return { messages: installed.messages, ...(tokens !== undefined ? { tokensBefore: tokens } : {}), tokensAfter };
             }
             reason = { kind: 'fallback', detail: 'its tool call is not in the transcript' };
@@ -659,7 +659,7 @@ export const register: Register = (on: On, options: PluginOptions) => {
     const heldArm = tracked ? st.parties.armed(key) : undefined;
     const armed = fallback ?? heldArm;
     const decision = decide({ trigger: kind, label: party.label, limit, tokens, enabled: party.haiku || party.policy.enabled, armed, unlisted: party.unlisted, haiku: party.haiku });
-    record(st, $, { ...base, type: party.label, limit, source: party.haiku ? 'haiku' : party.source, tokens: tokens ?? null, lastResponseTokens: st.parties.reading(key) ?? null, messages: e.messages.length, decision: decision.action, ...(decision.action === 'pass' ? { why: decision.why } : {}) });
+    record(st, $, { ...base, type: party.label, limit, source: party.haiku ? 'haiku' : party.source, tokens: tokens ?? null, lastResponseTokens: st.parties.reading(key) ?? null, messages: messages.length, decision: decision.action, ...(decision.action === 'pass' ? { why: decision.why } : {}) });
     if (decision.action === 'skip') {
       if (kind === 'auto') st.asked.add(key);
       return { skip: decision.reason };
@@ -679,8 +679,17 @@ export const register: Register = (on: On, options: PluginOptions) => {
     const dropArm = (why: string): void => {
       if (fallback === undefined && heldArm !== undefined && st.parties.disarm(key)) record(st, $, { event: 'disarmed', party: key, via: why, trigger: e.trigger });
     };
+    // A person's /compact that did not finish summarized nothing: the stored handoff stays, and both are told once.
+    let manualTold = false;
+    const manualUnfinished = (why: string): void => {
+      if (manualTold) return;
+      manualTold = true;
+      $.ui.log(`sub-agent-compact: the person's /compact over the stored handoff of ${party.label} was skipped (${why}); the handoff stays stored`);
+      st.parties.notify(key, handoffNotice('skipped', why));
+    };
     const onAbort = (): void => {
       if (compactionEnd({ trigger: kind, skipped: false, aborted: true }) === 'unfinished') dropArm('interrupt');
+      if (manualOver !== undefined) manualUnfinished('interrupted');
     };
     next.signal.addEventListener('abort', onAbort, { once: true });
     // An interrupt that landed before this hook reached the compaction fires no event; read it now.
@@ -690,6 +699,7 @@ export const register: Register = (on: On, options: PluginOptions) => {
       outcome = await next(input);
     } catch (error) {
       if (compactionEnd({ trigger: kind, skipped: false, aborted: true }) === 'unfinished') dropArm('error');
+      if (manualOver !== undefined) manualUnfinished(`the compaction failed: ${message(error)}`);
       throw error;
     } finally {
       next.signal.removeEventListener('abort', onAbort);
@@ -699,8 +709,14 @@ export const register: Register = (on: On, options: PluginOptions) => {
     if (end === 'compacted' && outcome.skip === undefined) {
       st.parties.compacted(key, outcome.tokensAfter);
       if (fallback !== undefined && handoff !== undefined && 'toolUseId' in handoff.anchor) st.settled.add(`${key}:${handoff.anchor.toolUseId}`);
+      if (manualOver !== undefined) {
+        record(st, $, { event: 'disarmed', party: key, via: 'manual', what: 'handoff' });
+        $.ui.log(`sub-agent-compact: the person's /compact ran over the stored handoff of ${party.label}: the handoff was dropped and a summary ran`);
+        st.parties.notify(key, handoffNotice('manual'));
+      }
     } else if (end === 'unfinished') {
       dropArm('skipped');
+      if (manualOver !== undefined) manualUnfinished(outcome.skip ?? 'unfinished');
       if (fallback !== undefined) {
         $.ui.log(`sub-agent-compact: the summary that was to keep the handoff of ${party.label} was skipped (${outcome.skip ?? 'unfinished'}); the handoff stays stored`);
         st.parties.notify(key, handoffNotice('skipped', outcome.skip ?? 'unfinished'));

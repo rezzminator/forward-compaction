@@ -75,4 +75,13 @@ describe('notices to a party\'s model', () => {
     expect(parties.takeNotices('a1')).toEqual([]);
     expect(parties.takeNotices('main')).toEqual(['other']);
   });
+
+  it('queue a line once while it waits unread, so two layers reporting the same skip show it once', () => {
+    const parties = new Parties();
+    parties.notify('main', 'skipped: busy');
+    parties.notify('main', 'skipped: busy');
+    expect(parties.takeNotices('main')).toEqual(['skipped: busy']);
+    parties.notify('main', 'skipped: busy');
+    expect(parties.takeNotices('main')).toEqual(['skipped: busy']);
+  });
 });

@@ -138,7 +138,7 @@ export function handoffNudgeText({ tokens, level, autoCompact, main, toolName, f
     level > 0 ? `Nudge ${level + 1}: with more work still ahead, make the handoff your next call, before any other tool.` : 'With more work still ahead, hand off now: once the result above closes a step, make the handoff your next call, before any other tool.',
     how,
     `The handoff replaces your whole context, verbatim, as your only memory of the work so far${cut}.`,
-    'Fill it short, while you hold the context: `goal` (the task and every value it fixed, verbatim) and `next_step` (the exact first action: your next step) are required; add only what the rest of the work needs, so nothing has to be read again: done and verified, decisions, dead ends, file:line anchors, what is in flight. If an earlier handoff is part of what this replaces, carry forward what it still needs.',
+    'Keep it short: `goal` (the task, every value it fixed verbatim) and `next_step` (your exact next step) are required; add only what would otherwise be read again: verified results, decisions, dead ends, file:line anchors, what is in flight. Carry forward what an earlier handoff still needs.',
     `Compaction is forced at ${k(autoCompact)} whether you hand off or not.`,
   ].join(' ');
 }
@@ -180,8 +180,12 @@ const ITEM_MAX = 500;
 const LIST_MAX = 12;
 /** Most skills or commands one handoff names to load. */
 export const LOADS_MAX = 8;
-/** What a skill or command is called: no path separator, so a name can never leave the directories it is read from. */
-export const WAKE_NAME = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$/;
+/**
+ * What a skill or command is called: no path separator, and every `:`-separated
+ * segment (a directory once a command name is read as a path) starts alphanumeric,
+ * so no segment is `..` and a name can never leave the directories it is read from.
+ */
+export const WAKE_NAME = /^(?=.{1,100}$)[A-Za-z0-9][A-Za-z0-9._-]*(?::[A-Za-z0-9][A-Za-z0-9._-]*)*$/;
 
 const FIELD_KEYS = ['goal', 'next_step', 'done_verified', 'in_flight', 'files', 'decisions', 'dead_ends', 'standing_rules', 'notes', 'load_on_wake', 'handoff'] as const;
 
@@ -275,10 +279,17 @@ export function parseHandoff(input: Record<string, unknown>): HandoffParse {
   return { text, loads };
 }
 
-/** The input fields of a handoff tool call, from the event's top level or, when none is there, from its `input`. */
+/** Keys the tool.call event carries beside the tool's arguments. */
+const EVENT_KEYS = new Set(['tool', 'tool_use_id', 'agentId']);
+
+/**
+ * The input of a handoff tool call: every argument at the event's top level
+ * (a key that is not a field included, so the check names it) or, when none
+ * is there, the event's `input`.
+ */
 export function handoffInputOf(e: Record<string, unknown>): Record<string, unknown> {
   const top: Record<string, unknown> = {};
-  for (const key of FIELD_KEYS) if (e[key] !== undefined) top[key] = e[key];
+  for (const [key, value] of Object.entries(e)) if (!EVENT_KEYS.has(key) && key !== 'input' && value !== undefined) top[key] = value;
   if (Object.keys(top).length > 0) return top;
   const nested = e.input;
   return nested !== null && typeof nested === 'object' && !Array.isArray(nested) ? (nested as Record<string, unknown>) : {};
@@ -301,8 +312,9 @@ export function recoverHandoff(messages: readonly HandoffMessage[], toolName: st
     for (const use of [...m.toolUses].reverse()) {
       if (use.tool !== toolName) continue;
       if (!(replies.get(use.tool_use_id) ?? use.text ?? '').startsWith(HANDOFF_STORED_PREFIX)) continue;
+      // The latest stored call replaced every earlier one: if it no longer reads, none is recovered.
       const parsed = parseHandoff(handoffInputOf(use.input !== null && typeof use.input === 'object' ? (use.input as Record<string, unknown>) : {}));
-      if ('text' in parsed) return { text: parsed.text, anchor: { toolUseId: use.tool_use_id }, loads: parsed.loads };
+      return 'text' in parsed ? { text: parsed.text, anchor: { toolUseId: use.tool_use_id }, loads: parsed.loads } : undefined;
     }
   }
   return undefined;

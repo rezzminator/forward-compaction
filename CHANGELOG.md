@@ -7,10 +7,10 @@ Every release of sub-agent-compact. Versions follow [semantic versioning](https:
 ## [0.5.0] — 2026-10-13
 
 ### Added
-- The handoff has typed fields instead of one free-text string: `goal` and `next_step` are required; `done_verified`, `in_flight`, `files` (`path:line` anchors, never contents), `decisions`, `dead_ends`, `standing_rules` and `notes` are optional and an empty one is omitted from the installed text. A missing required field comes back as a tool error the model reads. The rendering is short markdown sections, not a fixed essay.
+- The handoff has typed fields instead of one free-text string: `goal` and `next_step` are required; `done_verified`, `in_flight`, `files` (`path:line` anchors, never contents), `decisions`, `dead_ends`, `standing_rules` and `notes` are optional and an empty one is omitted from the installed text. A missing required field or a key that is not a field comes back as a tool error the model reads. The rendering is short markdown sections, not a fixed essay.
 - `load_on_wake`: skill and command names the plugin resolves at the call and inlines at install. A skill the transcript shows was invoked is left to Claude Code, which re-attaches invoked skills itself (read from the 2.1.296 bundle, not yet proven live).
 - A handoff the plugin's memory lost is read back from the transcript's own `handoff` call before the compaction is judged.
-- Notices the model reads after its next tool result (the main chat: at its next prompt): a refused marker, a compaction that was skipped, a manual `/compact` that dropped a stored handoff.
+- Notices the model reads after its next tool result (the main chat: at its next prompt): a refused marker, a compaction that was skipped, a manual `/compact` that dropped a stored handoff, or that was skipped and left it stored.
 - One visible log line per install, naming the party and the size cut, and a warning, once, for each of: both tools off, the tool failing to register, an unknown compaction trigger, an unrecognised transcript shape.
 
 ### Changed

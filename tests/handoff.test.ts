@@ -382,12 +382,12 @@ describe('parseHandoff', () => {
     expect(bare.text).toBe(`**Goal**\n${GOAL}\n\n**Next step**\n${NEXT}`);
   });
 
-  it('adds little around the content: a full handoff is its words plus under 250 characters of labels', () => {
+  it('adds little around the content: a full handoff is its words plus at most 200 characters of labels', () => {
     const fields = { goal: GOAL, next_step: NEXT, standing_rules: ['r1'], done_verified: ['d1'], decisions: ['x1'], dead_ends: ['e1'], files: ['f1'], in_flight: ['i1'], notes: 'n1' };
     const parsed = parseHandoff(fields);
     if (!('text' in parsed)) throw new Error(parsed.problem);
     const content = Object.values(fields).flat().join('').length;
-    expect(parsed.text.length - content).toBeLessThan(250);
+    expect(parsed.text.length - content).toBeLessThanOrEqual(200);
   });
 
   it('names every missing or short required field at once', () => {
@@ -429,6 +429,8 @@ describe('parseHandoff', () => {
   it('returns the names to load when the model woke, and refuses a bad name or too many', () => {
     expect(parseHandoff({ goal: GOAL, next_step: NEXT, load_on_wake: ['/pfm-testing-manual', 'quality:prompt'] })).toMatchObject({ loads: ['pfm-testing-manual', 'quality:prompt'] });
     expect(mustFail({ goal: GOAL, next_step: NEXT, load_on_wake: ['../etc/passwd'] })).toMatch(/`load_on_wake`.*\.\.\/etc\/passwd/);
+    // A colon becomes a path separator for commands: a segment that does not start alphanumeric could climb out.
+    expect(mustFail({ goal: GOAL, next_step: NEXT, load_on_wake: ['x:..:..:etc'] })).toMatch(/`load_on_wake`.*x:\.\.:\.\.:etc/);
     expect(mustFail({ goal: GOAL, next_step: NEXT, load_on_wake: Array.from({ length: 9 }, (_, i) => `s${i}`) })).toMatch(/`load_on_wake`.*8/);
   });
 });
@@ -448,6 +450,12 @@ describe('handoffInputOf', () => {
     expect(handoffInputOf({ tool: 't', goal: 'a', next_step: 'b', tool_use_id: 'h1' })).toMatchObject({ goal: 'a', next_step: 'b' });
     expect(handoffInputOf({ tool: 't', input: { goal: 'a', next_step: 'b' } })).toEqual({ goal: 'a', next_step: 'b' });
     expect(handoffInputOf({ tool: 't', handoff: 'x' })).toMatchObject({ handoff: 'x' });
+  });
+
+  it('keeps a key that is not a field, so the check names it rather than dropping it unseen', () => {
+    const input = handoffInputOf({ tool: 't', tool_use_id: 'h1', agentId: 'a1', goal: GOAL, next_step: NEXT, dead_end: ['x'] });
+    expect(input).toEqual({ goal: GOAL, next_step: NEXT, dead_end: ['x'] });
+    expect(mustFail(input)).toMatch(/`dead_end` is not a field/);
   });
 });
 
@@ -473,6 +481,10 @@ describe('recoverHandoff', () => {
     expect(recoverHandoff([say('', 'a', [{ tool_use_id: 'h1', tool: NAME, input: typed }])], NAME)).toBeUndefined();
     expect(recoverHandoff(stored('h1', typed), 'mcp__other__handoff')).toBeUndefined();
     expect(recoverHandoff(stored('h1', { goal: GOAL }), NAME)).toBeUndefined();
+  });
+
+  it('never falls back to an earlier handoff when the latest stored one no longer reads: the latest replaced it', () => {
+    expect(recoverHandoff([...stored('h1', typed), ...stored('h2', { handoff: 'x'.repeat(HANDOFF_MAX_CHARS + 1) })], NAME)).toBeUndefined();
   });
 
   it('reads the result from the call itself when the transcript records it there', () => {
@@ -516,7 +528,6 @@ describe('what the model reads about its handoff', () => {
     expect(sub).toMatch(/nothing is installed/);
     expect(handoffStoredText({ chars: 4_000, main: false })).toMatch(/next compaction ask/);
     expect(handoffStoredText({ chars: 4_000, main: true })).toMatch(/this turn ends/);
-    expect(handoffStoredText({ chars: 4_000, main: true })).not.toMatch(/usually before your next request/);
   });
 
   it('draws an install as sizes before and after, and warns when most of the context was kept', () => {
@@ -531,6 +542,12 @@ describe('what the model reads about its handoff', () => {
     const sub = handoffNudgeText({ ...base, main: false, toolName: undefined });
     expect(sub).toMatch(/<handoff>/);
     expect(sub).not.toMatch(/undefined|mcp__/);
+  });
+
+  it('is no longer than the nudge of the free-text tool it replaces', () => {
+    const base = { tokens: 120_000, level: 0, autoCompact: 600_000, toolName: 'mcp__sub-agent-compact__handoff', firstReading: 40_000 };
+    expect(handoffNudgeText({ ...base, main: true })!.length).toBeLessThanOrEqual(997);
+    expect(handoffNudgeText({ ...base, main: false })!.length).toBeLessThanOrEqual(1032);
   });
 
   it('teaches the typed fields and carrying an earlier handoff forward', () => {

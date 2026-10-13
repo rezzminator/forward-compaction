@@ -14,7 +14,7 @@ const NEXT_STEP = '**Next step**\nEdit reports/c.sql:12, then run npm test.';
 const TOOL = 'mcp__sub-agent-compact__handoff';
 const MARKER = `<handoff>${HANDOFF}</handoff>`;
 
-type Harness = { registerThrows?: boolean; skipSummary?: boolean; compactResult?: unknown; files?: Record<string, string> };
+type Harness = { registerThrows?: boolean; skipSummary?: boolean; compactResult?: unknown; files?: Record<string, string>; listThrows?: boolean };
 
 function engine(options: Record<string, unknown> = {}, harness: Harness = {}) {
   const hooks = new Map<string, AnyHook>();
@@ -40,7 +40,12 @@ function engine(options: Record<string, unknown> = {}, harness: Harness = {}) {
     env: { get: async (key: string) => (key === 'HOME' ? '/h/u' : undefined) },
     fs: { exists: async (path: string) => path in files, read: async (path: string) => files[path] ?? '', write: async () => {}, list: async () => [] },
     ui: { log: (line: string) => void logs.push(line) },
-    agent: { list: async () => [] },
+    agent: {
+      list: async () => {
+        if (harness.listThrows) throw new Error('agent list unavailable');
+        return [];
+      },
+    },
     tool: {
       register: async (spec: { name: string }) => {
         if (harness.registerThrows) throw new Error('session not bound');
@@ -174,7 +179,10 @@ describe('the size of the cut in the nudge', () => {
     const reloaded = engine();
     await reloaded.start();
     await reloaded.step(208_000, { index: 0, messageCount: 140 });
-    expect((await reloaded.read()).context?.[0]).not.toMatch(/cutting each later request/);
+    await reloaded.step(250_000, { index: 3, messageCount: 150 });
+    const line = (await reloaded.read()).context?.[0];
+    expect(line).toMatch(/your context is 250k/);
+    expect(line).not.toMatch(/cutting each later request/);
     const fresh = engine();
     await fresh.start();
     await fresh.step(40_000, { index: 0, messageCount: 1 });
@@ -195,7 +203,7 @@ describe('a handoff the plugin no longer holds', () => {
     expect((await cc.read()).context?.join('\n')).toMatch(/recovered from your transcript/);
   });
 
-  it('is not installed when the person spoke after it, which cancelled it; a summary runs and the log says why', async () => {
+  it('is not installed when the person spoke after it, which cancelled it: the ask is held like any other', async () => {
     const cc = engine();
     await cc.start();
     await cc.step(250_000);
@@ -210,7 +218,7 @@ describe('a handoff the plugin no longer holds', () => {
     const cc = engine();
     await cc.start();
     await cc.step(250_000);
-    expect(await cc.ask('precompute')).toEqual({ skip: expect.any(String) });
+    expect(await cc.ask('precompute')).toEqual({ skip: 'handoff waits for the compaction' });
   });
 });
 
@@ -270,6 +278,16 @@ describe('a handoff the install cannot place', () => {
     expect((await cc.read()).context?.join('\n')).toMatch(/could not be installed verbatim/);
   });
 
+  it('falls back to the summary when the transcript is not a list at all, without crashing', async () => {
+    const cc = engine();
+    await cc.start();
+    await cc.step(250_000);
+    await cc.handoff();
+    await cc.ask('auto', null as never);
+    expect(cc.summarized()).toBe(1);
+    expect(cc.summarizerInputs[0].instructions).toContain('Edit reports/c.sql:12');
+  });
+
   it('treats a trigger it does not know as an automatic ask, and says so once', async () => {
     const cc = engine();
     await cc.start();
@@ -283,6 +301,19 @@ describe('a handoff the install cannot place', () => {
 });
 
 describe('a person\'s /compact over a stored handoff', () => {
+  it('leaves the handoff stored when the summary is skipped, and says so instead of claiming a summary ran', async () => {
+    const cc = engine({}, { skipSummary: true });
+    await cc.start();
+    await cc.step(250_000);
+    await cc.handoff();
+    expect(await cc.ask('manual')).toEqual({ skip: 'busy' });
+    expect(cc.logs.join('\n')).toMatch(/\/compact.*skipped \(busy\).*stays stored/);
+    expect((await cc.read()).context?.join('\n')).toMatch(/busy/);
+    const out = await cc.ask('auto');
+    expect(cc.summarized()).toBe(1);
+    expect(out.messages[0].text).toContain(NEXT_STEP);
+  });
+
   it('is told to the model: the handoff was dropped and a summary ran', async () => {
     const cc = engine();
     await cc.start();
@@ -312,6 +343,17 @@ describe('a handoff written between <handoff> tags', () => {
     expect((await cc.read('a1')).context?.join('\n')).toMatch(/handoff.*stored/);
   });
 
+  it('still delivers the notice when working out the nudge fails', async () => {
+    const harness: Harness = {};
+    const cc = engine({}, harness);
+    await cc.start();
+    await cc.subagent('a1');
+    await cc.step(250_000, { agentId: 'a1', answer: MARKER });
+    harness.listThrows = true;
+    expect((await cc.read('a1')).context?.join('\n')).toMatch(/handoff.*stored/);
+    expect(cc.logs.join('\n')).toMatch(/nudging a1 failed: agent list unavailable/);
+  });
+
   it('tells the agent when the marker was refused, with the reason', async () => {
     const cc = engine();
     await cc.start();
@@ -327,7 +369,7 @@ describe('a tool that is not registered', () => {
     await cc.start();
     await cc.step(250_000);
     expect((await cc.read()).context).toBeUndefined();
-    expect(cc.logs.join('\n')).toMatch(/main chat cannot hand off/);
+    expect(cc.logs.join('\n')).toMatch(/not registered, so it is not nudged/);
   });
 
   it('nudges a sub-agent to the <handoff> marker alone, never to the missing tool', async () => {
@@ -337,7 +379,7 @@ describe('a tool that is not registered', () => {
     await cc.step(250_000, { agentId: 'a1' });
     const line = (await cc.read('a1')).context?.[0] as string;
     expect(line).toMatch(/<handoff>/);
-    expect(line).not.toMatch(/mcp__/);
+    expect(line).not.toMatch(/mcp__|undefined/);
   });
 
   it('registers on the first hook when session.start never fired (a plugin loaded mid-session)', async () => {
@@ -374,6 +416,13 @@ describe('the typed handoff through the tool', () => {
     expect(out.result).toMatch(/^Not stored/);
     for (const field of ['goal', 'next_step', 'done_verified']) expect(out.result).toContain(`\`${field}\``);
     expect(await cc.ask('auto', cc.plain())).toEqual({ skip: expect.any(String) });
+  });
+
+  it('names a field it does not know instead of storing the handoff without it', async () => {
+    const cc = engine();
+    await cc.start();
+    await cc.step(250_000);
+    expect((await cc.handoff({ ...FIELDS, dead_end: ['retrying the cache'] })).result).toMatch(/^Not stored: .*`dead_end` is not a field/);
   });
 
   it('still takes the free text of the earlier tool', async () => {
