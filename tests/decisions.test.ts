@@ -46,7 +46,7 @@ describe('parseEnabled', () => {
 
 describe('resolveOptions', () => {
   it('defaults when nothing is set', () => {
-    expect(resolveOptions({})).toEqual({ main: DEFAULT_MAIN, subagent: DEFAULT_SUBAGENT, keepBrief: true, compactTool: false, handoffTool: true, forwardHandoffTool: false, agentDirs: [], errors: [] });
+    expect(resolveOptions({})).toEqual({ main: DEFAULT_MAIN, subagent: DEFAULT_SUBAGENT, keepBrief: true, compactTool: true, handoffTool: false, forwardHandoffTool: false, agentDirs: [], errors: [] });
     expect(DEFAULT_KEEP_BRIEF).toBe(true);
     expect(DEFAULT_MAIN).toEqual({ enabled: true, autoCompact: { percent: 60 }, nudgeStart: { percent: 20 }, nudgeEvery: { percent: 10 } });
     expect(DEFAULT_SUBAGENT).toEqual({ enabled: true, autoCompact: { percent: 60 }, nudgeStart: { percent: 20 }, nudgeEvery: { percent: 10 } });
@@ -63,6 +63,8 @@ describe('resolveOptions', () => {
       subagentAutoCompactNudgeEvery: '5%',
       subagentAutoCompactEnabled: true,
       subagentKeepBrief: 'off',
+      compactTool: 'off',
+      handoffTool: 'on',
       agentDirs: 'a, /b/c ,',
       logFile: '/tmp/x.jsonl',
     });

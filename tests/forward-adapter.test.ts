@@ -135,10 +135,10 @@ describe('the forward handoff tool through the adapter', () => {
   it('is not registered unless forwardHandoffTool is on', async () => {
     const off = engine({});
     await off.start();
-    expect(off.registered).toEqual(['handoff', 'look_back']);
+    expect(off.registered).toEqual(['compact', 'look_back']);
     const on = engine();
     await on.start();
-    expect(on.registered.sort()).toEqual(['forward_handoff', 'handoff', 'look_back']);
+    expect(on.registered.sort()).toEqual(['forward_handoff', 'look_back']);
   });
 
   it('stores the text code carried and persists the raw arguments, the literal text and the record', async () => {

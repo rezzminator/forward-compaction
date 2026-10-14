@@ -4,10 +4,12 @@ import { HANDOFF_OPENING } from '../plugins/sub-agent-compact/src/handoff.ts';
 
 // The handoff path end to end through the adapter: the tool stores the text,
 // the next automatic ask installs it without calling the summarizer beneath,
-// and the compact tool stays unregistered unless its flag turns it on. Every
-// failure on that path reaches the model (its next tool result) or the person (the log).
+// and each tool is registered only while its flag is on: by default the
+// compact tool alone, beside the always-on look_back. Every failure on that
+// path reaches the model (its next tool result) or the person (the log).
 
 type AnyHook = (...args: any[]) => any;
+const HANDOFF_ONLY = { handoffTool: true, compactTool: false };
 const HANDOFF = 'Task (verbatim): "rename qty to quantity in every report". Done: a.sql, b.sql, npm test 41/41. Facts: reports/c.sql:12 reads `SELECT qty, price FROM ledger`. Next step: edit reports/c.sql:12, then npm test.';
 const FIELDS = { goal: 'Rename qty to quantity in every report (person, verbatim).', next_step: 'Edit reports/c.sql:12, then run npm test.', done_verified: ['a.sql, b.sql: npm test 41/41'] };
 const NEXT_STEP = '**Next step**\nEdit reports/c.sql:12, then run npm test.';
@@ -144,14 +146,20 @@ function engine(options: Record<string, unknown> = {}, harness: Harness = {}) {
 }
 
 describe('the handoff tool through the adapter', () => {
-  it('registers the handoff tool and not the compact tool by default', async () => {
+  it('registers the compact tool and not the handoff tool by default', async () => {
     const cc = engine();
+    await cc.start();
+    expect(cc.registered).toEqual(['compact', 'look_back']);
+  });
+
+  it('registers the handoff tool alone when it is on and the compact tool off', async () => {
+    const cc = engine(HANDOFF_ONLY);
     await cc.start();
     expect(cc.registered).toEqual(['handoff', 'look_back']);
   });
 
   it('registers both when the compact tool is turned on, and neither nudges about compact while handoff is on', async () => {
-    const cc = engine({ compactTool: true });
+    const cc = engine({ compactTool: true, handoffTool: true });
     await cc.start();
     expect(cc.registered.sort()).toEqual(['compact', 'handoff', 'look_back']);
     await cc.step(250_000);
@@ -161,7 +169,7 @@ describe('the handoff tool through the adapter', () => {
   });
 
   it('stores the handoff, then installs it at the next automatic ask without the summarizer', async () => {
-    const cc = engine();
+    const cc = engine(HANDOFF_ONLY);
     await cc.start();
     await cc.step(250_000);
     expect(await cc.handoff()).toEqual({ result: expect.stringMatching(/^Handoff stored/) });
@@ -176,7 +184,7 @@ describe('the handoff tool through the adapter', () => {
   });
 
   it('refuses a handoff below the first nudge point, and a thin one, storing nothing', async () => {
-    const cc = engine();
+    const cc = engine(HANDOFF_ONLY);
     await cc.start();
     await cc.step(120_000);
     expect(await cc.handoff()).toEqual({ result: expect.stringMatching(/^Not stored: .*120k.*200k/) });
@@ -186,7 +194,7 @@ describe('the handoff tool through the adapter', () => {
   });
 
   it('waits out a precompute, and leaves a person /compact to the summarizer', async () => {
-    const cc = engine();
+    const cc = engine(HANDOFF_ONLY);
     await cc.start();
     await cc.step(250_000);
     await cc.handoff();
@@ -196,7 +204,7 @@ describe('the handoff tool through the adapter', () => {
   });
 
   it('installs a main handoff between turns when no automatic ask came', async () => {
-    const cc = engine();
+    const cc = engine(HANDOFF_ONLY);
     await cc.start();
     await cc.step(250_000);
     await cc.handoff();
@@ -206,7 +214,7 @@ describe('the handoff tool through the adapter', () => {
   });
 
   it('nudges nobody when both tools are off', async () => {
-    const cc = engine({ handoffTool: false });
+    const cc = engine({ handoffTool: false, compactTool: false });
     await cc.start();
     expect(cc.registered).toEqual(['look_back']);
     await cc.step(250_000);
@@ -225,7 +233,7 @@ describe('registering the tools is bounded', () => {
   it('lets a turn go on after 5s when registering never finishes, says so once, and does not wait again on later turns', async () => {
     vi.useFakeTimers();
     const { gate } = deferred();
-    const cc = engine({}, { registerGate: gate });
+    const cc = engine(HANDOFF_ONLY, { registerGate: gate });
     let done = 0;
     void cc.step(1_000).then(() => done++);
     await vi.advanceTimersByTimeAsync(4_999);
@@ -242,7 +250,7 @@ describe('registering the tools is bounded', () => {
   it('bounds session.start the same way', async () => {
     vi.useFakeTimers();
     const { gate } = deferred();
-    const cc = engine({}, { registerGate: gate });
+    const cc = engine(HANDOFF_ONLY, { registerGate: gate });
     let started = false;
     void cc.start().then(() => (started = true));
     await vi.advanceTimersByTimeAsync(5_000);
@@ -251,7 +259,7 @@ describe('registering the tools is bounded', () => {
   });
 
   it('goes on, unbounded, with one warning when the engine has no clock to bound it with', async () => {
-    const cc = engine({}, { noClock: true });
+    const cc = engine(HANDOFF_ONLY, { noClock: true });
     await cc.start();
     await cc.step(1_000);
     await cc.step(2_000);
@@ -262,7 +270,7 @@ describe('registering the tools is bounded', () => {
   it('still names the tool in the nudge when the registration finishes after the timeout', async () => {
     vi.useFakeTimers();
     const { gate, release } = deferred();
-    const cc = engine({}, { registerGate: gate });
+    const cc = engine(HANDOFF_ONLY, { registerGate: gate });
     let went = false;
     void cc.step(1_000).then(() => (went = true));
     await vi.advanceTimersByTimeAsync(5_000);
@@ -277,7 +285,7 @@ describe('registering the tools is bounded', () => {
     vi.useFakeTimers();
     const { gate, release } = deferred();
     const harness: Harness = { registerGate: gate, registerThrows: true };
-    const cc = engine({}, harness);
+    const cc = engine(HANDOFF_ONLY, harness);
     void cc.step(1_000);
     await vi.advanceTimersByTimeAsync(5_000);
     release();
@@ -289,7 +297,7 @@ describe('registering the tools is bounded', () => {
   });
 
   it('sets no timer on later turns once every tool is registered', async () => {
-    const cc = engine();
+    const cc = engine(HANDOFF_ONLY);
     await cc.start();
     await cc.step(1_000);
     expect(cc.registered).toEqual(['handoff', 'look_back']);
@@ -302,14 +310,14 @@ describe('registering the tools is bounded', () => {
 
 describe('the size of the cut in the nudge', () => {
   it('is stated only from a reading taken on the session\'s first request, so a plugin reloaded mid-session leaves it out', async () => {
-    const reloaded = engine();
+    const reloaded = engine(HANDOFF_ONLY);
     await reloaded.start();
     await reloaded.step(208_000, { index: 0, messageCount: 140 });
     await reloaded.step(250_000, { index: 3, messageCount: 150 });
     const line = (await reloaded.read()).context?.[0];
     expect(line).toMatch(/your context is 250k/);
     expect(line).not.toMatch(/cutting each later request/);
-    const fresh = engine();
+    const fresh = engine(HANDOFF_ONLY);
     await fresh.start();
     await fresh.step(40_000, { index: 0, messageCount: 1 });
     await fresh.step(250_000, { index: 3, messageCount: 30 });
@@ -317,7 +325,7 @@ describe('the size of the cut in the nudge', () => {
   });
 
   it('is left out when a reloaded plugin first sees the step after a CLI compaction (a summary and the prompt, two messages) of a session with many prompts', async () => {
-    const cc = engine({}, { turns: 5 });
+    const cc = engine(HANDOFF_ONLY, { turns: 5 });
     await cc.start();
     await cc.step(40_000, { index: 0, messageCount: 2 });
     await cc.step(250_000, { index: 3, messageCount: 30 });
@@ -327,7 +335,7 @@ describe('the size of the cut in the nudge', () => {
   });
 
   it('is left out, with a warning once, when the prompt count cannot be read', async () => {
-    const cc = engine({}, { turns: null });
+    const cc = engine(HANDOFF_ONLY, { turns: null });
     await cc.start();
     await cc.step(40_000, { index: 0, messageCount: 1 });
     await cc.step(41_000, { index: 0, messageCount: 1 });
@@ -339,7 +347,7 @@ describe('the size of the cut in the nudge', () => {
 
 describe('a handoff the plugin no longer holds', () => {
   it('is found in the transcript, where the tool call and its stored reply stand, and installed; the model and the person are told', async () => {
-    const cc = engine();
+    const cc = engine(HANDOFF_ONLY);
     await cc.start();
     await cc.step(250_000);
     const out = await cc.ask('auto');
@@ -350,7 +358,7 @@ describe('a handoff the plugin no longer holds', () => {
   });
 
   it('is not installed when the person spoke after it, which cancelled it: the ask is held like any other', async () => {
-    const cc = engine();
+    const cc = engine(HANDOFF_ONLY);
     await cc.start();
     await cc.step(250_000);
     const person = { role: 'user', text: 'stop, do something else', toolUses: [], handle: 'm3' };
@@ -361,7 +369,7 @@ describe('a handoff the plugin no longer holds', () => {
   });
 
   it('is waited for by a precompute like a stored one', async () => {
-    const cc = engine();
+    const cc = engine(HANDOFF_ONLY);
     await cc.start();
     await cc.step(250_000);
     expect(await cc.ask('precompute')).toEqual({ skip: 'handoff waits for the compaction' });
@@ -370,14 +378,14 @@ describe('a handoff the plugin no longer holds', () => {
 
 describe('when the handoff installs', () => {
   it('tells the main chat the truth in the tool result: at the end of its turn', async () => {
-    const cc = engine();
+    const cc = engine(HANDOFF_ONLY);
     await cc.start();
     await cc.step(250_000);
     expect((await cc.handoff()).result).toMatch(/this turn ends/);
   });
 
   it('tells the model and the person when the compaction between turns was skipped, the handoff staying stored', async () => {
-    const cc = engine({}, { compactResult: { skip: 'a tool is running' } });
+    const cc = engine(HANDOFF_ONLY, { compactResult: { skip: 'a tool is running' } });
     await cc.start();
     await cc.step(250_000);
     await cc.handoff();
@@ -388,7 +396,7 @@ describe('when the handoff installs', () => {
   });
 
   it('draws every install as a line the person reads', async () => {
-    const cc = engine();
+    const cc = engine(HANDOFF_ONLY);
     await cc.start();
     await cc.step(250_000);
     await cc.handoff();
@@ -399,7 +407,7 @@ describe('when the handoff installs', () => {
 
 describe('a handoff the install cannot place', () => {
   it('stays stored when the summary that keeps it is skipped, and installs at the next ask', async () => {
-    const cc = engine({}, { skipSummary: true });
+    const cc = engine(HANDOFF_ONLY, { skipSummary: true });
     await cc.start();
     await cc.step(250_000);
     await cc.handoff(FIELDS, 'zzz');
@@ -414,7 +422,7 @@ describe('a handoff the install cannot place', () => {
   });
 
   it('falls back to the summary, with the handoff as its instructions and a notice, when the transcript is not in the shape installs read', async () => {
-    const cc = engine();
+    const cc = engine(HANDOFF_ONLY);
     await cc.start();
     await cc.step(250_000);
     await cc.handoff();
@@ -425,7 +433,7 @@ describe('a handoff the install cannot place', () => {
   });
 
   it('falls back to the summary when the transcript is not a list at all, without crashing', async () => {
-    const cc = engine();
+    const cc = engine(HANDOFF_ONLY);
     await cc.start();
     await cc.step(250_000);
     await cc.handoff();
@@ -435,7 +443,7 @@ describe('a handoff the install cannot place', () => {
   });
 
   it('treats a trigger it does not know as an automatic ask, and says so once', async () => {
-    const cc = engine();
+    const cc = engine(HANDOFF_ONLY);
     await cc.start();
     await cc.step(250_000);
     await cc.handoff();
@@ -448,7 +456,7 @@ describe('a handoff the install cannot place', () => {
 
 describe('a person\'s /compact over a stored handoff', () => {
   it('leaves the handoff stored when the summary is skipped, and says so instead of claiming a summary ran', async () => {
-    const cc = engine({}, { skipSummary: true });
+    const cc = engine(HANDOFF_ONLY, { skipSummary: true });
     await cc.start();
     await cc.step(250_000);
     await cc.handoff();
@@ -461,7 +469,7 @@ describe('a person\'s /compact over a stored handoff', () => {
   });
 
   it('is told to the model: the handoff was dropped and a summary ran', async () => {
-    const cc = engine();
+    const cc = engine(HANDOFF_ONLY);
     await cc.start();
     await cc.step(250_000);
     await cc.handoff();
@@ -473,7 +481,7 @@ describe('a person\'s /compact over a stored handoff', () => {
 
 describe('a handoff written between <handoff> tags', () => {
   it('is checked like the tool\'s: a stop on a thin marker is refused with the reason, so the agent can write it out', async () => {
-    const cc = engine();
+    const cc = engine(HANDOFF_ONLY);
     await cc.start();
     await cc.subagent('a1');
     await cc.step(250_000, { agentId: 'a1' });
@@ -482,7 +490,7 @@ describe('a handoff written between <handoff> tags', () => {
   });
 
   it('tells the agent on its next tool result that the marker was stored', async () => {
-    const cc = engine();
+    const cc = engine(HANDOFF_ONLY);
     await cc.start();
     await cc.subagent('a1');
     await cc.step(250_000, { agentId: 'a1', answer: MARKER });
@@ -491,7 +499,7 @@ describe('a handoff written between <handoff> tags', () => {
 
   it('still delivers the notice when working out the nudge fails', async () => {
     const harness: Harness = {};
-    const cc = engine({}, harness);
+    const cc = engine(HANDOFF_ONLY, harness);
     await cc.start();
     await cc.subagent('a1');
     await cc.step(250_000, { agentId: 'a1', answer: MARKER });
@@ -501,7 +509,7 @@ describe('a handoff written between <handoff> tags', () => {
   });
 
   it('tells the agent when the marker was refused, with the reason', async () => {
-    const cc = engine();
+    const cc = engine(HANDOFF_ONLY);
     await cc.start();
     await cc.subagent('a1');
     await cc.step(250_000, { agentId: 'a1', answer: '<handoff>next: c.sql</handoff>' });
@@ -511,7 +519,7 @@ describe('a handoff written between <handoff> tags', () => {
 
 describe('a tool that is not registered', () => {
   it('leaves the main chat un-nudged to call a tool that is not there, and tells the person once', async () => {
-    const cc = engine({}, { registerThrows: true });
+    const cc = engine(HANDOFF_ONLY, { registerThrows: true });
     await cc.start();
     await cc.step(250_000);
     expect((await cc.read()).context).toBeUndefined();
@@ -519,7 +527,7 @@ describe('a tool that is not registered', () => {
   });
 
   it('nudges a sub-agent to the <handoff> marker alone, never to the missing tool', async () => {
-    const cc = engine({}, { registerThrows: true });
+    const cc = engine(HANDOFF_ONLY, { registerThrows: true });
     await cc.start();
     await cc.subagent('a1');
     await cc.step(250_000, { agentId: 'a1' });
@@ -529,14 +537,14 @@ describe('a tool that is not registered', () => {
   });
 
   it('registers on the first hook when session.start never fired (a plugin loaded mid-session)', async () => {
-    const cc = engine();
+    const cc = engine(HANDOFF_ONLY);
     await cc.step(250_000);
     expect(cc.registered).toEqual(['handoff', 'look_back']);
     expect(await cc.handoff()).toEqual({ result: expect.stringMatching(/^Handoff stored/) });
   });
 
   it('says in the log when both tools are off', async () => {
-    const cc = engine({ handoffTool: false });
+    const cc = engine({ handoffTool: false, compactTool: false });
     await cc.start();
     await cc.step(1_000);
     expect(cc.logs.join('\n')).toMatch(/no self-compaction tool is on/);
@@ -545,7 +553,7 @@ describe('a tool that is not registered', () => {
 
 describe('Haiku', () => {
   it('is let through at the point Claude Code asked it, well below the plugin\'s own limit', async () => {
-    const cc = engine();
+    const cc = engine(HANDOFF_ONLY);
     await cc.start();
     await cc.step(49_600, { model: 'claude-haiku-4-5' });
     await cc.ask('auto');
@@ -555,7 +563,7 @@ describe('Haiku', () => {
 
 describe('the typed handoff through the tool', () => {
   it('returns every problem at once as a tool result the agent reads, storing nothing', async () => {
-    const cc = engine();
+    const cc = engine(HANDOFF_ONLY);
     await cc.start();
     await cc.step(250_000);
     const out = await cc.handoff({ done_verified: 5 });
@@ -565,21 +573,21 @@ describe('the typed handoff through the tool', () => {
   });
 
   it('names a field it does not know instead of storing the handoff without it', async () => {
-    const cc = engine();
+    const cc = engine(HANDOFF_ONLY);
     await cc.start();
     await cc.step(250_000);
     expect((await cc.handoff({ ...FIELDS, dead_end: ['retrying the cache'] })).result).toMatch(/^Not stored: .*`dead_end` is not a field/);
   });
 
   it('still takes the free text of the earlier tool', async () => {
-    const cc = engine();
+    const cc = engine(HANDOFF_ONLY);
     await cc.start();
     await cc.step(250_000);
     expect(await cc.handoff({ handoff: HANDOFF })).toEqual({ result: expect.stringMatching(/^Handoff stored/) });
   });
 
   it('reads its fields from the event\'s input when they are not at the top', async () => {
-    const cc = engine();
+    const cc = engine(HANDOFF_ONLY);
     await cc.start();
     await cc.step(250_000);
     const out = await cc.handoff({ input: FIELDS });
@@ -589,7 +597,7 @@ describe('the typed handoff through the tool', () => {
 
 describe('a handoff the plugin no longer holds, after the harness spoke', () => {
   it('is still installed when only a task notification followed it, which no person wrote', async () => {
-    const cc = engine();
+    const cc = engine(HANDOFF_ONLY);
     await cc.start();
     await cc.step(250_000);
     const notice = { role: 'user', text: '<task-notification>\n<task-id>b1</task-id>\n<status>completed</status>\n</task-notification>', toolUses: [], handle: 'm3' };
@@ -603,7 +611,7 @@ describe('load_on_wake', () => {
   const SKILL = '/nowhere/.claude/commands/pfm-testing-manual.md';
 
   it('inlines the named command or skill into the installed handoff', async () => {
-    const cc = engine({}, { files: { [SKILL]: '---\nname: x\n---\nRUN TESTS IN THE FENCE' } });
+    const cc = engine(HANDOFF_ONLY, { files: { [SKILL]: '---\nname: x\n---\nRUN TESTS IN THE FENCE' } });
     await cc.start();
     await cc.step(250_000);
     expect((await cc.handoff({ ...FIELDS, load_on_wake: ['pfm-testing-manual'] })).result).toMatch(/^Handoff stored/);
@@ -614,7 +622,7 @@ describe('load_on_wake', () => {
   });
 
   it('refuses at the call a name that resolves nowhere, naming it and where it looked, storing nothing', async () => {
-    const cc = engine();
+    const cc = engine(HANDOFF_ONLY);
     await cc.start();
     await cc.step(250_000);
     const out = await cc.handoff({ ...FIELDS, load_on_wake: ['no-such-thing'] });
@@ -624,7 +632,7 @@ describe('load_on_wake', () => {
 
   it('says in the installed text, the log and a notice what could no longer be loaded', async () => {
     const files: Record<string, string> = { [SKILL]: 'BODY' };
-    const cc = engine({}, { files });
+    const cc = engine(HANDOFF_ONLY, { files });
     await cc.start();
     await cc.step(250_000);
     await cc.handoff({ ...FIELDS, load_on_wake: ['pfm-testing-manual'] });
@@ -636,7 +644,7 @@ describe('load_on_wake', () => {
   });
 
   it('leaves out what the model invoked, and says it only invoked it', async () => {
-    const cc = engine({}, { files: { [SKILL]: 'BODY' } });
+    const cc = engine(HANDOFF_ONLY, { files: { [SKILL]: 'BODY' } });
     await cc.start();
     await cc.step(250_000);
     await cc.handoff({ ...FIELDS, load_on_wake: ['pfm-testing-manual'] });
@@ -647,7 +655,7 @@ describe('load_on_wake', () => {
   });
 
   it('refuses at the call a name whose file is a directory, a pipe or any other path that is not a regular file, reading nothing', async () => {
-    const cc = engine({}, { files: { [SKILL]: 'BODY' }, kinds: { [SKILL]: 'other' } });
+    const cc = engine(HANDOFF_ONLY, { files: { [SKILL]: 'BODY' }, kinds: { [SKILL]: 'other' } });
     await cc.start();
     await cc.step(250_000);
     const out = await cc.handoff({ ...FIELDS, load_on_wake: ['pfm-testing-manual'] });
@@ -656,19 +664,19 @@ describe('load_on_wake', () => {
   });
 
   it('refuses at the call a file past the byte cap, before it is read', async () => {
-    const cc = engine({}, { files: { [SKILL]: 'BODY' }, sizes: { [SKILL]: 4 * 1024 * 1024 } });
+    const cc = engine(HANDOFF_ONLY, { files: { [SKILL]: 'BODY' }, sizes: { [SKILL]: 4 * 1024 * 1024 } });
     await cc.start();
     await cc.step(250_000);
     expect((await cc.handoff({ ...FIELDS, load_on_wake: ['pfm-testing-manual'] })).result).toMatch(/^Not stored: .*pfm-testing-manual.*is 4194304 bytes, past the 262144 bytes/);
   });
 
   it('refuses at the call a file it cannot stat, and says NOT LOADED when the path stopped being a file by the install', async () => {
-    const unreadable = engine({}, { files: { [SKILL]: 'BODY' }, statThrows: true });
+    const unreadable = engine(HANDOFF_ONLY, { files: { [SKILL]: 'BODY' }, statThrows: true });
     await unreadable.start();
     await unreadable.step(250_000);
     expect((await unreadable.handoff({ ...FIELDS, load_on_wake: ['pfm-testing-manual'] })).result).toMatch(/^Not stored: .*pfm-testing-manual.*could not stat .*EACCES/);
     const kinds: Record<string, string> = {};
-    const cc = engine({}, { files: { [SKILL]: 'BODY' }, kinds });
+    const cc = engine(HANDOFF_ONLY, { files: { [SKILL]: 'BODY' }, kinds });
     await cc.start();
     await cc.step(250_000);
     await cc.handoff({ ...FIELDS, load_on_wake: ['pfm-testing-manual'] });

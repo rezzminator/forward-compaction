@@ -127,13 +127,13 @@ describe('user messages', () => {
       asst(use('ToolSearch', { query: 'select:X' }, 'q1')),
       user(res('q1', 'x'), 'Tool loaded.'),
       user('The buddy plugin sent a message:\nthe ask said no reads'),
-      user('Do a forward handoff now.  — sid 85d9f2c8 · to reply: chat_inject FORWARD_HANDOFF <message>'),
+      user('Do a forward handoff now.  — sid 85d9f2c8 · to reply: chat call FORWARD_HANDOFF <message>'),
     ];
     expect(userMessages(m)).toEqual(['Do a forward handoff now.']);
   });
 
   it('puts the latest on the last real message: a harness text after it does not take the place', () => {
-    const m = [user('first'), user('Do a forward handoff now.  — sid 1a2b3c4d · to reply: chat_inject X <message>'), asst(use('ToolSearch', {}, 'q') as never), user(res('q', 'ok'), 'Tool loaded.')];
+    const m = [user('first'), user('Do a forward handoff now.  — sid 1a2b3c4d · to reply: chat call X <message>'), asst(use('ToolSearch', {}, 'q') as never), user(res('q', 'ok'), 'Tool loaded.')];
     const { text } = renderForward({ seq: 1, users: userMessages(m), skills: [], trail: [], loaded: [], tasks: [], running: [], paths: [], problems: [], args: { objective: 'o', done: [], remaining: [], next: 'n', blocked: [], findings: [], loadFiles: [], dropSkills: [], trimmed: [] } });
     expect(text).toContain('[2, latest] Do a forward handoff now.');
     expect(text).not.toContain('Tool loaded');

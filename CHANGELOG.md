@@ -162,6 +162,11 @@ Every release of sub-agent-compact. Versions follow [semantic versioning](https:
 - After a plugin reload mid-session, the plugin's first reading became the "fresh base", and the nudge told a 208k main chat that a handoff would cut it to "about 208k plus your handoff"; the real result was 25k. The cut is now stated only when the base reading came from the session's first request; otherwise the claim is left out.
 - A handoff stored while the main chat's compaction was skipped was reported as installed; the model and the user are now told it is still pending.
 
+## [0.4.1] — 2026-10-13
+
+### Changed
+- The defaults are back to the compact-only behaviour of 0.3.1 and earlier: `compactTool` is `true` and `handoffTool` is `false`, so models get the `compact` tool and the `<compact-now>` marker, and the nudges say how to compact. 0.4.0 shipped them the other way round. To keep the 0.4.0 behaviour, set `handoffTool` to `true` (and `compactTool` to `false` to drop the `compact` tool beside it).
+
 ## [0.4.0] — 2026-10-13
 
 ### Added
