@@ -45,6 +45,15 @@ describe('parseEnabled', () => {
 });
 
 describe('resolveOptions', () => {
+  it('uses the plugin decision folder only for a blank logFile with PLUGIN_LOG_DIR (R6)', () => {
+    const resolve = resolveOptions as (...args: any[]) => ReturnType<typeof resolveOptions>;
+    expect([
+      resolve({ logFile: '' }, { pluginLogDir: '/x/logs' }).logFile,
+      resolve({ logFile: '/tmp/a.jsonl' }, { pluginLogDir: '/x/logs' }).logFile,
+      resolve({ logFile: '' }, {}).logFile,
+      resolve({}, { pluginLogDir: '/x/logs/' }).logFile,
+    ]).toEqual(['/x/logs/sub-agent-compact/decisions/.jsonl', '/tmp/a.jsonl', undefined, '/x/logs/sub-agent-compact/decisions/.jsonl']);
+  });
   it('defaults when nothing is set', () => {
     expect(resolveOptions({})).toEqual({ main: DEFAULT_MAIN, subagent: DEFAULT_SUBAGENT, keepBrief: true, compactTool: true, handoffTool: false, forwardHandoffTool: false, agentDirs: [], errors: [] });
     expect(DEFAULT_KEEP_BRIEF).toBe(true);

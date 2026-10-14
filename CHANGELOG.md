@@ -4,6 +4,13 @@ Every release of sub-agent-compact. Versions follow [semantic versioning](https:
 
 ## [Unreleased]
 
+## [0.7.0-dev.23] — 2026-10-14
+
+### Added
+
+- Plugin diagnostics append bounded JSONL rows to errors, warnings and info files under `PLUGIN_LOG_DIR`, or the plugin's HOME state folder when unset. A session heartbeat names the version and directory source; logging failures report once per failing streak without changing work results.
+- A blank `logFile` follows `PLUGIN_LOG_DIR` into per-session decision files. Explicit decision-log settings and existing screen notices are kept.
+
 ## [0.7.0-dev.22] — 2026-10-14
 
 ### Fixed

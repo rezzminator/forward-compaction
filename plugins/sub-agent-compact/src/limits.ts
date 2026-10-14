@@ -1,3 +1,5 @@
+import { pluginLogDir } from './log.ts';
+
 /** A context size: a token count, or a percentage of the model's own window. */
 export type Size = { tokens: number } | { percent: number };
 
@@ -147,7 +149,7 @@ function dirList(raw: unknown, errors: string[]): string[] {
 }
 
 /** Validates the plugin options; every invalid value falls back and is named in `errors`. */
-export function resolveOptions(options: Record<string, unknown>): ResolvedOptions {
+export function resolveOptions(options: Record<string, unknown>, env: { pluginLogDir?: string } = {}): ResolvedOptions {
   const errors: string[] = [];
   const party = (prefix: 'main' | 'subagent', fallback: Policy): Policy =>
     readPolicy(
@@ -175,6 +177,8 @@ export function resolveOptions(options: Record<string, unknown>): ResolvedOption
   if (typeof rawLog === 'string' && rawLog.trim() !== '') {
     if (rawLog.trim().startsWith('/')) logFile = rawLog.trim();
     else errors.push(`sub-agent-compact: option logFile must be an absolute path (got ${JSON.stringify(rawLog)}); logging off`);
+  } else if ((rawLog === undefined || (typeof rawLog === 'string' && rawLog.trim() === '')) && env.pluginLogDir) {
+    logFile = `${pluginLogDir(env.pluginLogDir, undefined, 'sub-agent-compact')}/decisions/.jsonl`;
   }
   return { main, subagent, keepBrief, compactTool, handoffTool, forwardHandoffTool, agentDirs, ...(logFile ? { logFile } : {}), errors };
 }

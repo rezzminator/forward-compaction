@@ -1,4 +1,10 @@
 import { describe, expect, it } from 'vitest';
+import { execFile } from 'node:child_process';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { promisify } from 'node:util';
+import { URL } from 'node:url';
 import { register } from '../plugins/sub-agent-compact/hooks/sub-agent-compact.ts';
 
 // The forward handoff through the adapter: the tool collects what code carries, stores the text and
@@ -21,7 +27,8 @@ const api = (extra: unknown[] = []) => [
   { role: 'assistant', content: [{ type: 'tool_use', id: 'f1', name: 'mcp__sub-agent-compact__forward_handoff', input: FIELDS }] },
 ];
 
-type Env = { denied?: string[]; listFails?: boolean; noHome?: boolean; noTranscript?: boolean; cwd?: string; agentRows?: Record<string, unknown[]>; agents?: { id: string; type: string }[]; run?: (argv: string[], init?: { cwd?: string }) => { exitCode: number; stdout: string; stderr: string } | undefined };
+type Env = { home?: string; pluginLogDir?: string; pluginUser?: { uid: number; gid: number }; pluginRunFails?: boolean; denied?: string[]; listFails?: boolean; noHome?: boolean; noTranscript?: boolean; cwd?: string; agentRows?: Record<string, unknown[]>; agents?: { id: string; type: string }[]; run?: (argv: string[], init?: { cwd?: string }) => { exitCode: number; stdout: string; stderr: string } | undefined };
+const pluginExec = promisify(execFile);
 
 function engine(options: Record<string, unknown> = { forwardHandoffTool: true }, files: Record<string, string> = {}, apiRows: unknown[] = api(), git = true, refused: string[] = [], env: Env = {}) {
   const hooks = new Map<string, AnyHook>();
@@ -43,7 +50,7 @@ function engine(options: Record<string, unknown> = { forwardHandoffTool: true },
       messages: async (a?: { agentId?: string }) => (a?.agentId !== undefined ? (env.agentRows?.[a.agentId] ?? []) : apiRows),
       compact: async () => ({}),
     },
-    env: { get: async (key: string) => (key === 'HOME' && !env.noHome ? '/h/u' : undefined) },
+    env: { get: async (key: string) => key === 'PLUGIN_LOG_DIR' ? env.pluginLogDir : key === 'HOME' && !env.noHome ? env.home ?? '/h/u' : undefined },
     fs: {
       exists: async (path: string) => path in known || path in written || Object.keys(written).some((p) => p.startsWith(`${path}/`)),
       read: async (path: string) => known[path] ?? written[path] ?? '',
@@ -58,6 +65,11 @@ function engine(options: Record<string, unknown> = { forwardHandoffTool: true },
     process: {
       run: async (argv: string[], init?: { cwd?: string }) => {
         runCalls.push(argv);
+        if (argv[0] === '/bin/sh' && argv[3] === 'plugin-log') {
+          if (env.pluginRunFails) throw new Error('plugin process unavailable');
+          const out = await pluginExec('/bin/sh', argv.slice(1), { encoding: 'utf8', ...env.pluginUser });
+          return { exitCode: 0, ...out };
+        }
         const line = argv.join(' ');
         const scripted = env.run?.(argv, init);
         if (scripted !== undefined) return scripted;
@@ -73,7 +85,7 @@ function engine(options: Record<string, unknown> = { forwardHandoffTool: true },
         return { exitCode: 1, stdout: '', stderr: '' };
       },
     },
-    clock: { after: (ms: number, fn: () => void) => ({ cancel: () => clearTimeout(setTimeout(fn, ms)) }) },
+    clock: { now: async () => Date.parse('2026-10-14T15:20:31.123Z'), after: (ms: number, fn: () => void) => ({ cancel: () => clearTimeout(setTimeout(fn, ms)) }) },
     ui: { log: (line: string) => void logs.push(line) },
     agent: { list: async () => env.agents ?? [] },
     tool: {
@@ -114,6 +126,7 @@ function engine(options: Record<string, unknown> = { forwardHandoffTool: true },
     logs,
     summarized: () => summarized,
     start: () => dispatch('session.start', {}, async () => ({})),
+    end: () => dispatch('session.end', { reason: 'exit' }, async () => ({ sessionId: 'session-1' })),
     step: async (tokens: number, model = 'claude-opus-4-5[1m]') => {
       current = tokens;
       const gen = dispatch('turn.step', { model }, async function* () {
@@ -651,7 +664,7 @@ describe('look_back through the adapter (R1–R7, R9)', () => {
     const cc = lookEngine(); await cc.start();
     const out = await cc.call({ tool: LOOK_BACK, why: 'lost detail' });
     expect(out.result).toContain('query or entry');
-    expect(cc.runCalls).toEqual([]);
+    expect(cc.runCalls.filter((argv) => argv[3] !== 'plugin-log')).toEqual([]);
     expect(lookLines(cc)).toEqual(['look back (main): lost detail — failed: query or entry is required']);
     expect((await lookRows(cc))[0]).toMatchObject({ why: 'lost detail', boundary: null, error: 'query or entry is required' });
   });
@@ -665,7 +678,7 @@ describe('look_back through the adapter (R1–R7, R9)', () => {
     const out = await cc.call(input);
     expect(out.result).toBe('original result');
     expect(cc.nextInputs).toEqual([input]);
-    expect(cc.runCalls).toEqual([]);
+    expect(cc.runCalls.filter((argv) => argv[3] !== 'plugin-log')).toEqual([]);
     expect(await saidLines(cc)).toEqual([`look back by hand (${label}): ${input.tool} on the transcript`]);
     expect(lookLines(cc)).toEqual([]);
     expect(await lookRows(cc, 'look-back-manual')).toEqual([expect.objectContaining({ event: 'look-back-manual', party, tool: input.tool })]);
@@ -676,7 +689,7 @@ describe('look_back through the adapter (R1–R7, R9)', () => {
     for (const input of [{ tool: 'Read', file_path: '/any/agent-a2.jsonl', agentId: 'a1' }, { tool: 'Read', file_path: '/any/old-session-1.jsonl.bak' }, { tool: 'Write', file_path: '/any/session-1.jsonl' }]) expect((await cc.call(input)).result).toBe('original result');
     expect(await saidLines(cc)).toEqual([]);
     expect(await lookRows(cc, 'look-back-manual')).toEqual([]);
-    expect(cc.runCalls).toEqual([]);
+    expect(cc.runCalls.filter((argv) => argv[3] !== 'plugin-log')).toEqual([]);
   });
 });
 
@@ -792,5 +805,71 @@ describe('the Git block describes the repositories the work touched', () => {
     const wake = await wakeOf([use('e1', 'Edit', { file_path: '/a/.worktrees/fix/src/x.ts' }), use('e2', 'Edit', { file_path: '/b/src/y.ts' })], run);
     expect(gitBlockOf(wake)).toBe('/a/.worktrees/fix: flight/fix@bbb2222, 1 dirty: /a/.worktrees/fix/src/x.ts\n');
     expect(wake).toMatch(/Unresolved\n(?:.*\n)*git \/b\/src: fatal: detected dubious ownership in repository at '\/b'\n/);
+  });
+});
+
+describe('plugin log through the forward adapter', () => {
+  const diskRows = (dir: string, file: string): any[] => existsSync(join(dir, file)) ? readFileSync(join(dir, file), 'utf8').trim().split('\n').map((row) => JSON.parse(row)) : [];
+  it.each([true, false])('writes forced levels, one heartbeat and the session at override=%s', async (override) => {
+    const temp = mkdtempSync(join(tmpdir(), 'compact-plugin-adapter-'));
+    const dir = override ? join(temp, 'logs/sub-agent-compact') : join(temp, '.local/state/sub-agent-compact/logs');
+    try {
+      const cc = engine({ forwardHandoffTool: true, compactTool: false, mainAutoCompact: 'bad', logFile: '/logs/decisions.jsonl' }, {}, api(), true, ['look_back'], { home: temp, ...(override ? { pluginLogDir: join(temp, 'logs') } : {}) });
+      expect(await cc.start()).toEqual({});
+      await cc.start();
+      expect(await cc.end()).toEqual({ sessionId: 'session-1' });
+      const errors = diskRows(dir, 'errors.jsonl'); const warnings = diskRows(dir, 'warnings.jsonl'); const info = diskRows(dir, 'info.jsonl');
+      expect(errors.filter((row) => row.event === 'tool-register-failed').map((row) => [row.level, row.where, row.session, row.detail.tool])).toEqual([['error', 'hooks/sub-agent-compact.ts#record', 'session-1', 'look_back'], ['error', 'hooks/sub-agent-compact.ts#record', 'session-1', 'look_back']]);
+      expect(warnings.filter((row) => row.event === 'option-error').map((row) => [row.level, row.where, row.session])).toEqual([['warning', 'hooks/sub-agent-compact.ts#record', 'session-1']]);
+      expect(info).toEqual([{ ts: '2026-10-14T15:20:31.123Z', plugin: 'sub-agent-compact', level: 'info', event: 'logger-ready', msg: 'plugin logger ready', where: 'hooks/sub-agent-compact.ts#start', session: 'session-1', detail: { version: JSON.parse(readFileSync(new URL('../plugins/sub-agent-compact/.claude-plugin/plugin.json', import.meta.url), 'utf8')).version, dir_source: override ? 'PLUGIN_LOG_DIR' : 'fallback' } }]);
+      const said = (await cc.decisions()).find((row: any) => row.event === 'said');
+      expect(Object.keys(said)).toEqual(['ts', 'event', 'line', 'shown']);
+      expect(cc.runCalls.filter((argv) => argv[0] === '/bin/sh' && argv[3] === 'plugin-log').every((argv) => argv[4] === dir)).toBe(true);
+    } finally { rmSync(temp, { recursive: true, force: true }); }
+  });
+  it('records gathered problems as warnings while still storing the partial handoff', async () => {
+    const temp = mkdtempSync(join(tmpdir(), 'compact-plugin-partial-'));
+    try {
+      const cc = engine({ forwardHandoffTool: true, compactTool: false }, {}, api(), true, [], { home: temp, pluginLogDir: join(temp, 'logs'), noTranscript: true });
+      await cc.start(); await cc.step(250_000);
+      expect((await cc.forward()).result).toContain('Forward handoff stored');
+      await cc.end();
+      const warnings = diskRows(join(temp, 'logs/sub-agent-compact'), 'warnings.jsonl');
+      expect(warnings.filter((row) => row.detail?.problem === 'transcript: no file for session session-1').map((row) => [row.level, row.event, row.where])).toEqual([['warning', 'forward-invalid', 'hooks/sub-agent-compact.ts#record']]);
+    } finally { rmSync(temp, { recursive: true, force: true }); }
+  });
+  it('reports the directory once per failure streak and rearms after recovery, without changing work', async () => {
+    const temp = mkdtempSync(join(tmpdir(), 'compact-plugin-failure-'));
+    const env: Env = { home: temp, pluginLogDir: join(temp, 'logs'), pluginRunFails: true };
+    const cc = engine({ forwardHandoffTool: true, compactTool: false }, {}, api(), true, [], env);
+    try {
+      expect(await cc.start()).toEqual({}); await cc.end();
+      const first = await cc.forward({ objective: '' }); await cc.end();
+      expect(first.result).toContain('Not stored');
+      const notices = () => cc.logs.filter((line) => line.includes('plugin log ') && line.includes('failed:'));
+      expect(notices()).toEqual([expect.stringContaining(`${temp}/logs/sub-agent-compact failed: plugin process unavailable`)]);
+      env.pluginRunFails = false;
+      expect(await cc.forward({ objective: '' })).toEqual(first); await cc.end();
+      expect(diskRows(join(temp, 'logs/sub-agent-compact'), 'warnings.jsonl').map((row) => row.event)).toEqual(['forward-invalid']);
+      env.pluginRunFails = true;
+      expect(await cc.forward({ objective: '' })).toEqual(first); await cc.end();
+      expect(notices()).toEqual([expect.stringContaining('plugin process unavailable'), expect.stringContaining('plugin process unavailable')]);
+    } finally { rmSync(temp, { recursive: true, force: true }); }
+  });
+  it.skipIf(process.getuid?.() !== 0)('skip-because:needs-root-fixture: nonroot chmod EPERM reports once and keeps tool results', async () => {
+    const temp = mkdtempSync(join(tmpdir(), 'compact-plugin-eperm-')); const dir = join(temp, 'sub-agent-compact');
+    chmodSync(temp, 0o777); mkdirSync(dir, { mode: 0o777 }); chmodSync(dir, 0o777);
+    const cc = engine({ forwardHandoffTool: true, compactTool: false }, {}, api(), true, [], { home: temp, pluginLogDir: temp, pluginUser: { uid: 65534, gid: 65534 } });
+    try {
+      expect(await cc.start()).toEqual({}); await cc.end();
+      expect((await cc.forward({ objective: '' })).result).toContain('Not stored'); await cc.end();
+      expect(cc.logs.filter((line) => line.includes('plugin log ') && line.includes('failed:'))).toEqual([expect.stringMatching(new RegExp(`${dir} failed:[\\s\\S]*Operation not permitted`))]);
+    } finally { rmSync(temp, { recursive: true, force: true }); }
+  });
+  it('names missing env instead of silently treating logging as absent', async () => {
+    const cc = engine({ forwardHandoffTool: true, compactTool: false }, {}, api(), true, [], { noHome: true });
+    await cc.start(); await cc.start(); await cc.end();
+    expect(cc.logs.filter((line) => line.startsWith('plugin log off:'))).toEqual(['plugin log off: no PLUGIN_LOG_DIR and no HOME']);
+    expect(await cc.read()).toEqual({ result: 'file text' });
   });
 });
