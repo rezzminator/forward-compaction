@@ -1,1 +1,0 @@
-appendFileSync(debugPath, line);

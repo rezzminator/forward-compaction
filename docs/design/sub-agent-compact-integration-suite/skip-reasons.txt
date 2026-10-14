@@ -1,2 +1,0 @@
-case-sensitive-filesystem
-root-ignores-permissions

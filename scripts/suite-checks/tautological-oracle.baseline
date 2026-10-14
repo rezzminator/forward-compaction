@@ -1,4 +1,0 @@
-# ceiling 2026-09-25 3
-falls back on a bad value and names it, never silently	expect(options.mainAutoCompact).toBe(DEFAULT_MAIN_AUTO_COMPACT);
-falls back on a bad value and names it, never silently	expect(options.subagentAutoCompact).toBe(DEFAULT_SUBAGENT_AUTO_COMPACT);
-sees tool results the last response usage has not (the one-step lag)	expect(currentTokens(5_000, transcript)).toBe(estimateTranscript(transcript));

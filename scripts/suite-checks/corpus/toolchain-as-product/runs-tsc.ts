@@ -1,1 +1,0 @@
-execSync('npx tsc --noEmit');
