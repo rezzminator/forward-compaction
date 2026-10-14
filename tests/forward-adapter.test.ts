@@ -518,16 +518,20 @@ const LOOK_BACK = 'mcp__sub-agent-compact__look_back';
 const COMPLETE = '\n[look-back-complete]\n';
 const numbered = (n: number, content: unknown, type = 'user') => `${n}:${JSON.stringify({ type, timestamp: '2026-01-02T03:04:05Z', message: { role: type, content } })}\n`;
 const okProcess = (stdout: string) => ({ exitCode: 0, stdout, stderr: '' });
+const lookRun = (search: string): Env => ({ run: (argv) => {
+  if (argv[0] === 'sh' && argv[2]!.includes('compact_boundary')) return okProcess('4:{"subtype":"compact_boundary"}\n10:{"subtype":"compact_boundary"}\n' + COMPLETE);
+  if (argv[0] === 'sh') return okProcess(search + COMPLETE);
+  return undefined;
+} });
+const lookEngineRun = lookRun(numbered(8, 'Alpha beta error text'));
 const lookEngine = (over: Env = {}, search = numbered(8, 'Alpha beta error text')) => engine(
   { logFile: '/logs/decisions.jsonl', handoffTool: false, forwardHandoffTool: false, compactTool: false }, {}, api(), true, [],
-  { run: (argv) => {
-    if (argv[0] === 'sh' && argv[2]!.includes('compact_boundary')) return okProcess('4:{"subtype":"compact_boundary"}\n10:{"subtype":"compact_boundary"}\n' + COMPLETE);
-    if (argv[0] === 'sh') return okProcess(search + COMPLETE);
-    return undefined;
-  }, ...over },
+  { ...lookRun(search), ...over },
 );
 const lookRows = async (cc: ReturnType<typeof engine>, event = 'look-back') => (await cc.decisions()).filter((r: any) => r.event === event);
 const lookLines = (cc: ReturnType<typeof engine>) => cc.logs.filter((line) => line.startsWith('look back'));
+/** Every look back line said, on the screen or not: the decision log's `said` rows. */
+const saidLines = async (cc: ReturnType<typeof engine>) => (await cc.decisions()).filter((r: any) => r.event === 'said' && r.line.startsWith('look back')).map((r: any) => r.line);
 
 describe('look_back through the adapter (R1–R7, R9)', () => {
   it('registers on load with all compaction options off, retries a failure three times, and records attempts', async () => {
@@ -551,7 +555,7 @@ describe('look_back through the adapter (R1–R7, R9)', () => {
     expect(scan[2]).toContain('1,$(($2 - 1))p');
     expect(scan[2]).toContain('tail -n 200');
     expect(cc.runCalls.find((a) => a[0] === 'find')).toEqual(['find', '-H', '/h/u/.claude/projects', '-maxdepth', '2', '-type', 'f', '-name', 'session-1.jsonl']);
-    expect(lookLines(cc)).toEqual(['look back (main): lost error — 1 hits']);
+    expect(await saidLines(cc)).toEqual(['look back (main): lost error — 1 hits']);
     expect(await lookRows(cc)).toEqual([expect.objectContaining({ event: 'look-back', party: 'main', why: 'lost error', query: 'alpha beta', hits: 1, boundary: 10 })]);
     expect(cc.nextInputs).toEqual([]);
   });
@@ -565,14 +569,14 @@ describe('look_back through the adapter (R1–R7, R9)', () => {
     expect(out.result).toContain(compacted ? 'already in context' : 'Nothing has been compacted yet');
     expect(cc.runCalls.filter((a) => a[0] === 'sh')).toHaveLength(1);
     expect((await lookRows(cc))[0]).toMatchObject({ boundary: compacted ? 10 : null });
-    expect(lookLines(cc)).toHaveLength(1);
+    expect(await saidLines(cc)).toHaveLength(1);
   });
   it('answers no boundary without searching and still counts the call', async () => {
     const cc = lookEngine({ run: (argv) => argv[0] === 'sh' ? okProcess(COMPLETE) : undefined }); await cc.start();
     const out = await cc.call({ tool: LOOK_BACK, why: 'exact value', query: 'value' });
     expect(out.result).toMatch(/Nothing has been compacted yet.*still in context/);
     expect(cc.runCalls.filter((a) => a[0] === 'sh')).toHaveLength(1);
-    expect(lookLines(cc)).toEqual(['look back (main): exact value — 0 hits']);
+    expect(await saidLines(cc)).toEqual(['look back (main): exact value — 0 hits']);
     expect(await lookRows(cc)).toEqual([expect.objectContaining({ boundary: null, hits: 0 })]);
   });
   it.each([
@@ -596,7 +600,7 @@ describe('look_back through the adapter (R1–R7, R9)', () => {
     expect(out.result).toContain('No entry before the compaction at line 10 matches: alpha, beta');
     expect(out.result).toContain('fewer or other words');
     expect((await lookRows(cc))[0]).toMatchObject({ boundary: 10, hits: 0 });
-    expect(lookLines(cc)).toEqual(['look back (main): lost text — 0 hits']);
+    expect(await saidLines(cc)).toEqual(['look back (main): lost text — 0 hits']);
   });
   it('chooses the calling sub-agent transcript by agentId, including an unlisted party', async () => {
     for (const [agents, label] of [[[{ id: 'a1', type: 'reviewer' }], 'reviewer'], [[], 'unlisted']] as const) {
@@ -611,7 +615,7 @@ describe('look_back through the adapter (R1–R7, R9)', () => {
       expect(out.result).toContain('agent detail');
       expect(cc.runCalls.find((a) => a[0] === 'find')!.slice(-2)).toEqual(['-path', '*/session-1/subagents/agent-a1.jsonl']);
       expect(cc.runCalls.filter((a) => a[0] === 'sh').every((a) => a[4] === agentFile)).toBe(true);
-      expect(lookLines(cc)).toEqual([`look back (${label}): lost detail — 1 hits`]);
+      expect(await saidLines(cc)).toEqual([`look back (${label}): lost detail — 1 hits`]);
       expect((await lookRows(cc))[0]).toMatchObject({ party: 'a1', hits: 1 });
     }
   });
@@ -625,7 +629,7 @@ describe('look_back through the adapter (R1–R7, R9)', () => {
     } }); await cc.start();
     const fetched = await cc.call({ tool: LOOK_BACK, why: 'lost output', entry: 8 });
     expect(fetched.result).toBe('#8  2026-01-02 03:04  result of Bash\nfull output');
-    expect(lookLines(cc)).toEqual(['look back (main): lost output — entry 8']);
+    expect(await saidLines(cc)).toEqual(['look back (main): lost output — entry 8']);
     expect((await lookRows(cc))[0]).toMatchObject({ entry: 8, boundary: 10 });
     const before = cc.runCalls.length;
     const held = await cc.call({ tool: LOOK_BACK, why: 'lost output', entry: 10 });
@@ -635,8 +639,9 @@ describe('look_back through the adapter (R1–R7, R9)', () => {
     namesFail = true;
     const failed = await cc.call({ tool: LOOK_BACK, why: 'lost output', entry: 8 });
     expect(failed.result).toBe('Look back failed: tool name lookup: grep: transcript unavailable');
-    expect(lookLines(cc)).toHaveLength(3);
-    expect(lookLines(cc)[2]).toBe('look back (main): lost output — failed: tool name lookup: grep: transcript unavailable');
+    expect(await saidLines(cc)).toHaveLength(3);
+    expect(lookLines(cc)).toHaveLength(2);
+    expect((await saidLines(cc))[2]).toBe('look back (main): lost output — failed: tool name lookup: grep: transcript unavailable');
     expect(await lookRows(cc)).toHaveLength(3);
     expect((await lookRows(cc))[2]).toMatchObject({ entry: 8, boundary: 10, error: 'tool name lookup: grep: transcript unavailable' });
   });
@@ -659,15 +664,48 @@ describe('look_back through the adapter (R1–R7, R9)', () => {
     expect(out.result).toBe('original result');
     expect(cc.nextInputs).toEqual([input]);
     expect(cc.runCalls).toEqual([]);
-    expect(lookLines(cc)).toEqual([`look back by hand (${label}): ${input.tool} on the transcript`]);
+    expect(await saidLines(cc)).toEqual([`look back by hand (${label}): ${input.tool} on the transcript`]);
+    expect(lookLines(cc)).toEqual([]);
     expect(await lookRows(cc, 'look-back-manual')).toEqual([expect.objectContaining({ event: 'look-back-manual', party, tool: input.tool })]);
   });
   it('does not count another party file, a similarly named file, or Write', async () => {
     const cc = lookEngine(); await cc.start();
     expect(cc.registered).toEqual(['look_back']);
     for (const input of [{ tool: 'Read', file_path: '/any/agent-a2.jsonl', agentId: 'a1' }, { tool: 'Read', file_path: '/any/old-session-1.jsonl.bak' }, { tool: 'Write', file_path: '/any/session-1.jsonl' }]) expect((await cc.call(input)).result).toBe('original result');
-    expect(lookLines(cc)).toEqual([]);
+    expect(await saidLines(cc)).toEqual([]);
     expect(await lookRows(cc, 'look-back-manual')).toEqual([]);
     expect(cc.runCalls).toEqual([]);
+  });
+});
+
+// Every line the plugin says lands in the decision log as a 'said' row; a routine success stays off the screen while a log takes it.
+describe('the lines the plugin says, on the screen and in the decision log', () => {
+  const said = async (cc: ReturnType<typeof engine>) => (await cc.decisions()).filter((r: any) => r.event === 'said');
+  it('logs a look back notice as a said row and keeps it off the screen', async () => {
+    const cc = lookEngine(); await cc.start();
+    await cc.call({ tool: LOOK_BACK, why: 'lost error', query: 'alpha beta' });
+    expect((await said(cc)).filter((r: any) => r.line.startsWith('look back'))).toEqual([expect.objectContaining({ event: 'said', line: 'look back (main): lost error — 1 hits', shown: false })]);
+    expect(lookLines(cc)).toEqual([]);
+  });
+  it('shows a failure line on the screen and logs it as a said row', async () => {
+    const cc = lookEngine(); await cc.start();
+    await cc.call({ tool: LOOK_BACK, why: 'lost detail' });
+    const line = 'look back (main): lost detail — failed: query or entry is required';
+    expect(lookLines(cc)).toEqual([line]);
+    expect((await said(cc)).filter((r: any) => r.line === line)).toEqual([expect.objectContaining({ shown: true })]);
+  });
+  it('shows a failure the old code left off the log, by its screen text', async () => {
+    const cc = engine({ forwardHandoffTool: true, logFile: '/logs/decisions.jsonl' }, { [DIR.replace(/\/1$/, '')]: '' }, api(), true, [], { listFails: true });
+    await cc.start();
+    await cc.forward();
+    const line = cc.logs.find((l) => l.includes('EACCES'))!;
+    expect(line).toMatch(/^listing .* failed: EACCES/);
+    expect((await said(cc)).filter((r: any) => r.line === line)).toEqual([expect.objectContaining({ shown: true })]);
+  });
+  it('shows a routine line on the screen when no decision log is configured', async () => {
+    const cc = engine({ handoffTool: false, forwardHandoffTool: false, compactTool: false }, {}, api(), true, [], lookEngineRun);
+    await cc.start();
+    await cc.call({ tool: LOOK_BACK, why: 'lost error', query: 'alpha beta' });
+    expect(lookLines(cc)).toEqual(['look back (main): lost error — 1 hits']);
   });
 });

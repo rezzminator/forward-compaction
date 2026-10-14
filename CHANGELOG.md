@@ -4,6 +4,13 @@ Every release of sub-agent-compact. Versions follow [semantic versioning](https:
 
 ## [Unreleased]
 
+## [0.7.0-dev.19] — 2026-10-14
+
+### Changed
+
+- Every line the plugin says is also written to the decision log as a `said` row (`line`, `shown`), so a failure that only reached the screen, such as a forward handoff that could not be saved, can now be read back from the log.
+- Routine successes — look back notices, a manual transcript read, a handoff or forward handoff installed with every block, a handoff recovered from the transcript — go to the decision log only; failures, skips, fallbacks and missing blocks still show on screen. With no `logFile`, or when the log is off for the session, routine lines show on screen as before.
+
 ## [0.7.0-dev.18] — 2026-10-13
 
 ### Fixed

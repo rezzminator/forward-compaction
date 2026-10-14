@@ -5,7 +5,7 @@
 **Smart auto-compact for Claude Code: a separate compaction point for every sub-agent, and self-compaction at a milestone the model chooses.**
 
 [![Claude Code plugin](https://img.shields.io/badge/Claude%20Code-plugin-D97757)](https://docs.claude.com/en/docs/claude-code/plugins)
-[![Version](https://img.shields.io/badge/version-0.7.0--dev.18-blue)](./CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.7.0--dev.19-blue)](./CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
 [![Tests](https://img.shields.io/badge/tests-402%20passing-brightgreen)](#development)
 [![Built with Professor](https://img.shields.io/badge/built%20with-Professor-8A2BE2)](https://github.com/rezzminator/professor)
@@ -53,7 +53,10 @@ the model decide *when* to compact.
   the ask is held up to 3 times and the model is told to call it now; then it
   compacts with or without it.
 - 📜 **Every decision logged** to a JSONL file per session, when you want to
-  see why a compaction ran or was held.
+  see why a compaction ran or was held. Every line the plugin says lands there
+  too, as a `said` row: failures still show on screen, while routine successes
+  (look back notices, an installed handoff) stay in the log, and show on
+  screen only when no `logFile` is set.
 
 ## 📊 Benchmark
 
@@ -238,7 +241,7 @@ Every call is saved under `<Claude config directory>/sub-agent-compact/forward-h
 
 `look_back` is always available to the main chat and every sub-agent. It searches only the caller's own transcript before its latest compaction, including a forward handoff. Supply `why` (what the compaction lost) and `query` (all words must appear in one entry, case-insensitive; double quotes keep a phrase whole). Results are numbered, newest first, with readable snippets. Fetch an exact entry with `entry: N` instead of a query; entries already in context are refused.
 
-Every call is a counted compaction miss: the person sees one chat line explaining what was missed, and the decision log records `look-back` when `logFile` is configured. Manual `Read`, `Grep` or `Bash` calls naming the caller's transcript are also shown and logged as `look-back-manual`, without changing the call. No compaction yet, no matching entry, and lookup failures have distinct replies.
+Every call is a counted compaction miss: the decision log records `look-back` and the one line explaining what was missed when `logFile` is configured; the line reaches the screen when the call failed or no `logFile` is set. Manual `Read`, `Grep` or `Bash` calls naming the caller's transcript are also logged as `look-back-manual`, the same way, without changing the call. No compaction yet, no matching entry, and lookup failures have distinct replies.
 
 Search keeps the newest 200 raw candidates, re-checks the words against readable text, and returns up to 20 hits / 12k characters; an entry fetch keeps up to 24k characters with a cut marker. Tool results name their tool when its call can be found; unavailable names and unsupported transcript shapes are explicit. Missing details beyond these bounds need a narrower query or an entry fetch.
 
