@@ -168,11 +168,13 @@ function record(st: State, $: EngineInterface, row: Row): void {
       const existing = (await $.fs.exists(path)) ? await $.fs.read(path) : '';
       await $.fs.write(path, appendRows(existing, rows, LOG_CAP));
     })
-    // Screen only, once per distinct failure: logging a failed log write would queue another write.
+    // Screen only, once per distinct failure: logging a failed log write would queue another write. The key drops
+    // numbers, so one failure whose text carries a varying size or offset is still shown once.
     .catch((error) => {
       const line = `sub-agent-compact: writing the decision log for ${file} failed: ${message(error)}`;
-      if (st.logFailures.has(line)) return;
-      st.logFailures.add(line);
+      const key = line.replace(/\d+/g, '#');
+      if (st.logFailures.has(key)) return;
+      st.logFailures.add(key);
       show($, line);
     });
 }
@@ -224,14 +226,15 @@ function start(st: State, $: EngineInterface): Promise<void> {
       say(st, $, `sub-agent-compact: reading CLAUDE_CODE_AUTO_COMPACT_WINDOW failed: ${message(error)}`);
     }
     const dirs = [`${cwd}/.claude/agents`, ...(home ? [`${home}/.claude/agents`] : []), ...st.config.agentDirs];
+    const resolveLog = (line: string) => {
+      say(st, $, line);
+      record(st, $, { event: 'resolve-error', line });
+    };
     st.policies = new AgentPolicies(
       dirs,
       st.config.subagent,
-      engineAgentFs({ exists: (path) => $.fs.exists(path), read: (path) => $.fs.read(path), list: (dir) => $.fs.list(dir) }),
-      (line) => {
-        say(st, $, line);
-        record(st, $, { event: 'resolve-error', line });
-      },
+      engineAgentFs({ exists: (path) => $.fs.exists(path), read: (path) => $.fs.read(path), list: (dir) => $.fs.list(dir), stat: (path) => $.fs.stat(path) }, resolveLog),
+      resolveLog,
     );
     if (!st.config.handoffTool && !st.config.compactTool && !st.config.forwardHandoffTool) {
       warnOnce(st, $, 'no-tools', 'sub-agent-compact: no self-compaction tool is on (handoffTool, compactTool and forwardHandoffTool are all off); parties are nudged by nobody and only compacted at their limits');

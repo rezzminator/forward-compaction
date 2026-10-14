@@ -19,11 +19,15 @@ b=$(grep -oE 'badge/version-[0-9A-Za-z.-]+-blue' README.md | sed -E 's/badge\/ve
 [ "$b" = "$v" ] || { echo "FAIL README badge says ${b:-nothing}, plugin.json $v"; fail=1; }
 grep -qE "^## \[$v\] — [0-9]{4}-[0-9]{2}-[0-9]{2}$" CHANGELOG.md || { echo "FAIL CHANGELOG.md has no dated section for $v"; fail=1; }
 tb=$(grep -oE 'badge/tests-[0-9]+%20passing' README.md | sed -E 's/badge\/tests-|%20passing//g' | head -1)
-report=$(node_modules/.bin/vitest run --dir tests --reporter=json 2>/dev/null)
-counts=$(printf '%s' "$report" | node -e 'const j = JSON.parse(require("fs").readFileSync(0, "utf8")); process.stdout.write(`${j.numPassedTests} ${j.numFailedTests}`)' 2>/dev/null) || { echo "ERROR cannot read the test count: run npm ci"; exit 2; }
-passed=${counts% *}
-failed=${counts#* }
+[ -x node_modules/.bin/vitest ] || { echo "ERROR cannot read the test count: run npm ci"; exit 2; }
+errors=$(mktemp) || { echo "ERROR mktemp failed"; exit 2; }
+trap 'rm -f "$errors"' EXIT
+report=$(node_modules/.bin/vitest run --dir tests --reporter=json 2>"$errors"); ran=$?
+counts=$(printf '%s' "$report" | node -e 'const j = JSON.parse(require("fs").readFileSync(0, "utf8")); process.stdout.write(`${j.numPassedTests} ${j.numFailedTests} ${j.numFailedTestSuites}`)' 2>/dev/null) ||
+  { echo "ERROR cannot read the test count: vitest gave no JSON report (exit $ran): $(grep -m 1 -E '^[A-Za-z]*Error: ' "$errors" || tail -n 1 "$errors")"; exit 2; }
+read -r passed failed broken <<<"$counts"
 if [ -z "$tb" ]; then echo "FAIL README has no tests badge (tests-N%20passing)"; fail=1
+elif [ "$broken" != 0 ] && [ "$failed" = 0 ]; then echo "FAIL the run has $broken test file$([ "$broken" = 1 ] || echo s) that failed to run, so the README tests badge cannot be checked"; fail=1
 elif [ "$failed" != 0 ]; then echo "FAIL the run has $failed failing test$([ "$failed" = 1 ] || echo s), so the README tests badge cannot be checked"; fail=1
 elif [ "$tb" != "$passed" ]; then echo "FAIL README tests badge says $tb, the run passes $passed"; fail=1
 fi

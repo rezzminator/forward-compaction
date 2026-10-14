@@ -62,6 +62,14 @@ describe('a decision log that cannot be written, through the adapter', () => {
     expect(failures(cc.shown)).toEqual(['writing the decision log for /logs/decisions.jsonl failed: EACCES: permission denied']);
   });
 
+  it('tells the person once when the same failure carries a varying number', async () => {
+    let size = 4_194_304;
+    const cc = engine(() => new Error(`EFBIG: ${size++} bytes, over the 4 MiB limit`));
+    await cc.start();
+    for (let i = 0; i < 4; i++) await cc.ask();
+    expect(failures(cc.shown)).toEqual(['writing the decision log for /logs/decisions.jsonl failed: EFBIG: 4194304 bytes, over the 4 MiB limit']);
+  });
+
   it('tells the person again when the failure is a different one', async () => {
     let n = 0;
     const cc = engine(() => new Error(n++ < 2 ? 'EACCES: permission denied' : 'ENOSPC: no space left'));

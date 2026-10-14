@@ -4,6 +4,14 @@ Every release of sub-agent-compact. Versions follow [semantic versioning](https:
 
 ## [Unreleased]
 
+## [0.7.0-dev.22] — 2026-10-14
+
+### Fixed
+
+- A sub-agent whose definition in an agents directory is a symbolic link is found by its frontmatter name, as a regular file is. A link is read only when it leads to a regular file within the 4 MiB read limit; a link to a pipe, a device, a directory or nowhere, or to a larger file, is skipped and named on screen, never read.
+- A decision log that cannot be written is named on screen once per distinct failure, not once per flush; a failure whose text differs only in a number (a size or an offset) counts as the same one.
+- `npm run release:check` reads the test count from the run itself: a run with a failing test, or a test file that failed to run, is a failure, and a test runner that gives no report is named with its own error.
+
 ## [0.7.0-dev.21] — 2026-10-14
 
 ### Fixed

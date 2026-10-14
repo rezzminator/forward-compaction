@@ -61,6 +61,22 @@ describe('release-check.sh README tests badge', () => {
     expect(status).toBe(1);
   });
 
+  it('fails when a test file cannot even be collected, whatever the badge says', () => {
+    const root = plant({ badge: '[![Tests](https://img.shields.io/badge/tests-3%20passing-brightgreen)](#development)' });
+    writeFileSync(join(root, 'tests/broken.test.ts'), "import './no-such-module.ts';\n");
+    const { status, out } = run(root);
+    expect(out).toBe('FAIL the run has 1 test file that failed to run, so the README tests badge cannot be checked');
+    expect(status).toBe(1);
+  });
+
+  it('exits 2 naming the runner failure, not npm ci, when vitest is installed but gives no report', () => {
+    const root = plant({ badge: '[![Tests](https://img.shields.io/badge/tests-3%20passing-brightgreen)](#development)' });
+    writeFileSync(join(root, 'vitest.config.ts'), "throw new Error('planted config failure');\n");
+    const { status, out } = run(root);
+    expect(out).toMatch(/^ERROR cannot read the test count: vitest gave no JSON report \(exit \d+\): .*planted config failure/);
+    expect(status).toBe(2);
+  });
+
   it('exits 2 and says why when the test runner cannot run', () => {
     const root = plant({ badge: '[![Tests](https://img.shields.io/badge/tests-3%20passing-brightgreen)](#development)' });
     rmSync(join(root, 'node_modules'));
