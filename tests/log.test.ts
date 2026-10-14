@@ -100,6 +100,62 @@ describe('plugin log', () => {
       }
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
+  it.each([
+    ['absolute', 'new'], ['absolute', 'existing'], ['absolute', 'capped'],
+    ['hyphen-relative', 'new'], ['hyphen-relative', 'existing'], ['hyphen-relative', 'capped'],
+  ] as const)('appends exact private rows with BSD chmod: %s %s', async (kind, state) => {
+    const parent = mkdtempSync(join(tmpdir(), 'plugin-bsd-'));
+    const bin = join(parent, 'bin');
+    const dir = log.pluginLogDir(kind === 'absolute' ? join(parent, 'logs') : '-logs', undefined, 'sub-agent-compact')!;
+    const disk = join(parent, kind === 'absolute' ? 'logs' : '-logs', 'sub-agent-compact');
+    const levels = [['errors.jsonl', 'error'], ['warnings.jsonl', 'warning'], ['info.jsonl', 'info']] as const;
+    const seed = (file: string) => JSON.stringify({ seed: file }) + '\n';
+    const backup = (file: string) => `previous backup: ${file}\n`;
+    const oversized = Buffer.alloc(log.PLUGIN_LOG_CAP_BYTES + 1, 'x');
+    const pairs = levels.flatMap(([file, level]) => [file, render({ ...fields, level, msg: "literal $(touch bad); ' \\ text" })]);
+    const notice = (file: string) => JSON.stringify({ ts: '2026-10-14T15:20:31.123Z', plugin: 'sub-agent-compact', level: 'warning', event: 'log-capped', msg: 'level file exceeded 20971520 bytes; moved aside', where: 'src/log.ts#APPEND_SCRIPT', session: 's1', detail: { file } }) + '\n';
+    try {
+      mkdirSync(bin);
+      const shim = join(bin, 'chmod');
+      writeFileSync(shim, `#!/bin/sh
+for arg do
+  case "$arg" in
+    --) printf 'chmod: --: No such file or directory\\n' >&2; exit 1;;
+    -*) printf 'chmod: unsafe operand: %s\\n' "$arg" >&2; exit 1;;
+  esac
+done
+exec /bin/chmod "$@"
+`);
+      chmodSync(shim, 0o755);
+      if (state !== 'new') {
+        mkdirSync(disk, { recursive: true }); chmodSync(disk, 0o755);
+        for (const [file] of levels) {
+          writeFileSync(join(disk, file), state === 'capped' && file !== 'info.jsonl' ? oversized : seed(file));
+          writeFileSync(join(disk, `${file}.1`), backup(file));
+          for (const name of [file, `${file}.1`]) chmodSync(join(disk, name), 0o644);
+        }
+      }
+      const result = await exec('/bin/sh', ['-c', log.APPEND_SCRIPT, 'plugin-log', dir, 'sub-agent-compact', ...pairs], {
+        cwd: parent, env: { ...process.env, PATH: `${bin}:${process.env.PATH ?? '/usr/bin:/bin'}` },
+      }).then(({ stderr }) => ({ code: 0, stderr }), (error) => ({ code: error.code, stderr: error.stderr }));
+      for (const [index, [file]] of levels.entries()) {
+        const prefix = state === 'new' || (state === 'capped' && file !== 'info.jsonl') ? '' : seed(file);
+        const caps = state === 'capped' && file === 'warnings.jsonl' ? notice('warnings.jsonl') + notice('errors.jsonl') : '';
+        const expected = prefix + caps + pairs[index * 2 + 1];
+        const actual = existsSync(join(disk, file)) ? readFileSync(join(disk, file), 'utf8') : '';
+        expect(actual.endsWith(pairs[index * 2 + 1]!), `writer result: ${JSON.stringify(result)}`).toBe(true);
+        expect(actual).toBe(expected);
+        expect(statSync(join(disk, file)).mode & 0o777).toBe(0o600);
+        if (state !== 'new') {
+          const saved = readFileSync(join(disk, `${file}.1`));
+          expect(saved.equals(state === 'capped' && file !== 'info.jsonl' ? oversized : Buffer.from(backup(file)))).toBe(true);
+          expect(statSync(join(disk, `${file}.1`)).mode & 0o777).toBe(0o600);
+        }
+      }
+      expect(result).toEqual({ code: 0, stderr: '' });
+      expect(statSync(disk).mode & 0o777).toBe(0o700);
+    } finally { rmSync(parent, { recursive: true, force: true }); }
+  });
   it.each(['errors.jsonl', 'warnings.jsonl', 'info.jsonl'])('tightens existing owned objects only when appending %s', async (file) => {
     const parent = mkdtempSync(join(tmpdir(), 'plugin-modes-')); const dir = join(parent, 'levels');
     chmodSync(parent, 0o755); mkdirSync(dir, { mode: 0o755 }); chmodSync(dir, 0o755);

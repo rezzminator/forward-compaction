@@ -85,17 +85,18 @@ export function levelRow(fields: PluginLogFields, nowMs: number): string {
 export const APPEND_SCRIPT = `set -eu
 umask 077
 dir=$1; plugin=$2; shift 2
+case "$dir" in -*) dir=./$dir;; esac
 fail() { printf '%s: %s\\n' "$1" "$2" >&2; exit 1; }
 [ ! -L "$dir" ] || fail "$dir" 'refusing log directory symlink'
 mkdir -p -- "$dir"
 [ -w "$dir" ] || fail "$dir" 'log directory is not writable'
-chmod 700 -- "$dir"
+chmod 700 "$dir"
 for name in errors.jsonl warnings.jsonl info.jsonl; do
   for owned in "$dir/$name" "$dir/$name.1"; do
     [ ! -L "$owned" ] || fail "$owned" 'refusing level file symlink'
     if [ -e "$owned" ]; then
       [ -r "$owned" ] && [ -w "$owned" ] || fail "$owned" 'level file is not readable and writable'
-      chmod 600 -- "$owned"
+      chmod 600 "$owned"
     fi
   done
 done

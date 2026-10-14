@@ -4,6 +4,12 @@ Every release of sub-agent-compact. Versions follow [semantic versioning](https:
 
 ## [Unreleased]
 
+## [0.7.1-dev.0] — 2026-10-15
+
+### Fixed
+
+- Plugin log appends work with macOS chmod, including private existing level files and backups, cap rotations and relative log roots beginning with a hyphen.
+
 ## [0.7.0-dev.23] — 2026-10-14
 
 ### Added

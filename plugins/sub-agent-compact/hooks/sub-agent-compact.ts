@@ -242,7 +242,7 @@ function start(st: State, $: EngineInterface): Promise<void> {
     const earlyRows = st.pluginRows.splice(0);
     if (st.pluginLog !== undefined) for (const fields of earlyRows) plog(st, $, fields);
     st.config = servedOptions(resolveOptions(st.rawOptions, { pluginLogDir: override }));
-    plog(st, $, { level: 'info', event: 'logger-ready', msg: 'plugin logger ready', where: 'hooks/sub-agent-compact.ts#start', detail: { version: '0.7.0-dev.23', dir_source: override ? 'PLUGIN_LOG_DIR' : 'fallback' } });
+    plog(st, $, { level: 'info', event: 'logger-ready', msg: 'plugin logger ready', where: 'hooks/sub-agent-compact.ts#start', detail: { version: '0.7.1-dev.0', dir_source: override ? 'PLUGIN_LOG_DIR' : 'fallback' } });
     for (const line of st.config.errors) {
       say(st, $, line, 'warning');
       record(st, $, { event: 'option-error', line });
