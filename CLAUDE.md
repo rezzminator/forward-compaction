@@ -22,6 +22,7 @@ behavioural spec.
 - An error never holds a compaction: log it with context, let the compaction pass.
 - A bad option is logged by name and falls back to its default.
 - A version bump moves `plugins/sub-agent-compact/.claude-plugin/plugin.json`, `marketplace.json`, `package.json` and the README badge together; installed copies update only on a new version.
+- The README tests badge states the count of tests `npm test` passes; `npm run release:check` runs the suite and fails when they differ, so the badge is set last, after the final test is added.
 - Defaults agree in three places: `plugins/sub-agent-compact/src/limits.ts` (`DEFAULT_MAIN`, `DEFAULT_SUBAGENT`), `plugin.json`'s `userConfig`, and the README options table.
 - The README benchmark reports measured runs only; a figure the code has changed since is labelled not re-measured.
 - Public repo: no machine-absolute paths, personal data or private project names in a tracked file.
