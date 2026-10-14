@@ -3,7 +3,7 @@ import { bounded } from '../src/bounded.ts';
 import { LOOK_BACK_TOOL, LOOK_BACK_DESCRIPTION, LOOK_BACK_INPUT_SCHEMA, parseLookBack, boundaryArgv, boundaryLine, searchArgv, entryArgv, namesArgv, processOutput, parseEntries, toolNames, resultIds, searchResults, entryResult, manualTranscriptCall, lookBackNotice, type LookBackResult } from '../src/look-back.ts';
 import { haikuServed, servedOptions, toolsToRegister } from '../src/register.ts';
 import { FORWARD_INPUT_SCHEMA, FORWARD_TOOL, FORWARD_TOOL_DESCRIPTION, forwardHoldText, forwardNudgeText, forwardRefusal, forwardStoredText, parseForwardArgs, rereadNudge, type ForwardArgs } from '../src/forward-args.ts';
-import { absPath, fileTrail, handoffInReply, findTranscriptArgv, firstFound, gitLine, heldForward, opensWithSummary, openingSummary, summaryKnowledge, outline, OUTLINE_FILE_MAX_BYTES, priorCalls, priorPrompts, mergeTrail, invocationPaths, invocations, parseLineRange, parsePorcelain, planAndTasks, runningWork, sliceLines, userMessages, type ApiMsg, type LiveWork, type TrailEntry } from '../src/forward-carry.ts';
+import { absPath, fileTrail, handoffInReply, findTranscriptArgv, firstFound, gitBlock, gitLine, GIT_REPOS, heldForward, outsideRepository, opensWithSummary, openingSummary, summaryKnowledge, outline, OUTLINE_FILE_MAX_BYTES, priorCalls, priorPrompts, mergeTrail, invocationPaths, invocations, parseLineRange, parsePorcelain, planAndTasks, runningWork, sliceLines, trailDirs, userMessages, type ApiMsg, type LiveWork, type TrailEntry } from '../src/forward-carry.ts';
 import { buildRecord, carriedFrom, forwardDir, forwardSessionDir, nextSeq, previousDir, withInstall } from '../src/forward-record.ts';
 import { chainUsers, forwardInstalledLine, installCheck, renderForward, TRAIL_MAX, type RenderInput } from '../src/forward-text.ts';
 import { BRIEF_MAX_TOKENS, reseatBrief, seatedBrief } from '../src/brief.ts';
@@ -760,23 +760,6 @@ async function gatherForward(st: State, $: EngineInterface, args: ForwardArgs, a
     else problems.push(`plan ${planFile}: ${read.problem}`);
   }
 
-  let git: string | undefined;
-  try {
-    const run = (argv: string[]) => $.process.run(argv, { cwd, timeoutMs: 15_000 });
-    const branch = await run(['git', 'rev-parse', '--abbrev-ref', 'HEAD']);
-    if (branch.exitCode !== 0) problems.push(`git: ${failure(branch)}`);
-    else {
-      const head = await run(['git', 'rev-parse', '--short', 'HEAD']);
-      const top = await run(['git', 'rev-parse', '--show-toplevel']);
-      // A cloned repo's fsmonitor hook is a program of its own: the status runs without it.
-      const status = await run(['git', '-c', 'core.fsmonitor=false', 'status', '--porcelain']);
-      if (head.exitCode !== 0 || status.exitCode !== 0 || top.exitCode !== 0) problems.push(`git: ${failure(head.exitCode !== 0 ? head : top.exitCode !== 0 ? top : status)}`);
-      else git = gitLine({ branch: branch.stdout.trim(), head: head.stdout.trim(), dirty: parsePorcelain(status.stdout, top.stdout.trim()) });
-    }
-  } catch (error) {
-    problems.push(`git: ${message(error)}`);
-  }
-
   // The prompts: those an earlier handoff carried (from its record, never its text), then those written since it.
   // The held handoff is the newest text a record of this party holds, else the one an install put at the start; a paste elsewhere is a person's words.
   const unreadable: string[] = [];
@@ -828,6 +811,57 @@ async function gatherForward(st: State, $: EngineInterface, args: ForwardArgs, a
     if ('content' in read) outlines[entry.path] = outline(entry.path, read.content);
     else problems.push(`outline ${entry.path}: ${read.problem}`);
   }
+  // The repositories the work touched: those of the files made or edited, else of the files read, newest first,
+  // a linked worktree or submodule as its own. The session directory's only when the files name none.
+  let here = cwd;
+  try {
+    // Read now, not at start: a shell `cd` moves it.
+    here = await $.session.cwd();
+  } catch (error) {
+    problems.push(`git: reading the session cwd failed (${message(error)}); using ${cwd}`);
+  }
+  const topOf = async (dir: string): Promise<{ top: string } | { none: string } | { problem: string }> => {
+    try {
+      const out = await $.process.run(['git', '-C', dir, 'rev-parse', '--show-toplevel'], { timeoutMs: 15_000 });
+      if (out.exitCode === 0) return { top: out.stdout.trim() };
+      return outsideRepository(out) ? { none: failure(out) } : { problem: failure(out) };
+    } catch (error) {
+      return { problem: message(error) };
+    }
+  };
+  const tops: string[] = [];
+  const touched = trailDirs(trail);
+  for (const tier of [touched.made, touched.read]) {
+    for (const dir of tier) {
+      const found = await topOf(dir);
+      if ('top' in found) {
+        if (!tops.includes(found.top)) tops.push(found.top);
+      } else if ('problem' in found) problems.push(`git ${dir}: ${found.problem}`);
+    }
+    if (tops.length > 0) break;
+  }
+  const own = await topOf(here);
+  if (tops.length === 0) {
+    if ('top' in own) tops.push(own.top);
+    else problems.push(`git: ${'none' in own ? own.none : own.problem}`);
+  }
+  const repos: { root: string; line: string }[] = [];
+  for (const root of tops.slice(0, GIT_REPOS)) {
+    const named = 'top' in own && own.top === root && tops.length === 1 ? 'git' : `git ${root}`;
+    try {
+      const run = (argv: string[]) => $.process.run(argv, { cwd: root, timeoutMs: 15_000 });
+      const branch = await run(['git', 'rev-parse', '--abbrev-ref', 'HEAD']);
+      const head = await run(['git', 'rev-parse', '--short', 'HEAD']);
+      // A cloned repo's fsmonitor hook is a program of its own: the status runs without it.
+      const status = await run(['git', '-c', 'core.fsmonitor=false', 'status', '--porcelain']);
+      const failed = [branch, head, status].find((out) => out.exitCode !== 0);
+      if (failed !== undefined) problems.push(`${named}: ${failure(failed)}`);
+      else repos.push({ root, line: gitLine({ branch: branch.stdout.trim(), head: head.stdout.trim(), dirty: parsePorcelain(status.stdout, root) }) });
+    } catch (error) {
+      problems.push(`${named}: ${message(error)}`);
+    }
+  }
+  const git = gitBlock(repos, { ...('top' in own ? { own: own.top } : {}), more: tops.slice(GIT_REPOS) });
   const live = at.agentId === undefined && st.live !== undefined ? { tasks: st.live.tasks, crons: st.live.crons, started: st.live.started, now: Date.now() } : undefined;
 
   return { seq: at.seq, users: chain.users, usersDropped: chain.dropped, ...(chain.inReply ? { handoffInReply: true } : {}), ...(summary !== undefined ? { summary } : {}), skills, trail, outlines, loaded, ...(plan !== undefined ? { plan } : {}), tasks: work.tasks, running: runningWork(api, live), ...(git !== undefined ? { git } : {}), paths: paths.length > 0 ? [paths.join(' · ')] : [], problems, args };

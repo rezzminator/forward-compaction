@@ -76,6 +76,7 @@ export type RenderInput = {
   plan?: string;
   tasks: string[];
   running: string[];
+  /** One line per repository the work touched (`gitBlock`). */
   git?: string;
   paths: string[];
   /** Anything that was asked for and is not in the text, one line each. */
@@ -205,7 +206,7 @@ export function renderForward(i: RenderInput): { text: string; blocks: BlockReco
   if (i.plan !== undefined) add('Plan', cut(i.plan.trim(), PLAN_MAX_CHARS), 1);
   add('Tasks', i.tasks.slice(0, TASKS_MAX).map((x) => item('', x)).join('\n'), Math.min(i.tasks.length, TASKS_MAX));
   add('Running', i.running.join('\n'), i.running.length);
-  if (i.git !== undefined) add('Git', i.git, 1);
+  if (i.git !== undefined) add('Git', i.git, i.git.split('\n').length);
   add('Paths', i.paths.join('\n'), i.paths.length);
   const all = [...problems, ...i.problems];
   add('Unresolved', [...all, LOOK_BACK_HINT].join('\n'), all.length + 1);

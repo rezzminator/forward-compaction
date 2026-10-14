@@ -4,6 +4,12 @@ Every release of sub-agent-compact. Versions follow [semantic versioning](https:
 
 ## [Unreleased]
 
+## [0.7.0-dev.21] — 2026-10-14
+
+### Fixed
+
+- The forward handoff's `Git` block describes the repositories the work touched instead of the directory the session started in. A chat started in a repository's main checkout that builds in a linked worktree, a submodule or another repository got the main checkout's branch and dirty files. The block now has a line per repository: those of the files made or edited, else those of the files read, newest first, each named by its root, at most 3, with the rest counted and named. When the files touched are in no repository, it keeps the session directory's repository (read at handoff time, so a shell `cd` counts), with the bare line as before. A directory git fails to look in is named in `Unresolved`.
+
 ## [0.7.0-dev.20] — 2026-10-14
 
 ### Added

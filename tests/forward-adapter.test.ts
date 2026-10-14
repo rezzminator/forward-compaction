@@ -21,7 +21,7 @@ const api = (extra: unknown[] = []) => [
   { role: 'assistant', content: [{ type: 'tool_use', id: 'f1', name: 'mcp__sub-agent-compact__forward_handoff', input: FIELDS }] },
 ];
 
-type Env = { denied?: string[]; listFails?: boolean; noHome?: boolean; noTranscript?: boolean; agentRows?: Record<string, unknown[]>; agents?: { id: string; type: string }[]; run?: (argv: string[]) => { exitCode: number; stdout: string; stderr: string } | undefined };
+type Env = { denied?: string[]; listFails?: boolean; noHome?: boolean; noTranscript?: boolean; cwd?: string; agentRows?: Record<string, unknown[]>; agents?: { id: string; type: string }[]; run?: (argv: string[], init?: { cwd?: string }) => { exitCode: number; stdout: string; stderr: string } | undefined };
 
 function engine(options: Record<string, unknown> = { forwardHandoffTool: true }, files: Record<string, string> = {}, apiRows: unknown[] = api(), git = true, refused: string[] = [], env: Env = {}) {
   const hooks = new Map<string, AnyHook>();
@@ -38,7 +38,7 @@ function engine(options: Record<string, unknown> = { forwardHandoffTool: true },
     session: {
       id: async () => 'session-1',
       turns: async () => 1,
-      cwd: async () => '/nowhere',
+      cwd: async () => env.cwd ?? '/nowhere',
       usage: async () => ({ context: { tokens: current, window: 1_000_000 } }),
       messages: async (a?: { agentId?: string }) => (a?.agentId !== undefined ? (env.agentRows?.[a.agentId] ?? []) : apiRows),
       compact: async () => ({}),
@@ -56,14 +56,16 @@ function engine(options: Record<string, unknown> = { forwardHandoffTool: true },
       stat: async (path: string) => ({ kind: 'file', size: (known[path] ?? '').length, mtimeMs: 0, isLink: false }),
     },
     process: {
-      run: async (argv: string[]) => {
+      run: async (argv: string[], init?: { cwd?: string }) => {
         runCalls.push(argv);
         const line = argv.join(' ');
-        const scripted = env.run?.(argv);
+        const scripted = env.run?.(argv, init);
         if (scripted !== undefined) return scripted;
         if (!git && argv[0] === 'git') return { exitCode: 128, stdout: '', stderr: 'fatal: not a git repository' };
         if (line === 'git rev-parse --abbrev-ref HEAD') return { exitCode: 0, stdout: 'main\n', stderr: '' };
-        if (line === 'git rev-parse --show-toplevel') return { exitCode: 0, stdout: '/nowhere\n', stderr: '' };
+        if (argv[0] === 'git' && argv[1] === '-C' && argv.slice(3).join(' ') === 'rev-parse --show-toplevel') {
+          return argv[2] === '/nowhere' || argv[2]!.startsWith('/nowhere/') ? { exitCode: 0, stdout: '/nowhere\n', stderr: '' } : { exitCode: 128, stdout: '', stderr: 'fatal: not a git repository' };
+        }
         if (argv[0] === 'find') return { exitCode: 0, stdout: env.noTranscript ? '' : `${TRANSCRIPT}\n`, stderr: '' };
         if (line === 'git rev-parse --short HEAD') return { exitCode: 0, stdout: 'abc1234\n', stderr: '' };
         if (line === 'git -c core.fsmonitor=false status --porcelain') return { exitCode: 0, stdout: ' M a.txt\n', stderr: '' };
@@ -707,5 +709,88 @@ describe('the lines the plugin says, on the screen and in the decision log', () 
     await cc.start();
     await cc.call({ tool: LOOK_BACK, why: 'lost error', query: 'alpha beta' });
     expect(lookLines(cc)).toEqual(['look back (main): lost error — 1 hits']);
+  });
+});
+
+describe('the Git block describes the repositories the work touched', () => {
+  // Repository A's main checkout, a linked worktree of A inside it, and a repository B elsewhere:
+  // git answers from the directory it runs in (`-C dir`, else the run's cwd), as the real one does.
+  const REPOS: Record<string, { branch: string; head: string; porcelain: string }> = {
+    '/a': { branch: 'develop', head: 'aaa1111', porcelain: ' M main-only.txt\n' },
+    '/a/.worktrees/fix': { branch: 'flight/fix', head: 'bbb2222', porcelain: ' M src/x.ts\n' },
+    '/b': { branch: 'main', head: 'ccc3333', porcelain: '?? new.ts\n' },
+  };
+  const ok = (stdout: string) => ({ exitCode: 0, stdout, stderr: '' });
+  const gitAt = (argv: string[], init?: { cwd?: string }) => {
+    if (argv[0] !== 'git') return undefined;
+    const dashC = argv[1] === '-C';
+    const dir = dashC ? argv[2]! : (init?.cwd ?? '');
+    const rest = (dashC ? argv.slice(3) : argv.slice(1)).join(' ');
+    const root = Object.keys(REPOS).filter((r) => dir === r || dir.startsWith(`${r}/`)).sort((x, y) => y.length - x.length)[0];
+    if (root === undefined) return { exitCode: 128, stdout: '', stderr: 'fatal: not a git repository (or any of the parent directories): .git' };
+    const repo = REPOS[root]!;
+    if (rest === 'rev-parse --show-toplevel') return ok(`${root}\n`);
+    if (rest === 'rev-parse --abbrev-ref HEAD') return ok(`${repo.branch}\n`);
+    if (rest === 'rev-parse --short HEAD') return ok(`${repo.head}\n`);
+    if (rest === '-c core.fsmonitor=false status --porcelain') return ok(repo.porcelain);
+    return { exitCode: 1, stdout: '', stderr: `unscripted: git ${rest}` };
+  };
+  const use = (id: string, name: string, input: Record<string, unknown>) => [
+    { role: 'assistant', content: [{ type: 'tool_use', id, name, input }] },
+    { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: 'ok' }] },
+  ];
+  const rows = (calls: unknown[][]) => [
+    { role: 'user', content: [text('fix the bug')] },
+    ...calls.flat(),
+    { role: 'assistant', content: [{ type: 'tool_use', id: 'f1', name: TOOL, input: FIELDS }] },
+  ];
+  const wakeOf = async (calls: unknown[][], run = gitAt) => {
+    const cc = engine({ forwardHandoffTool: true }, {}, rows(calls), true, [], { cwd: '/a', run });
+    await cc.start();
+    await cc.forward();
+    return cc.written[`${DIR}/wake.txt`]!;
+  };
+  const gitBlockOf = (wake: string) => /\nGit\n((?:(?!Paths\n|Unresolved\n)[^\n]*\n)*)/.exec(wake)?.[1];
+
+  it("names a linked worktree's branch and dirty files when the session started in the main checkout", async () => {
+    const wake = await wakeOf([use('r1', 'Read', { file_path: '/a/README.md' }), use('e1', 'Edit', { file_path: '/a/.worktrees/fix/src/x.ts' })]);
+    expect(gitBlockOf(wake)).toBe('/a/.worktrees/fix: flight/fix@bbb2222, 1 dirty: /a/.worktrees/fix/src/x.ts\n');
+    expect(wake).not.toContain('develop@aaa1111');
+    expect(wake).not.toContain('main-only.txt');
+  });
+
+  it('names a different repository the files were made in', async () => {
+    const wake = await wakeOf([use('w1', 'Write', { file_path: '/b/new.ts', content: 'x' })]);
+    expect(gitBlockOf(wake)).toBe('/b: main@ccc3333, 1 dirty: /b/new.ts\n');
+    expect(wake).not.toContain('develop@aaa1111');
+  });
+
+  it('names each repository touched, newest first', async () => {
+    const wake = await wakeOf([use('e1', 'Edit', { file_path: '/a/.worktrees/fix/src/x.ts' }), use('w1', 'Write', { file_path: '/b/new.ts', content: 'x' })]);
+    expect(gitBlockOf(wake)).toBe('/b: main@ccc3333, 1 dirty: /b/new.ts\n/a/.worktrees/fix: flight/fix@bbb2222, 1 dirty: /a/.worktrees/fix/src/x.ts\n');
+  });
+
+  it('falls back to the files read when none was made or edited', async () => {
+    const wake = await wakeOf([use('r1', 'Read', { file_path: '/b/src/old.ts' })]);
+    expect(gitBlockOf(wake)).toBe('/b: main@ccc3333, 1 dirty: /b/new.ts\n');
+  });
+
+  it("keeps the session directory's repository, unnamed, when no file was touched", async () => {
+    const wake = await wakeOf([]);
+    expect(gitBlockOf(wake)).toBe('develop@aaa1111, 1 dirty: /a/main-only.txt\n');
+  });
+
+  it("keeps the session directory's repository when the files touched are in none", async () => {
+    const wake = await wakeOf([use('w1', 'Write', { file_path: '/tmp/scratch/notes.txt', content: 'x' })]);
+    expect(gitBlockOf(wake)).toBe('develop@aaa1111, 1 dirty: /a/main-only.txt\n');
+    expect(wake).not.toMatch(/Unresolved\n(?:.*\n)*git /);
+  });
+
+  it('names a directory git failed to look in, instead of dropping it silently', async () => {
+    const run = (argv: string[], init?: { cwd?: string }) =>
+      argv[0] === 'git' && argv[2] === '/b/src' ? { exitCode: 128, stdout: '', stderr: "fatal: detected dubious ownership in repository at '/b'" } : gitAt(argv, init);
+    const wake = await wakeOf([use('e1', 'Edit', { file_path: '/a/.worktrees/fix/src/x.ts' }), use('e2', 'Edit', { file_path: '/b/src/y.ts' })], run);
+    expect(gitBlockOf(wake)).toBe('/a/.worktrees/fix: flight/fix@bbb2222, 1 dirty: /a/.worktrees/fix/src/x.ts\n');
+    expect(wake).toMatch(/Unresolved\n(?:.*\n)*git \/b\/src: fatal: detected dubious ownership in repository at '\/b'\n/);
   });
 });

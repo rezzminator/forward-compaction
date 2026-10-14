@@ -476,6 +476,35 @@ export function gitLine({ branch, head, dirty }: { branch: string; head: string;
   return `${branch}@${head}, ${dirty.length} dirty: ${dirty.slice(0, GIT_PATHS).join(', ')}${dirty.length > GIT_PATHS ? '…' : ''}`;
 }
 
+/** The Git block names at most this many repositories; the rest are counted and named by their root. */
+export const GIT_REPOS = 3;
+
+/** The directories of the trail's absolute paths, newest first and each once: those of the files made or edited, and those of the files read. */
+export function trailDirs(trail: readonly TrailEntry[]): { made: string[]; read: string[] } {
+  const made: string[] = [];
+  const read: string[] = [];
+  for (const entry of trail) {
+    if (!entry.path.startsWith('/')) continue;
+    const dir = entry.path.slice(0, entry.path.lastIndexOf('/')) || '/';
+    const list = entry.tag === 'R' ? read : made;
+    if (!list.includes(dir)) list.push(dir);
+  }
+  return { made, read };
+}
+
+/** A failed `git -C <dir> rev-parse --show-toplevel` that means the directory is in no repository, or gone since, rather than a look that failed. */
+export function outsideRepository(out: { exitCode: number; stderr: string }): boolean {
+  return out.exitCode === 128 && /not a git repository|cannot change to/.test(out.stderr);
+}
+
+/** One line per repository, each `root: branch@head…`; the session's own repository alone keeps the bare line. Undefined when there is nothing to say. */
+export function gitBlock(repos: readonly { root: string; line: string }[], { own, more = [] }: { own?: string; more?: readonly string[] }): string | undefined {
+  if (repos.length === 1 && more.length === 0 && repos[0]!.root === own) return repos[0]!.line;
+  const lines = repos.map((r) => `${r.root}: ${r.line}`);
+  if (more.length > 0) lines.push(`${more.length} more ${more.length === 1 ? 'repository' : 'repositories'}: ${more.join(', ')}`);
+  return lines.length > 0 ? lines.join('\n') : undefined;
+}
+
 /** A `load_files` range: `10-20`, `10:20` or `7`, one-based and inclusive; undefined when it is not one. */
 export function parseLineRange(text: string): { from: number; to: number } | undefined {
   const m = /^\s*(\d+)\s*(?:[-:]\s*(\d+))?\s*$/.exec(text);

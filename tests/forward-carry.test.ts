@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { bashWrites, handoffInReply, collapseWhitespace, fileTrail, gitLine, invocationPaths, invocations, parseLineRange, parsePorcelain, planAndTasks, runningWork, sliceLines, stripNoise, userMessages, absPath, findTranscriptArgv, firstFound, heldForward, opensWithSummary, priorPrompts, priorCalls, mergeTrail, openingSummary, summaryKnowledge, outline, parsePorcelain as porcelain, type ApiMsg } from '../plugins/sub-agent-compact/src/forward-carry.ts';
+import { bashWrites, handoffInReply, collapseWhitespace, fileTrail, gitBlock, gitLine, GIT_REPOS, outsideRepository, trailDirs, invocationPaths, invocations, parseLineRange, parsePorcelain, planAndTasks, runningWork, sliceLines, stripNoise, userMessages, absPath, findTranscriptArgv, firstFound, heldForward, opensWithSummary, priorPrompts, priorCalls, mergeTrail, openingSummary, summaryKnowledge, outline, parsePorcelain as porcelain, type ApiMsg } from '../plugins/sub-agent-compact/src/forward-carry.ts';
 import { renderForward } from '../plugins/sub-agent-compact/src/forward-text.ts';
 import { HANDOFF_OPENING } from '../plugins/sub-agent-compact/src/handoff.ts';
 
@@ -428,6 +428,38 @@ describe('git, ranges, transcript', () => {
     expect(gitLine({ branch: 'main', head: 'abc1234', dirty: [] })).toBe('main@abc1234, clean');
     const many = Array.from({ length: 14 }, (_, i) => `f${i}`);
     expect(gitLine({ branch: 'dev', head: 'x', dirty: many })).toBe(`dev@x, 14 dirty: ${many.slice(0, 10).join(', ')}…`);
+  });
+
+  it('takes the directories of the files made or edited apart from those read, newest first, each once', () => {
+    const trail = [
+      { tag: 'E' as const, path: '/a/.worktrees/fix/src/x.ts' },
+      { tag: 'R' as const, path: '/a/README.md' },
+      { tag: 'C' as const, path: '/a/.worktrees/fix/src/y.ts' },
+      { tag: 'C' as const, path: '/b/new.ts' },
+      { tag: 'R' as const, path: '/top.md' },
+      { tag: 'E' as const, path: 'relative/z.ts' },
+    ];
+    expect(trailDirs(trail)).toEqual({ made: ['/a/.worktrees/fix/src', '/b'], read: ['/a', '/'] });
+    expect(trailDirs([])).toEqual({ made: [], read: [] });
+  });
+
+  it('tells a directory in no repository, or gone, from a look that failed', () => {
+    expect(outsideRepository({ exitCode: 128, stderr: 'fatal: not a git repository (or any of the parent directories): .git' })).toBe(true);
+    expect(outsideRepository({ exitCode: 128, stderr: "fatal: cannot change to '/gone': No such file or directory" })).toBe(true);
+    expect(outsideRepository({ exitCode: 128, stderr: "fatal: detected dubious ownership in repository at '/b'" })).toBe(false);
+    expect(outsideRepository({ exitCode: 1, stderr: 'fatal: not a git repository' })).toBe(false);
+  });
+
+  it('writes the Git block a line per repository, named by its root, the session\'s own alone bare, the rest counted', () => {
+    const line = (root: string) => ({ root, line: 'main@abc, clean' });
+    expect(gitBlock([line('/a')], { own: '/a' })).toBe('main@abc, clean');
+    expect(gitBlock([line('/a/.worktrees/fix')], { own: '/a' })).toBe('/a/.worktrees/fix: main@abc, clean');
+    expect(gitBlock([line('/b')], {})).toBe('/b: main@abc, clean');
+    expect(gitBlock([line('/a'), line('/b')], { own: '/a' })).toBe('/a: main@abc, clean\n/b: main@abc, clean');
+    expect(gitBlock([line('/a')], { own: '/a', more: ['/d'] })).toBe('/a: main@abc, clean\n1 more repository: /d');
+    expect(gitBlock([line('/a'), line('/b'), line('/c')], { more: ['/d', '/e'] })).toBe('/a: main@abc, clean\n/b: main@abc, clean\n/c: main@abc, clean\n2 more repositories: /d, /e');
+    expect(gitBlock([], { own: '/a' })).toBeUndefined();
+    expect(GIT_REPOS).toBe(3);
   });
 
   it('honours a line range exactly', () => {

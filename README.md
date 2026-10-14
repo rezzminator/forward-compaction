@@ -5,7 +5,7 @@
 **Smart auto-compact for Claude Code: a separate compaction point for every sub-agent, and self-compaction at a milestone the model chooses.**
 
 [![Claude Code plugin](https://img.shields.io/badge/Claude%20Code-plugin-D97757)](https://docs.claude.com/en/docs/claude-code/plugins)
-[![Version](https://img.shields.io/badge/version-0.7.0--dev.20-blue)](./CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.7.0--dev.21-blue)](./CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
 [![Tests](https://img.shields.io/badge/tests-402%20passing-brightgreen)](#development)
 [![Built with Professor](https://img.shields.io/badge/built%20with-Professor-8A2BE2)](https://github.com/rezzminator/professor)
@@ -251,7 +251,7 @@ With `forwardHandoffTool` on, the main chat and every sub-agent a policy governs
 | `Skill <name>` | each skill and command invoked, once, reloaded from disk (the directory Claude Code printed for it, then the project, user and plugin directories) minus `drop_skills`, frontmatter stripped | about 3k tokens each, 12k total |
 | `Files` | `E`/`R`/`C path` per file the tool calls edited, read or created, newest first, every path absolute, plus subdirectory `CLAUDE.md` files the session picked up | 15 lines |
 | `Load <path>` | the `load_files` the model named, read at handoff time, a `lines` range exactly; a path the `Read` tool would not be allowed to read without asking is not read, and named in `Unresolved` | about 3k tokens each, 12k total |
-| `Plan`, `Tasks`, `Running`, `Git`, `Paths` | the plan, the latest todo or task state, background shells, sub-agents, monitors, wakeups and crons still running (the engine's own in-flight list from the last turn's end, plus calls since), one git line, the transcript (found by its session id) with the line of the cut, the previous forward handoff and the saved files | one line per item; `Paths` is one line |
+| `Plan`, `Tasks`, `Running`, `Git`, `Paths` | the plan, the latest todo or task state, background shells, sub-agents, monitors, wakeups and crons still running (the engine's own in-flight list from the last turn's end, plus calls since), a git line (branch, head, dirty files) per repository the work touched — those of the files made or edited, else of the files read, newest first, a linked worktree or submodule as its own, each named by its root; the session directory's, unnamed, when the files name none —, the transcript (found by its session id) with the line of the cut, the previous forward handoff and the saved files | one line per item; `Git` names 3 repositories and counts the rest; `Paths` is one line |
 | `Unresolved` | a skill or file that could not be read, an unknown `drop_skills` name, a failed git or transcript read; ends with the `look_back` hint | one line each |
 | `Objective`, `Done`, `Remaining`, `Blocked`, `Findings`, `Next` | the model's arguments; an over-limit field is trimmed and marked `[trimmed]`, a missing required field returns one error naming it | per field, in characters: `objective` 600, `next` 400; items: `done` and `remaining` 15 of 200, `blocked` 10 of 200, `findings` 15 of 300 |
 
