@@ -1,6 +1,6 @@
 {
   "name": "sub-agent-compact",
-  "version": "0.7.0-dev.19",
+  "version": "0.7.0-dev.20",
   "private": true,
   "description": "Smart auto-compact for Claude Code: a separate compaction point for every sub-agent, and self-compaction at a milestone the model chooses.",
   "type": "module",

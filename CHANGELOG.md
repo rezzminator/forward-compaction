@@ -4,6 +4,12 @@ Every release of sub-agent-compact. Versions follow [semantic versioning](https:
 
 ## [Unreleased]
 
+## [0.7.0-dev.20] — 2026-10-14
+
+### Added
+
+- A `compact-unseen` row (`party`, `before`, `after`) in the decision log when the main chat's token reading falls to half the previous one or less with no `session.compact` handled in between. Claude Code 2.1.299 on a machine with managed settings compacts the main chat without dispatching `session.compact` to user plugins (its debug log reads `session.compact bypassed by cc-plugin-sec-default (tier user)`), so the plugin can neither hold nor see those compactions; the row makes each one visible. A compaction before the session's first reading, such as the first request after a resume, leaves no reading to compare and is not caught.
+
 ## [0.7.0-dev.19] — 2026-10-14
 
 ### Changed

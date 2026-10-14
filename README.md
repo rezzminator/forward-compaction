@@ -5,7 +5,7 @@
 **Smart auto-compact for Claude Code: a separate compaction point for every sub-agent, and self-compaction at a milestone the model chooses.**
 
 [![Claude Code plugin](https://img.shields.io/badge/Claude%20Code-plugin-D97757)](https://docs.claude.com/en/docs/claude-code/plugins)
-[![Version](https://img.shields.io/badge/version-0.7.0--dev.19-blue)](./CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.7.0--dev.20-blue)](./CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
 [![Tests](https://img.shields.io/badge/tests-402%20passing-brightgreen)](#development)
 [![Built with Professor](https://img.shields.io/badge/built%20with-Professor-8A2BE2)](https://github.com/rezzminator/professor)
@@ -56,7 +56,10 @@ the model decide *when* to compact.
   see why a compaction ran or was held. Every line the plugin says lands there
   too, as a `said` row: failures still show on screen, while routine successes
   (look back notices, an installed handoff) stay in the log, and show on
-  screen only when no `logFile` is set.
+  screen only when no `logFile` is set. A main-chat compaction Claude Code
+  ran without asking the plugin (its reading fell to half or less, with no
+  `session.compact` in between) is logged as `compact-unseen` with the
+  readings `before` and `after`.
 
 ## 📊 Benchmark
 

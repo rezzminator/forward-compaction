@@ -36,6 +36,7 @@ import { appendRows, sessionLogPath } from '../src/log.ts';
 import { armedText, CONTINUE_AFTER_MARKER, disarmedText, earlyArm, markerRequest, nudgeText, stopRequest } from '../src/nudge.ts';
 import { FRESH_MAX_MESSAGES, isFirstRequest, Parties } from '../src/parties.ts';
 import { engineAskPoint, isHaiku, modelWindow } from '../src/window.ts';
+import { unseenCompaction } from '../src/unseen.ts';
 import { invokedSkills, pluginPaths, renderWake, stripFrontmatter, wakeCandidates, wakeFileProblem, WAKE_FILE_MAX_BYTES, type WakeEntry, type WakeRoots } from '../src/wake.ts';
 
 // Thin adapter: every decision lives in src/. Each hook catches its own
@@ -137,6 +138,8 @@ type State = {
   writing: Promise<void>;
   mainCompactedThisTurn: boolean;
   mainCompacting: boolean;
+  /** A session.compact of main was handled (or the plugin compacted main itself) since main's last reading. */
+  mainCompactSeen: boolean;
 };
 
 // Rows queue in memory; each flush reads the session's file and appends them,
@@ -949,6 +952,7 @@ export const register: Register = (on: On, options: PluginOptions) => {
     writing: Promise.resolve(),
     mainCompactedThisTurn: false,
     mainCompacting: false,
+    mainCompactSeen: false,
     toolTries: { handoff: 0, compact: 0, forward: 0, look_back: 0 },
     forwardSeq: new Map(),
     forwardInstalled: new Map(),
@@ -993,6 +997,12 @@ export const register: Register = (on: On, options: PluginOptions) => {
       // The main chat's prompt count is asked only when this could be that request.
       const mayBeFirst = e.index === 0 && typeof e.messageCount === 'number' && e.messageCount <= FRESH_MAX_MESSAGES && st.parties.firstReading(key) === undefined;
       const turns = main && tokens !== undefined && mayBeFirst ? await promptCount(st, $) : undefined;
+      // A sharp fall with no session.compact handled since is a compaction Claude Code never dispatched to the plugin.
+      if (main && tokens !== undefined) {
+        const before = st.parties.reading('main');
+        if (unseenCompaction(before, tokens, st.mainCompactSeen)) record(st, $, { event: 'compact-unseen', party: 'main', before: before ?? null, after: tokens });
+        st.mainCompactSeen = false;
+      }
       if (tokens !== undefined) st.parties.read(key, tokens, isFirstRequest({ index: e.index, messageCount: e.messageCount, main, turns }));
       const installed = st.forwardInstalled.get(key);
       if (installed !== undefined) {
@@ -1107,6 +1117,7 @@ export const register: Register = (on: On, options: PluginOptions) => {
   on('session.compact', async ($, e, next) => {
     const agentId = e.agentId;
     const key = agentId ?? 'main';
+    if (agentId === undefined) st.mainCompactSeen = true;
     // A trigger a newer Claude Code may add is handled as an automatic ask, and said once.
     const known = knownTrigger(e.trigger);
     const kind: Trigger = known ?? 'auto';
@@ -1324,6 +1335,7 @@ export const register: Register = (on: On, options: PluginOptions) => {
       st.mainCompacting = true;
       record(st, $, { event: 'turn.complete', party: 'main', tokens: tokens ?? null, limit, action: 'compact', why: handoff !== undefined ? 'handoff' : focus !== undefined ? 'self' : 'at-limit' });
       const outcome = await $.session.compact(focus !== undefined ? { instructions: focus } : {});
+      st.mainCompactSeen = true;
       const skipped = 'skip' in outcome && outcome.skip ? outcome.skip : null;
       record(st, $, { event: 'turn.complete.compacted', party: 'main', skipped });
       if (skipped !== null) {
