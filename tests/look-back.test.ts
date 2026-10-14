@@ -2,7 +2,8 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 // A missing new module is an assertion red, not a transform/build-error red.
 let back: Record<string, any>;
@@ -116,11 +117,11 @@ describe('look_back public documentation and oversized queries', () => {
     expect(out.text).toContain('fewer or other words');
   });
   it('documents look_back and counted misses in tools prose and the changelog (R10)', () => {
-    const readme = readFileSync(new URL('../README.md', import.meta.url), 'utf8');
+    const readme = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'README.md'), 'utf8');
     expect(readme).toContain('### Look back');
     expect(readme).toContain('Every call is a counted compaction miss');
     expect(readme).toContain('look-back-manual');
-    const changelog = readFileSync(new URL('../CHANGELOG.md', import.meta.url), 'utf8');
+    const changelog = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'CHANGELOG.md'), 'utf8');
     expect(changelog.split('\n## [').some((section) => section.includes('`look_back`') && section.includes('shown to the person'))).toBe(true);
   });
 });

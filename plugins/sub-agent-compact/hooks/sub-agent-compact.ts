@@ -7,6 +7,7 @@ import { absPath, fileTrail, handoffInReply, findTranscriptArgv, firstFound, git
 import { buildRecord, carriedFrom, forwardDir, forwardSessionDir, nextSeq, previousDir, withInstall } from '../src/forward-record.ts';
 import { chainUsers, forwardInstalledLine, installCheck, renderForward, TRAIL_MAX, type RenderInput } from '../src/forward-text.ts';
 import { BRIEF_MAX_TOKENS, reseatBrief, seatedBrief } from '../src/brief.ts';
+import { engineAgentFs } from '../src/agent-fs.ts';
 import { AgentPolicies, AgentTypes } from '../src/agents.ts';
 import { compactionEnd, contextTokens, currentTokens, decide, estimateTranscript, HAIKU_HOLDS, haikuHold, knownTrigger, personPrompt, type Trigger } from '../src/decide.ts';
 import {
@@ -131,6 +132,8 @@ type State = {
   /** Automatic asks held per Haiku party while it is told to call the forward handoff. */
   haikuHeld: Map<string, number>;
   warned: Set<string>;
+  /** The log-write failures already shown: a log that cannot be written fails every flush the same way, and the person hears each failure once. */
+  logFailures: Set<string>;
   pending: string[];
   logPath?: Promise<string | undefined>;
   /** Reading the session id failed: no row is written this session, so a routine line goes to the screen. */
@@ -165,8 +168,13 @@ function record(st: State, $: EngineInterface, row: Row): void {
       const existing = (await $.fs.exists(path)) ? await $.fs.read(path) : '';
       await $.fs.write(path, appendRows(existing, rows, LOG_CAP));
     })
-    // Screen only: logging a failed log write would queue another write.
-    .catch((error) => show($, `sub-agent-compact: writing the decision log for ${file} failed: ${message(error)}`));
+    // Screen only, once per distinct failure: logging a failed log write would queue another write.
+    .catch((error) => {
+      const line = `sub-agent-compact: writing the decision log for ${file} failed: ${message(error)}`;
+      if (st.logFailures.has(line)) return;
+      st.logFailures.add(line);
+      show($, line);
+    });
 }
 
 function warnOnce(st: State, $: EngineInterface, key: string, line: string): void {
@@ -219,12 +227,7 @@ function start(st: State, $: EngineInterface): Promise<void> {
     st.policies = new AgentPolicies(
       dirs,
       st.config.subagent,
-      {
-        exists: (path) => $.fs.exists(path),
-        read: (path) => $.fs.read(path),
-        listMarkdown: async (dir) =>
-          (await $.fs.list(dir)).filter((entry) => entry.kind === 'file' && entry.name.endsWith('.md')).map((entry) => entry.name),
-      },
+      engineAgentFs({ exists: (path) => $.fs.exists(path), read: (path) => $.fs.read(path), list: (dir) => $.fs.list(dir) }),
       (line) => {
         say(st, $, line);
         record(st, $, { event: 'resolve-error', line });
@@ -982,6 +985,7 @@ export const register: Register = (on: On, options: PluginOptions) => {
     asked: new Set(),
     haikuHeld: new Map(),
     warned: new Set(),
+    logFailures: new Set(),
     pending: [],
     writing: Promise.resolve(),
     mainCompactedThisTurn: false,
