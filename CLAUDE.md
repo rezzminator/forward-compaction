@@ -16,6 +16,8 @@ behavioural spec.
 
 `npm test`, `npm run typecheck` and `npm run validate:plugin` all pass before a commit. A live check loads the checkout with `--plugin-dir plugins/sub-agent-compact`: its options key is then `sub-agent-compact@inline`, and the installed copy is disabled in the same `--settings`.
 
+Refresh the installed copy with `claude plugin marketplace update` as written, never under a `CLAUDE_CONFIG_DIR` override pointing at `~/.claude`: `claude` then writes `.claude.json` and `backups/` into the shared store, and `pfm`'s store-guard hook denies it.
+
 ## Rules
 
 - A new behaviour lands in `plugins/sub-agent-compact/src/` as a pure function with a test watched failing first; the adapter only wires it.
