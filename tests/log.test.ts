@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { execFile } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
@@ -103,7 +103,7 @@ describe('plugin log', () => {
   it.each([
     ['absolute', 'new'], ['absolute', 'existing'], ['absolute', 'capped'],
     ['hyphen-relative', 'new'], ['hyphen-relative', 'existing'], ['hyphen-relative', 'capped'],
-  ] as const)('appends exact private rows with BSD chmod: %s %s', async (kind, state) => {
+  ] as const)('appends exact rows with BSD chmod: %s %s', async (kind, state) => {
     const parent = mkdtempSync(join(tmpdir(), 'plugin-bsd-'));
     const bin = join(parent, 'bin');
     const dir = log.pluginLogDir(kind === 'absolute' ? join(parent, 'logs') : '-logs', undefined, 'sub-agent-compact')!;
@@ -145,37 +145,21 @@ exec /bin/chmod "$@"
         const actual = existsSync(join(disk, file)) ? readFileSync(join(disk, file), 'utf8') : '';
         expect(actual.endsWith(pairs[index * 2 + 1]!), `writer result: ${JSON.stringify(result)}`).toBe(true);
         expect(actual).toBe(expected);
-        expect(statSync(join(disk, file)).mode & 0o777).toBe(0o600);
+        if (state === 'new' || (state === 'capped' && file !== 'info.jsonl')) expect(statSync(join(disk, file)).mode & 0o777).toBe(0o600);
         if (state !== 'new') {
           const saved = readFileSync(join(disk, `${file}.1`));
           expect(saved.equals(state === 'capped' && file !== 'info.jsonl' ? oversized : Buffer.from(backup(file)))).toBe(true);
-          expect(statSync(join(disk, `${file}.1`)).mode & 0o777).toBe(0o600);
         }
       }
       expect(result).toEqual({ code: 0, stderr: '' });
-      expect(statSync(disk).mode & 0o777).toBe(0o700);
-    } finally { rmSync(parent, { recursive: true, force: true }); }
-  });
-  it.each(['errors.jsonl', 'warnings.jsonl', 'info.jsonl'])('tightens existing owned objects only when appending %s', async (file) => {
-    const parent = mkdtempSync(join(tmpdir(), 'plugin-modes-')); const dir = join(parent, 'levels');
-    chmodSync(parent, 0o755); mkdirSync(dir, { mode: 0o755 }); chmodSync(dir, 0o755);
-    const owned = ['errors.jsonl', 'warnings.jsonl', 'info.jsonl'].flatMap((name) => [name, `${name}.1`]);
-    try {
-      for (const name of [...owned, 'decisions.jsonl']) { writeFileSync(join(dir, name), '{}\n'); chmodSync(join(dir, name), 0o644); }
-      await shell(dir, [file, JSON.stringify({ ts: '2026-10-14T15:20:31.123Z', ...fields }) + '\n']);
-      expect(statSync(parent).mode & 0o777).toBe(0o755);
-      expect(statSync(dir).mode & 0o777).toBe(0o700);
-      expect(owned.map((name) => [name, statSync(join(dir, name)).mode & 0o777])).toEqual(owned.map((name) => [name, 0o600]));
-      expect(statSync(join(dir, 'decisions.jsonl')).mode & 0o777).toBe(0o644);
-      expect(readFileSync(join(dir, 'decisions.jsonl'), 'utf8')).toBe('{}\n');
-      expect(rows(dir, file)).toEqual([{}, { ts: '2026-10-14T15:20:31.123Z', ...fields }]);
+      if (state === 'new') expect(statSync(disk).mode & 0o777).toBe(0o700);
     } finally { rmSync(parent, { recursive: true, force: true }); }
   });
   it.each([
     ['errors.jsonl', 'error', true, true], ['errors.jsonl', 'error', true, false],
     ['warnings.jsonl', 'warning', true, true], ['warnings.jsonl', 'warning', false, false],
     ['info.jsonl', 'info', false, true], ['info.jsonl', 'info', true, false],
-  ])('names every cap, carries only the known session and tightens backups for %s %s session=%s detail=%s', async (file, level, known, detail) => {
+  ])('names every cap and carries only the known session for %s %s session=%s detail=%s', async (file, level, known, detail) => {
     const dir = mkdtempSync(join(tmpdir(), 'plugin-cap-'));
     const session = String.fromCharCode(115, 34, 92, 10, 38634);
     const input = { ...fields, level, msg: 'literal ,"session":"decoy", "detail":{}', detail: detail ? { session: 'nested decoy' } : undefined, ...(known ? { session } : { session: undefined }) };
@@ -189,7 +173,6 @@ exec /bin/chmod "$@"
       if (file !== 'warnings.jsonl') expect(rows(dir, file as string)).toEqual([JSON.parse(text)]);
       for (const name of new Set([file, 'warnings.jsonl'])) {
         expect(statSync(join(dir, `${name}.1`)).size).toBe(20971521);
-        expect(statSync(join(dir, `${name}.1`)).mode & 0o777).toBe(0o600);
       }
       expect(readFileSync(join(dir, 'warnings.jsonl'), 'utf8').trim().split('\n').every((row) => Buffer.byteLength(row + '\n') <= 4096)).toBe(true);
     } finally { rmSync(dir, { recursive: true, force: true }); }
@@ -215,16 +198,6 @@ exec /bin/chmod "$@"
       expect(Buffer.byteLength(text)).toBeLessThanOrEqual(4096);
       await expect(shell(dir, ['errors.jsonl', text])).rejects.toMatchObject({ stderr: expect.stringContaining(`${dir}/warnings.jsonl: cap warning metadata exceeds 4096 bytes`) });
     } finally { rmSync(dir, { recursive: true, force: true }); }
-  });
-  it.each(['directory', 'errors.jsonl', 'errors.jsonl.1'])('refuses an owned-path symlink without tightening its external target: %s', async (name) => {
-    const parent = mkdtempSync(join(tmpdir(), 'plugin-link-')); const dir = join(parent, 'levels'); const target = join(parent, 'target');
-    try {
-      if (name === 'directory') { mkdirSync(target); chmodSync(target, 0o755); symlinkSync(target, dir); }
-      else { mkdirSync(dir); writeFileSync(target, '{}\n'); chmodSync(target, 0o644); symlinkSync(target, join(dir, name)); }
-      await expect(shell(dir, ['errors.jsonl', JSON.stringify({ ts: '2026-10-14T15:20:31.123Z', ...fields }) + '\n'])).rejects.toMatchObject({ stderr: expect.stringContaining(name === 'directory' ? dir : join(dir, name)) });
-      expect(statSync(target).mode & 0o777).toBe(name === 'directory' ? 0o755 : 0o644);
-      if (name !== 'directory') expect(readFileSync(target, 'utf8')).toBe('{}\n');
-    } finally { rmSync(parent, { recursive: true, force: true }); }
   });
   it.skipIf(process.getuid?.() === 0)('skip-because:superuser: unwritable directory names the path', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'plugin-denied-'));

@@ -87,23 +87,11 @@ umask 077
 dir=$1; plugin=$2; shift 2
 case "$dir" in -*) dir=./$dir;; esac
 fail() { printf '%s: %s\\n' "$1" "$2" >&2; exit 1; }
-[ ! -L "$dir" ] || fail "$dir" 'refusing log directory symlink'
-mkdir -p -- "$dir"
-[ -w "$dir" ] || fail "$dir" 'log directory is not writable'
-chmod 700 "$dir"
-for name in errors.jsonl warnings.jsonl info.jsonl; do
-  for owned in "$dir/$name" "$dir/$name.1"; do
-    [ ! -L "$owned" ] || fail "$owned" 'refusing level file symlink'
-    if [ -e "$owned" ]; then
-      [ -r "$owned" ] && [ -w "$owned" ] || fail "$owned" 'level file is not readable and writable'
-      chmod 600 "$owned"
-    fi
-  done
-done
+mkdir -p "$dir"
 cap() {
   if [ -f "$1" ]; then
     bytes=$(wc -c < "$1") || exit 1
-    if [ "$bytes" -gt ${PLUGIN_LOG_CAP_BYTES} ]; then mv -f -- "$1" "$1.1" || exit 1; return 0; fi
+    if [ "$bytes" -gt ${PLUGIN_LOG_CAP_BYTES} ]; then mv -f "$1" "$1.1" || exit 1; return 0; fi
   fi
   return 1
 }

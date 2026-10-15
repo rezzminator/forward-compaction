@@ -5,9 +5,9 @@
 **Smart auto-compact for Claude Code: a separate compaction point for every sub-agent, and self-compaction at a milestone the model chooses.**
 
 [![Claude Code plugin](https://img.shields.io/badge/Claude%20Code-plugin-D97757)](https://docs.claude.com/en/docs/claude-code/plugins)
-[![Version](https://img.shields.io/badge/version-0.7.1--dev.0-blue)](./CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.7.1--dev.1-blue)](./CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
-[![Tests](https://img.shields.io/badge/tests-628%20passing-brightgreen)](#development)
+[![Tests](https://img.shields.io/badge/tests-624%20passing-brightgreen)](#development)
 [![Built with Professor](https://img.shields.io/badge/built%20with-Professor-8A2BE2)](https://github.com/rezzminator/professor)
 
 **34% cheaper** than a sub-agent that never compacts · **52% less context** re-sent on every request
@@ -297,7 +297,7 @@ name and replaced by the default, never ignored silently.
 
 ### Logs
 
-Errors, warnings and info append JSONL rows to `$PLUGIN_LOG_DIR/sub-agent-compact/{errors,warnings,info}.jsonl`. With the variable unset, they use `$HOME/.local/state/sub-agent-compact/logs/`. Each session writes one `logger-ready` info row. Rows name the event, component and session; diagnostic details never include handoff or transcript bodies. Rows are bounded to 4096 bytes, directories and files are private, and a level file over 20 MiB moves to `.1` with a `log-capped` warning. A failed log write reports its directory and error once per failing streak without changing compaction or tool results.
+Errors, warnings and info append JSONL rows to `$PLUGIN_LOG_DIR/sub-agent-compact/{errors,warnings,info}.jsonl`. With the variable unset, they use `$HOME/.local/state/sub-agent-compact/logs/`. Rows name the event, component and session; diagnostic details never include handoff or transcript bodies. Rows are bounded to 4096 bytes, new directories and files are private, and a level file over 20 MiB moves to `.1` with a `log-capped` warning. A failed log write reports its directory and error once per failing streak without changing compaction or tool results.
 
 Existing screen notices and the per-session decision log stay separate. An explicit `logFile` always wins; only the blank default follows `PLUGIN_LOG_DIR`. With neither `PLUGIN_LOG_DIR` nor `HOME`, the screen reports that plugin logging is off.
 

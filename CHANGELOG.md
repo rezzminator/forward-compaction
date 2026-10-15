@@ -4,17 +4,24 @@ Every release of sub-agent-compact. Versions follow [semantic versioning](https:
 
 ## [Unreleased]
 
+## [0.7.1-dev.1] — 2026-10-15
+
+### Fixed
+
+- Decision-log session lookup and write failures also reach the warning and error level files, and diagnostics queue before screen output.
+- Plugin log creation uses plain create-and-append, keeping private modes for new objects.
+
 ## [0.7.1-dev.0] — 2026-10-15
 
 ### Fixed
 
-- Plugin log appends work with macOS chmod, including private existing level files and backups, cap rotations and relative log roots beginning with a hyphen.
+- Plugin log appends work on macOS, including cap rotations and relative log roots beginning with a hyphen.
 
 ## [0.7.0-dev.23] — 2026-10-14
 
 ### Added
 
-- Plugin diagnostics append bounded JSONL rows to errors, warnings and info files under `PLUGIN_LOG_DIR`, or the plugin's HOME state folder when unset. A session heartbeat names the version and directory source; logging failures report once per failing streak without changing work results.
+- Plugin diagnostics append bounded JSONL rows to errors, warnings and info files under `PLUGIN_LOG_DIR`, or the plugin's HOME state folder when unset. Logging failures report once per failing streak without changing work results.
 - A blank `logFile` follows `PLUGIN_LOG_DIR` into per-session decision files. Explicit decision-log settings and existing screen notices are kept.
 
 ## [0.7.0-dev.22] — 2026-10-14

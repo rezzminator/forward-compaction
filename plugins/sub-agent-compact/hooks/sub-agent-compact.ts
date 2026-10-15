@@ -61,9 +61,9 @@ function screenLine(line: string): string {
 /** Every line said lands in the decision log as a `said` row; a routine one reaches the screen too while there is no log to hold it. */
 function say(st: State, $: EngineInterface, line: string, level: PluginLogLevel = 'error'): void {
   const shown = level !== 'info' || !st.config.logFile || st.logOff === true;
+  plog(st, $, { level, event: 'said', msg: screenLine(line), where: 'hooks/sub-agent-compact.ts#say' });
   if (shown) show($, line);
   record(st, $, { event: 'said', line: screenLine(line), shown });
-  plog(st, $, { level, event: 'said', msg: screenLine(line), where: 'hooks/sub-agent-compact.ts#say' });
 }
 /** The model's tool-call lines of a transcript before line $2, the newest 400: sed cuts at the boundary, so no line's length matters. */
 const CALLS_BEFORE = `sed -n "1,$(($2 - 1))p" "$1" | grep -a -n '"type":"assistant"' | grep -a '"tool_use"' | tail -n 400`;
@@ -180,9 +180,11 @@ function record(st: State, $: EngineInterface, row: Row): void {
   st.logPath ??= $.session.id().then(
     (id) => sessionLogPath(file, id),
     (error) => {
-      // Screen only: the log this line would land in is the one that is off.
+      // The level log is independent of the decision log that is off.
       st.logOff = true;
-      show($, `sub-agent-compact: reading the session id failed: ${message(error)}; the decision log is off for this session`);
+      const line = `sub-agent-compact: reading the session id failed: ${message(error)}; the decision log is off for this session`;
+      plog(st, $, { level: 'warning', event: 'decision-log-session-error', msg: screenLine(line), where: 'hooks/sub-agent-compact.ts#record', detail: { error: message(error) } });
+      show($, line);
       return undefined;
     },
   );
@@ -194,13 +196,14 @@ function record(st: State, $: EngineInterface, row: Row): void {
       const existing = (await $.fs.exists(path)) ? await $.fs.read(path) : '';
       await $.fs.write(path, appendRows(existing, rows, LOG_CAP));
     })
-    // Screen only, once per distinct failure: logging a failed log write would queue another write. The key drops
+    // Screen and level log only, once per distinct failure: never queue another decision write. The key drops
     // numbers, so one failure whose text carries a varying size or offset is still shown once.
     .catch((error) => {
       const line = `sub-agent-compact: writing the decision log for ${file} failed: ${message(error)}`;
       const key = line.replace(/\d+/g, '#');
       if (st.logFailures.has(key)) return;
       st.logFailures.add(key);
+      plog(st, $, { level: 'error', event: 'decision-log-write-error', msg: screenLine(line), where: 'hooks/sub-agent-compact.ts#record', detail: { error: message(error) } });
       show($, line);
     });
 }
@@ -242,7 +245,6 @@ function start(st: State, $: EngineInterface): Promise<void> {
     const earlyRows = st.pluginRows.splice(0);
     if (st.pluginLog !== undefined) for (const fields of earlyRows) plog(st, $, fields);
     st.config = servedOptions(resolveOptions(st.rawOptions, { pluginLogDir: override }));
-    plog(st, $, { level: 'info', event: 'logger-ready', msg: 'plugin logger ready', where: 'hooks/sub-agent-compact.ts#start', detail: { version: '0.7.1-dev.0', dir_source: override ? 'PLUGIN_LOG_DIR' : 'fallback' } });
     for (const line of st.config.errors) {
       say(st, $, line, 'warning');
       record(st, $, { event: 'option-error', line });

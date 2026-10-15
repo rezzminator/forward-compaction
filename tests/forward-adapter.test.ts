@@ -1,10 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { execFile } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
-import { URL } from 'node:url';
 import { register } from '../plugins/sub-agent-compact/hooks/sub-agent-compact.ts';
 
 // The forward handoff through the adapter: the tool collects what code carries, stores the text and
@@ -27,7 +26,7 @@ const api = (extra: unknown[] = []) => [
   { role: 'assistant', content: [{ type: 'tool_use', id: 'f1', name: 'mcp__sub-agent-compact__forward_handoff', input: FIELDS }] },
 ];
 
-type Env = { home?: string; pluginLogDir?: string; pluginUser?: { uid: number; gid: number }; pluginRunFails?: boolean; denied?: string[]; listFails?: boolean; noHome?: boolean; noTranscript?: boolean; cwd?: string; agentRows?: Record<string, unknown[]>; agents?: { id: string; type: string }[]; run?: (argv: string[], init?: { cwd?: string }) => { exitCode: number; stdout: string; stderr: string } | undefined };
+type Env = { decisionSessionFailsOnce?: boolean; decisionWriteFails?: boolean; uiFailsOnce?: boolean; home?: string; pluginLogDir?: string; pluginRunFails?: boolean; denied?: string[]; listFails?: boolean; noHome?: boolean; noTranscript?: boolean; cwd?: string; agentRows?: Record<string, unknown[]>; agents?: { id: string; type: string }[]; run?: (argv: string[], init?: { cwd?: string }) => { exitCode: number; stdout: string; stderr: string } | undefined };
 const pluginExec = promisify(execFile);
 
 function engine(options: Record<string, unknown> = { forwardHandoffTool: true }, files: Record<string, string> = {}, apiRows: unknown[] = api(), git = true, refused: string[] = [], env: Env = {}) {
@@ -43,7 +42,10 @@ function engine(options: Record<string, unknown> = { forwardHandoffTool: true },
   const known: Record<string, string> = { [TRANSCRIPT]: '', ...files };
   const $ = {
     session: {
-      id: async () => 'session-1',
+      id: async () => {
+        if (env.decisionSessionFailsOnce) { env.decisionSessionFailsOnce = false; throw new Error('session lookup unavailable'); }
+        return 'session-1';
+      },
       turns: async () => 1,
       cwd: async () => env.cwd ?? '/nowhere',
       usage: async () => ({ context: { tokens: current, window: 1_000_000 } }),
@@ -54,7 +56,10 @@ function engine(options: Record<string, unknown> = { forwardHandoffTool: true },
     fs: {
       exists: async (path: string) => path in known || path in written || Object.keys(written).some((p) => p.startsWith(`${path}/`)),
       read: async (path: string) => known[path] ?? written[path] ?? '',
-      write: async (path: string, content: string) => void (written[path] = content),
+      write: async (path: string, content: string) => {
+        if (env.decisionWriteFails) throw new Error('decision write unavailable');
+        written[path] = content;
+      },
       list: async (dir: string) => {
         if (env.listFails) throw new Error(`EACCES: permission denied, scandir '${dir}'`);
         const names = Object.keys(written).filter((p) => p.startsWith(`${dir}/`)).map((p) => p.slice(dir.length + 1).split('/')[0]!);
@@ -67,7 +72,7 @@ function engine(options: Record<string, unknown> = { forwardHandoffTool: true },
         runCalls.push(argv);
         if (argv[0] === '/bin/sh' && argv[3] === 'plugin-log') {
           if (env.pluginRunFails) throw new Error('plugin process unavailable');
-          const out = await pluginExec('/bin/sh', argv.slice(1), { encoding: 'utf8', ...env.pluginUser });
+          const out = await pluginExec('/bin/sh', argv.slice(1), { encoding: 'utf8' });
           return { exitCode: 0, ...out };
         }
         const line = argv.join(' ');
@@ -86,7 +91,10 @@ function engine(options: Record<string, unknown> = { forwardHandoffTool: true },
       },
     },
     clock: { now: async () => Date.parse('2026-10-14T15:20:31.123Z'), after: (ms: number, fn: () => void) => ({ cancel: () => clearTimeout(setTimeout(fn, ms)) }) },
-    ui: { log: (line: string) => void logs.push(line) },
+    ui: { log: (line: string) => {
+      if (env.uiFailsOnce) { env.uiFailsOnce = false; throw new Error('screen unavailable'); }
+      logs.push(line);
+    } },
     agent: { list: async () => env.agents ?? [] },
     tool: {
       check: async (q: { tool: string; input: { file_path: string } }) =>
@@ -810,7 +818,7 @@ describe('the Git block describes the repositories the work touched', () => {
 
 describe('plugin log through the forward adapter', () => {
   const diskRows = (dir: string, file: string): any[] => existsSync(join(dir, file)) ? readFileSync(join(dir, file), 'utf8').trim().split('\n').map((row) => JSON.parse(row)) : [];
-  it.each([true, false])('writes forced levels, one heartbeat and the session at override=%s', async (override) => {
+  it.each([true, false])('writes forced errors, warnings and the session at override=%s', async (override) => {
     const temp = mkdtempSync(join(tmpdir(), 'compact-plugin-adapter-'));
     const dir = override ? join(temp, 'logs/sub-agent-compact') : join(temp, '.local/state/sub-agent-compact/logs');
     try {
@@ -818,13 +826,42 @@ describe('plugin log through the forward adapter', () => {
       expect(await cc.start()).toEqual({});
       await cc.start();
       expect(await cc.end()).toEqual({ sessionId: 'session-1' });
-      const errors = diskRows(dir, 'errors.jsonl'); const warnings = diskRows(dir, 'warnings.jsonl'); const info = diskRows(dir, 'info.jsonl');
+      const errors = diskRows(dir, 'errors.jsonl'); const warnings = diskRows(dir, 'warnings.jsonl');
       expect(errors.filter((row) => row.event === 'tool-register-failed').map((row) => [row.level, row.where, row.session, row.detail.tool])).toEqual([['error', 'hooks/sub-agent-compact.ts#record', 'session-1', 'look_back'], ['error', 'hooks/sub-agent-compact.ts#record', 'session-1', 'look_back']]);
       expect(warnings.filter((row) => row.event === 'option-error').map((row) => [row.level, row.where, row.session])).toEqual([['warning', 'hooks/sub-agent-compact.ts#record', 'session-1']]);
-      expect(info).toEqual([{ ts: '2026-10-14T15:20:31.123Z', plugin: 'sub-agent-compact', level: 'info', event: 'logger-ready', msg: 'plugin logger ready', where: 'hooks/sub-agent-compact.ts#start', session: 'session-1', detail: { version: JSON.parse(readFileSync(new URL('../plugins/sub-agent-compact/.claude-plugin/plugin.json', import.meta.url), 'utf8')).version, dir_source: override ? 'PLUGIN_LOG_DIR' : 'fallback' } }]);
       const said = (await cc.decisions()).find((row: any) => row.event === 'said');
       expect(Object.keys(said)).toEqual(['ts', 'event', 'line', 'shown']);
       expect(cc.runCalls.filter((argv) => argv[0] === '/bin/sh' && argv[3] === 'plugin-log').every((argv) => argv[4] === dir)).toBe(true);
+    } finally { rmSync(temp, { recursive: true, force: true }); }
+  });
+  it.each([
+    ['lookup', 'warning', 'warnings.jsonl', 'decision-log-session-error', 'session lookup unavailable'],
+    ['write', 'error', 'errors.jsonl', 'decision-log-write-error', 'decision write unavailable'],
+  ])('logs decision %s failure at %s level without changing the hook result', async (failure, level, file, event, error) => {
+    const temp = mkdtempSync(join(tmpdir(), 'compact-decision-failure-'));
+    try {
+      const cc = engine({ compactTool: false, mainAutoCompact: 'bad', logFile: '/logs/decisions.jsonl' }, {}, api(), true, [], {
+        home: temp, pluginLogDir: join(temp, 'logs'), decisionSessionFailsOnce: failure === 'lookup', decisionWriteFails: failure === 'write',
+      });
+      expect(await cc.start()).toEqual({});
+      await cc.decisions();
+      expect(await cc.end()).toEqual({ sessionId: 'session-1' });
+      expect(diskRows(join(temp, 'logs/sub-agent-compact'), file!).filter((row) => row.event === event)).toEqual([{
+        ts: '2026-10-14T15:20:31.123Z', plugin: 'sub-agent-compact', level, event,
+        msg: failure === 'lookup' ? 'reading the session id failed: session lookup unavailable; the decision log is off for this session' : 'writing the decision log for /logs/decisions.jsonl failed: decision write unavailable',
+        where: 'hooks/sub-agent-compact.ts#record', session: 'session-1', detail: { error },
+      }]);
+    } finally { rmSync(temp, { recursive: true, force: true }); }
+  });
+  it('queues the said level row before a throwing screen call', async () => {
+    const temp = mkdtempSync(join(tmpdir(), 'compact-screen-failure-'));
+    try {
+      const cc = engine({ compactTool: false, mainAutoCompact: 'bad' }, {}, api(), true, [], { home: temp, pluginLogDir: join(temp, 'logs'), uiFailsOnce: true });
+      await expect(cc.start()).rejects.toThrow('screen unavailable');
+      await cc.end();
+      expect(diskRows(join(temp, 'logs/sub-agent-compact'), 'warnings.jsonl').filter((row) => row.event === 'said')).toEqual([expect.objectContaining({
+        level: 'warning', event: 'said', where: 'hooks/sub-agent-compact.ts#say', session: 'session-1', msg: expect.stringContaining('mainAutoCompact'),
+      })]);
     } finally { rmSync(temp, { recursive: true, force: true }); }
   });
   it('records gathered problems as warnings while still storing the partial handoff', async () => {
@@ -854,16 +891,6 @@ describe('plugin log through the forward adapter', () => {
       env.pluginRunFails = true;
       expect(await cc.forward({ objective: '' })).toEqual(first); await cc.end();
       expect(notices()).toEqual([expect.stringContaining('plugin process unavailable'), expect.stringContaining('plugin process unavailable')]);
-    } finally { rmSync(temp, { recursive: true, force: true }); }
-  });
-  it.skipIf(process.getuid?.() !== 0)('skip-because:needs-root-fixture: nonroot chmod EPERM reports once and keeps tool results', async () => {
-    const temp = mkdtempSync(join(tmpdir(), 'compact-plugin-eperm-')); const dir = join(temp, 'sub-agent-compact');
-    chmodSync(temp, 0o777); mkdirSync(dir, { mode: 0o777 }); chmodSync(dir, 0o777);
-    const cc = engine({ forwardHandoffTool: true, compactTool: false }, {}, api(), true, [], { home: temp, pluginLogDir: temp, pluginUser: { uid: 65534, gid: 65534 } });
-    try {
-      expect(await cc.start()).toEqual({}); await cc.end();
-      expect((await cc.forward({ objective: '' })).result).toContain('Not stored'); await cc.end();
-      expect(cc.logs.filter((line) => line.includes('plugin log ') && line.includes('failed:'))).toEqual([expect.stringMatching(new RegExp(`${dir} failed:[\\s\\S]*Operation not permitted`))]);
     } finally { rmSync(temp, { recursive: true, force: true }); }
   });
   it('names missing env instead of silently treating logging as absent', async () => {
