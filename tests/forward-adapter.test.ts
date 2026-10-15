@@ -26,7 +26,7 @@ const api = (extra: unknown[] = []) => [
   { role: 'assistant', content: [{ type: 'tool_use', id: 'f1', name: 'mcp__sub-agent-compact__forward_handoff', input: FIELDS }] },
 ];
 
-type Env = { decisionSessionFailsOnce?: boolean; decisionWriteFails?: boolean; uiFailsOnce?: boolean; home?: string; pluginLogDir?: string; pluginRunFails?: boolean; denied?: string[]; listFails?: boolean; noHome?: boolean; noTranscript?: boolean; cwd?: string; agentRows?: Record<string, unknown[]>; agents?: { id: string; type: string }[]; run?: (argv: string[], init?: { cwd?: string }) => { exitCode: number; stdout: string; stderr: string } | undefined };
+type Env = { decisionSessionFailsOnce?: boolean; decisionWriteFails?: boolean; uiFailsOnce?: boolean; home?: string; pluginLogDir?: string; pluginRunFails?: boolean; readFails?: string[]; denied?: string[]; listFails?: boolean; noHome?: boolean; noTranscript?: boolean; cwd?: string; agentRows?: Record<string, unknown[]>; agents?: { id: string; type: string }[]; run?: (argv: string[], init?: { cwd?: string }) => { exitCode: number; stdout: string; stderr: string } | undefined };
 const pluginExec = promisify(execFile);
 
 function engine(options: Record<string, unknown> = { forwardHandoffTool: true }, files: Record<string, string> = {}, apiRows: unknown[] = api(), git = true, refused: string[] = [], env: Env = {}) {
@@ -55,7 +55,10 @@ function engine(options: Record<string, unknown> = { forwardHandoffTool: true },
     env: { get: async (key: string) => key === 'PLUGIN_LOG_DIR' ? env.pluginLogDir : key === 'HOME' && !env.noHome ? env.home ?? '/h/u' : undefined },
     fs: {
       exists: async (path: string) => path in known || path in written || Object.keys(written).some((p) => p.startsWith(`${path}/`)),
-      read: async (path: string) => known[path] ?? written[path] ?? '',
+      read: async (path: string) => {
+        if (env.readFails?.includes(path)) throw new Error('EACCES');
+        return known[path] ?? written[path] ?? '';
+      },
       write: async (path: string, content: string) => {
         if (env.decisionWriteFails) throw new Error('decision write unavailable');
         written[path] = content;
@@ -388,16 +391,26 @@ describe('the forward handoff tool through the adapter', () => {
     expect(JSON.parse(cc.written[`${dir2}/record.json`]!).trail).toEqual([{ tag: 'E', path: '/nowhere/reports/c.sql' }, { tag: 'R', path: '/nowhere/reports/a.sql' }]);
   });
 
-  it('outlines each file the party made or edited from its content now, and names one it cannot read', async () => {
-    const rows = [{ role: 'user', content: [text('build it')] }, { role: 'assistant', content: [{ type: 'tool_use', id: 'w1', name: 'Write', input: { file_path: 'src/levels.ts', content: 'x' } }, { type: 'tool_use', id: 'e1', name: 'Edit', input: { file_path: 'src/gone.ts' } }] }];
-    const cc = engine({ forwardHandoffTool: true }, { '/nowhere/src/levels.ts': 'export const LEVELS = [1];\nexport function rank() {}\n' }, rows);
-    await cc.start();
-    await cc.step(250_000);
-    await cc.forward();
-    const wake = cc.written[`${DIR}/wake.txt`]!;
-    expect(wake).toContain('C /nowhere/src/levels.ts — 2 lines: LEVELS, rank\n');
-    expect(wake).toContain('E /nowhere/src/gone.ts\n');
-    expect(wake).toMatch(/Unresolved\n(?:.*\n)*outline \/nowhere\/src\/gone\.ts: not found\n/);
+  it('outlines current file content and diagnoses missing paths in every supported form', async () => {
+    for (const [path, resolved, unreadable = false] of [
+      ['src/gone.ts', '/nowhere/src/gone.ts'],
+      ['/nowhere/src/gone.ts', '/nowhere/src/gone.ts'],
+      ['file:///nowhere/src/gone.ts', '/nowhere/src/gone.ts'],
+      ['~/src/gone.ts', '/h/u/src/gone.ts'],
+      ['src/private.ts', '/nowhere/src/private.ts', true],
+    ] as [string, string, boolean?][]) {
+      const rows = [{ role: 'user', content: [text('build it')] }, { role: 'assistant', content: [{ type: 'tool_use', id: 'w1', name: 'Write', input: { file_path: 'src/levels.ts', content: 'x' } }, { type: 'tool_use', id: 'e1', name: 'Edit', input: { file_path: path } }] }];
+      const cc = engine({ forwardHandoffTool: true }, { '/nowhere/src/levels.ts': 'export const LEVELS = [1];\nexport function rank() {}\n', ...(unreadable ? { [resolved]: 'private' } : {}) }, rows, true, [], { readFails: unreadable ? [resolved] : [] });
+      await cc.start();
+      await cc.step(250_000);
+      expect((await cc.forward()).result).toContain('Forward handoff stored');
+      const wake = cc.written[`${DIR}/wake.txt`]!;
+      if (path === 'src/gone.ts') expect(wake).toContain('C /nowhere/src/levels.ts — 2 lines: LEVELS, rank\n');
+      expect(wake).toContain(`E ${resolved}\n`);
+      expect.soft(wake).toContain(unreadable
+        ? `outline ${resolved}: unreadable: EACCES\n`
+        : `outline ${resolved}: not found; check the prior file-tool path (absolute or relative to session cwd /nowhere); the file may have moved or been deleted\n`);
+    }
   });
 
   it("lists the files touched before Claude Code's own compaction, read from the transcript", async () => {

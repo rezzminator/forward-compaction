@@ -857,7 +857,10 @@ async function gatherForward(st: State, $: EngineInterface, args: ForwardArgs, a
     if (entry.tag === 'R') continue;
     const read = await readOne(st, $, entry.path, OUTLINE_FILE_MAX_BYTES);
     if ('content' in read) outlines[entry.path] = outline(entry.path, read.content);
-    else problems.push(`outline ${entry.path}: ${read.problem}`);
+    else {
+      const hint = read.problem === 'not found' ? `; check the prior file-tool path (absolute or relative to session cwd ${cwd}); the file may have moved or been deleted` : '';
+      problems.push(`outline ${entry.path}: ${read.problem}${hint}`);
+    }
   }
   // The repositories the work touched: those of the files made or edited, else of the files read, newest first,
   // a linked worktree or submodule as its own. The session directory's only when the files name none.
