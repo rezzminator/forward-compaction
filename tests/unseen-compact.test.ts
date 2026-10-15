@@ -25,6 +25,7 @@ function engine() {
       compact: async () => ({}),
     },
     env: { get: async (name: string) => optionVars({ logFile: '/logs/decisions.jsonl' })[name] },
+    settings: { read: async () => ({}) },
     fs: {
       exists: async (path: string) => path in written,
       read: async (path: string) => written[path] ?? '',

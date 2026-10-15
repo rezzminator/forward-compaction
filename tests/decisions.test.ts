@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { AgentPolicies, AgentTypes, type AgentFs } from '../plugins/sub-agent-compact/src/agents.ts';
 import { compactionEnd, contextTokens, decide, knownTrigger, personPrompt } from '../plugins/sub-agent-compact/src/decide.ts';
 import { parseFrontmatter } from '../plugins/sub-agent-compact/src/frontmatter.ts';
-import { DEFAULT_KEEP_BRIEF, DEFAULT_MAIN, DEFAULT_SUBAGENT, OPTION_ENV, parseEnabled, parseSize, resolveOptions, sizeTokens } from '../plugins/sub-agent-compact/src/limits.ts';
+import { DEFAULT_KEEP_BRIEF, DEFAULT_MAIN, DEFAULT_SUBAGENT, OPTION_ENV, leftoverOptionKeys, parseEnabled, parseSize, resolveOptions, sizeTokens } from '../plugins/sub-agent-compact/src/limits.ts';
 
 describe('parseSize', () => {
   it.each([
@@ -143,6 +143,18 @@ describe('resolveOptions', () => {
 
   it('says nothing across units, where only the window decides', () => {
     expect(withVars({ SUB_AGENT_COMPACT_MAIN_AUTO_COMPACT: '50%', SUB_AGENT_COMPACT_MAIN_AUTO_COMPACT_NUDGE_START: '600k' }).errors).toEqual([]);
+  });
+});
+
+describe('leftoverOptionKeys', () => {
+  it('names the option keys of every sub-agent-compact@ entry across the sources, each once; other plugins, empty and malformed entries add none', () => {
+    const user = { pluginConfigs: { 'sub-agent-compact@sub-agent-compact': { options: { forwardHandoffTool: true, logFile: '/l' } }, 'other@x': { options: { colour: 'red' } }, 'sub-agent-compact-x@y': { options: { mainAutoCompact: '1m' } } } };
+    const local = { pluginConfigs: { 'sub-agent-compact@inline': { options: { logFile: '/m', compactTool: false } }, 'sub-agent-compact@dev': { options: {} } } };
+    const odd = { pluginConfigs: { 'sub-agent-compact@a': null, 'sub-agent-compact@b': { options: ['x'] }, 'sub-agent-compact@c': 'text' } };
+    expect(leftoverOptionKeys([user, {}, local, odd, { pluginConfigs: [] }])).toEqual(['forwardHandoffTool', 'logFile', 'compactTool']);
+  });
+  it('is empty with no pluginConfigs anywhere', () => {
+    expect(leftoverOptionKeys([{}, { env: { A: '1' } }])).toEqual([]);
   });
 });
 

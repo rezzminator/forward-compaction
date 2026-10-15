@@ -32,7 +32,7 @@ import {
   type ArmedHandoff,
   type ForwardMeta,
 } from '../src/handoff.ts';
-import { resolveOptions, sizeTokens, type OptionEnvironment, type Policy, type ResolvedOptions } from '../src/limits.ts';
+import { SETTINGS_SOURCES, leftoverOptionKeys, resolveOptions, sizeTokens, type OptionEnvironment, type Policy, type ResolvedOptions } from '../src/limits.ts';
 import { sessionLogPath, decisionAppendArgv, retentionArgv, SkipFold, pluginLogDir, levelRow, pluginLogEvent, PluginLogQueue, type PluginLogLevel, type PluginLogFields } from '../src/log.ts';
 import { armedText, CONTINUE_AFTER_MARKER, disarmedText, earlyArm, markerRequest, nudgeText, stopRequest } from '../src/nudge.ts';
 import { FRESH_MAX_MESSAGES, isFirstRequest, Parties } from '../src/parties.ts';
@@ -343,6 +343,18 @@ async function readOptionEnv($: EngineInterface): Promise<Pick<OptionEnvironment
   return { vars, readErrors };
 }
 
+/** Every settings source, for a leftover `pluginConfigs` entry; a source that cannot be read is said and counts as empty. */
+async function readSettingsSources(st: State, $: EngineInterface): Promise<Readonly<Record<string, unknown>>[]> {
+  return Promise.all(SETTINGS_SOURCES.map(async (source) => {
+    try {
+      return await $.settings.read({ source });
+    } catch (error) {
+      say(st, $, `sub-agent-compact: reading the ${source} settings failed: ${message(error)}; a leftover pluginConfigs entry there goes unnamed`, 'warning');
+      return {};
+    }
+  }));
+}
+
 // First hook call: report option errors, learn the native window, build the resolver.
 function start(st: State, $: EngineInterface): Promise<void> {
   st.started ??= (async () => {
@@ -377,8 +389,10 @@ function start(st: State, $: EngineInterface): Promise<void> {
     for (const line of st.config.errors) {
       say(st, $, line, 'warning', { event: 'option-error', line });
     }
-    if (st.ignoredOptions.length > 0) {
-      const line = `sub-agent-compact: options ${st.ignoredOptions.join(', ')} are not read; set SUB_AGENT_COMPACT_* environment variables instead (README, Central options); their values are not applied`;
+    const leftover = new Set(st.ignoredOptions);
+    for (const key of leftoverOptionKeys(await readSettingsSources(st, $))) leftover.add(key);
+    if (leftover.size > 0) {
+      const line = `sub-agent-compact: options ${[...leftover].join(', ')} are not read; set SUB_AGENT_COMPACT_* environment variables instead (README, Central options); their values are not applied`;
       warnOnce(st, $, 'options-ignored', line);
     }
     try {
@@ -412,7 +426,7 @@ function start(st: State, $: EngineInterface): Promise<void> {
       { pluginDirs: async (plugin) => { const path = (await wakeRoots(st, $)).plugins[plugin]; return path ? [`${path}/agents`] : []; } },
     );
     if (!st.config.handoffTool && !st.config.compactTool && !st.config.forwardHandoffTool) {
-      warnOnce(st, $, 'no-tools', 'sub-agent-compact: no self-compaction tool is on (handoffTool, compactTool and forwardHandoffTool are all off); parties are nudged by nobody and only compacted at their limits');
+      warnOnce(st, $, 'no-tools', 'sub-agent-compact: no self-compaction tool is on (SUB_AGENT_COMPACT_HANDOFF_TOOL, SUB_AGENT_COMPACT_COMPACT_TOOL and SUB_AGENT_COMPACT_FORWARD_HANDOFF_TOOL are all off); parties are nudged by nobody and only compacted at their limits');
     }
     record(st, $, { event: 'start', main: st.config.main, subagent: st.config.subagent, agentDirs: dirs, mainWindow: st.mainWindow ?? null, compactWindow: st.compactWindow ?? null });
   })().finally(() => settleConfig(st, $));

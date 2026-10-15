@@ -102,6 +102,28 @@ export const OPTION_ENV = {
 
 export type OptionName = keyof typeof OPTION_ENV;
 
+/** The settings sources a leftover `pluginConfigs` entry can sit in, as `$.settings.read({ source })` names them. */
+export const SETTINGS_SOURCES = ['user', 'project', 'local', 'flag', 'policy'] as const;
+
+/**
+ * The option keys of every `pluginConfigs` entry for this plugin (`sub-agent-compact@{marketplace}`) in these
+ * settings, each once in first-seen order: what an install before 0.8 left behind. Claude Code hands `register`
+ * only the options a manifest declares, and this one declares none, so the settings are where such an entry shows.
+ */
+export function leftoverOptionKeys(settings: readonly Readonly<Record<string, unknown>>[]): string[] {
+  const keys = new Set<string>();
+  for (const source of settings) {
+    const configs = source.pluginConfigs;
+    if (typeof configs !== 'object' || configs === null || Array.isArray(configs)) continue;
+    for (const [id, entry] of Object.entries(configs)) {
+      if (id.split('@')[0] !== 'sub-agent-compact' || typeof entry !== 'object' || entry === null) continue;
+      const options = (entry as { options?: unknown }).options;
+      if (typeof options === 'object' && options !== null && !Array.isArray(options)) for (const key of Object.keys(options)) keys.add(key);
+    }
+  }
+  return [...keys];
+}
+
 /** Parses an environment on/off value: 1, 0, true or false in any case. */
 export function parseEnvFlag(raw: string): Parse<boolean> {
   const word = raw.trim().toLowerCase();

@@ -19,6 +19,7 @@ function engine() {
       compact: async () => ({ skip: 'not in this test' }),
     },
     env: { get: async (name: string) => (name === 'CLAUDE_CODE_AUTO_COMPACT_WINDOW' ? '100000' : undefined) },
+    settings: { read: async () => ({}) },
     fs: { exists: async () => false, read: async () => '', write: async () => {}, list: async () => [] },
     ui: { log: () => {} },
     agent: { list: async () => [] },

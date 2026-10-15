@@ -20,6 +20,7 @@ function engine(writeError: () => Error) {
       compact: async () => ({}),
     },
     env: { get: async (name: string) => optionVars({ logFile: '/logs/decisions.jsonl' })[name] },
+    settings: { read: async () => ({}) },
     fs: {
       exists: async () => false,
       read: async () => '',

@@ -62,6 +62,7 @@ function engine(options: Record<string, unknown> = {}, harness: Harness = {}) {
       },
     },
     env: { get: async (key: string) => (key === 'HOME' ? '/h/u' : optionVars(options)[key]) },
+    settings: { read: async () => ({}) },
     fs: {
       exists: async (path: string) => path in files,
       read: async (path: string) => files[path] ?? '',
@@ -555,7 +556,7 @@ describe('a tool that is not registered', () => {
     const cc = engine({ handoffTool: false, compactTool: false });
     await cc.start();
     await cc.step(1_000);
-    expect(cc.logs.join('\n')).toMatch(/no self-compaction tool is on/);
+    expect(cc.logs.join('\n')).toMatch(/no self-compaction tool is on \(SUB_AGENT_COMPACT_HANDOFF_TOOL, SUB_AGENT_COMPACT_COMPACT_TOOL and SUB_AGENT_COMPACT_FORWARD_HANDOFF_TOOL are all off\)/);
   });
 });
 

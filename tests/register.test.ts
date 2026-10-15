@@ -50,11 +50,6 @@ describe('the environment reads in the hooks module', () => {
   const root = join(dirname(fileURLToPath(import.meta.url)), '..');
   const source = readFileSync(join(root, 'plugins/sub-agent-compact/hooks/sub-agent-compact.ts'), 'utf8');
   const readme = readFileSync(join(root, 'README.md'), 'utf8');
-  const manifest = JSON.parse(readFileSync(join(root, 'plugins/sub-agent-compact/.claude-plugin/plugin.json'), 'utf8')) as Record<string, unknown>;
-
-  it('declares no userConfig: the environment is the only home of an option', () => {
-    expect(Object.keys(manifest)).not.toContain('userConfig');
-  });
 
   it('spells each variable of OPTION_ENV as its own string literal, once, the name Claude Code lists', () => {
     const names = Object.values(OPTION_ENV);

@@ -29,7 +29,7 @@ const api = (extra: unknown[] = []) => [
   { role: 'assistant', content: [{ type: 'tool_use', id: 'f1', name: 'mcp__sub-agent-compact__forward_handoff', input: FIELDS }] },
 ];
 
-type Env = { registerOptions?: Record<string, unknown>; homeGate?: Promise<void>; timers?: (() => void)[]; cwdFails?: boolean; vars?: Record<string, string>; envReadFails?: string[]; window?: number; decisionSessionFailsOnce?: boolean; decisionWriteFails?: boolean; uiFailsOnce?: boolean; home?: string; pluginLogDir?: string; pluginRunFails?: boolean; readFails?: string[]; denied?: string[]; listFails?: boolean; noHome?: boolean; noTranscript?: boolean; cwd?: string; agentRows?: Record<string, unknown[]>; agents?: { id: string; type: string }[]; run?: (argv: string[], init?: { cwd?: string }) => { exitCode: number; stdout: string; stderr: string } | undefined; appendWaits?: Promise<void>; pluginWaits?: Promise<void>; timersFire?: boolean; noClock?: boolean };
+type Env = { registerOptions?: Record<string, unknown>; settings?: Record<string, Record<string, unknown>>; settingsReadFails?: string[]; homeGate?: Promise<void>; timers?: (() => void)[]; cwdFails?: boolean; vars?: Record<string, string>; envReadFails?: string[]; window?: number; decisionSessionFailsOnce?: boolean; decisionWriteFails?: boolean; uiFailsOnce?: boolean; home?: string; pluginLogDir?: string; pluginRunFails?: boolean; readFails?: string[]; denied?: string[]; listFails?: boolean; noHome?: boolean; noTranscript?: boolean; cwd?: string; agentRows?: Record<string, unknown[]>; agents?: { id: string; type: string }[]; run?: (argv: string[], init?: { cwd?: string }) => { exitCode: number; stdout: string; stderr: string } | undefined; appendWaits?: Promise<void>; pluginWaits?: Promise<void>; timersFire?: boolean; noClock?: boolean };
 const pluginExec = promisify(execFile);
 
 function engine(options: Record<string, unknown> = { forwardHandoffTool: true }, files: Record<string, string> = {}, apiRows: unknown[] = api(), git = true, refused: string[] = [], env: Env = {}) {
@@ -68,6 +68,13 @@ function engine(options: Record<string, unknown> = { forwardHandoffTool: true },
         if (env.envReadFails?.includes(key)) throw new Error('environment unavailable');
         if (key === 'HOME') await env.homeGate;
         return vars[key] ?? (key === 'PLUGIN_LOG_DIR' ? env.pluginLogDir : key === 'HOME' && !env.noHome ? env.home ?? '/h/u' : undefined);
+      },
+    },
+    settings: {
+      read: async (a?: { source?: string }) => {
+        const source = a?.source ?? 'merged';
+        if (env.settingsReadFails?.includes(source)) throw new Error(`the ${source} settings are unreadable`);
+        return env.settings?.[source] ?? {};
       },
     },
     fs: {
@@ -251,9 +258,21 @@ describe('the forward handoff tool through the adapter', () => {
     expect(cc.logs.filter((line) => line.includes(FORWARD))).toEqual([expect.stringMatching(/reading SUB_AGENT_COMPACT_FORWARD_HANDOFF_TOOL failed: environment unavailable.*using the default/)]);
   });
 
-  describe('options handed to register (a leftover pluginConfigs entry)', () => {
+  describe('a leftover pluginConfigs entry', () => {
     const left = { forwardHandoffTool: true, mainAutoCompact: '300k', logFile: '/logs/decisions.jsonl' };
-    it('applies none of them and says so once, naming the variables', async () => {
+    it('found in the settings, register handed none: applies none of its options and names their keys once; a source that cannot be read is said', async () => {
+      const settings = {
+        user: { pluginConfigs: { 'sub-agent-compact@sub-agent-compact': { options: { forwardHandoffTool: true } }, 'other@x': { options: { colour: 'red' } } } },
+        local: { pluginConfigs: { 'sub-agent-compact@inline': { options: { mainAutoCompact: '300k', forwardHandoffTool: true } } } },
+      };
+      const cc = engine({}, {}, api(), true, [], { registerOptions: {}, settings, settingsReadFails: ['policy'] });
+      await cc.start();
+      await cc.start();
+      expect(cc.registered.sort()).toEqual(['compact', 'look_back']);
+      expect(cc.logs.filter((line) => line.includes('SUB_AGENT_COMPACT_*'))).toEqual([expect.stringMatching(/^options forwardHandoffTool, mainAutoCompact are not read; set SUB_AGENT_COMPACT_\* environment variables instead.*not applied/)]);
+      expect(cc.logs.filter((line) => line.includes('policy settings'))).toEqual([expect.stringMatching(/reading the policy settings failed: the policy settings are unreadable; a leftover pluginConfigs entry there goes unnamed/)]);
+    });
+    it('handed to register: applies none of them and says so once, naming the keys', async () => {
       const cc = engine({}, {}, api(), true, [], { registerOptions: left });
       await cc.start();
       await cc.start();

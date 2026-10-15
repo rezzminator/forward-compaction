@@ -15,6 +15,7 @@ function engine() {
   const $ = {
     session: { id: async () => 'session-1', cwd: async () => '/nowhere', usage: async () => ({ context: { tokens: 0, window: 1_000_000 } }) },
     env: { get: async (name: string) => (name === 'CLAUDE_CODE_AUTO_COMPACT_WINDOW' ? '100000' : undefined) },
+    settings: { read: async () => ({}) },
     fs: { exists: async () => false, read: async () => '', write: async () => {}, list: async () => [] },
     ui: { log: () => {} },
     agent: { list: async () => [] },

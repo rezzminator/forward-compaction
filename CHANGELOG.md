@@ -8,7 +8,7 @@ Every release of sub-agent-compact. Versions follow [semantic versioning](https:
 
 ### Removed
 
-- The plugin's `userConfig` (and with it `pluginConfigs["sub-agent-compact@sub-agent-compact"].options`, `/config` and the option layer): every option is read from its `SUB_AGENT_COMPACT_*` environment variable alone, an unset, empty or blank variable giving the default. A non-empty options object handed to the plugin is not applied; the plugin names its keys in one warning, once.
+- The plugin's `userConfig` (and with it `pluginConfigs["sub-agent-compact@sub-agent-compact"].options`, `/config` and the option layer): every option is read from its `SUB_AGENT_COMPACT_*` environment variable alone, an unset, empty or blank variable giving the default. A non-empty options object handed to the plugin is not applied; the plugin finds a leftover entry in any settings source and names its keys in one warning, once.
 
 ### Changed
 
