@@ -15,7 +15,13 @@ export function engineAgentFs(
 ): AgentFs {
   return {
     exists: (path) => fs.exists(path),
-    read: (path) => fs.read(path),
+    // Every route reads through here: the direct `<type>.md` as the name index, so a link to a pipe, a device or a file past the limit is never read.
+    read: async (path) => {
+      const target = await fs.stat(path);
+      if (target.kind !== 'file') throw new Error(`${path}: not a regular file`);
+      if (target.size > AGENT_FILE_MAX_BYTES) throw new Error(`${path}: ${target.size} bytes, over the ${AGENT_FILE_MAX_BYTES} byte limit`);
+      return fs.read(path);
+    },
     listMarkdown: async (dir) => {
       const names: string[] = [];
       for (const entry of await fs.list(dir)) {

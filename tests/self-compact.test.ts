@@ -1,10 +1,28 @@
 import { describe, expect, it } from 'vitest';
 import { armedText, compactMarker, disarmedText, markerRequest, nudgeLevel, nudgeText, stopRequest } from '../plugins/sub-agent-compact/src/nudge.ts';
 import { ENGINE_COMPACT_BUFFER, engineAskPoint, isHaiku, modelWindow } from '../plugins/sub-agent-compact/src/window.ts';
+import * as windowModule from '../plugins/sub-agent-compact/src/window.ts';
+
+const future: Record<string, any> = windowModule;
+
+describe('forcedPoint', () => {
+  it.each([
+    [{ tokens: 600_000 }, 200_000, { limit: 167_000, set: 600_000, clamped: true }],
+    [{ tokens: 150_000 }, 200_000, { limit: 150_000, set: 150_000, clamped: false }],
+    [{ percent: 60 }, 1_000_000, { limit: 600_000, set: 600_000, clamped: false }],
+    [{ percent: 100 }, 200_000, { limit: 167_000, set: 200_000, clamped: true }],
+  ])('clamps %j against a %i window to Claude Code\'s ask point', (size, window, expected) => {
+    expect(future.forcedPoint?.(size, window)).toEqual(expected);
+  });
+});
 
 describe('modelWindow', () => {
   it('knows Haiku at 200k, a [1m] id and Sonnet 5 at 1M', () => {
     expect(modelWindow('claude-haiku-4-5-20251001', 1_000_000)).toBe(200_000);
+    // Haiku 5.5 is natively 1M in Claude Code 2.1.300's model table (`context:{window:1e6,native_1m:!0}`), on every provider id.
+    expect(modelWindow('claude-haiku-5-5', 200_000)).toBe(1_000_000);
+    expect(modelWindow('us.anthropic.claude-haiku-5-5', 200_000)).toBe(1_000_000);
+    expect(modelWindow('anthropic.claude-haiku-5-5', 200_000)).toBe(1_000_000);
     expect(modelWindow('claude-opus-5-5[1m]', 200_000)).toBe(1_000_000);
     expect(modelWindow('claude-sonnet-5', 200_000)).toBe(1_000_000);
   });

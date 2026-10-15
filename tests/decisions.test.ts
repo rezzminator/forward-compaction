@@ -1,8 +1,11 @@
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { AgentPolicies, AgentTypes, type AgentFs } from '../plugins/sub-agent-compact/src/agents.ts';
-import { compactionEnd, contextTokens, decide, HAIKU_HOLDS, haikuHold, knownTrigger, personPrompt } from '../plugins/sub-agent-compact/src/decide.ts';
+import { compactionEnd, contextTokens, decide, knownTrigger, personPrompt } from '../plugins/sub-agent-compact/src/decide.ts';
 import { parseFrontmatter } from '../plugins/sub-agent-compact/src/frontmatter.ts';
-import { DEFAULT_KEEP_BRIEF, DEFAULT_MAIN, DEFAULT_SUBAGENT, parseEnabled, parseSize, resolveOptions, sizeTokens } from '../plugins/sub-agent-compact/src/limits.ts';
+import { DEFAULT_KEEP_BRIEF, DEFAULT_MAIN, DEFAULT_SUBAGENT, OPTION_KEYS, parseEnabled, parseSize, resolveOptions, sizeTokens } from '../plugins/sub-agent-compact/src/limits.ts';
 
 describe('parseSize', () => {
   it.each([
@@ -103,7 +106,42 @@ describe('resolveOptions', () => {
     expect(options.errors[1]).toMatch(/subagentAutoCompact is invalid/);
     expect(options.errors[2]).toMatch(/subagentAutoCompactEnabled is invalid.*"maybe".*true/);
     expect(options.errors[3]).toMatch(/subagentKeepBrief is invalid.*"sometimes".*true/);
-    expect(options.errors[4]).toMatch(/logFile must be an absolute path/);
+    expect(options.errors[4]).toMatch(/option logFile is invalid \(not an absolute path/);
+  });
+
+  it.each([
+    ['a relative logFile falls back to the PLUGIN_LOG_DIR default', { logFile: 'relative.jsonl' }, { pluginLogDir: '/x/logs' }, '/x/logs/sub-agent-compact/decisions/.jsonl', /option logFile is invalid \(not an absolute path: "relative.jsonl"\); using the default \/x\/logs\/sub-agent-compact\/decisions\/.jsonl/],
+    ['a relative logFile without PLUGIN_LOG_DIR keeps the default, no log', { logFile: 'relative.jsonl' }, {}, undefined, /option logFile is invalid \(not an absolute path: "relative.jsonl"\); using the default \(no decision log\)/],
+    ['a non-string logFile falls back too', { logFile: 42 }, { pluginLogDir: '/x/logs' }, '/x/logs/sub-agent-compact/decisions/.jsonl', /option logFile is invalid \(not a string: 42\)/],
+  ])('%s', (_name, options, env, logFile, error) => {
+    const resolved = resolveOptions(options as Record<string, unknown>, env);
+    expect(resolved.logFile).toBe(logFile);
+    expect(resolved.errors).toEqual([expect.stringMatching(error)]);
+  });
+
+  it('names a non-string agentDirs item and keeps the rest', () => {
+    const resolved = resolveOptions({ agentDirs: ['/x', 7, '/y'] });
+    expect(resolved.agentDirs).toEqual(['/x', '/y']);
+    expect(resolved.errors).toEqual(['sub-agent-compact: option agentDirs item 7 is invalid (not a string); ignoring it']);
+  });
+
+  it('names unknown option keys in one line, and knows every key plugin.json declares', () => {
+    const declared = Object.keys(JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), '../plugins/sub-agent-compact/.claude-plugin/plugin.json'), 'utf8')).userConfig);
+    expect([...OPTION_KEYS].sort()).toEqual(declared.sort());
+    expect(resolveOptions(Object.fromEntries(declared.map((key) => [key, undefined]))).errors).toEqual([]);
+    expect(resolveOptions({ mainAutoCompat: '300k', handofTool: true }).errors).toEqual(['sub-agent-compact: unknown options mainAutoCompat, handofTool; ignoring them']);
+  });
+
+  it.each([
+    ['main', { mainAutoCompact: '300k', mainAutoCompactNudgeStart: '300k' }, /mainAutoCompactNudgeStart 300000 is not below mainAutoCompact 300000/],
+    ['subagent', { subagentAutoCompact: '40%', subagentAutoCompactNudgeStart: '50%' }, /subagentAutoCompactNudgeStart 50% is not below subagentAutoCompact 40%/],
+  ])('says a %s nudge start at or past its forced point, keeping both', (_name, options, error) => {
+    const resolved = resolveOptions(options);
+    expect(resolved.errors).toEqual([expect.stringMatching(error)]);
+  });
+
+  it('says nothing across units, where only the window decides', () => {
+    expect(resolveOptions({ mainAutoCompact: '50%', mainAutoCompactNudgeStart: '600k' }).errors).toEqual([]);
   });
 });
 
@@ -268,6 +306,20 @@ describe('AgentTypes', () => {
     expect(await types.of('wf1', async () => [])).toBe('Explore');
     expect(await types.of('fork1', async () => [])).toBeUndefined();
   });
+
+  it('lists again for an id the list missed only after 60 s', async () => {
+    let now = 0;
+    let lists = 0;
+    const types = new AgentTypes(() => now);
+    const list = async () => { lists++; return now > 60_000 ? [{ id: 'late', type: 'scout' }] : []; };
+    expect(await types.of('late', list)).toBeUndefined();
+    now = 30_000;
+    expect(await types.of('late', list)).toBeUndefined();
+    expect(lists).toBe(1);
+    now = 61_000;
+    expect(await types.of('late', list)).toBe('scout');
+    expect(lists).toBe(2);
+  });
 });
 
 describe('decide for a loop the session does not list', () => {
@@ -318,21 +370,11 @@ describe('a Haiku loop and the triggers Claude Code may send', () => {
   });
 });
 
-describe('haikuHold', () => {
-  const ask = { haiku: true, forwardOn: true, trigger: 'auto' as const, stored: false, held: 0 };
-  it('holds an automatic ask of a Haiku party with no forward handoff stored, up to HAIKU_HOLDS times', () => {
-    expect(haikuHold(ask)).toBe(true);
-    expect(haikuHold({ ...ask, held: HAIKU_HOLDS - 1 })).toBe(true);
-    expect(haikuHold({ ...ask, held: HAIKU_HOLDS })).toBe(false);
+describe('an automatic ask no response answered since the last one was held', () => {
+  it('passes below the limit: the request after the held ask got no answer, as a prompt too long gets none', () => {
+    expect(decide({ trigger: 'auto', label: 'main', limit: 600_000, tokens: 150_000, unanswered: true } as any)).toEqual({ action: 'pass', why: 'unanswered' });
   });
-  it('lets the ask through once the forward handoff is stored', () => {
-    expect(haikuHold({ ...ask, stored: true })).toBe(false);
+  it('still holds a party with automatic compaction off', () => {
+    expect(decide({ trigger: 'auto', label: 'main', limit: 600_000, tokens: 150_000, unanswered: true, enabled: false } as any)).toEqual({ action: 'skip', reason: 'main: auto-compact off' });
   });
-  it('never holds a requested compaction, a non-Haiku party, or Haiku without the forward handoff', () => {
-    expect(haikuHold({ ...ask, trigger: 'manual' })).toBe(false);
-    expect(haikuHold({ ...ask, trigger: 'plugin' })).toBe(false);
-    expect(haikuHold({ ...ask, haiku: false })).toBe(false);
-    expect(haikuHold({ ...ask, forwardOn: false })).toBe(false);
-  });
-  it('holds at most three asks', () => expect(HAIKU_HOLDS).toBe(3));
 });

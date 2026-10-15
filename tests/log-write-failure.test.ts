@@ -22,10 +22,12 @@ function engine(writeError: () => Error) {
     fs: {
       exists: async () => false,
       read: async () => '',
-      write: async () => {
-        throw writeError();
-      },
+      write: async () => {},
       list: async () => [],
+    },
+    // The append script's failure: its first stderr line is the reason.
+    process: {
+      run: async (argv: string[]) => argv[3] === 'decision-log' ? { exitCode: 1, stdout: '', stderr: `${writeError().message}\n` } : { exitCode: 0, stdout: '', stderr: '' },
     },
     clock: { after: (ms: number, fn: () => void) => ({ cancel: () => clearTimeout(setTimeout(fn, ms)) }) },
     ui: { log: (line: string) => void shown.push(line) },

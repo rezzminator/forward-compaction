@@ -14,8 +14,3 @@ export function toolsToRegister(
 export function servedOptions<T extends { compactTool: boolean; forwardHandoffTool: boolean }>(options: T): T {
   return options.forwardHandoffTool && options.compactTool ? { ...options, compactTool: false } : options;
 }
-
-/** Whether a party is nudged, stored and installed: Haiku only through the forward handoff, every other party always. */
-export function haikuServed(haiku: boolean, forwardOn: boolean): boolean {
-  return !haiku || forwardOn;
-}

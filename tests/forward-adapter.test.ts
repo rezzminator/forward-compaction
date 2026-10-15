@@ -11,10 +11,12 @@ import { register } from '../plugins/sub-agent-compact/hooks/sub-agent-compact.t
 
 type AnyHook = (...args: any[]) => any;
 const TOOL = 'mcp__sub-agent-compact__forward_handoff';
-const DIR = '/h/u/.claude/sub-agent-compact/forward-handoff/session-1/1';
+const DIR = '/h/u/.local/state/sub-agent-compact/forward-handoff/session-1/1';
+/** Where records were kept before: under the Claude config directory, so a CLAUDE_CONFIG_DIR switch lost them. */
+const LEGACY_DIR = '/h/u/.claude/sub-agent-compact/forward-handoff/session-1/1';
 // Claude Code hashes a project path over 200 characters: the directory is not the cwd with dashes.
 const TRANSCRIPT = '/h/u/.claude/projects/-nowhere-aaaa-0f3c9d/session-1.jsonl';
-const AGENT_DIR = '/h/u/.claude/sub-agent-compact/forward-handoff/session-1/agent-agent-1/1';
+const AGENT_DIR = '/h/u/.local/state/sub-agent-compact/forward-handoff/session-1/agent-agent-1/1';
 const FIELDS = { objective: 'Rename qty to quantity in every report', done: ['a.sql, b.sql: npm test 41/41'], remaining: ['c.sql'], next: 'Edit reports/c.sql:12, then run npm test.' };
 
 const text = (t: string) => ({ type: 'text', text: t });
@@ -26,7 +28,7 @@ const api = (extra: unknown[] = []) => [
   { role: 'assistant', content: [{ type: 'tool_use', id: 'f1', name: 'mcp__sub-agent-compact__forward_handoff', input: FIELDS }] },
 ];
 
-type Env = { decisionSessionFailsOnce?: boolean; decisionWriteFails?: boolean; uiFailsOnce?: boolean; home?: string; pluginLogDir?: string; pluginRunFails?: boolean; readFails?: string[]; denied?: string[]; listFails?: boolean; noHome?: boolean; noTranscript?: boolean; cwd?: string; agentRows?: Record<string, unknown[]>; agents?: { id: string; type: string }[]; run?: (argv: string[], init?: { cwd?: string }) => { exitCode: number; stdout: string; stderr: string } | undefined };
+type Env = { window?: number; decisionSessionFailsOnce?: boolean; decisionWriteFails?: boolean; uiFailsOnce?: boolean; home?: string; pluginLogDir?: string; pluginRunFails?: boolean; readFails?: string[]; denied?: string[]; listFails?: boolean; noHome?: boolean; noTranscript?: boolean; cwd?: string; agentRows?: Record<string, unknown[]>; agents?: { id: string; type: string }[]; run?: (argv: string[], init?: { cwd?: string }) => { exitCode: number; stdout: string; stderr: string } | undefined; appendWaits?: Promise<void>; pluginWaits?: Promise<void>; timersFire?: boolean; noClock?: boolean };
 const pluginExec = promisify(execFile);
 
 function engine(options: Record<string, unknown> = { forwardHandoffTool: true }, files: Record<string, string> = {}, apiRows: unknown[] = api(), git = true, refused: string[] = [], env: Env = {}) {
@@ -34,11 +36,14 @@ function engine(options: Record<string, unknown> = { forwardHandoffTool: true },
   const registered: string[] = [];
   const specs: Record<string, any> = {};
   const runCalls: string[][] = [];
+  const fsWrites: string[] = [];
   const nextInputs: unknown[] = [];
   const written: Record<string, string> = {};
   const logs: string[] = [];
   let current = 0;
   let summarized = 0;
+  let compactCalls = 0;
+  let usageCalls = 0;
   const known: Record<string, string> = { [TRANSCRIPT]: '', ...files };
   const $ = {
     session: {
@@ -48,9 +53,9 @@ function engine(options: Record<string, unknown> = { forwardHandoffTool: true },
       },
       turns: async () => 1,
       cwd: async () => env.cwd ?? '/nowhere',
-      usage: async () => ({ context: { tokens: current, window: 1_000_000 } }),
+      usage: async () => { usageCalls++; return { context: { tokens: current, window: env.window ?? 1_000_000 } }; },
       messages: async (a?: { agentId?: string }) => (a?.agentId !== undefined ? (env.agentRows?.[a.agentId] ?? []) : apiRows),
-      compact: async () => ({}),
+      compact: async () => { compactCalls++; return {}; },
     },
     env: { get: async (key: string) => key === 'PLUGIN_LOG_DIR' ? env.pluginLogDir : key === 'HOME' && !env.noHome ? env.home ?? '/h/u' : undefined },
     fs: {
@@ -59,10 +64,7 @@ function engine(options: Record<string, unknown> = { forwardHandoffTool: true },
         if (env.readFails?.includes(path)) throw new Error('EACCES');
         return known[path] ?? written[path] ?? '';
       },
-      write: async (path: string, content: string) => {
-        if (env.decisionWriteFails) throw new Error('decision write unavailable');
-        written[path] = content;
-      },
+      write: async (path: string, content: string) => { fsWrites.push(path); written[path] = content; },
       list: async (dir: string) => {
         if (env.listFails) throw new Error(`EACCES: permission denied, scandir '${dir}'`);
         const names = Object.keys(written).filter((p) => p.startsWith(`${dir}/`)).map((p) => p.slice(dir.length + 1).split('/')[0]!);
@@ -71,10 +73,20 @@ function engine(options: Record<string, unknown> = { forwardHandoffTool: true },
       stat: async (path: string) => ({ kind: 'file', size: (known[path] ?? '').length, mtimeMs: 0, isLink: false }),
     },
     process: {
-      run: async (argv: string[], init?: { cwd?: string }) => {
+      run: async (argv: string[], init?: { cwd?: string; stdin?: string }) => {
         runCalls.push(argv);
+        // The decision log's append script, as its contract says: the rows on stdin are appended to the path after the script name.
+        if (argv[0] === '/bin/sh' && argv[3] === 'decision-log') {
+          const path = argv[4]!;
+          await env.appendWaits;
+          if (env.decisionWriteFails) throw new Error('decision write unavailable');
+          written[path] = (written[path] ?? '') + (init?.stdin ?? '');
+          return { exitCode: 0, stdout: '', stderr: '' };
+        }
+        if (argv[0] === '/bin/sh' && argv[3] === 'decision-retention') return { exitCode: 0, stdout: '', stderr: '' };
         if (argv[0] === '/bin/sh' && argv[3] === 'plugin-log') {
           if (env.pluginRunFails) throw new Error('plugin process unavailable');
+          await env.pluginWaits;
           const out = await pluginExec('/bin/sh', argv.slice(1), { encoding: 'utf8' });
           return { exitCode: 0, ...out };
         }
@@ -93,7 +105,12 @@ function engine(options: Record<string, unknown> = { forwardHandoffTool: true },
         return { exitCode: 1, stdout: '', stderr: '' };
       },
     },
-    clock: { now: async () => Date.parse('2026-10-14T15:20:31.123Z'), after: (ms: number, fn: () => void) => ({ cancel: () => clearTimeout(setTimeout(fn, ms)) }) },
+    clock: { now: async () => Date.parse('2026-10-14T15:20:31.123Z'), after: (ms: number, fn: () => void) => {
+      if (env.noClock) throw new Error('no timers here');
+      if (!env.timersFire) return { cancel: () => clearTimeout(setTimeout(fn, ms)) };
+      const timer = setTimeout(fn, ms);
+      return { cancel: () => clearTimeout(timer) };
+    } },
     ui: { log: (line: string) => {
       if (env.uiFailsOnce) { env.uiFailsOnce = false; throw new Error('screen unavailable'); }
       logs.push(line);
@@ -112,8 +129,8 @@ function engine(options: Record<string, unknown> = { forwardHandoffTool: true },
   };
   const on = (event: string, hook: AnyHook) => void hooks.set(event, hook);
   register(on as never, options as never);
-  const dispatch = (event: string, e: unknown, impl: (e: any) => any): any => {
-    const next = Object.assign((input: unknown) => impl(input), { signal: new AbortController().signal });
+  const dispatch = (event: string, e: unknown, impl: (e: any) => any, budgetMs?: number): any => {
+    const next = Object.assign((input: unknown) => impl(input), { signal: new AbortController().signal }, budgetMs === undefined ? {} : { budget: { ms: budgetMs, remainingMs: budgetMs } });
     const hook = hooks.get(event);
     return hook ? hook($, e, next) : impl(e);
   };
@@ -127,28 +144,42 @@ function engine(options: Record<string, unknown> = { forwardHandoffTool: true },
     registered,
     specs,
     runCalls,
+    fsWrites,
     nextInputs,
     call: (e: Record<string, unknown>) => dispatch('tool.call', e, async (input) => { nextInputs.push(input); return { result: 'original result' }; }),
     decisions: async () => {
       await new Promise<void>((resolve) => setImmediate(resolve));
-      return Object.values(written).flatMap((body) => body.trim().split('\n').filter(Boolean).map((line) => JSON.parse(line)));
+      return Object.entries(written).filter(([path]) => path.endsWith('.jsonl')).flatMap(([, body]) => body.trim().split('\n').filter(Boolean).map((line) => JSON.parse(line)));
     },
     written,
     logs,
     summarized: () => summarized,
+    compacts: () => compactCalls,
+    usageCalls: () => usageCalls,
+    turnComplete: (input: Record<string, unknown> = {}, next: () => Promise<unknown> = async () => ({})) => dispatch('turn.complete', input, next),
     start: () => dispatch('session.start', {}, async () => ({})),
-    end: () => dispatch('session.end', { reason: 'exit' }, async () => ({ sessionId: 'session-1' })),
-    step: async (tokens: number, model = 'claude-opus-4-5[1m]') => {
+    end: (reason = 'exit', budgetMs?: number) => dispatch('session.end', { reason, sessionId: 'session-1' }, async () => ({ sessionId: 'session-1' }), budgetMs),
+    step: async (tokens: number, model = 'claude-opus-4-5[1m]', agentId?: string) => {
       current = tokens;
-      const gen = dispatch('turn.step', { model }, async function* () {
+      const gen = dispatch('turn.step', { model, ...(agentId ? { agentId } : {}) }, async function* () {
         return { usage: { input_tokens: tokens }, answer: 'working', toolUses: [{}] };
+      });
+      for (;;) if ((await gen.next()).done) break;
+    },
+    /** A step that brought no usage: a hook answered it without a request, or the request failed (a prompt too long). */
+    stepNoUsage: async (toolUses: number, model = 'claude-opus-4-5[1m]') => {
+      const gen = dispatch('turn.step', { model }, async function* () {
+        return { usage: null, answer: '', toolUses: Array.from({ length: toolUses }, () => ({})) };
       });
       for (;;) if ((await gen.next()).done) break;
     },
     forward: (fields: Record<string, unknown> = FIELDS, agentId?: string) =>
       dispatch('tool.call', { tool: TOOL, ...fields, tool_use_id: 'f1', ...(agentId ? { agentId } : {}) }, async () => ({ result: 'unreached' })),
     stop: (e: Record<string, unknown>) => dispatch('classic.Stop', e, async () => ({})),
-    read: () => dispatch('tool.call', { tool: 'Read', file_path: 'x' }, async () => ({ result: 'file text' })),
+    spawn: (e: Record<string, unknown>, agentId: string) => dispatch('agent.spawn', { tool_use_id: 't1', prompt: 'go', ...e }, async () => ({ model: 'claude-opus-4-5', agentId })),
+    read: (agentId?: string) => dispatch('tool.call', { tool: 'Read', file_path: 'x', ...(agentId ? { agentId } : {}) }, async () => ({ result: 'file text' })),
+    /** A compaction Claude Code itself left unfinished: its summary was skipped beneath the plugin. */
+    askUnfinished: (trigger: string) => dispatch('session.compact', { trigger, messages: rows }, async () => ({ skip: 'prompt is too long' })),
     ask: (trigger: string, messages: unknown[] = rows) =>
       dispatch('session.compact', { trigger, messages }, async () => {
         summarized++;
@@ -210,28 +241,22 @@ describe('the forward handoff tool through the adapter', () => {
     expect(cc.logs.filter((line) => line.startsWith('sub-agent-compact:'))).toEqual([]);
   });
 
-  it('holds Claude Code\'s automatic ask of a Haiku main chat until its forward handoff is stored, telling it once', async () => {
-    const cc = engine();
+  it('leaves a Haiku main chat to Claude Code: no nudge, no forced point, no hold, and its forward handoff refused unstored', async () => {
+    const cc = engine({ forwardHandoffTool: true, compactTool: false, logFile: '/logs/decisions.jsonl' });
     await cc.start();
-    await cc.step(60_000, 'claude-haiku-4-5');
-    expect(await cc.ask('auto')).toEqual({ skip: expect.stringContaining('held for its forward handoff (1/3)') });
-    const told = await cc.read();
-    expect((told.context ?? []).filter((line: string) => line.includes('very next step'))).toHaveLength(1);
-    expect(await cc.ask('auto')).toEqual({ skip: expect.stringContaining('(2/3)') });
-    expect(((await cc.read()).context ?? []).some((line: string) => line.includes('very next step'))).toBe(false);
-    expect((await cc.forward()).result).toMatch(/^Forward handoff stored/);
-    const out = await cc.ask('auto');
-    expect(cc.summarized()).toBe(0);
-    expect(out.messages[0].text).toBe(cc.written[`${DIR}/wake.txt`]);
-  });
-
-  it('lets a Haiku main chat\'s ask through to Claude Code\'s own summary after three holds without a forward handoff', async () => {
-    const cc = engine();
-    await cc.start();
-    await cc.step(60_000, 'claude-haiku-4-5');
-    for (let i = 1; i <= 3; i++) expect(await cc.ask('auto')).toEqual({ skip: expect.stringContaining(`(${i}/3)`) });
+    await cc.step(170_000, 'claude-haiku-4-5');
+    expect((await cc.read()).context ?? []).toEqual([]);
+    await cc.turnComplete();
+    expect(cc.compacts()).toBe(0);
+    const out = await cc.forward();
+    expect(out.result).toMatch(/^Not stored: .*Haiku/);
+    expect(cc.written[`${DIR}/wake.txt`]).toBeUndefined();
     await cc.ask('auto');
     expect(cc.summarized()).toBe(1);
+    const rows = await cc.decisions();
+    expect(rows.filter((r: any) => ['nudge', 'forward-stored', 'turn.complete', 'handoff'].includes(r.event) || r.decision === 'skip')).toEqual([]);
+    expect(rows.find((r: any) => r.event === 'forward-refused')).toMatchObject({ party: 'main', why: 'haiku' });
+    expect(rows.find((r: any) => r.event === 'session.compact')).toMatchObject({ decision: 'pass', why: 'haiku' });
   });
 
   it('checks the install against what the session holds at the next step, and names a block that did not land', async () => {
@@ -279,12 +304,12 @@ describe('the forward handoff tool through the adapter', () => {
     expect(cc.logs.some((line) => line.includes('EACCES'))).toBe(true);
   });
 
-  it('saves nothing into the project when there is no Claude config directory, and says so', async () => {
+  it('saves nothing into the project when neither HOME nor a Claude config directory is known, and says so', async () => {
     const cc = engine({ forwardHandoffTool: true }, {}, api(), true, [], { noHome: true });
     await cc.start();
     const out = await cc.forward();
     expect(Object.keys(cc.written)).toEqual([]);
-    expect(out.result).toMatch(/Not saved to disk: no Claude config directory/);
+    expect(out.result).toMatch(/Not saved to disk: neither HOME nor CLAUDE_CONFIG_DIR is set/);
   });
 
   it('returns one nudge for a missing required field and stores nothing', async () => {
@@ -359,6 +384,23 @@ describe('the forward handoff tool through the adapter', () => {
     expect(Object.keys(cc.written).filter((p) => p.startsWith(DIR))).toEqual([]);
   });
 
+  it.each([
+    ['in the directory its spawn named', { cwd: '/work/other' }, '/work/other/tmp/notes.md'],
+    ["in the parent's directory at its spawn", {}, '/nowhere/tmp/notes.md'],
+  ])("places a sub-agent's relative shell write %s, never under a later session directory", async (_name, spawn, path) => {
+    const write = { role: 'assistant', content: [{ type: 'tool_use', id: 'b1', name: 'Bash', input: { command: "cat >> tmp/notes.md <<'EOF'\nx\nEOF" } }] };
+    const agentRows = { 'agent-1': [{ role: 'user', content: [text('Write the notes.')] }, write, { role: 'assistant', content: [{ type: 'tool_use', id: 'f1', name: 'mcp__sub-agent-compact__forward_handoff', input: FIELDS }] }] };
+    const env: Env = { agentRows, agents: [{ id: 'agent-1', type: 'reviewer' }] };
+    const cc = engine({ forwardHandoffTool: true }, {}, api(), true, [], env);
+    await cc.start();
+    await cc.spawn(spawn, 'agent-1');
+    // The main chat's shell moved on after the spawn: the sub-agent still runs where it started.
+    env.cwd = '/elsewhere';
+    await cc.forward(FIELDS, 'agent-1');
+    const files = cc.written[`${AGENT_DIR}/wake.txt`]!.split('\nFiles\n')[1]!.split('\n')[0];
+    expect(files).toBe(`E ${path}`);
+  });
+
   it('chains the prompts: the second handoff carries the first one from its record, then those since, and records them', async () => {
     const cc = engine();
     await cc.start();
@@ -374,6 +416,47 @@ describe('the forward handoff tool through the adapter', () => {
     expect(wake2).toContain('User\n[1] rename qty to quantity in every report\n[2, latest, handed off in reply] second ask\n');
     expect(wake2).toContain(`previous ${DIR}`);
     expect(JSON.parse(cc.written[`${dir2}/record.json`]!)).toMatchObject({ users: ['rename qty to quantity in every report', 'second ask'], usersDropped: 0 });
+  });
+
+  it('installs a forward handoff stored before a plugin reload, from its saved files', async () => {
+    const first = engine();
+    await first.start();
+    await first.step(250_000);
+    const out = await first.forward();
+    // A new plugin process: nothing held, the saved files on disk, the stored call standing in the transcript.
+    const cc = engine({ forwardHandoffTool: true, logFile: '/logs/decisions.jsonl' }, { [`${DIR}/wake.txt`]: first.written[`${DIR}/wake.txt`]!, [`${DIR}/record.json`]: first.written[`${DIR}/record.json`]! });
+    await cc.start();
+    await cc.step(250_000);
+    const rows = [
+      { role: 'user', text: 'rename qty to quantity in every report', toolUses: [], handle: 'm0' },
+      { role: 'assistant', text: '', toolUses: [{ tool_use_id: 'f1', tool: TOOL, input: FIELDS }], handle: 'm1' },
+      { role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: 'f1', text: out.result, isError: false }], handle: 'm2' },
+    ];
+    const result = await cc.ask('auto', rows);
+    expect(cc.summarized()).toBe(0);
+    expect(JSON.stringify(result)).toContain('rename qty to quantity in every report');
+    expect((await cc.decisions()).find((r: any) => r.decision === 'handoff')).toMatchObject({ recovered: true });
+  });
+
+  it('chains from a record kept under the config directory before, numbering past it, under the HOME root', async () => {
+    const cc = engine();
+    await cc.start();
+    await cc.step(250_000);
+    await cc.forward();
+    const wake1 = cc.written[`${DIR}/wake.txt`]!;
+    await cc.ask('auto');
+    cc.rows.splice(0, cc.rows.length, { role: 'user', content: [text(wake1)] }, { role: 'user', content: [text('second ask')] }, { role: 'assistant', content: [{ type: 'tool_use', id: 'f1', name: 'mcp__sub-agent-compact__forward_handoff', input: FIELDS }] });
+    await cc.step(250_000);
+    // The first call's files as an earlier version left them: under the config directory only.
+    for (const path of Object.keys(cc.written).filter((p) => p.startsWith(`${DIR}/`))) {
+      cc.written[`${LEGACY_DIR}/${path.slice(DIR.length + 1)}`] = cc.written[path]!;
+      delete cc.written[path];
+    }
+    await cc.forward();
+    const wake2 = cc.written[DIR.replace(/1$/, '2') + '/wake.txt']!;
+    expect(wake2).toContain('User\n[1] rename qty to quantity in every report\n[2, latest, handed off in reply] second ask\n');
+    expect(wake2).toMatch(new RegExp(`previous ${LEGACY_DIR}( ·|\n)`));
+    expect(wake2).not.toContain(`previous ${DIR}`);
   });
 
   it('chains the file trail: the second handoff lists the files touched since, then those the first one carried', async () => {
@@ -540,6 +623,38 @@ describe('the forward handoff tool through the adapter', () => {
     expect(nudged.context?.[0]).toContain('mcp__sub-agent-compact__forward_handoff');
   });
 
+  it.each([
+    ['a tools list without it', 'tools: WebSearch, WebFetch', false],
+    ['a block tools list naming it', 'tools:\n  - Read\n  - mcp__sub-agent-compact__forward_handoff', true],
+    ['no tools list', 'model: opus', true],
+    ['it disallowed', 'disallowedTools: [mcp__sub-agent-compact]', false],
+  ])('nudges a sub-agent toward the forward tool only when it has it: %s', async (_name, body, nudged) => {
+    const cc = engine({ forwardHandoffTool: true, logFile: '/logs/decisions.jsonl' }, { '/nowhere/.claude/agents/rr.md': `---\nname: rr\n${body}\n---\n` }, api(), true, [], { agents: [{ id: 'a1', type: 'rr' }] });
+    await cc.start();
+    await cc.step(250_000, 'claude-opus-4-5[1m]', 'a1');
+    const out = await cc.read('a1');
+    const nudges = (await cc.decisions()).filter((r: any) => r.event === 'nudge');
+    if (nudged) {
+      expect(out.context?.[0]).toContain('mcp__sub-agent-compact__forward_handoff');
+      expect(nudges).toMatchObject([{ party: 'a1', type: 'rr', tool: 'forward_handoff' }]);
+    } else {
+      expect(out.context ?? []).toEqual([]);
+      expect(nudges).toEqual([]);
+    }
+  });
+
+  it.each([
+    ['a tools list without it', 'tools: WebSearch, WebFetch', false],
+    ['no tools list', 'model: opus', true],
+  ])('nudges a sub-agent toward the compact tool only when it has it: %s', async (_name, body, nudged) => {
+    const cc = engine({ forwardHandoffTool: false, handoffTool: false, compactTool: true }, { '/nowhere/.claude/agents/rr.md': `---\nname: rr\n${body}\n---\n` }, api(), true, [], { agents: [{ id: 'a1', type: 'rr' }] });
+    await cc.start();
+    await cc.step(250_000, 'claude-opus-4-5[1m]', 'a1');
+    const out = await cc.read('a1');
+    if (nudged) expect(out.context?.[0]).toContain('mcp__sub-agent-compact__compact');
+    else expect(out.context ?? []).toEqual([]);
+  });
+
   it('nudges nobody to a tool that is not there when the forward tool is the only one on and did not register', async () => {
     const cc = engine({ forwardHandoffTool: true, handoffTool: false, compactTool: false }, {}, api(), true, ['forward_handoff']);
     await cc.start();
@@ -607,6 +722,14 @@ describe('look_back through the adapter (R1–R7, R9)', () => {
     expect((await lookRows(cc))[0]).toMatchObject({ boundary: compacted ? 10 : null });
     expect(await saidLines(cc)).toHaveLength(1);
   });
+  it.each([[{}], [{ why: 'x' }], [{ why: 'x', entry: 0 }]])('answers no boundary before any argument check: %j', async (args) => {
+    const cc = lookEngine({ run: (argv) => argv[0] === 'sh' ? okProcess(COMPLETE) : undefined }); await cc.start();
+    const out = await cc.call({ tool: LOOK_BACK, ...args });
+    expect(out.result).toMatch(/Nothing has been compacted yet.*still in context/);
+    expect((await lookRows(cc))[0]).toMatchObject({ boundary: null, hits: 0 });
+    expect((await lookRows(cc))[0].error).toBeUndefined();
+  });
+
   it('answers no boundary without searching and still counts the call', async () => {
     const cc = lookEngine({ run: (argv) => argv[0] === 'sh' ? okProcess(COMPLETE) : undefined }); await cc.start();
     const out = await cc.call({ tool: LOOK_BACK, why: 'exact value', query: 'value' });
@@ -681,13 +804,14 @@ describe('look_back through the adapter (R1–R7, R9)', () => {
     expect(await lookRows(cc)).toHaveLength(3);
     expect((await lookRows(cc))[2]).toMatchObject({ entry: 8, boundary: 10, error: 'tool name lookup: grep: transcript unavailable' });
   });
-  it('counts an invalid call with one failed notice and row, with no transcript process', async () => {
+  it('counts an invalid call after a compaction with one failed notice and row, finding the boundary but never searching', async () => {
     const cc = lookEngine(); await cc.start();
     const out = await cc.call({ tool: LOOK_BACK, why: 'lost detail' });
     expect(out.result).toContain('query or entry');
-    expect(cc.runCalls.filter((argv) => argv[3] !== 'plugin-log')).toEqual([]);
+    const transcriptRuns = cc.runCalls.filter((argv) => !['plugin-log', 'decision-log', 'decision-retention'].includes(argv[3]!));
+    expect(transcriptRuns.map((argv) => argv[0] === 'sh' && argv[2]!.includes('compact_boundary') ? 'boundary' : argv[0])).toEqual(['find', 'boundary']);
     expect(lookLines(cc)).toEqual(['look back (main): lost detail — failed: query or entry is required']);
-    expect((await lookRows(cc))[0]).toMatchObject({ why: 'lost detail', boundary: null, error: 'query or entry is required' });
+    expect((await lookRows(cc))[0]).toMatchObject({ why: 'lost detail', boundary: 10, error: 'query or entry is required' });
   });
   it.each([
     [{ tool: 'Read', file_path: '/any/session-1.jsonl' }, 'main', 'main'],
@@ -699,7 +823,7 @@ describe('look_back through the adapter (R1–R7, R9)', () => {
     const out = await cc.call(input);
     expect(out.result).toBe('original result');
     expect(cc.nextInputs).toEqual([input]);
-    expect(cc.runCalls.filter((argv) => argv[3] !== 'plugin-log')).toEqual([]);
+    expect(cc.runCalls.filter((argv) => !['plugin-log', 'decision-log', 'decision-retention'].includes(argv[3]!))).toEqual([]);
     expect(await saidLines(cc)).toEqual([`look back by hand (${label}): ${input.tool} on the transcript`]);
     expect(lookLines(cc)).toEqual([]);
     expect(await lookRows(cc, 'look-back-manual')).toEqual([expect.objectContaining({ event: 'look-back-manual', party, tool: input.tool })]);
@@ -710,7 +834,7 @@ describe('look_back through the adapter (R1–R7, R9)', () => {
     for (const input of [{ tool: 'Read', file_path: '/any/agent-a2.jsonl', agentId: 'a1' }, { tool: 'Read', file_path: '/any/old-session-1.jsonl.bak' }, { tool: 'Write', file_path: '/any/session-1.jsonl' }]) expect((await cc.call(input)).result).toBe('original result');
     expect(await saidLines(cc)).toEqual([]);
     expect(await lookRows(cc, 'look-back-manual')).toEqual([]);
-    expect(cc.runCalls.filter((argv) => argv[3] !== 'plugin-log')).toEqual([]);
+    expect(cc.runCalls.filter((argv) => !['plugin-log', 'decision-log', 'decision-retention'].includes(argv[3]!))).toEqual([]);
   });
 });
 
@@ -842,6 +966,12 @@ describe('plugin log through the forward adapter', () => {
       const errors = diskRows(dir, 'errors.jsonl'); const warnings = diskRows(dir, 'warnings.jsonl');
       expect(errors.filter((row) => row.event === 'tool-register-failed').map((row) => [row.level, row.where, row.session, row.detail.tool])).toEqual([['error', 'hooks/sub-agent-compact.ts#record', 'session-1', 'look_back'], ['error', 'hooks/sub-agent-compact.ts#record', 'session-1', 'look_back']]);
       expect(warnings.filter((row) => row.event === 'option-error').map((row) => [row.level, row.where, row.session])).toEqual([['warning', 'hooks/sub-agent-compact.ts#record', 'session-1']]);
+      // Each warning is one level row: the said line and its diagnostic row are one entry, not two.
+      expect(warnings.filter((row) => JSON.stringify(row).includes('mainAutoCompact')).map((row) => row.event)).toEqual(['option-error']);
+      expect(warnings.filter((row) => JSON.stringify(row).includes('registering the look_back tool failed')).map((row) => row.event)).toEqual(['warning']);
+      // The first row on disk is a real diagnostic, never a startup row.
+      expect(errors[0]).toMatchObject({ level: 'error', event: 'tool-register-failed', session: 'session-1', detail: { tool: 'look_back' } });
+      expect(diskRows(dir, 'info.jsonl').filter((row) => row.event === 'logger-ready')).toEqual([]);
       const said = (await cc.decisions()).find((row: any) => row.event === 'said');
       expect(Object.keys(said)).toEqual(['ts', 'event', 'line', 'shown']);
       expect(cc.runCalls.filter((argv) => argv[0] === '/bin/sh' && argv[3] === 'plugin-log').every((argv) => argv[4] === dir)).toBe(true);
@@ -866,14 +996,15 @@ describe('plugin log through the forward adapter', () => {
       }]);
     } finally { rmSync(temp, { recursive: true, force: true }); }
   });
-  it('queues the said level row before a throwing screen call', async () => {
+  it('queues the said line\'s level row before a throwing screen call', async () => {
     const temp = mkdtempSync(join(tmpdir(), 'compact-screen-failure-'));
     try {
       const cc = engine({ compactTool: false, mainAutoCompact: 'bad' }, {}, api(), true, [], { home: temp, pluginLogDir: join(temp, 'logs'), uiFailsOnce: true });
       await expect(cc.start()).rejects.toThrow('screen unavailable');
       await cc.end();
-      expect(diskRows(join(temp, 'logs/sub-agent-compact'), 'warnings.jsonl').filter((row) => row.event === 'said')).toEqual([expect.objectContaining({
-        level: 'warning', event: 'said', where: 'hooks/sub-agent-compact.ts#say', session: 'session-1', msg: expect.stringContaining('mainAutoCompact'),
+      // The option error is said with its diagnostic row: one level row, the row's, at the level said.
+      expect(diskRows(join(temp, 'logs/sub-agent-compact'), 'warnings.jsonl').filter((row) => JSON.stringify(row).includes('mainAutoCompact'))).toEqual([expect.objectContaining({
+        level: 'warning', event: 'option-error', where: 'hooks/sub-agent-compact.ts#record', session: 'session-1', msg: expect.stringContaining('mainAutoCompact'),
       })]);
     } finally { rmSync(temp, { recursive: true, force: true }); }
   });
@@ -911,5 +1042,202 @@ describe('plugin log through the forward adapter', () => {
     await cc.start(); await cc.start(); await cc.end();
     expect(cc.logs.filter((line) => line.startsWith('plugin log off:'))).toEqual(['plugin log off: no PLUGIN_LOG_DIR and no HOME']);
     expect(await cc.read()).toEqual({ result: 'file text' });
+  });
+});
+
+describe('the forced point against the real window, through the adapter', () => {
+  const LOG = { forwardHandoffTool: true, compactTool: false, logFile: '/logs/decisions.jsonl' };
+  it('clamps a token limit above the window to Claude Code\'s ask point, and the row shows both', async () => {
+    const cc = engine({ ...LOG, mainAutoCompact: '600k' }, {}, api(), true, [], { window: 200_000 });
+    await cc.start();
+    await cc.step(170_000, 'claude-opus-4-5');
+    expect(await cc.ask('auto')).toHaveProperty('messages');
+    const rows = await cc.decisions();
+    expect(rows.find((r: any) => r.event === 'session.compact')).toMatchObject({ limit: 167_000, limitSet: 600_000, decision: 'pass', why: 'at-limit' });
+    expect(rows.filter((r: any) => r.event === 'warning' && r.key === 'clamped:main')).toHaveLength(1);
+  });
+  it('re-reads the main window when the model changes', async () => {
+    const env: Env = {};
+    const cc = engine(LOG, {}, api(), true, [], env);
+    await cc.start();
+    await cc.step(100_000, 'claude-opus-4-5[1m]');
+    env.window = 200_000;
+    await cc.step(130_000, 'claude-opus-4-5');
+    expect(await cc.ask('auto')).toHaveProperty('messages');
+    const rows = await cc.decisions();
+    expect(rows.find((r: any) => r.event === 'window-changed')).toMatchObject({ party: 'main', model: 'claude-opus-4-5', from: 1_000_000, to: 200_000 });
+    expect(rows.find((r: any) => r.event === 'session.compact')).toMatchObject({ limit: 120_000, decision: 'pass', why: 'at-limit' });
+  });
+  it('reads each model\'s window once when a router alternates the main chat\'s model per request', async () => {
+    const cc = engine(LOG);
+    await cc.start();
+    for (let i = 0; i < 3; i++) { await cc.step(100_000, 'claude-opus-4-5[1m]'); await cc.step(100_000, 'claude-opus-4-5'); }
+    expect(cc.usageCalls()).toBeLessThanOrEqual(3);
+  });
+  it('passes a second automatic ask that no response answered since the first was held (a prompt too long)', async () => {
+    const cc = engine(LOG);
+    await cc.start();
+    await cc.step(150_000);
+    expect(await cc.ask('auto')).toEqual({ skip: expect.any(String) });
+    expect(await cc.ask('auto')).toHaveProperty('messages');
+    expect((await cc.decisions()).filter((r: any) => r.event === 'session.compact').map((r: any) => [r.decision, r.why ?? null])).toEqual([['skip', null], ['pass', 'unanswered']]);
+  });
+  it('holds the next ask again after an interrupt or an API error ended the turn the held ask let through', async () => {
+    for (const reason of ['aborted', 'error']) {
+      const cc = engine(LOG);
+      await cc.start();
+      await cc.step(150_000);
+      expect(await cc.ask('auto')).toEqual({ skip: expect.any(String) });
+      await cc.turnComplete({ reason });
+      expect(await cc.ask('auto')).toEqual({ skip: expect.any(String) });
+    }
+  });
+
+  it('holds the next ask again after a step with no usage that asks for tools answered the held ask within the turn', async () => {
+    const cc = engine(LOG);
+    await cc.start();
+    await cc.step(150_000);
+    expect(await cc.ask('auto')).toEqual({ skip: expect.any(String) });
+    await cc.stepNoUsage(1);
+    expect(await cc.ask('auto')).toEqual({ skip: expect.any(String) });
+  });
+
+  it('passes the ask after a step with no usage and no tool uses (the failed request) as unanswered', async () => {
+    const cc = engine(LOG);
+    await cc.start();
+    await cc.step(150_000);
+    expect(await cc.ask('auto')).toEqual({ skip: expect.any(String) });
+    await cc.stepNoUsage(0);
+    expect(await cc.ask('auto')).toHaveProperty('messages');
+    expect((await cc.decisions()).filter((r: any) => r.event === 'session.compact').map((r: any) => [r.decision, r.why ?? null])).toEqual([['skip', null], ['pass', 'unanswered']]);
+  });
+
+  it('holds the next ask again after the chain beneath turn.complete rejected', async () => {
+    const cc = engine(LOG);
+    await cc.start();
+    await cc.step(150_000);
+    expect(await cc.ask('auto')).toEqual({ skip: expect.any(String) });
+    await expect(cc.turnComplete({}, async () => { throw new Error('turn failed below'); })).rejects.toThrow('turn failed below');
+    expect(await cc.ask('auto')).toEqual({ skip: expect.any(String) });
+  });
+});
+
+describe('a failing plugin log reaches the decision log', () => {
+  it('records plugin-log-failed once per failure streak', async () => {
+    const temp = mkdtempSync(join(tmpdir(), 'compact-plugin-failed-row-'));
+    const env: Env = { home: temp, pluginLogDir: join(temp, 'logs'), pluginRunFails: true };
+    const cc = engine({ forwardHandoffTool: true, compactTool: false, logFile: '/logs/decisions.jsonl' }, {}, api(), true, [], env);
+    try {
+      await cc.start(); await cc.end();
+      await cc.forward({ objective: '' }); await cc.end();
+      const failed = (await cc.decisions()).filter((r: any) => r.event === 'plugin-log-failed');
+      expect(failed).toEqual([expect.objectContaining({ dir: join(temp, 'logs/sub-agent-compact'), error: 'plugin process unavailable' })]);
+    } finally { rmSync(temp, { recursive: true, force: true }); }
+  });
+});
+
+describe('the decision log through the adapter', () => {
+  it('appends through the append script, cleans up old sessions once, and closes the open skip streak at session end', async () => {
+    const cc = engine({ forwardHandoffTool: true, compactTool: false, logFile: '/logs/decisions.jsonl' });
+    await cc.start();
+    for (let i = 0; i < 3; i++) { await cc.step(10_000 + i); await cc.ask('auto'); }
+    await cc.end();
+    const rows = (await cc.decisions()).filter((r: any) => r.event === 'session.compact' || r.event === 'skips');
+    expect(rows.map((r: any) => [r.event, r.decision ?? null, r.count ?? null])).toEqual([['session.compact', 'skip', null], ['skips', null, 2]]);
+    expect(cc.fsWrites.filter((path) => path.startsWith('/logs/'))).toEqual([]);
+    const retention = cc.runCalls.filter((argv) => argv[3] === 'decision-retention');
+    expect(retention.map((argv) => argv.slice(4))).toEqual([['/logs', 'decisions.', '.jsonl', '14', '200', 'decisions.session-1.jsonl']]);
+    expect(cc.runCalls.filter((argv) => argv[3] === 'decision-log').every((argv) => argv[4] === '/logs/decisions.session-1.jsonl')).toBe(true);
+  });
+});
+
+describe('main state after a compaction the plugin did not handle, through the adapter', () => {
+  const LOG = { forwardHandoffTool: true, compactTool: false, logFile: '/logs/decisions.jsonl' };
+  it('drops the stored handoff and re-arms the nudges after an unseen compaction', async () => {
+    const cc = engine(LOG);
+    await cc.start();
+    await cc.step(250_000);
+    expect((await cc.read()).context?.[0]).toContain('mcp__sub-agent-compact__forward_handoff');
+    expect((await cc.forward()).result).toMatch(/^Forward handoff stored/);
+    await cc.step(40_000);
+    await cc.step(250_000);
+    expect((await cc.read()).context?.join('\n') ?? '').toContain('mcp__sub-agent-compact__forward_handoff');
+    await cc.ask('auto');
+    const rows = await cc.decisions();
+    expect(rows.filter((r: any) => r.event === 'compact-unseen')).toEqual([expect.objectContaining({ party: 'main', before: 250_000, after: 40_000, handoffDropped: true })]);
+    expect(rows.filter((r: any) => r.decision === 'handoff')).toEqual([]);
+  });
+
+  it('starts main over at a /clear: a cleared row, no unseen row and no stale handoff', async () => {
+    const cc = engine(LOG);
+    await cc.start();
+    await cc.step(250_000);
+    await cc.forward();
+    await cc.end('clear');
+    await cc.step(5_000);
+    await cc.step(250_000);
+    await cc.ask('auto');
+    const rows = await cc.decisions();
+    expect(rows.filter((r: any) => r.event === 'cleared')).toEqual([expect.objectContaining({ party: 'main', reason: 'clear' })]);
+    expect(rows.filter((r: any) => r.event === 'compact-unseen')).toEqual([]);
+    expect(rows.filter((r: any) => r.decision === 'handoff')).toEqual([]);
+  });
+
+  it('starts main over within the end bound while the log append hangs, and the ending session keeps its rows', async () => {
+    let release = () => {};
+    const env: Env = { timersFire: true, appendWaits: new Promise<void>((resolve) => { release = resolve; }) };
+    const cc = engine(LOG, {}, api(), true, [], env);
+    await cc.start();
+    await cc.step(250_000);
+    await cc.forward();
+    expect(await cc.end('clear', 400)).toEqual({ sessionId: 'session-1' });
+    expect(cc.logs.some((line: string) => line.includes('session-end bound (400 ms) ran out'))).toBe(true);
+    await cc.step(5_000);
+    await cc.step(250_000);
+    release();
+    await cc.end();
+    const rows = await cc.decisions();
+    expect(rows.filter((r: any) => r.event === 'cleared')).toEqual([expect.objectContaining({ party: 'main', reason: 'clear', handoffDropped: true })]);
+    expect(rows.filter((r: any) => r.event === 'compact-unseen')).toEqual([]);
+  });
+
+  it('counts the level rows a cut end flush may lose, not only decision rows', async () => {
+    const temp = mkdtempSync(join(tmpdir(), 'compact-end-level-'));
+    let release = () => {};
+    const env: Env = { home: temp, pluginLogDir: join(temp, 'logs'), timersFire: true, pluginWaits: new Promise<void>((resolve) => { release = resolve; }) };
+    // A real level row in flight: the option error's warning, held by the stalled level-log writer.
+    const cc = engine({ ...LOG, mainAutoCompact: 'bad' }, {}, api(), true, [], env);
+    try {
+      await cc.start();
+      expect(await cc.end('clear', 400)).toEqual({ sessionId: 'session-1' });
+      const line = cc.logs.find((l: string) => l.includes('session-end bound (400 ms) ran out')) ?? '';
+      expect(line).toMatch(/\d+ level rows? may be lost$/);
+      expect(line).not.toContain('0 decision');
+    } finally { release(); rmSync(temp, { recursive: true, force: true }); }
+  });
+
+  it('names the session-end flush as unbounded when the clock is unavailable', async () => {
+    const cc = engine(LOG, {}, api(), true, [], { noClock: true });
+    await cc.start();
+    expect(await cc.end('clear', 400)).toEqual({ sessionId: 'session-1' });
+    expect(cc.logs.some((l: string) => l.includes('the session-end log flush is not time-bounded'))).toBe(true);
+  });
+
+  it('is not masked by a precompute that installed nothing', async () => {
+    const cc = engine(LOG);
+    await cc.start();
+    await cc.step(250_000);
+    await cc.ask('precompute');
+    await cc.step(20_000);
+    expect((await cc.decisions()).filter((r: any) => r.event === 'compact-unseen')).toEqual([expect.objectContaining({ before: 250_000, after: 20_000 })]);
+  });
+
+  it('forces the compaction between turns when the native one did not finish', async () => {
+    const cc = engine({ ...LOG, mainAutoCompact: '100k' });
+    await cc.start();
+    await cc.step(150_000);
+    expect(await cc.askUnfinished('auto')).toEqual({ skip: 'prompt is too long' });
+    await cc.turnComplete();
+    expect(cc.compacts()).toBe(1);
   });
 });
