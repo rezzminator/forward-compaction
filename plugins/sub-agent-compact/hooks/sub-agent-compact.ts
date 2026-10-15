@@ -32,7 +32,7 @@ import {
   type ArmedHandoff,
   type ForwardMeta,
 } from '../src/handoff.ts';
-import { resolveOptions, sizeTokens, type Policy, type ResolvedOptions } from '../src/limits.ts';
+import { resolveOptions, sizeTokens, type OptionEnvironment, type Policy, type ResolvedOptions } from '../src/limits.ts';
 import { sessionLogPath, decisionAppendArgv, retentionArgv, SkipFold, pluginLogDir, levelRow, pluginLogEvent, PluginLogQueue, type PluginLogLevel, type PluginLogFields } from '../src/log.ts';
 import { armedText, CONTINUE_AFTER_MARKER, disarmedText, earlyArm, markerRequest, nudgeText, stopRequest } from '../src/nudge.ts';
 import { FRESH_MAX_MESSAGES, isFirstRequest, Parties } from '../src/parties.ts';
@@ -93,6 +93,8 @@ type State = {
   pluginWriting: Promise<void>;
   pluginFailing: boolean;
   started?: Promise<void>;
+  /** True once `start` has applied the environment layer to `config`: before it, `config` holds the options alone. */
+  configured?: boolean;
   policies?: AgentPolicies;
   /** CLAUDE_CODE_AUTO_COMPACT_WINDOW: the window Claude Code compacts against, so it asks from that less its buffer. */
   compactWindow?: number;
@@ -185,6 +187,9 @@ function plog(st: State, $: EngineInterface, fields: Omit<PluginLogFields, 'plug
   }).finally(() => { st.levelRowsWriting -= 1; });
 }
 
+/** Rows held back while the environment layer is still being read; later ones are dropped. */
+const PENDING_BEFORE_CONFIG = 500;
+
 /** Once per failing streak: on the screen and in the decision log, whose row maps to no level, so it never recurses into the failing log. */
 function pluginLogFailed(st: State, $: EngineInterface, error: string, dropped: number): void {
   show($, `sub-agent-compact: plugin log ${st.pluginLogDir} failed: ${error}; dropped ${dropped} ${dropped === 1 ? 'row' : 'rows'}`);
@@ -196,9 +201,28 @@ function pluginLogFailed(st: State, $: EngineInterface, error: string, dropped: 
 function record(st: State, $: EngineInterface, row: Row, levelRow = true): void {
   const diagnostic = levelRow ? pluginLogEvent(row) : undefined;
   if (diagnostic !== undefined) plog(st, $, diagnostic);
+  // The decision log's file may come from the environment, which `start` reads: a row before that waits, so the
+  // session's one file is chosen from the full config. `settleConfig` writes what waited.
+  if (!st.configured) {
+    for (const out of st.skips.add({ ts: new Date().toISOString(), ...row })) if (st.pending.length < PENDING_BEFORE_CONFIG) st.pending.push(JSON.stringify(out));
+    return;
+  }
   if (!st.config.logFile) return;
   for (const out of st.skips.add({ ts: new Date().toISOString(), ...row })) st.pending.push(JSON.stringify(out));
   flushDecisions(st, $);
+}
+
+/** Marks the config as final and writes the rows that waited for it, or drops them when no decision log is on. */
+function settleConfig(st: State, $: EngineInterface): void {
+  if (st.configured) return;
+  st.configured = true;
+  if (!st.config.logFile) {
+    st.pending.length = 0;
+    st.skips.drain();
+  } else {
+    for (const out of st.skips.drain()) if (st.pending.length < PENDING_BEFORE_CONFIG) st.pending.push(JSON.stringify(out));
+    if (st.pending.length > 0) flushDecisions(st, $);
+  }
 }
 
 function flushDecisions(st: State, $: EngineInterface): void {
@@ -284,6 +308,40 @@ function warnOnce(st: State, $: EngineInterface, key: string, line: string): voi
   say(st, $, line, 'warning', { event: 'warning', key, line });
 }
 
+/**
+ * The environment variable of each option, by name. Claude Code reads only a name spelled as a string
+ * literal, so each is written out twice here (the key and the call); a test holds them to plugin.json.
+ */
+async function readOptionEnv($: EngineInterface): Promise<Pick<OptionEnvironment, 'vars' | 'readErrors'>> {
+  const vars: Record<string, string> = {};
+  const readErrors: string[] = [];
+  const readOptionVar = async (name: string, get: () => Promise<string | undefined>): Promise<void> => {
+    try {
+      const value = await get();
+      if (value !== undefined) vars[name] = value;
+    } catch (error) {
+      readErrors.push(`sub-agent-compact: reading ${name} failed: ${message(error)}; its option decides`);
+    }
+  };
+  await Promise.all([
+    readOptionVar('SUB_AGENT_COMPACT_MAIN_AUTO_COMPACT', () => $.env.get('SUB_AGENT_COMPACT_MAIN_AUTO_COMPACT')),
+    readOptionVar('SUB_AGENT_COMPACT_MAIN_AUTO_COMPACT_NUDGE_START', () => $.env.get('SUB_AGENT_COMPACT_MAIN_AUTO_COMPACT_NUDGE_START')),
+    readOptionVar('SUB_AGENT_COMPACT_MAIN_AUTO_COMPACT_NUDGE_EVERY', () => $.env.get('SUB_AGENT_COMPACT_MAIN_AUTO_COMPACT_NUDGE_EVERY')),
+    readOptionVar('SUB_AGENT_COMPACT_MAIN_AUTO_COMPACT_ENABLED', () => $.env.get('SUB_AGENT_COMPACT_MAIN_AUTO_COMPACT_ENABLED')),
+    readOptionVar('SUB_AGENT_COMPACT_SUBAGENT_AUTO_COMPACT', () => $.env.get('SUB_AGENT_COMPACT_SUBAGENT_AUTO_COMPACT')),
+    readOptionVar('SUB_AGENT_COMPACT_SUBAGENT_AUTO_COMPACT_NUDGE_START', () => $.env.get('SUB_AGENT_COMPACT_SUBAGENT_AUTO_COMPACT_NUDGE_START')),
+    readOptionVar('SUB_AGENT_COMPACT_SUBAGENT_AUTO_COMPACT_NUDGE_EVERY', () => $.env.get('SUB_AGENT_COMPACT_SUBAGENT_AUTO_COMPACT_NUDGE_EVERY')),
+    readOptionVar('SUB_AGENT_COMPACT_SUBAGENT_AUTO_COMPACT_ENABLED', () => $.env.get('SUB_AGENT_COMPACT_SUBAGENT_AUTO_COMPACT_ENABLED')),
+    readOptionVar('SUB_AGENT_COMPACT_SUBAGENT_KEEP_BRIEF', () => $.env.get('SUB_AGENT_COMPACT_SUBAGENT_KEEP_BRIEF')),
+    readOptionVar('SUB_AGENT_COMPACT_HANDOFF_TOOL', () => $.env.get('SUB_AGENT_COMPACT_HANDOFF_TOOL')),
+    readOptionVar('SUB_AGENT_COMPACT_FORWARD_HANDOFF_TOOL', () => $.env.get('SUB_AGENT_COMPACT_FORWARD_HANDOFF_TOOL')),
+    readOptionVar('SUB_AGENT_COMPACT_COMPACT_TOOL', () => $.env.get('SUB_AGENT_COMPACT_COMPACT_TOOL')),
+    readOptionVar('SUB_AGENT_COMPACT_AGENT_DIRS', () => $.env.get('SUB_AGENT_COMPACT_AGENT_DIRS')),
+    readOptionVar('SUB_AGENT_COMPACT_LOG_FILE', () => $.env.get('SUB_AGENT_COMPACT_LOG_FILE')),
+  ]);
+  return { vars, readErrors };
+}
+
 // First hook call: report option errors, learn the native window, build the resolver.
 function start(st: State, $: EngineInterface): Promise<void> {
   st.started ??= (async () => {
@@ -313,7 +371,8 @@ function start(st: State, $: EngineInterface): Promise<void> {
     else show($, 'plugin log off: no PLUGIN_LOG_DIR and no HOME');
     const earlyRows = st.pluginRows.splice(0);
     if (st.pluginLog !== undefined) for (const fields of earlyRows) plog(st, $, fields);
-    st.config = servedOptions(resolveOptions(st.rawOptions, { pluginLogDir: override }));
+    st.config = servedOptions(resolveOptions(st.rawOptions, { pluginLogDir: override, ...(await readOptionEnv($)) }));
+    settleConfig(st, $);
     for (const line of st.config.errors) {
       say(st, $, line, 'warning', { event: 'option-error', line });
     }
@@ -351,7 +410,7 @@ function start(st: State, $: EngineInterface): Promise<void> {
       warnOnce(st, $, 'no-tools', 'sub-agent-compact: no self-compaction tool is on (handoffTool, compactTool and forwardHandoffTool are all off); parties are nudged by nobody and only compacted at their limits');
     }
     record(st, $, { event: 'start', main: st.config.main, subagent: st.config.subagent, agentDirs: dirs, mainWindow: st.mainWindow ?? null, compactWindow: st.compactWindow ?? null });
-  })();
+  })().finally(() => settleConfig(st, $));
   return st.started;
 }
 
@@ -1233,10 +1292,11 @@ export const register: Register = (on: On, options: PluginOptions) => {
         st.forwardInstalled.delete(key);
         await finishForward(st, $, installed, e.agentId);
       }
+      // A marker is read only with the final config: while start is still reading the environment, `config` holds the options alone and could disagree with it.
       // A Haiku party's markers are not read: it is left to Claude Code, so a marker it writes is neither stored nor refused.
       const haiku = isHaiku(e.model);
-      const handoff = st.config.handoffTool && !haiku ? handoffMarkerRequest({ answer: result.answer, toolCalls: result.toolUses.length, main }) : undefined;
-      const focus = st.config.compactTool && !haiku && handoff === undefined ? markerRequest({ answer: result.answer, toolCalls: result.toolUses.length, main }) : undefined;
+      const handoff = st.configured && st.config.handoffTool && !haiku ? handoffMarkerRequest({ answer: result.answer, toolCalls: result.toolUses.length, main }) : undefined;
+      const focus = st.configured && st.config.compactTool && !haiku && handoff === undefined ? markerRequest({ answer: result.answer, toolCalls: result.toolUses.length, main }) : undefined;
       if (handoff !== undefined) {
         const stored = storeHandoff(st, $, await partyOf(st, $, e.agentId), { text: handoff, anchor: { marker: true } }, 'marker');
         // The marker has no tool result to answer it: the agent reads the outcome on its next tool result.
@@ -1321,6 +1381,7 @@ export const register: Register = (on: On, options: PluginOptions) => {
     // A Haiku sub-agent's stop is its own: its last message is not read for a marker.
     if (isHaiku(st.models.get(e.agent_id))) return next(e);
     try {
+      await start(st, $);
       const continued = st.parties.continued(e.agent_id);
       const handoff = st.config.handoffTool ? handoffStopRequest({ lastMessage: e.last_assistant_message, continued }) : undefined;
       if (handoff !== undefined) {

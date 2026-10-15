@@ -79,6 +79,37 @@ export function parseEnabled(raw: unknown): Parse<boolean> {
   return { ok: false, error: `not true/false, on/off or yes/no: ${JSON.stringify(raw)}` };
 }
 
+/**
+ * The environment variable of each option, `SUB_AGENT_COMPACT_` plus the option in upper snake case.
+ * The hooks module spells each name as a literal of its own: Claude Code reads only literal names.
+ */
+export const OPTION_ENV = {
+  mainAutoCompact: 'SUB_AGENT_COMPACT_MAIN_AUTO_COMPACT',
+  mainAutoCompactNudgeStart: 'SUB_AGENT_COMPACT_MAIN_AUTO_COMPACT_NUDGE_START',
+  mainAutoCompactNudgeEvery: 'SUB_AGENT_COMPACT_MAIN_AUTO_COMPACT_NUDGE_EVERY',
+  mainAutoCompactEnabled: 'SUB_AGENT_COMPACT_MAIN_AUTO_COMPACT_ENABLED',
+  subagentAutoCompact: 'SUB_AGENT_COMPACT_SUBAGENT_AUTO_COMPACT',
+  subagentAutoCompactNudgeStart: 'SUB_AGENT_COMPACT_SUBAGENT_AUTO_COMPACT_NUDGE_START',
+  subagentAutoCompactNudgeEvery: 'SUB_AGENT_COMPACT_SUBAGENT_AUTO_COMPACT_NUDGE_EVERY',
+  subagentAutoCompactEnabled: 'SUB_AGENT_COMPACT_SUBAGENT_AUTO_COMPACT_ENABLED',
+  subagentKeepBrief: 'SUB_AGENT_COMPACT_SUBAGENT_KEEP_BRIEF',
+  handoffTool: 'SUB_AGENT_COMPACT_HANDOFF_TOOL',
+  forwardHandoffTool: 'SUB_AGENT_COMPACT_FORWARD_HANDOFF_TOOL',
+  compactTool: 'SUB_AGENT_COMPACT_COMPACT_TOOL',
+  agentDirs: 'SUB_AGENT_COMPACT_AGENT_DIRS',
+  logFile: 'SUB_AGENT_COMPACT_LOG_FILE',
+} as const;
+
+export type OptionName = keyof typeof OPTION_ENV;
+
+/** Parses an environment on/off value: 1, 0, true or false in any case. */
+export function parseEnvFlag(raw: string): Parse<boolean> {
+  const word = raw.trim().toLowerCase();
+  if (word === '1' || word === 'true') return { ok: true, value: true };
+  if (word === '0' || word === 'false') return { ok: true, value: false };
+  return { ok: false, error: `not 1, 0, true or false: ${JSON.stringify(raw)}` };
+}
+
 /** The four keys of a policy, as the suffix after a party prefix (`mainAutoCompactNudgeStart`) or alone in frontmatter. */
 export const POLICY_KEYS = { autoCompact: 'AutoCompact', nudgeStart: 'AutoCompactNudgeStart', nudgeEvery: 'AutoCompactNudgeEvery', enabled: 'AutoCompactEnabled' } as const;
 
@@ -175,15 +206,56 @@ function nudgeAfterLimit(prefix: 'main' | 'subagent', policy: Policy): string | 
   return `sub-agent-compact: option ${prefix}${POLICY_KEYS.nudgeStart} ${formatSize(start)} is not below ${prefix}${POLICY_KEYS.autoCompact} ${formatSize(limit)}; the forced point comes first and no nudge goes out before it`;
 }
 
-/** Validates the plugin options; every invalid value falls back and is named in `errors`. */
-export function resolveOptions(options: Record<string, unknown>, env: { pluginLogDir?: string } = {}): ResolvedOptions {
-  const errors: string[] = [];
-  const party = (prefix: 'main' | 'subagent', fallback: Policy): Policy =>
-    readPolicy(
+/** What the person set in the environment, read by the adapter: each variable's value by name, and the lines for any that could not be read. */
+export type OptionEnvironment = {
+  pluginLogDir?: string;
+  vars?: Readonly<Record<string, string | undefined>>;
+  readErrors?: readonly string[];
+};
+
+/**
+ * Validates the plugin options, a variable of the environment over an option over the default;
+ * every invalid value falls back to the default and is named in `errors`.
+ */
+export function resolveOptions(options: Record<string, unknown>, env: OptionEnvironment = {}): ResolvedOptions {
+  const errors: string[] = [...(env.readErrors ?? [])];
+  // The variable of an option, or undefined when it is unset, empty or blank: the option layer then decides.
+  const fromEnv = (option: OptionName): string | undefined => {
+    const value = env.vars?.[OPTION_ENV[option]]?.trim();
+    return value === undefined || value === '' ? undefined : value;
+  };
+  const badEnv = (option: OptionName, error: string, fallbackText: string): void => {
+    errors.push(`sub-agent-compact: env ${OPTION_ENV[option]} is invalid (${error}); using the default ${fallbackText}`);
+  };
+  const party = (prefix: 'main' | 'subagent', fallback: Policy): Policy => {
+    const policy = readPolicy(
       (field) => options[prefix + POLICY_KEYS[field]],
       fallback,
       (field, error, fallbackText) => errors.push(`sub-agent-compact: option ${prefix}${POLICY_KEYS[field]} is invalid (${error}); using the default ${fallbackText}`),
     ).policy;
+    for (const field of ['autoCompact', 'nudgeStart', 'nudgeEvery'] as const) {
+      const option = (prefix + POLICY_KEYS[field]) as OptionName;
+      const raw = fromEnv(option);
+      if (raw === undefined) continue;
+      const parsed = parseSize(raw);
+      if (parsed.ok) policy[field] = parsed.value;
+      else {
+        policy[field] = fallback[field];
+        badEnv(option, parsed.error, formatSize(fallback[field]));
+      }
+    }
+    const option = (prefix + POLICY_KEYS.enabled) as OptionName;
+    const raw = fromEnv(option);
+    if (raw !== undefined) {
+      const parsed = parseEnvFlag(raw);
+      if (parsed.ok) policy.enabled = parsed.value;
+      else {
+        policy.enabled = fallback.enabled;
+        badEnv(option, parsed.error, String(fallback.enabled));
+      }
+    }
+    return policy;
+  };
   const unknown = Object.keys(options).filter((key) => !OPTION_KEYS.includes(key));
   if (unknown.length > 0) errors.push(`sub-agent-compact: unknown options ${unknown.join(', ')}; ignoring them`);
   const main = party('main', DEFAULT_MAIN);
@@ -192,19 +264,28 @@ export function resolveOptions(options: Record<string, unknown>, env: { pluginLo
     const line = nudgeAfterLimit(prefix, policy);
     if (line) errors.push(line);
   }
-  const flag = (name: string, fallback: boolean): boolean => {
+  const flag = (name: OptionName, fallback: boolean): boolean => {
+    let value = fallback;
     const raw = options[name];
-    if (raw === undefined || raw === '') return fallback;
-    const parsed = parseEnabled(raw);
+    if (raw !== undefined && raw !== '') {
+      const parsed = parseEnabled(raw);
+      if (parsed.ok) value = parsed.value;
+      else errors.push(`sub-agent-compact: option ${name} is invalid (${parsed.error}); using the default ${fallback}`);
+    }
+    const envRaw = fromEnv(name);
+    if (envRaw === undefined) return value;
+    const parsed = parseEnvFlag(envRaw);
     if (parsed.ok) return parsed.value;
-    errors.push(`sub-agent-compact: option ${name} is invalid (${parsed.error}); using the default ${fallback}`);
+    badEnv(name, parsed.error, String(fallback));
     return fallback;
   };
   const keepBrief = flag('subagentKeepBrief', DEFAULT_KEEP_BRIEF);
   const compactTool = flag('compactTool', DEFAULT_COMPACT_TOOL);
   const handoffTool = flag('handoffTool', DEFAULT_HANDOFF_TOOL);
   const forwardHandoffTool = flag('forwardHandoffTool', DEFAULT_FORWARD_HANDOFF_TOOL);
-  const agentDirs = dirList(options.agentDirs, errors);
+  const optionDirs = dirList(options.agentDirs, errors);
+  const envDirs = fromEnv('agentDirs');
+  const agentDirs = envDirs === undefined ? optionDirs : dirList(envDirs, errors);
   // Blank or invalid → the default: the plugin's decisions folder under PLUGIN_LOG_DIR, else no decision log.
   const fallbackLog = env.pluginLogDir ? `${pluginLogDir(env.pluginLogDir, undefined, 'sub-agent-compact')}/decisions/.jsonl` : undefined;
   let logFile = fallbackLog;
@@ -216,6 +297,14 @@ export function resolveOptions(options: Record<string, unknown>, env: { pluginLo
     else badLog(`not an absolute path: ${JSON.stringify(rawLog)}`);
   } else if (rawLog !== undefined && typeof rawLog !== 'string') {
     badLog(`not a string: ${JSON.stringify(rawLog)}`);
+  }
+  const envLog = fromEnv('logFile');
+  if (envLog !== undefined) {
+    if (envLog.startsWith('/')) logFile = envLog;
+    else {
+      badEnv('logFile', `not an absolute path: ${JSON.stringify(envLog)}`, fallbackLog ?? '(no decision log)');
+      logFile = fallbackLog;
+    }
   }
   return { main, subagent, keepBrief, compactTool, handoffTool, forwardHandoffTool, agentDirs, ...(logFile ? { logFile } : {}), errors };
 }

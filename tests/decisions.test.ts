@@ -145,6 +145,77 @@ describe('resolveOptions', () => {
   });
 });
 
+describe('resolveOptions: the environment layer', () => {
+  type Resolved = ReturnType<typeof resolveOptions>;
+  const resolve = resolveOptions as (options: Record<string, unknown>, env?: Record<string, unknown>) => Resolved;
+  const withVars = (options: Record<string, unknown>, vars: Record<string, string | undefined>) => resolve(options, { vars });
+  // One row per option: the variable it reads, a value in each layer, a value its grammar refuses, and where it lands.
+  const rows: { option: string; name: string; optionValue: unknown; envValue: string; bad?: string; pick: (r: Resolved) => unknown; fromEnv: unknown; fromOption: unknown; fromDefault: unknown }[] = [
+    { option: 'mainAutoCompact', name: 'SUB_AGENT_COMPACT_MAIN_AUTO_COMPACT', optionValue: '50%', envValue: '300k', bad: 'lots', pick: (r) => r.main.autoCompact, fromEnv: { tokens: 300000 }, fromOption: { percent: 50 }, fromDefault: { percent: 60 } },
+    { option: 'mainAutoCompactNudgeStart', name: 'SUB_AGENT_COMPACT_MAIN_AUTO_COMPACT_NUDGE_START', optionValue: '30%', envValue: '25%', bad: '0%', pick: (r) => r.main.nudgeStart, fromEnv: { percent: 25 }, fromOption: { percent: 30 }, fromDefault: { percent: 20 } },
+    { option: 'mainAutoCompactNudgeEvery', name: 'SUB_AGENT_COMPACT_MAIN_AUTO_COMPACT_NUDGE_EVERY', optionValue: '15%', envValue: '50k', bad: '-3', pick: (r) => r.main.nudgeEvery, fromEnv: { tokens: 50000 }, fromOption: { percent: 15 }, fromDefault: { percent: 10 } },
+    { option: 'mainAutoCompactEnabled', name: 'SUB_AGENT_COMPACT_MAIN_AUTO_COMPACT_ENABLED', optionValue: true, envValue: '0', bad: 'maybe', pick: (r) => r.main.enabled, fromEnv: false, fromOption: true, fromDefault: true },
+    { option: 'subagentAutoCompact', name: 'SUB_AGENT_COMPACT_SUBAGENT_AUTO_COMPACT', optionValue: '70%', envValue: '90k', bad: '101%', pick: (r) => r.subagent.autoCompact, fromEnv: { tokens: 90000 }, fromOption: { percent: 70 }, fromDefault: { percent: 60 } },
+    { option: 'subagentAutoCompactNudgeStart', name: 'SUB_AGENT_COMPACT_SUBAGENT_AUTO_COMPACT_NUDGE_START', optionValue: '35%', envValue: '40k', bad: 'soon', pick: (r) => r.subagent.nudgeStart, fromEnv: { tokens: 40000 }, fromOption: { percent: 35 }, fromDefault: { percent: 20 } },
+    { option: 'subagentAutoCompactNudgeEvery', name: 'SUB_AGENT_COMPACT_SUBAGENT_AUTO_COMPACT_NUDGE_EVERY', optionValue: '20%', envValue: '5%', bad: '150kb', pick: (r) => r.subagent.nudgeEvery, fromEnv: { percent: 5 }, fromOption: { percent: 20 }, fromDefault: { percent: 10 } },
+    { option: 'subagentAutoCompactEnabled', name: 'SUB_AGENT_COMPACT_SUBAGENT_AUTO_COMPACT_ENABLED', optionValue: true, envValue: 'FALSE', bad: 'nope', pick: (r) => r.subagent.enabled, fromEnv: false, fromOption: true, fromDefault: true },
+    { option: 'subagentKeepBrief', name: 'SUB_AGENT_COMPACT_SUBAGENT_KEEP_BRIEF', optionValue: true, envValue: '0', bad: '2', pick: (r) => r.keepBrief, fromEnv: false, fromOption: true, fromDefault: true },
+    { option: 'handoffTool', name: 'SUB_AGENT_COMPACT_HANDOFF_TOOL', optionValue: false, envValue: 'true', bad: 'enabled', pick: (r) => r.handoffTool, fromEnv: true, fromOption: false, fromDefault: false },
+    { option: 'forwardHandoffTool', name: 'SUB_AGENT_COMPACT_FORWARD_HANDOFF_TOOL', optionValue: false, envValue: '1', bad: 'yes please', pick: (r) => r.forwardHandoffTool, fromEnv: true, fromOption: false, fromDefault: false },
+    { option: 'compactTool', name: 'SUB_AGENT_COMPACT_COMPACT_TOOL', optionValue: true, envValue: 'false', bad: 'off', pick: (r) => r.compactTool, fromEnv: false, fromOption: true, fromDefault: true },
+    { option: 'agentDirs', name: 'SUB_AGENT_COMPACT_AGENT_DIRS', optionValue: '/from/option', envValue: '/a, /b/c ,', pick: (r) => r.agentDirs, fromEnv: ['/a', '/b/c'], fromOption: ['/from/option'], fromDefault: [] },
+    { option: 'logFile', name: 'SUB_AGENT_COMPACT_LOG_FILE', optionValue: '/from/option.jsonl', envValue: ' /from/env.jsonl ', bad: 'relative.jsonl', pick: (r) => r.logFile, fromEnv: '/from/env.jsonl', fromOption: '/from/option.jsonl', fromDefault: undefined },
+  ];
+
+  it.each(rows)('$name overrides $option', ({ option, name, optionValue, envValue, pick, fromEnv }) => {
+    const result = withVars({ [option]: optionValue }, { [name]: envValue });
+    expect(pick(result)).toEqual(fromEnv);
+    expect(result.errors).toEqual([]);
+  });
+
+  it.each(rows)('$option keeps the option layer while $name is unset, empty or blank, and the default when neither is set', ({ option, name, optionValue, pick, fromOption, fromDefault }) => {
+    for (const vars of [{}, { [name]: undefined }, { [name]: '' }, { [name]: '  \t ' }]) {
+      const result = withVars({ [option]: optionValue }, vars);
+      expect(pick(result)).toEqual(fromOption);
+      expect(result.errors).toEqual([]);
+    }
+    expect(pick(withVars({}, {}))).toEqual(fromDefault);
+  });
+
+  it.each(rows.filter((row) => row.bad !== undefined))('a bad $name is named and the default is used, not the option layer', ({ option, name, optionValue, bad, pick, fromDefault }) => {
+    const result = withVars({ [option]: optionValue }, { [name]: bad });
+    expect(pick(result)).toEqual(fromDefault);
+    expect(result.errors).toHaveLength(1);
+    expect(result.errors[0]).toMatch(new RegExp(`^sub-agent-compact: env ${name} is invalid \\(.+\\); using the default`));
+  });
+
+  it('reads an environment boolean as 1, 0, true or false in any case, with surrounding space', () => {
+    const flag = (value: string) => withVars({}, { SUB_AGENT_COMPACT_HANDOFF_TOOL: value });
+    expect(['1', 'TRUE', ' True ', 'true'].map((value) => flag(value).handoffTool)).toEqual([true, true, true, true]);
+    expect(['0', 'FALSE', ' False ', 'false'].map((value) => withVars({ handoffTool: true }, { SUB_AGENT_COMPACT_HANDOFF_TOOL: value }).handoffTool)).toEqual([false, false, false, false]);
+    expect(['on', 'yes', 'off', '01'].map((value) => flag(value).errors.length)).toEqual([1, 1, 1, 1]);
+  });
+
+  it('reports a variable that could not be read by name, and lets the option layer decide', () => {
+    const result = resolve({ forwardHandoffTool: true }, { vars: {}, readErrors: ['sub-agent-compact: reading SUB_AGENT_COMPACT_FORWARD_HANDOFF_TOOL failed: denied; using the option layer'] });
+    expect(result.forwardHandoffTool).toBe(true);
+    expect(result.errors).toEqual(['sub-agent-compact: reading SUB_AGENT_COMPACT_FORWARD_HANDOFF_TOOL failed: denied; using the option layer']);
+  });
+
+  it('still names a bad option under a valid environment value', () => {
+    const result = resolve({ logFile: 'relative.jsonl', subagentKeepBrief: 'sometimes', agentDirs: 7 }, { vars: { SUB_AGENT_COMPACT_LOG_FILE: '/e.jsonl', SUB_AGENT_COMPACT_SUBAGENT_KEEP_BRIEF: '0', SUB_AGENT_COMPACT_AGENT_DIRS: '/a' } });
+    expect(result.logFile).toBe('/e.jsonl');
+    expect(result.keepBrief).toBe(false);
+    expect(result.agentDirs).toEqual(['/a']);
+    expect(result.errors.map((line) => line.replace(/\(.*$/, ''))).toEqual(['sub-agent-compact: option subagentKeepBrief is invalid ', 'sub-agent-compact: option agentDirs is invalid ', 'sub-agent-compact: option logFile is invalid ']);
+  });
+
+  it('lets an environment log file win over a blank option and over PLUGIN_LOG_DIR', () => {
+    expect(resolve({ logFile: '' }, { pluginLogDir: '/x/logs', vars: { SUB_AGENT_COMPACT_LOG_FILE: '/e/d.jsonl' } }).logFile).toBe('/e/d.jsonl');
+    expect(resolve({ logFile: '/o.jsonl' }, { pluginLogDir: '/x/logs', vars: { SUB_AGENT_COMPACT_LOG_FILE: 'rel.jsonl' } }).logFile).toBe('/x/logs/sub-agent-compact/decisions/.jsonl');
+  });
+});
+
 describe('parseFrontmatter', () => {
   it('reads top-level scalars', () => {
     const text = '---\nname: big-reader\ndescription: "reads: files"\nautoCompact: 130k # tokens\ntools:\n  - Read\n---\nbody autoCompact: 1\n';

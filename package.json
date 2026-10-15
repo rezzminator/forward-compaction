@@ -11,6 +11,7 @@
   "scripts": {
     "test": "vitest run --dir tests",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.hooks.json",
+    "probe:installed": "vitest run --dir scripts/host-probe",
     "validate:plugin": "claude plugin validate --strict . && claude plugin validate --strict plugins/sub-agent-compact",
     "release:check": "scripts/release-check.sh"
   },

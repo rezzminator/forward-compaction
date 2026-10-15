@@ -7,7 +7,7 @@
 [![Claude Code plugin](https://img.shields.io/badge/Claude%20Code-plugin-D97757)](https://docs.claude.com/en/docs/claude-code/plugins)
 [![Version](https://img.shields.io/badge/version-0.7.1--dev.3-blue)](./CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
-[![Tests](https://img.shields.io/badge/tests-740%20passing-brightgreen)](#development)
+[![Tests](https://img.shields.io/badge/tests-793%20passing-brightgreen)](#development)
 [![Built with Professor](https://img.shields.io/badge/built%20with-Professor-8A2BE2)](https://github.com/rezzminator/professor)
 
 **34% cheaper** than a sub-agent that never compacts · **52% less context** re-sent on every request
@@ -302,22 +302,30 @@ A **size** is a percentage of the model's own window (`"10%"`), an integer,
 or a number with a k/m suffix (`"150k"`, `"0.6m"`). A bad value is logged by
 name and replaced by the default, never ignored silently.
 
-| Option | Default | Meaning |
-| --- | --- | --- |
-| `mainAutoCompact` | `60%` | The main chat's forced point. |
-| `mainAutoCompactNudgeStart` | `20%` | The main chat's first nudge. |
-| `mainAutoCompactNudgeEvery` | `10%` | The step between the main chat's nudges. |
-| `mainAutoCompactEnabled` | `true` | Off: the main chat is never nudged or compacted automatically; its own request still runs. |
-| `subagentAutoCompact` | `60%` | A sub-agent's forced point, unless its definition sets its own. It covers built-ins such as `general-purpose` and `Explore`. |
-| `subagentAutoCompactNudgeStart` | `20%` | A sub-agent's first nudge. |
-| `subagentAutoCompactNudgeEvery` | `10%` | The step between a sub-agent's nudges. |
-| `subagentAutoCompactEnabled` | `true` | Off: sub-agents are never nudged or compacted automatically; their own requests still run. |
-| `subagentKeepBrief` | `true` | On: after each compaction a sub-agent's brief is seated again verbatim right after the summary. Off: the summary alone stands for it. |
-| `forwardHandoffTool` | `false` | On: every party gets the `forward_handoff` tool (see [Forward handoff](#forward-handoff)). Code carries the user messages, skills, file trail, plan and tasks, running work and git state; the model writes only its frontier. Installed verbatim when its turn ends. |
-| `handoffTool` | `false` | On: models get the `handoff` tool. Its typed fields (`goal` and `next_step` required) are rendered to short markdown sections that replace the model's whole conversation so far, installed with no summarizer request; what it does after the call is kept. |
-| `compactTool` | `true` | On: models get the `compact` tool (hidden while `forwardHandoffTool` is on: the forward handoff replaces it), whose focus a summarizer turns into a summary, and `<compact-now>` markers count; while `handoffTool` is also on, the nudges name the handoff. Off: no `compact` tool, and `<compact-now>` markers count for nothing. |
-| `agentDirs` | empty | Comma-separated extra directories of agent definitions. A list item that is not a string is named and ignored. |
-| `logFile` | empty | Absolute path of the JSONL decision log. Each session writes its own file: `decisions.jsonl` becomes `decisions.{session-id}.jsonl`. Empty uses `$PLUGIN_LOG_DIR/sub-agent-compact/decisions/{session-id}.jsonl` when that variable is set, otherwise decision logging is off. A relative path or a non-string is named as invalid and falls back to that default. |
+Every option can also be set with an environment variable: `SUB_AGENT_COMPACT_`
+plus the option in upper snake case, the table's second column. Precedence:
+the environment variable, then the option above, then the default. A variable
+that is unset, empty or blank is absent and the option decides. A flag
+variable is `1`, `0`, `true` or `false` in any case; a size, a directory list
+and the log file take the option's own grammar. A bad value is named by its
+variable on the screen and the default is used, not the option's value.
+
+| Option | Environment variable | Default | Meaning |
+| --- | --- | --- | --- |
+| `mainAutoCompact` | `SUB_AGENT_COMPACT_MAIN_AUTO_COMPACT` | `60%` | The main chat's forced point. |
+| `mainAutoCompactNudgeStart` | `SUB_AGENT_COMPACT_MAIN_AUTO_COMPACT_NUDGE_START` | `20%` | The main chat's first nudge. |
+| `mainAutoCompactNudgeEvery` | `SUB_AGENT_COMPACT_MAIN_AUTO_COMPACT_NUDGE_EVERY` | `10%` | The step between the main chat's nudges. |
+| `mainAutoCompactEnabled` | `SUB_AGENT_COMPACT_MAIN_AUTO_COMPACT_ENABLED` | `true` | Off: the main chat is never nudged or compacted automatically; its own request still runs. |
+| `subagentAutoCompact` | `SUB_AGENT_COMPACT_SUBAGENT_AUTO_COMPACT` | `60%` | A sub-agent's forced point, unless its definition sets its own. It covers built-ins such as `general-purpose` and `Explore`. |
+| `subagentAutoCompactNudgeStart` | `SUB_AGENT_COMPACT_SUBAGENT_AUTO_COMPACT_NUDGE_START` | `20%` | A sub-agent's first nudge. |
+| `subagentAutoCompactNudgeEvery` | `SUB_AGENT_COMPACT_SUBAGENT_AUTO_COMPACT_NUDGE_EVERY` | `10%` | The step between a sub-agent's nudges. |
+| `subagentAutoCompactEnabled` | `SUB_AGENT_COMPACT_SUBAGENT_AUTO_COMPACT_ENABLED` | `true` | Off: sub-agents are never nudged or compacted automatically; their own requests still run. |
+| `subagentKeepBrief` | `SUB_AGENT_COMPACT_SUBAGENT_KEEP_BRIEF` | `true` | On: after each compaction a sub-agent's brief is seated again verbatim right after the summary. Off: the summary alone stands for it. |
+| `forwardHandoffTool` | `SUB_AGENT_COMPACT_FORWARD_HANDOFF_TOOL` | `false` | On: every party gets the `forward_handoff` tool (see [Forward handoff](#forward-handoff)). Code carries the user messages, skills, file trail, plan and tasks, running work and git state; the model writes only its frontier. Installed verbatim when its turn ends. |
+| `handoffTool` | `SUB_AGENT_COMPACT_HANDOFF_TOOL` | `false` | On: models get the `handoff` tool. Its typed fields (`goal` and `next_step` required) are rendered to short markdown sections that replace the model's whole conversation so far, installed with no summarizer request; what it does after the call is kept. |
+| `compactTool` | `SUB_AGENT_COMPACT_COMPACT_TOOL` | `true` | On: models get the `compact` tool (hidden while `forwardHandoffTool` is on: the forward handoff replaces it), whose focus a summarizer turns into a summary, and `<compact-now>` markers count; while `handoffTool` is also on, the nudges name the handoff. Off: no `compact` tool, and `<compact-now>` markers count for nothing. |
+| `agentDirs` | `SUB_AGENT_COMPACT_AGENT_DIRS` | empty | Comma-separated extra directories of agent definitions. A list item that is not a string is named and ignored. |
+| `logFile` | `SUB_AGENT_COMPACT_LOG_FILE` | empty | Absolute path of the JSONL decision log. Each session writes its own file: `decisions.jsonl` becomes `decisions.{session-id}.jsonl`. Empty uses `$PLUGIN_LOG_DIR/sub-agent-compact/decisions/{session-id}.jsonl` when that variable is set, otherwise decision logging is off. A relative path or a non-string is named as invalid and falls back to that default. |
 
 ### Logs
 
@@ -456,6 +464,7 @@ npm install
 npm test              # unit tests for plugins/sub-agent-compact/src/
 npm run typecheck
 npm run validate:plugin
+npm run probe:installed   # with SUB_AGENT_COMPACT_PROBE_DIR=<installed plugin directory>: does that copy register forward_handoff from its environment variable alone?
 ```
 
 Work lands on `develop`; `main` holds only releases, and each one is tagged `sub-agent-compact--vX.Y.Z` with its notes in [CHANGELOG.md](./CHANGELOG.md). Pull requests go to `develop`.

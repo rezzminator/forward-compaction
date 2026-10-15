@@ -14,7 +14,7 @@ behavioural spec.
 
 ## Commands
 
-`npm test`, `npm run typecheck` and `npm run validate:plugin` all pass before a commit. A live check loads the checkout with `--plugin-dir plugins/sub-agent-compact`: its options key is then `sub-agent-compact@inline`, and the installed copy is disabled in the same `--settings`.
+`npm test`, `npm run typecheck` and `npm run validate:plugin` all pass before a commit. A live check loads the checkout with `--plugin-dir plugins/sub-agent-compact`: its options key is then `sub-agent-compact@inline`, and the installed copy is disabled in the same `--settings`. `npm run probe:installed`, with `SUB_AGENT_COMPACT_PROBE_DIR` naming an installed copy, checks it registers `forward_handoff` from its variable alone.
 
 Refresh the installed copy with `claude plugin marketplace update` as written, never under a `CLAUDE_CONFIG_DIR` override pointing at `~/.claude`: `claude` then writes `.claude.json` and `backups/` into the shared store, and `pfm`'s store-guard hook denies it.
 
@@ -23,6 +23,8 @@ Refresh the installed copy with `claude plugin marketplace update` as written, n
 - A new behaviour lands in `plugins/sub-agent-compact/src/` as a pure function with a test watched failing first; the adapter only wires it.
 - An error never holds a compaction: log it with context, let the compaction pass.
 - A bad option is logged by name and falls back to its default.
+- Every option is also a variable `SUB_AGENT_COMPACT_{OPTION}`, upper snake, ahead of the option and the default: flags `1|0|true|false`, any case; sizes, dirs and log file the option's grammar; unset, empty or blank is absent; a bad value is named by its variable and the default applies.
+- A new option adds its variable to `OPTION_ENV` (`plugins/sub-agent-compact/src/limits.ts`), a literal `readOptionVar` line to the adapter and its README options-table entry; `tests/register.test.ts` holds the literals to `plugin.json`.
 - A version bump moves `plugins/sub-agent-compact/.claude-plugin/plugin.json`, `marketplace.json`, `package.json` and the README badge together; installed copies update only on a new version.
 - The README tests badge states the count of tests `npm test` passes; `npm run release:check` runs the suite and fails when they differ, so the badge is set last, after the final test is added.
 - Defaults agree in three places: `plugins/sub-agent-compact/src/limits.ts` (`DEFAULT_MAIN`, `DEFAULT_SUBAGENT`), `plugin.json`'s `userConfig`, and the README options table.

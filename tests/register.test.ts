@@ -1,3 +1,6 @@
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { servedOptions, toolsToRegister } from '../plugins/sub-agent-compact/src/register.ts';
 
@@ -39,5 +42,19 @@ describe('servedOptions', () => {
   it('leaves the compact tool as set while the forward handoff is off', () => {
     expect(servedOptions(base)).toEqual(base);
     expect(servedOptions({ ...base, compactTool: false })).toEqual({ ...base, compactTool: false });
+  });
+});
+
+describe('the environment reads in the hooks module', () => {
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..');
+  const source = readFileSync(join(root, 'plugins/sub-agent-compact/hooks/sub-agent-compact.ts'), 'utf8');
+  const manifest = JSON.parse(readFileSync(join(root, 'plugins/sub-agent-compact/.claude-plugin/plugin.json'), 'utf8')) as { userConfig: Record<string, unknown> };
+  const envName = (option: string) => `SUB_AGENT_COMPACT_${option.replace(/([A-Z])/g, '_$1').toUpperCase()}`;
+
+  it('spells each option\'s variable as its own string literal, once, the name Claude Code lists', () => {
+    const options = Object.keys(manifest.userConfig);
+    expect(options).toHaveLength(14);
+    const spelled = [...source.matchAll(/readOptionVar\('([A-Z_]+)', \(\) => \$\.env\.get\('([A-Z_]+)'\)\)/g)].map((match) => [match[1], match[2]]);
+    expect(spelled).toEqual(options.map((option) => [envName(option), envName(option)]));
   });
 });

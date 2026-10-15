@@ -26,6 +26,10 @@ Every release of sub-agent-compact. Versions follow [semantic versioning](https:
 - Haiku 5.5 (`claude-haiku-5-5`) is read as the 1M window Claude Code gives it, not 200k; Haiku 4.5 and older stay 200k. Haiku stays hands-off, so this corrects the logged `limit` and window only.
 - A sub-agent's relative shell writes in the forward handoff's `Files` block resolve under the directory it was spawned in.
 
+### Added
+
+- Every option is also read from an environment variable, `SUB_AGENT_COMPACT_` plus the option in upper snake case (`SUB_AGENT_COMPACT_FORWARD_HANDOFF_TOOL`), ahead of the option and the default; tools register from the variable alone. A flag is `1`, `0`, `true` or `false`; a bad value is named by its variable and the default is used.
+
 ## [0.7.1-dev.2] — 2026-10-15
 
 ### Fixed
