@@ -32,7 +32,7 @@ import {
   type ArmedHandoff,
   type ForwardMeta,
 } from '../src/handoff.ts';
-import { resolveOptions, sizeTokens, type Policy, type ResolvedOptions } from '../src/limits.ts';
+import { resolveOptions, sizeTokens, type OptionEnvironment, type Policy, type ResolvedOptions } from '../src/limits.ts';
 import { appendRows, sessionLogPath, pluginLogDir, levelRow, pluginLogEvent, PluginLogQueue, type PluginLogLevel, type PluginLogFields } from '../src/log.ts';
 import { armedText, CONTINUE_AFTER_MARKER, disarmedText, earlyArm, markerRequest, nudgeText, stopRequest } from '../src/nudge.ts';
 import { FRESH_MAX_MESSAGES, isFirstRequest, Parties } from '../src/parties.ts';
@@ -88,6 +88,8 @@ type State = {
   pluginWriting: Promise<void>;
   pluginFailing: boolean;
   started?: Promise<void>;
+  /** True once `start` has applied the environment layer to `config`: before it, `config` holds the options alone. */
+  configured?: boolean;
   policies?: AgentPolicies;
   /** CLAUDE_CODE_AUTO_COMPACT_WINDOW: the window Claude Code compacts against, so it asks from that less its buffer. */
   compactWindow?: number;
@@ -169,14 +171,36 @@ function plog(st: State, $: EngineInterface, fields: Omit<PluginLogFields, 'plug
   });
 }
 
+/** Rows held back while the environment layer is still being read; past this many the oldest-kept stay and later ones are dropped. */
+const PENDING_BEFORE_CONFIG = 500;
+
 // Rows queue in memory; each flush reads the session's file and appends them,
 // so a resumed session keeps its earlier rows and no other chat shares the file.
 function record(st: State, $: EngineInterface, row: Row): void {
   const diagnostic = pluginLogEvent(row);
   if (diagnostic !== undefined) plog(st, $, diagnostic);
+  // The decision log's file may come from the environment, which `start` reads: a row before that waits, so the
+  // session's one file is chosen from the full config. `settleConfig` writes what waited.
+  if (!st.configured) {
+    if (st.pending.length < PENDING_BEFORE_CONFIG) st.pending.push(JSON.stringify({ ts: new Date().toISOString(), ...row }));
+    return;
+  }
   const file = st.config.logFile;
   if (!file) return;
   st.pending.push(JSON.stringify({ ts: new Date().toISOString(), ...row }));
+  writeDecisionLog(st, $, file);
+}
+
+/** Marks the config as final and writes the rows that waited for it, or drops them when no decision log is on. */
+function settleConfig(st: State, $: EngineInterface): void {
+  if (st.configured) return;
+  st.configured = true;
+  const file = st.config.logFile;
+  if (!file) st.pending.length = 0;
+  else if (st.pending.length > 0) writeDecisionLog(st, $, file);
+}
+
+function writeDecisionLog(st: State, $: EngineInterface, file: string): void {
   st.logPath ??= $.session.id().then(
     (id) => sessionLogPath(file, id),
     (error) => {
@@ -215,6 +239,40 @@ function warnOnce(st: State, $: EngineInterface, key: string, line: string): voi
   record(st, $, { event: 'warning', key, line });
 }
 
+/**
+ * The environment variable of each option, by name. Claude Code reads only a name spelled as a string
+ * literal, so each is written out twice here (the key and the call); a test holds them to plugin.json.
+ */
+async function readOptionEnv($: EngineInterface): Promise<Pick<OptionEnvironment, 'vars' | 'readErrors'>> {
+  const vars: Record<string, string> = {};
+  const readErrors: string[] = [];
+  const readOptionVar = async (name: string, get: () => Promise<string | undefined>): Promise<void> => {
+    try {
+      const value = await get();
+      if (value !== undefined) vars[name] = value;
+    } catch (error) {
+      readErrors.push(`sub-agent-compact: reading ${name} failed: ${message(error)}; its option decides`);
+    }
+  };
+  await Promise.all([
+    readOptionVar('SUB_AGENT_COMPACT_MAIN_AUTO_COMPACT', () => $.env.get('SUB_AGENT_COMPACT_MAIN_AUTO_COMPACT')),
+    readOptionVar('SUB_AGENT_COMPACT_MAIN_AUTO_COMPACT_NUDGE_START', () => $.env.get('SUB_AGENT_COMPACT_MAIN_AUTO_COMPACT_NUDGE_START')),
+    readOptionVar('SUB_AGENT_COMPACT_MAIN_AUTO_COMPACT_NUDGE_EVERY', () => $.env.get('SUB_AGENT_COMPACT_MAIN_AUTO_COMPACT_NUDGE_EVERY')),
+    readOptionVar('SUB_AGENT_COMPACT_MAIN_AUTO_COMPACT_ENABLED', () => $.env.get('SUB_AGENT_COMPACT_MAIN_AUTO_COMPACT_ENABLED')),
+    readOptionVar('SUB_AGENT_COMPACT_SUBAGENT_AUTO_COMPACT', () => $.env.get('SUB_AGENT_COMPACT_SUBAGENT_AUTO_COMPACT')),
+    readOptionVar('SUB_AGENT_COMPACT_SUBAGENT_AUTO_COMPACT_NUDGE_START', () => $.env.get('SUB_AGENT_COMPACT_SUBAGENT_AUTO_COMPACT_NUDGE_START')),
+    readOptionVar('SUB_AGENT_COMPACT_SUBAGENT_AUTO_COMPACT_NUDGE_EVERY', () => $.env.get('SUB_AGENT_COMPACT_SUBAGENT_AUTO_COMPACT_NUDGE_EVERY')),
+    readOptionVar('SUB_AGENT_COMPACT_SUBAGENT_AUTO_COMPACT_ENABLED', () => $.env.get('SUB_AGENT_COMPACT_SUBAGENT_AUTO_COMPACT_ENABLED')),
+    readOptionVar('SUB_AGENT_COMPACT_SUBAGENT_KEEP_BRIEF', () => $.env.get('SUB_AGENT_COMPACT_SUBAGENT_KEEP_BRIEF')),
+    readOptionVar('SUB_AGENT_COMPACT_HANDOFF_TOOL', () => $.env.get('SUB_AGENT_COMPACT_HANDOFF_TOOL')),
+    readOptionVar('SUB_AGENT_COMPACT_FORWARD_HANDOFF_TOOL', () => $.env.get('SUB_AGENT_COMPACT_FORWARD_HANDOFF_TOOL')),
+    readOptionVar('SUB_AGENT_COMPACT_COMPACT_TOOL', () => $.env.get('SUB_AGENT_COMPACT_COMPACT_TOOL')),
+    readOptionVar('SUB_AGENT_COMPACT_AGENT_DIRS', () => $.env.get('SUB_AGENT_COMPACT_AGENT_DIRS')),
+    readOptionVar('SUB_AGENT_COMPACT_LOG_FILE', () => $.env.get('SUB_AGENT_COMPACT_LOG_FILE')),
+  ]);
+  return { vars, readErrors };
+}
+
 // First hook call: report option errors, learn the native window, build the resolver.
 function start(st: State, $: EngineInterface): Promise<void> {
   st.started ??= (async () => {
@@ -244,7 +302,8 @@ function start(st: State, $: EngineInterface): Promise<void> {
     else show($, 'plugin log off: no PLUGIN_LOG_DIR and no HOME');
     const earlyRows = st.pluginRows.splice(0);
     if (st.pluginLog !== undefined) for (const fields of earlyRows) plog(st, $, fields);
-    st.config = servedOptions(resolveOptions(st.rawOptions, { pluginLogDir: override }));
+    st.config = servedOptions(resolveOptions(st.rawOptions, { pluginLogDir: override, ...(await readOptionEnv($)) }));
+    settleConfig(st, $);
     for (const line of st.config.errors) {
       say(st, $, line, 'warning');
       record(st, $, { event: 'option-error', line });
@@ -282,7 +341,7 @@ function start(st: State, $: EngineInterface): Promise<void> {
       warnOnce(st, $, 'no-tools', 'sub-agent-compact: no self-compaction tool is on (handoffTool, compactTool and forwardHandoffTool are all off); parties are nudged by nobody and only compacted at their limits');
     }
     record(st, $, { event: 'start', main: st.config.main, subagent: st.config.subagent, agentDirs: dirs, mainWindow: st.mainWindow ?? null, compactWindow: st.compactWindow ?? null });
-  })();
+  })().finally(() => settleConfig(st, $));
   return st.started;
 }
 
@@ -1101,8 +1160,9 @@ export const register: Register = (on: On, options: PluginOptions) => {
         st.forwardInstalled.delete(key);
         await finishForward(st, $, installed, e.agentId);
       }
-      const handoff = st.config.handoffTool ? handoffMarkerRequest({ answer: result.answer, toolCalls: result.toolUses.length, main }) : undefined;
-      const focus = st.config.compactTool && handoff === undefined ? markerRequest({ answer: result.answer, toolCalls: result.toolUses.length, main }) : undefined;
+      // A marker is read only with the final config: while start is still reading the environment, `config` holds the options alone and could disagree with it.
+      const handoff = st.configured && st.config.handoffTool ? handoffMarkerRequest({ answer: result.answer, toolCalls: result.toolUses.length, main }) : undefined;
+      const focus = st.configured && st.config.compactTool && handoff === undefined ? markerRequest({ answer: result.answer, toolCalls: result.toolUses.length, main }) : undefined;
       if (handoff !== undefined) {
         const stored = storeHandoff(st, $, await partyOf(st, $, e.agentId), { text: handoff, anchor: { marker: true } }, 'marker');
         // The marker has no tool result to answer it: the agent reads the outcome on its next tool result.
@@ -1174,6 +1234,7 @@ export const register: Register = (on: On, options: PluginOptions) => {
   on('classic.SubagentStop', async ($, e, next) => {
     st.types.learn(e.agent_id, e.agent_type);
     try {
+      await start(st, $);
       const continued = st.parties.continued(e.agent_id);
       const handoff = st.config.handoffTool ? handoffStopRequest({ lastMessage: e.last_assistant_message, continued }) : undefined;
       if (handoff !== undefined) {

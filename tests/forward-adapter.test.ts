@@ -26,7 +26,7 @@ const api = (extra: unknown[] = []) => [
   { role: 'assistant', content: [{ type: 'tool_use', id: 'f1', name: 'mcp__sub-agent-compact__forward_handoff', input: FIELDS }] },
 ];
 
-type Env = { decisionSessionFailsOnce?: boolean; decisionWriteFails?: boolean; uiFailsOnce?: boolean; home?: string; pluginLogDir?: string; pluginRunFails?: boolean; readFails?: string[]; denied?: string[]; listFails?: boolean; noHome?: boolean; noTranscript?: boolean; cwd?: string; agentRows?: Record<string, unknown[]>; agents?: { id: string; type: string }[]; run?: (argv: string[], init?: { cwd?: string }) => { exitCode: number; stdout: string; stderr: string } | undefined };
+type Env = { homeGate?: Promise<void>; timers?: (() => void)[]; cwdFails?: boolean; vars?: Record<string, string>; envReadFails?: string[]; decisionSessionFailsOnce?: boolean; decisionWriteFails?: boolean; uiFailsOnce?: boolean; home?: string; pluginLogDir?: string; pluginRunFails?: boolean; readFails?: string[]; denied?: string[]; listFails?: boolean; noHome?: boolean; noTranscript?: boolean; cwd?: string; agentRows?: Record<string, unknown[]>; agents?: { id: string; type: string }[]; run?: (argv: string[], init?: { cwd?: string }) => { exitCode: number; stdout: string; stderr: string } | undefined };
 const pluginExec = promisify(execFile);
 
 function engine(options: Record<string, unknown> = { forwardHandoffTool: true }, files: Record<string, string> = {}, apiRows: unknown[] = api(), git = true, refused: string[] = [], env: Env = {}) {
@@ -47,12 +47,21 @@ function engine(options: Record<string, unknown> = { forwardHandoffTool: true },
         return 'session-1';
       },
       turns: async () => 1,
-      cwd: async () => env.cwd ?? '/nowhere',
+      cwd: async () => {
+        if (env.cwdFails) throw new Error('cwd unavailable');
+        return env.cwd ?? '/nowhere';
+      },
       usage: async () => ({ context: { tokens: current, window: 1_000_000 } }),
       messages: async (a?: { agentId?: string }) => (a?.agentId !== undefined ? (env.agentRows?.[a.agentId] ?? []) : apiRows),
       compact: async () => ({}),
     },
-    env: { get: async (key: string) => key === 'PLUGIN_LOG_DIR' ? env.pluginLogDir : key === 'HOME' && !env.noHome ? env.home ?? '/h/u' : undefined },
+    env: {
+      get: async (key: string) => {
+        if (env.envReadFails?.includes(key)) throw new Error('environment unavailable');
+        if (key === 'HOME') await env.homeGate;
+        return env.vars?.[key] ?? (key === 'PLUGIN_LOG_DIR' ? env.pluginLogDir : key === 'HOME' && !env.noHome ? env.home ?? '/h/u' : undefined);
+      },
+    },
     fs: {
       exists: async (path: string) => path in known || path in written || Object.keys(written).some((p) => p.startsWith(`${path}/`)),
       read: async (path: string) => {
@@ -93,7 +102,16 @@ function engine(options: Record<string, unknown> = { forwardHandoffTool: true },
         return { exitCode: 1, stdout: '', stderr: '' };
       },
     },
-    clock: { now: async () => Date.parse('2026-10-14T15:20:31.123Z'), after: (ms: number, fn: () => void) => ({ cancel: () => clearTimeout(setTimeout(fn, ms)) }) },
+    clock: {
+      now: async () => Date.parse('2026-10-14T15:20:31.123Z'),
+      after: (ms: number, fn: () => void) => {
+        if (env.timers) {
+          env.timers.push(fn);
+          return { cancel: () => {} };
+        }
+        return { cancel: () => clearTimeout(setTimeout(fn, ms)) };
+      },
+    },
     ui: { log: (line: string) => {
       if (env.uiFailsOnce) { env.uiFailsOnce = false; throw new Error('screen unavailable'); }
       logs.push(line);
@@ -145,6 +163,13 @@ function engine(options: Record<string, unknown> = { forwardHandoffTool: true },
       });
       for (;;) if ((await gen.next()).done) break;
     },
+    stepAs: async (agentId: string, answer: string, tokens: number) => {
+      current = tokens;
+      const gen = dispatch('turn.step', { model: 'claude-opus-4-5[1m]', agentId }, async function* () {
+        return { usage: { input_tokens: tokens }, answer, toolUses: [{}] };
+      });
+      for (;;) if ((await gen.next()).done) break;
+    },
     forward: (fields: Record<string, unknown> = FIELDS, agentId?: string) =>
       dispatch('tool.call', { tool: TOOL, ...fields, tool_use_id: 'f1', ...(agentId ? { agentId } : {}) }, async () => ({ result: 'unreached' })),
     stop: (e: Record<string, unknown>) => dispatch('classic.Stop', e, async () => ({})),
@@ -165,6 +190,67 @@ describe('the forward handoff tool through the adapter', () => {
     const on = engine();
     await on.start();
     expect(on.registered.sort()).toEqual(['forward_handoff', 'look_back']);
+  });
+
+  const FORWARD = 'SUB_AGENT_COMPACT_FORWARD_HANDOFF_TOOL';
+
+  it('registers forward_handoff from the environment alone, with no option set', async () => {
+    const cc = engine({}, {}, api(), true, [], { vars: { [FORWARD]: '1' } });
+    await cc.start();
+    expect(cc.registered.sort()).toEqual(['forward_handoff', 'look_back']);
+    expect(cc.logs.filter((line) => line.includes(FORWARD))).toEqual([]);
+  });
+
+  it('lets the environment turn the forward handoff off over an option that turns it on', async () => {
+    const cc = engine({ forwardHandoffTool: true }, {}, api(), true, [], { vars: { [FORWARD]: 'false' } });
+    await cc.start();
+    expect(cc.registered.sort()).toEqual(['compact', 'look_back']);
+  });
+
+  it('names a bad environment value on the screen and registers by the default', async () => {
+    const cc = engine({ forwardHandoffTool: true }, {}, api(), true, [], { vars: { [FORWARD]: 'sure' } });
+    await cc.start();
+    expect(cc.registered.sort()).toEqual(['compact', 'look_back']);
+    expect(cc.logs.filter((line) => line.includes(FORWARD))).toEqual([expect.stringMatching(/env SUB_AGENT_COMPACT_FORWARD_HANDOFF_TOOL is invalid.*"sure".*using the default false/)]);
+  });
+
+  it('names a variable that could not be read and lets the option layer register the tool', async () => {
+    const cc = engine({ forwardHandoffTool: true }, {}, api(), true, [], { envReadFails: [FORWARD] });
+    await cc.start();
+    expect(cc.registered.sort()).toEqual(['forward_handoff', 'look_back']);
+    expect(cc.logs.filter((line) => line.includes(FORWARD))).toEqual([expect.stringMatching(/reading SUB_AGENT_COMPACT_FORWARD_HANDOFF_TOOL failed: environment unavailable/)]);
+  });
+
+  const MARKER = 'Parts 1-2 done.\n<compact-now>next: part 3</compact-now>';
+  const settle = () => new Promise<void>((resolve) => setImmediate(resolve));
+
+  it('arms a sub-agent on its marker (control)', async () => {
+    const cc = engine({ logFile: '/logs/decisions.jsonl' }, {}, api(), true, [], { agents: [{ id: 'a1', type: 'reviewer' }] });
+    await cc.start();
+    await cc.stepAs('a1', MARKER, 250_000);
+    expect((await cc.decisions()).filter((row) => row.event === 'armed' && row.via === 'marker')).toHaveLength(1);
+  });
+
+  it('reads no marker before the environment layer is applied, so the off switch holds while start is still reading the environment', async () => {
+    let release!: () => void;
+    const timers: (() => void)[] = [];
+    const cc = engine({ logFile: '/logs/decisions.jsonl' }, {}, api(), true, [], { agents: [{ id: 'a1', type: 'reviewer' }], vars: { SUB_AGENT_COMPACT_COMPACT_TOOL: '0' }, timers, homeGate: new Promise<void>((resolve) => { release = resolve; }) });
+    const stepping = cc.stepAs('a1', MARKER, 250_000);
+    await settle();
+    for (const fire of timers.splice(0)) fire();
+    await settle();
+    release();
+    await stepping;
+    expect((await cc.decisions()).filter((row) => /^arm/.test(String(row.event)))).toEqual([]);
+  });
+
+  it('keeps the session decision log at the environment path when a row is written before start applies it', async () => {
+    const cc = engine({ logFile: '/a/decisions.jsonl' }, {}, api(), true, [], { cwdFails: true, vars: { SUB_AGENT_COMPACT_LOG_FILE: '/b/decisions.jsonl' } });
+    await cc.start();
+    await cc.decisions();
+    const logs = Object.keys(cc.written).filter((path) => path.endsWith('.jsonl') && !path.includes('/sub-agent-compact/'));
+    expect(logs).toEqual(['/b/decisions.session-1.jsonl']);
+    expect(cc.written['/b/decisions.session-1.jsonl']).toContain('cwd unavailable');
   });
 
   it('stores the text code carried and persists the raw arguments, the literal text and the record', async () => {

@@ -4,6 +4,10 @@ Every release of sub-agent-compact. Versions follow [semantic versioning](https:
 
 ## [Unreleased]
 
+### Added
+
+- Every option is also read from an environment variable, `SUB_AGENT_COMPACT_` plus the option in upper snake case (`SUB_AGENT_COMPACT_FORWARD_HANDOFF_TOOL`), ahead of the option and the default; tools register from the variable alone. A flag is `1`, `0`, `true` or `false`; a bad value is named by its variable and the default is used.
+
 ## [0.7.1-dev.1] — 2026-10-15
 
 ### Fixed
