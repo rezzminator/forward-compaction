@@ -1,5 +1,6 @@
 // What a forward handoff leaves on disk: where, and the measurement record the experiment reads.
 import { estimateTokens, fnv1a, type BlockRecord } from './forward-text.ts';
+import { isHarnessText, type HandoffMessage } from './handoff.ts';
 
 type TrailEntry = { tag: 'R' | 'E' | 'C'; path: string };
 const isTrailEntry = (t: unknown): t is TrailEntry =>
@@ -9,15 +10,25 @@ const ROOT = 'sub-agent-compact/forward-handoff';
 
 const safe = (id: string): string => id.replace(/[^A-Za-z0-9_-]/g, '_');
 
-/** The directory of one loop's calls: the session's for the main chat, `agent-<id>` inside it for a sub-agent. */
-export function forwardSessionDir(configDir: string, session: string, agentId?: string): string {
-  const dir = `${configDir}/${ROOT}/${safe(session)}`;
+/**
+ * Where records live, the one written first: `$HOME/.local/state/sub-agent-compact/forward-handoff`, which a
+ * CLAUDE_CONFIG_DIR or account switch leaves in place, then `<config dir>/sub-agent-compact/forward-handoff`, where
+ * earlier versions wrote and which stays read. Without HOME the config directory's is written. None → [].
+ */
+export function forwardRoots({ home, configDir }: { home?: string; configDir?: string }): string[] {
+  const roots = [...(home ? [`${home}/.local/state/${ROOT}`] : []), ...(configDir ? [`${configDir}/${ROOT}`] : [])];
+  return [...new Set(roots)];
+}
+
+/** The directory of one loop's calls under a root: the session's for the main chat, `agent-<id>` inside it for a sub-agent. */
+export function forwardSessionDir(root: string, session: string, agentId?: string): string {
+  const dir = `${root}/${safe(session)}`;
   return agentId === undefined ? dir : `${dir}/agent-${safe(agentId)}`;
 }
 
-/** The directory of one call: `<config dir>/sub-agent-compact/forward-handoff/<session>[/agent-<id>]/<n>`. */
-export function forwardDir(configDir: string, session: string, seq: number, agentId?: string): string {
-  return `${forwardSessionDir(configDir, session, agentId)}/${seq}`;
+/** The directory of one call: `<root>/<session>[/agent-<id>]/<n>`. */
+export function forwardDir(root: string, session: string, seq: number, agentId?: string): string {
+  return `${forwardSessionDir(root, session, agentId)}/${seq}`;
 }
 
 /** The number of the next call, from the names already in the session's directory. */
@@ -28,8 +39,8 @@ export function nextSeq(names: readonly string[]): number {
 }
 
 /** The directory of the call before this one, undefined for the first. */
-export function previousDir(configDir: string, session: string, seq: number, agentId?: string): string | undefined {
-  return seq > 1 ? forwardDir(configDir, session, seq - 1, agentId) : undefined;
+export function previousDir(root: string, session: string, seq: number, agentId?: string): string | undefined {
+  return seq > 1 ? forwardDir(root, session, seq - 1, agentId) : undefined;
 }
 
 export type ForwardRecord = Record<string, unknown>;
@@ -68,6 +79,32 @@ export function carriedFrom(records: readonly unknown[], heldText: string): { us
     const rec = r as Record<string, unknown>;
     if (rec.textHash !== hash || !Array.isArray(rec.users) || !rec.users.every((u) => typeof u === 'string')) continue;
     return { users: rec.users as string[], dropped: typeof rec.usersDropped === 'number' ? rec.usersDropped : 0, ...(rec.handoffInReply === true ? { inReply: true } : {}), ...(Array.isArray(rec.trail) && rec.trail.every(isTrailEntry) ? { trail: rec.trail as TrailEntry[] } : {}), ...(typeof rec.summary === 'string' ? { summary: rec.summary } : {}) };
+  }
+  return undefined;
+}
+
+/**
+ * The forward handoff a reloaded plugin lost: the latest call of `toolName` whose reply says it was stored and saved,
+ * with the directory its files are in. A call still standing in the transcript was never installed; a person's message
+ * after it cancelled it, a message the harness wrote did not. A latest stored call saved nowhere recovers nothing.
+ */
+export function recoverForward(messages: readonly HandoffMessage[], toolName: string, roots: readonly string[]): { toolUseId: string; dir: string } | undefined {
+  const replies = new Map<string, string>();
+  for (const m of messages) for (const r of m.toolResults ?? []) replies.set(r.tool_use_id, r.text ?? '');
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i]!;
+    if (m.role === 'user' && (m.toolResults ?? []).length === 0 && m.text.trim() !== '' && !isHarnessText(m.text)) return undefined;
+    if (m.role !== 'assistant') continue;
+    for (const use of [...m.toolUses].reverse()) {
+      if (use.tool !== toolName) continue;
+      const reply = replies.get(use.tool_use_id) ?? '';
+      if (!reply.startsWith('Forward handoff stored')) continue;
+      // The plugin's own clause is the reply's last: a loaded file's name before it may carry the same words.
+      const saved = /^[\s\S]* Saved to (\/.+?)\. It installs/.exec(reply);
+      const dir = saved?.[1];
+      if (dir === undefined || dir.split('/').includes('..') || !roots.some((root) => dir.startsWith(`${root}/`))) return undefined;
+      return { toolUseId: use.tool_use_id, dir };
+    }
   }
   return undefined;
 }

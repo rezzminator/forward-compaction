@@ -1,15 +1,15 @@
 import type { EngineInterface, On, PluginOptions, Register } from 'claude-code';
 import { bounded } from '../src/bounded.ts';
 import { LOOK_BACK_TOOL, LOOK_BACK_DESCRIPTION, LOOK_BACK_INPUT_SCHEMA, parseLookBack, boundaryArgv, boundaryLine, searchArgv, entryArgv, namesArgv, processOutput, parseEntries, toolNames, resultIds, searchResults, entryResult, manualTranscriptCall, lookBackNotice, type LookBackResult } from '../src/look-back.ts';
-import { haikuServed, servedOptions, toolsToRegister } from '../src/register.ts';
-import { FORWARD_INPUT_SCHEMA, FORWARD_TOOL, FORWARD_TOOL_DESCRIPTION, forwardHoldText, forwardNudgeText, forwardRefusal, forwardStoredText, parseForwardArgs, rereadNudge, type ForwardArgs } from '../src/forward-args.ts';
+import { servedOptions, toolsToRegister } from '../src/register.ts';
+import { FORWARD_INPUT_SCHEMA, FORWARD_TOOL, FORWARD_TOOL_DESCRIPTION, forwardNudgeText, forwardRefusal, forwardStoredText, parseForwardArgs, rereadNudge, type ForwardArgs } from '../src/forward-args.ts';
 import { absPath, fileTrail, handoffInReply, findTranscriptArgv, firstFound, gitBlock, gitLine, GIT_REPOS, heldForward, outsideRepository, opensWithSummary, openingSummary, summaryKnowledge, outline, OUTLINE_FILE_MAX_BYTES, priorCalls, priorPrompts, mergeTrail, invocationPaths, invocations, parseLineRange, parsePorcelain, planAndTasks, runningWork, sliceLines, trailDirs, userMessages, type ApiMsg, type LiveWork, type TrailEntry } from '../src/forward-carry.ts';
-import { buildRecord, carriedFrom, forwardDir, forwardSessionDir, nextSeq, previousDir, withInstall } from '../src/forward-record.ts';
-import { chainUsers, forwardInstalledLine, installCheck, renderForward, TRAIL_MAX, type RenderInput } from '../src/forward-text.ts';
+import { buildRecord, carriedFrom, forwardDir, forwardRoots, forwardSessionDir, nextSeq, previousDir, recoverForward, withInstall } from '../src/forward-record.ts';
+import { chainUsers, forwardInstalledLine, installCheck, renderForward, TRAIL_MAX, type BlockRecord, type RenderInput } from '../src/forward-text.ts';
 import { BRIEF_MAX_TOKENS, reseatBrief, seatedBrief } from '../src/brief.ts';
 import { engineAgentFs } from '../src/agent-fs.ts';
-import { AgentPolicies, AgentTypes } from '../src/agents.ts';
-import { compactionEnd, contextTokens, currentTokens, decide, estimateTranscript, HAIKU_HOLDS, haikuHold, knownTrigger, personPrompt, type Trigger } from '../src/decide.ts';
+import { AgentPolicies, AgentTypes, hasTool } from '../src/agents.ts';
+import { compactionEnd, contextTokens, currentTokens, decide, estimateTranscript, knownTrigger, personPrompt, type Trigger } from '../src/decide.ts';
 import {
   CONTINUE_AFTER_HANDOFF,
   HANDOFF_INPUT_SCHEMA,
@@ -33,10 +33,10 @@ import {
   type ForwardMeta,
 } from '../src/handoff.ts';
 import { resolveOptions, sizeTokens, type OptionEnvironment, type Policy, type ResolvedOptions } from '../src/limits.ts';
-import { appendRows, sessionLogPath, pluginLogDir, levelRow, pluginLogEvent, PluginLogQueue, type PluginLogLevel, type PluginLogFields } from '../src/log.ts';
+import { sessionLogPath, decisionAppendArgv, retentionArgv, SkipFold, pluginLogDir, levelRow, pluginLogEvent, PluginLogQueue, type PluginLogLevel, type PluginLogFields } from '../src/log.ts';
 import { armedText, CONTINUE_AFTER_MARKER, disarmedText, earlyArm, markerRequest, nudgeText, stopRequest } from '../src/nudge.ts';
 import { FRESH_MAX_MESSAGES, isFirstRequest, Parties } from '../src/parties.ts';
-import { engineAskPoint, isHaiku, modelWindow } from '../src/window.ts';
+import { engineAskPoint, forcedPoint, isHaiku, modelWindow } from '../src/window.ts';
 import { unseenCompaction } from '../src/unseen.ts';
 import { invokedSkills, pluginPaths, renderWake, stripFrontmatter, wakeCandidates, wakeFileProblem, WAKE_FILE_MAX_BYTES, type WakeEntry, type WakeRoots } from '../src/wake.ts';
 
@@ -47,8 +47,6 @@ const COMPACT_TOOL = 'compact';
 /** The main chat's window when $.session.usage() cannot be read. */
 const FALLBACK_WINDOW = 200_000;
 
-const LOG_CAP = 2000;
-
 /** A line on the person's screen: Claude Code already names the plugin in front of it, so the line never names it again. */
 function show($: EngineInterface, line: string): void {
   $.ui.log(screenLine(line));
@@ -58,17 +56,24 @@ function screenLine(line: string): string {
   return line.replace(/^sub-agent-compact: /, '');
 }
 
-/** Every line said lands in the decision log as a `said` row; a routine one reaches the screen too while there is no log to hold it. */
-function say(st: State, $: EngineInterface, line: string, level: PluginLogLevel = 'error'): void {
+/**
+ * Every line said lands in the decision log as a `said` row; a routine one reaches the screen too while there is no
+ * log to hold it. A line said with its diagnostic row is one level-log entry: the row's, at the level said.
+ */
+function say(st: State, $: EngineInterface, line: string, level: PluginLogLevel = 'error', row?: Row): void {
   const shown = level !== 'info' || !st.config.logFile || st.logOff === true;
-  plog(st, $, { level, event: 'said', msg: screenLine(line), where: 'hooks/sub-agent-compact.ts#say' });
+  const diagnostic = row === undefined ? undefined : pluginLogEvent(row);
+  plog(st, $, diagnostic !== undefined ? { ...diagnostic, level } : { level, event: 'said', msg: screenLine(line), where: 'hooks/sub-agent-compact.ts#say' });
   if (shown) show($, line);
   record(st, $, { event: 'said', line: screenLine(line), shown });
+  if (row !== undefined) record(st, $, row, diagnostic === undefined);
 }
 /** The model's tool-call lines of a transcript before line $2, the newest 400: sed cuts at the boundary, so no line's length matters. */
 const CALLS_BEFORE = `sed -n "1,$(($2 - 1))p" "$1" | grep -a -n '"type":"assistant"' | grep -a '"tool_use"' | tail -n 400`;
 /** Registering the tools holds a turn no longer than this: past it the turn goes on and the plugin stops waiting on registration. */
 const ENSURE_TOOLS_TIMEOUT_MS = 5_000;
+/** Of session.end's one bound, the share left for Claude Code's own end step after the log writes. */
+const END_CORE_RESERVE_MS = 300;
 /** Registering a tool is tried on this many hook calls before it is given up on. */
 const REGISTER_TRIES = 3;
 
@@ -136,12 +141,20 @@ type State = {
   models: Map<string, string>;
   parties: Parties;
   asked: Set<string>;
-  /** Automatic asks held per Haiku party while it is told to call the forward handoff. */
-  haikuHeld: Map<string, number>;
   warned: Set<string>;
   /** The log-write failures already shown: a log that cannot be written fails every flush the same way, and the person hears each failure once. */
   logFailures: Set<string>;
   pending: string[];
+  /** Rows the decision append in flight carries; 0 when none is. */
+  rowsWriting: number;
+  /** Level-log rows queued or being written: what a cut end flush may lose from the level log. */
+  levelRowsWriting: number;
+  /** The main chat's window per model, as read after a model change. */
+  modelWindows: Map<string, number>;
+  /** Routine skips fold into one `skips` row per streak. */
+  skips: SkipFold;
+  /** Old sessions' logs were cleaned up once this session (or tried). */
+  retained?: boolean;
   logPath?: Promise<string | undefined>;
   /** Reading the session id failed: no row is written this session, so a routine line goes to the screen. */
   logOff?: boolean;
@@ -150,57 +163,71 @@ type State = {
   mainCompacting: boolean;
   /** A session.compact of main was handled (or the plugin compacted main itself) since main's last reading. */
   mainCompactSeen: boolean;
+  /** Where each sub-agent runs, learned at its spawn: its own relative paths land there, not where the main chat's shell is now. */
+  agentCwd: Map<string, string>;
 };
 
 /** Level logging is off the work path; failures report through show, never recursively through say. */
 function plog(st: State, $: EngineInterface, fields: Omit<PluginLogFields, 'plugin' | 'session'>): void {
   const queue = st.pluginLog;
   if (queue === undefined) { if (!st.pluginInitialized) st.pluginRows.push(fields); return; }
+  st.levelRowsWriting += 1;
   st.pluginWriting = st.pluginWriting.then(async () => {
     let session: string | undefined;
     try { session = await $.session.id(); }
     catch (error) { show($, `sub-agent-compact: reading the plugin log session id failed: ${message(error)}; row has no session`); }
     const now = await $.clock.now();
     queue.add(levelRow({ plugin: 'sub-agent-compact', ...fields, ...(session ? { session } : {}) }, now));
-    const out = await queue.flush((argv) => $.process.run(argv, { timeoutMs: 5000 }));
-    if (out.error !== undefined && !st.pluginFailing) show($, `sub-agent-compact: plugin log ${st.pluginLogDir} failed: ${out.error}; dropped ${out.dropped} rows`);
+    const out = await queue.flush((argv) => $.process.run(argv, { timeoutMs: 15_000 }));
+    if (out.error !== undefined && !st.pluginFailing) pluginLogFailed(st, $, out.error, out.dropped);
     st.pluginFailing = out.dropped !== 0;
   }).catch((error) => {
-    if (!st.pluginFailing) show($, `sub-agent-compact: plugin log ${st.pluginLogDir} failed: ${message(error)}; dropped 1 row`);
+    if (!st.pluginFailing) pluginLogFailed(st, $, message(error), 1);
     st.pluginFailing = true;
-  });
+  }).finally(() => { st.levelRowsWriting -= 1; });
 }
 
-/** Rows held back while the environment layer is still being read; past this many the oldest-kept stay and later ones are dropped. */
+/** Rows held back while the environment layer is still being read; later ones are dropped. */
 const PENDING_BEFORE_CONFIG = 500;
 
-// Rows queue in memory; each flush reads the session's file and appends them,
-// so a resumed session keeps its earlier rows and no other chat shares the file.
-function record(st: State, $: EngineInterface, row: Row): void {
-  const diagnostic = pluginLogEvent(row);
+/** Once per failing streak: on the screen and in the decision log, whose row maps to no level, so it never recurses into the failing log. */
+function pluginLogFailed(st: State, $: EngineInterface, error: string, dropped: number): void {
+  show($, `sub-agent-compact: plugin log ${st.pluginLogDir} failed: ${error}; dropped ${dropped} ${dropped === 1 ? 'row' : 'rows'}`);
+  record(st, $, { event: 'plugin-log-failed', dir: st.pluginLogDir ?? null, error, dropped });
+}
+
+// Rows queue in memory; each flush appends them to the session's file through the append script, under its
+// lock, so a resumed session keeps its earlier rows, no row is rewritten and no other chat shares the file.
+function record(st: State, $: EngineInterface, row: Row, levelRow = true): void {
+  const diagnostic = levelRow ? pluginLogEvent(row) : undefined;
   if (diagnostic !== undefined) plog(st, $, diagnostic);
   // The decision log's file may come from the environment, which `start` reads: a row before that waits, so the
   // session's one file is chosen from the full config. `settleConfig` writes what waited.
   if (!st.configured) {
-    if (st.pending.length < PENDING_BEFORE_CONFIG) st.pending.push(JSON.stringify({ ts: new Date().toISOString(), ...row }));
+    for (const out of st.skips.add({ ts: new Date().toISOString(), ...row })) if (st.pending.length < PENDING_BEFORE_CONFIG) st.pending.push(JSON.stringify(out));
     return;
   }
-  const file = st.config.logFile;
-  if (!file) return;
-  st.pending.push(JSON.stringify({ ts: new Date().toISOString(), ...row }));
-  writeDecisionLog(st, $, file);
+  if (!st.config.logFile) return;
+  for (const out of st.skips.add({ ts: new Date().toISOString(), ...row })) st.pending.push(JSON.stringify(out));
+  flushDecisions(st, $);
 }
 
 /** Marks the config as final and writes the rows that waited for it, or drops them when no decision log is on. */
 function settleConfig(st: State, $: EngineInterface): void {
   if (st.configured) return;
   st.configured = true;
-  const file = st.config.logFile;
-  if (!file) st.pending.length = 0;
-  else if (st.pending.length > 0) writeDecisionLog(st, $, file);
+  if (!st.config.logFile) {
+    st.pending.length = 0;
+    st.skips.drain();
+  } else {
+    for (const out of st.skips.drain()) if (st.pending.length < PENDING_BEFORE_CONFIG) st.pending.push(JSON.stringify(out));
+    if (st.pending.length > 0) flushDecisions(st, $);
+  }
 }
 
-function writeDecisionLog(st: State, $: EngineInterface, file: string): void {
+function flushDecisions(st: State, $: EngineInterface): void {
+  const file = st.config.logFile;
+  if (!file) return;
   st.logPath ??= $.session.id().then(
     (id) => sessionLogPath(file, id),
     (error) => {
@@ -212,14 +239,23 @@ function writeDecisionLog(st: State, $: EngineInterface, file: string): void {
       return undefined;
     },
   );
+  // Taken now: rows queued before a /clear go to the ending session's file even when they are written after startOver.
+  const logPath = st.logPath;
+  const pending = st.pending;
   st.writing = st.writing
     .then(async () => {
-      const path = await st.logPath;
-      const rows = st.pending.splice(0);
+      const path = await logPath;
+      const rows = pending.splice(0);
       if (!path || rows.length === 0) return;
-      const existing = (await $.fs.exists(path)) ? await $.fs.read(path) : '';
-      await $.fs.write(path, appendRows(existing, rows, LOG_CAP));
+      st.rowsWriting = rows.length;
+      if (!st.retained) {
+        st.retained = true;
+        await retainLogs(st, $, file, path);
+      }
+      const out = await $.process.run(decisionAppendArgv(path), { stdin: rows.map((line) => `${line}\n`).join(''), timeoutMs: 15_000 });
+      if (out.exitCode !== 0) throw new Error(out.stderr.split('\n')[0]?.trim() || `the append script exited ${out.exitCode}`);
     })
+    .finally(() => { st.rowsWriting = 0; })
     // Screen and level log only, once per distinct failure: never queue another decision write. The key drops
     // numbers, so one failure whose text carries a varying size or offset is still shown once.
     .catch((error) => {
@@ -232,11 +268,44 @@ function writeDecisionLog(st: State, $: EngineInterface, file: string): void {
     });
 }
 
+/** Once per session, before its first append: old sessions' logs beside this one go; a failure is told once and the log goes on. */
+async function retainLogs(st: State, $: EngineInterface, file: string, path: string): Promise<void> {
+  try {
+    const out = await $.process.run(retentionArgv(file, path), { timeoutMs: 15_000 });
+    if (out.exitCode !== 0) throw new Error(out.stderr.split('\n')[0]?.trim() || `the retention script exited ${out.exitCode}`);
+  } catch (error) {
+    const line = `sub-agent-compact: cleaning up old decision logs beside ${file} failed: ${message(error)}; they stay`;
+    plog(st, $, { level: 'warning', event: 'decision-retention-failed', msg: line, where: 'hooks/sub-agent-compact.ts#retainLogs', detail: { file, error: message(error) } });
+    show($, line);
+  }
+}
+
+/** Main's context was compacted and this plugin knows it: the next reading's drop is no unseen compaction, and turn.complete does not compact again. */
+function mainCompacted(st: State): void {
+  st.mainCompactSeen = true;
+  st.mainCompactedThisTurn = true;
+}
+
+/** After a /clear or a resume: main's conversation is a new one, under a new session id and its own decision log file. */
+function startOver(st: State): void {
+  st.parties.forget('main');
+  st.forwardWoke.delete('main');
+  st.forwardInstalled.delete('main');
+  st.rereadNudged.delete('main');
+  st.asked.delete('main');
+  st.mainCompactSeen = false;
+  st.mainCompactedThisTurn = false;
+  st.live = undefined;
+  st.sessionId = undefined;
+  st.logPath = undefined;
+  st.pending = [];
+  st.retained = false;
+}
+
 function warnOnce(st: State, $: EngineInterface, key: string, line: string): void {
   if (st.warned.has(key)) return;
   st.warned.add(key);
-  say(st, $, line, 'warning');
-  record(st, $, { event: 'warning', key, line });
+  say(st, $, line, 'warning', { event: 'warning', key, line });
 }
 
 /**
@@ -305,8 +374,7 @@ function start(st: State, $: EngineInterface): Promise<void> {
     st.config = servedOptions(resolveOptions(st.rawOptions, { pluginLogDir: override, ...(await readOptionEnv($)) }));
     settleConfig(st, $);
     for (const line of st.config.errors) {
-      say(st, $, line, 'warning');
-      record(st, $, { event: 'option-error', line });
+      say(st, $, line, 'warning', { event: 'option-error', line });
     }
     try {
       st.configDir = (await $.env.get('CLAUDE_CONFIG_DIR')) || (home ? `${home}/.claude` : undefined);
@@ -328,14 +396,15 @@ function start(st: State, $: EngineInterface): Promise<void> {
     }
     const dirs = [`${cwd}/.claude/agents`, ...(home ? [`${home}/.claude/agents`] : []), ...st.config.agentDirs];
     const resolveLog = (line: string) => {
-      say(st, $, line, 'warning');
-      record(st, $, { event: 'resolve-error', line });
+      say(st, $, line, 'warning', { event: 'resolve-error', line });
     };
     st.policies = new AgentPolicies(
       dirs,
       st.config.subagent,
       engineAgentFs({ exists: (path) => $.fs.exists(path), read: (path) => $.fs.read(path), list: (dir) => $.fs.list(dir), stat: (path) => $.fs.stat(path) }, resolveLog),
       resolveLog,
+      // A plugin's agent type (`plugin:agent`) is defined in that plugin's install, as installed_plugins.json names it.
+      { pluginDirs: async (plugin) => { const path = (await wakeRoots(st, $)).plugins[plugin]; return path ? [`${path}/agents`] : []; } },
     );
     if (!st.config.handoffTool && !st.config.compactTool && !st.config.forwardHandoffTool) {
       warnOnce(st, $, 'no-tools', 'sub-agent-compact: no self-compaction tool is on (handoffTool, compactTool and forwardHandoffTool are all off); parties are nudged by nobody and only compacted at their limits');
@@ -360,32 +429,62 @@ type Party = {
   /** Where the policy came from: mainAutoCompact*, subagentAutoCompact*, or a definition file. */
   source: string;
   window: number;
-  /** Haiku runs on Claude Code's own compaction point: no nudges, no self-compaction. */
+  /** Haiku is left to Claude Code: no nudge, no hold, no forced point, no handoff, no brief seated back. */
   haiku: boolean;
   /** An engine loop missing from `$.agent.list()`: no policy governs it, so it is never nudged, armed or held. */
   unlisted: boolean;
+  /** Whether its definition's `tools` and `disallowedTools` leave it a tool; the main chat and a party without lists have every tool. */
+  canUse: (tool: string) => boolean;
 };
+
+const everyTool = (): boolean => true;
 
 async function partyOf(st: State, $: EngineInterface, agentId: string | undefined): Promise<Party> {
   await start(st, $);
   const key = agentId ?? 'main';
   const model = st.models.get(key);
   const window = modelWindow(model, st.mainWindow ?? FALLBACK_WINDOW);
-  if (!agentId) return { key, label: 'main', main: true, policy: st.config.main, source: 'mainAutoCompact', window, haiku: isHaiku(model), unlisted: false };
+  if (!agentId) return { key, label: 'main', main: true, policy: st.config.main, source: 'mainAutoCompact', window, haiku: isHaiku(model), unlisted: false, canUse: everyTool };
   const label = await agentType(st, $, agentId);
-  if (label === undefined) return { key, label: 'unlisted', main: false, policy: st.config.subagent, source: 'unlisted', window, haiku: isHaiku(model), unlisted: true };
+  if (label === undefined) return { key, label: 'unlisted', main: false, policy: st.config.subagent, source: 'unlisted', window, haiku: isHaiku(model), unlisted: true, canUse: everyTool };
   const resolved = await st.policies!.resolve(label);
   const source = resolved.source === 'default' ? 'subagentAutoCompact' : resolved.source;
-  return { key, label, main: false, policy: resolved.policy, source, window, haiku: isHaiku(model), unlisted: false };
+  const canUse = (tool: string) => hasTool(resolved.tools, resolved.disallowedTools, tool);
+  return { key, label, main: false, policy: resolved.policy, source, window, haiku: isHaiku(model), unlisted: false, canUse };
 }
 
-/** The forced point in tokens; Haiku's is Claude Code's own ask point for its window. */
-function limitOf(party: Party): number {
-  return party.haiku ? engineAskPoint(party.window) : sizeTokens(party.policy.autoCompact, party.window);
+/** The forced point in tokens, clamped to Claude Code's ask point for the party's window; Haiku's is that ask point. */
+function forcedOf(party: Party): { limit: number; set: number; clamped: boolean } {
+  if (!party.haiku) return forcedPoint(party.policy.autoCompact, party.window);
+  const ask = engineAskPoint(party.window);
+  return { limit: ask, set: ask, clamped: false };
+}
+
+/** The forced point, a clamp said once per party type; `limitSet` beside `limit` in a row whenever it was clamped. */
+function limitOf(st: State, $: EngineInterface, party: Party): { limit: number; row: Row } {
+  const forced = forcedOf(party);
+  if (!forced.clamped) return { limit: forced.limit, row: { limit: forced.limit } };
+  warnOnce(st, $, `clamped:${party.label}`, `sub-agent-compact: ${party.label} limit ${forced.set} is past Claude Code's ask point ${forced.limit} for its ${party.window}-token window; it is forced at ${forced.limit}`);
+  return { limit: forced.limit, row: { limit: forced.limit, limitSet: forced.set } };
 }
 
 function askPointOf(st: State): number | undefined {
   return st.compactWindow === undefined ? undefined : engineAskPoint(st.compactWindow);
+}
+
+/** The main chat's window, read again after its model changed; a failed read keeps the one known. */
+async function rereadWindow(st: State, $: EngineInterface, model: string): Promise<void> {
+  try {
+    // A router that switches models per request asks once per model, never once per request.
+    const window = st.modelWindows.get(model) ?? (await $.session.usage()).context.window;
+    if (typeof window !== 'number' || !(window > 0)) return;
+    st.modelWindows.set(model, window);
+    if (window === st.mainWindow) return;
+    record(st, $, { event: 'window-changed', party: 'main', model, from: st.mainWindow ?? null, to: window });
+    st.mainWindow = window;
+  } catch (error) {
+    say(st, $, `sub-agent-compact: re-reading the main chat's window after its model changed to ${model} failed: ${message(error)}; keeping ${st.mainWindow ?? FALLBACK_WINDOW}`, 'warning');
+  }
 }
 
 type Stored = { why: 'refused' | 'invalid'; text: string } | undefined;
@@ -435,10 +534,10 @@ function arm(st: State, $: EngineInterface, party: Party, focus: string, via: 't
 /** The nudge line owed after this tool call, once the party's context passed a nudge point it was not yet told about. */
 async function nudgeFor(st: State, $: EngineInterface, agentId: string | undefined): Promise<string | undefined> {
   const party = await partyOf(st, $, agentId);
-  if (!haikuServed(party.haiku, st.forwardToolName !== undefined) || party.unlisted || !party.policy.enabled) return undefined;
+  if (party.haiku || party.unlisted || !party.policy.enabled) return undefined;
   if (!st.config.handoffTool && !st.config.compactTool && !st.config.forwardHandoffTool) return undefined;
-  // Every party is steered to the forward handoff tool once it is registered.
-  const forward = st.forwardToolName !== undefined;
+  // Every party whose definition leaves it the forward handoff tool is steered to it once it is registered; one without it is never pointed at it.
+  const forward = st.forwardToolName !== undefined && party.canUse(st.forwardToolName);
   // Without the forward tool this party has only the handoff and compact tools: with both off there is nothing to nudge toward.
   if (!forward && !st.config.handoffTool && !st.config.compactTool) return undefined;
   if (!forward && st.config.handoffTool && party.main && st.handoffToolName === undefined) {
@@ -446,18 +545,22 @@ async function nudgeFor(st: State, $: EngineInterface, agentId: string | undefin
     warnOnce(st, $, 'main-no-handoff', 'sub-agent-compact: the main chat cannot hand off: the handoff tool is not registered, so it is not nudged');
     return undefined;
   }
+  // A party whose definition leaves it no compact tool is never pointed at it.
+  const compactTool = st.toolName ?? `mcp__sub-agent-compact__${COMPACT_TOOL}`;
+  if (!forward && !st.config.handoffTool && !party.canUse(compactTool)) return undefined;
   const nudgeStart = sizeTokens(party.policy.nudgeStart, party.window);
   const nudgeEvery = sizeTokens(party.policy.nudgeEvery, party.window);
   const level = st.parties.nudgeDue(party.key, nudgeStart, nudgeEvery);
   const tokens = st.parties.reading(party.key);
   if (level === undefined || tokens === undefined) return undefined;
-  const autoCompact = limitOf(party);
+  const autoCompact = limitOf(st, $, party).limit;
   record(st, $, { event: 'nudge', party: party.key, type: party.label, tokens, level, nudgeStart, nudgeEvery, autoCompact, window: party.window, tool: forward ? FORWARD_TOOL : st.config.handoffTool ? 'handoff' : 'compact' });
   if (forward) return forwardNudgeText({ tokens, level, autoCompact, toolName: st.forwardToolName! });
   if (st.config.handoffTool) {
-    return handoffNudgeText({ tokens, level, autoCompact, main: party.main, toolName: st.handoffToolName, firstReading: st.parties.firstReading(party.key) });
+    const toolName = st.handoffToolName !== undefined && party.canUse(st.handoffToolName) ? st.handoffToolName : undefined;
+    return handoffNudgeText({ tokens, level, autoCompact, main: party.main, toolName, firstReading: st.parties.firstReading(party.key) });
   }
-  return nudgeText({ tokens, window: party.window, level, autoCompact, main: party.main, toolName: st.toolName ?? `mcp__sub-agent-compact__${COMPACT_TOOL}` });
+  return nudgeText({ tokens, window: party.window, level, autoCompact, main: party.main, toolName: compactTool });
 }
 
 async function registerCompactTool(st: State, $: EngineInterface): Promise<void> {
@@ -501,7 +604,6 @@ async function answerLookBackTool(st: State, $: EngineInterface, e: Record<strin
   try {
     await start(st, $);
     if (agentId !== undefined) label = (await agentType(st, $, agentId)) ?? 'unlisted';
-    if (args.error) throw new Error(args.error);
     if (st.configDir === undefined) throw new Error('no Claude config directory');
     const session = await (st.sessionId ??= $.session.id());
     const found = processOutput(await $.process.run(findTranscriptArgv({ configDir: st.configDir, session, ...(agentId !== undefined ? { agentId } : {}) }), { timeoutMs: 15_000 }), 'transcript lookup');
@@ -509,7 +611,9 @@ async function answerLookBackTool(st: State, $: EngineInterface, e: Record<strin
     if (file === undefined) throw new Error(`no transcript file for ${agentId === undefined ? `session ${session}` : `agent ${agentId}`}`);
     const bounds = processOutput(await $.process.run(boundaryArgv(file), { timeoutMs: 15_000 }), 'compaction boundary', true);
     boundary = boundaryLine(bounds) ?? null;
+    // Before any argument check: with nothing compacted there is no earlier transcript, whatever was asked.
     if (boundary === null) result = { text: 'Nothing has been compacted yet, so everything is still in context.', hits: 0 };
+    else if (args.error) throw new Error(args.error);
     else if (args.entry !== undefined && args.entry >= boundary) result = entryResult([], args.entry, boundary);
     else {
       const argv = args.entry !== undefined ? entryArgv(file, args.entry) : searchArgv(file, boundary, args.terms);
@@ -521,7 +625,7 @@ async function answerLookBackTool(st: State, $: EngineInterface, e: Record<strin
         const uses = processOutput(await $.process.run(namesArgv(file, boundary, ids), { timeoutMs: 30_000 }), 'tool name lookup', true);
         names = { ...names, ...toolNames(parseEntries(uses).filter((entry) => entry.line < boundary!)) };
       }
-      result = args.entry !== undefined ? entryResult(entries, args.entry, boundary, names) : searchResults(entries, args.terms, boundary, names);
+      result = args.entry !== undefined ? entryResult(entries, args.entry, boundary, names) : searchResults(entries, args.terms, boundary, names, st.forwardToolName);
     }
   } catch (error) {
     const reason = message(error);
@@ -545,8 +649,7 @@ async function observeManualLookBack(st: State, $: EngineInterface, e: Record<st
     record(st, $, { event: 'look-back-manual', party, tool });
     say(st, $, `look back by hand (${label}): ${tool} on the transcript`, 'info');
   } catch (error) {
-    say(st, $, `sub-agent-compact: observing manual transcript lookup of ${party} via ${tool} failed: ${message(error)}`);
-    record(st, $, { event: 'look-back-manual-error', party, tool, error: message(error) });
+    say(st, $, `sub-agent-compact: observing manual transcript lookup of ${party} via ${tool} failed: ${message(error)}`, 'error', { event: 'look-back-manual-error', party, tool, error: message(error) });
   }
 }
 
@@ -580,11 +683,11 @@ async function registerHandoffTool(st: State, $: EngineInterface): Promise<void>
  * `$.clock.after`, or, where the engine has none, a timer that never fires and a warning once: the wait is then unbounded, as it was.
  * A call a hook refuses without throwing never fires either and is not reported: that wait is unbounded too.
  */
-function afterOrNever(st: State, $: EngineInterface, ms: number, fn: () => void): { cancel: () => void } {
+function afterOrNever(st: State, $: EngineInterface, ms: number, fn: () => void, what: string): { cancel: () => void } {
   try {
     return $.clock.after(ms, fn);
   } catch (error) {
-    warnOnce(st, $, 'no-clock', `sub-agent-compact: $.clock.after is unavailable (${message(error)}); registering the tools is not time-bounded`);
+    warnOnce(st, $, `no-clock:${what}`, `sub-agent-compact: $.clock.after is unavailable (${message(error)}); ${what} is not time-bounded`);
     return { cancel: () => {} };
   }
 }
@@ -630,7 +733,7 @@ async function ensureTools(st: State, $: EngineInterface): Promise<void> {
     if (left().length === 0) st.toolsSettled = true;
   })();
   // A hang here would hold every turn of every chat: past the limit the turn goes on, and the person is told.
-  const outcome = await bounded(registered, ENSURE_TOOLS_TIMEOUT_MS, (ms, fn) => afterOrNever(st, $, ms, fn));
+  const outcome = await bounded(registered, ENSURE_TOOLS_TIMEOUT_MS, (ms, fn) => afterOrNever(st, $, ms, fn, 'registering the tools'));
   if (!outcome.timedOut) return;
   st.toolsAbandoned = true;
   // Once the slow registration settles, a later hook spends the tries left.
@@ -743,21 +846,24 @@ const failure = (out: { exitCode: number; stderr: string }): string => out.stder
 
 /** The records of this party's earlier forward handoffs on disk, newest first; a record that cannot be read is named in `unreadable`. */
 async function earlierRecords(st: State, $: EngineInterface, at: { session: string; agentId?: string }, unreadable: string[]): Promise<unknown[]> {
-  if (st.configDir === undefined) return [];
-  const dir = forwardSessionDir(st.configDir, at.session, at.agentId);
-  const records: unknown[] = [];
-  try {
-    if (!(await $.fs.exists(dir))) return [];
-    const names = (await $.fs.list(dir)).map((entry) => entry.name).filter((name) => /^\d+$/.test(name)).sort((a, b) => Number(b) - Number(a));
-    for (const name of names) {
-      try {
-        records.push(JSON.parse(await $.fs.read(`${dir}/${name}/record.json`)));
-      } catch (error) {
-        unreadable.push(`record ${name} unreadable (${message(error)})`);
-      }
+  // Every root, the HOME one first: a call numbered in both is read once, from the first.
+  const found = new Map<number, string>();
+  for (const root of forwardRoots({ home: st.home, configDir: st.configDir })) {
+    const dir = forwardSessionDir(root, at.session, at.agentId);
+    try {
+      if (!(await $.fs.exists(dir))) continue;
+      for (const entry of await $.fs.list(dir)) if (/^\d+$/.test(entry.name) && !found.has(Number(entry.name))) found.set(Number(entry.name), `${dir}/${entry.name}`);
+    } catch (error) {
+      unreadable.push(`listing ${dir} failed (${message(error)})`);
     }
-  } catch (error) {
-    unreadable.push(`listing ${dir} failed (${message(error)})`);
+  }
+  const records: unknown[] = [];
+  for (const [seq, dir] of [...found.entries()].sort((a, b) => b[0] - a[0])) {
+    try {
+      records.push(JSON.parse(await $.fs.read(`${dir}/record.json`)));
+    } catch (error) {
+      unreadable.push(`record ${seq} unreadable (${message(error)})`);
+    }
   }
   return records;
 }
@@ -767,7 +873,7 @@ async function earlierRecords(st: State, $: EngineInterface, at: { session: stri
  * live environment. A read that fails is a line in `problems`, never an absence. Every path is absolute.
  */
 async function gatherForward(st: State, $: EngineInterface, args: ForwardArgs, at: { seq: number; dir?: string; session: string; agentId?: string }): Promise<RenderInput> {
-  const cwd = st.cwd ?? '.';
+  const cwd = (at.agentId !== undefined ? st.agentCwd.get(at.agentId) : undefined) ?? st.cwd ?? '.';
   const abs = (path: string): string => absPath(path, cwd, st.home ?? '');
   const problems: string[] = [...(args.problems ?? [])];
   let api: ApiMsg[] = [];
@@ -854,8 +960,12 @@ async function gatherForward(st: State, $: EngineInterface, args: ForwardArgs, a
       problems.push(`transcript: ${message(error)}`);
     }
   }
-  const previous = st.configDir === undefined ? undefined : previousDir(st.configDir, at.session, at.seq, at.agentId);
-  if (previous !== undefined) paths.push(`previous ${previous}`);
+  // The previous call's folder where it is, the HOME root first: one saved under the config directory alone is named there.
+  for (const root of forwardRoots({ home: st.home, configDir: st.configDir })) {
+    const previous = previousDir(root, at.session, at.seq, at.agentId);
+    if (previous === undefined) break;
+    if (await $.fs.exists(previous).catch(() => false)) { paths.push(`previous ${previous}`); break; }
+  }
   if (at.dir !== undefined) paths.push(`saved ${at.dir}`);
 
   const work = planAndTasks(api);
@@ -988,6 +1098,11 @@ async function answerForwardTool(st: State, $: EngineInterface, e: Record<string
     return parsed.nudge;
   }
   const party = await partyOf(st, $, agentId);
+  // Haiku is left to Claude Code's own compaction: nothing is stored, so nothing waits to install.
+  if (party.haiku) {
+    record(st, $, { event: 'forward-refused', party: key, why: 'haiku' });
+    return handoffRefusal({ haiku: true, unlisted: false, tokens: undefined, nudgeStart: 0 })!;
+  }
   // A loop no policy governs is never installed at its compaction: storing would tell it a handoff is coming that never lands.
   if (party.unlisted) {
     record(st, $, { event: 'forward-refused', party: key, why: 'unlisted' });
@@ -1011,22 +1126,25 @@ async function answerForwardTool(st: State, $: EngineInterface, e: Record<string
   const session = await $.session.id();
   let saved = '';
   let existing: string[] = [];
-  if (st.configDir === undefined) saved = ' Not saved to disk: no Claude config directory (neither CLAUDE_CONFIG_DIR nor HOME is set).';
-  else {
-    const sessionDir = forwardSessionDir(st.configDir, session, agentId);
+  const roots = forwardRoots({ home: st.home, configDir: st.configDir });
+  if (roots.length === 0) saved = ' Not saved to disk: neither HOME nor CLAUDE_CONFIG_DIR is set.';
+  // Numbered past every root's calls, so a record an earlier version kept under the config directory is never shadowed.
+  for (const root of saved === '' ? roots : []) {
+    const sessionDir = forwardSessionDir(root, session, agentId);
     try {
-      if (await $.fs.exists(sessionDir)) existing = (await $.fs.list(sessionDir)).map((entry) => entry.name);
+      if (await $.fs.exists(sessionDir)) existing.push(...(await $.fs.list(sessionDir)).map((entry) => entry.name));
     } catch (error) {
       // Unlisted, the next number is a guess: saving could overwrite an earlier call's files.
       saved = ` Not saved to disk: listing ${sessionDir} failed: ${message(error)}.`;
       say(st, $, `sub-agent-compact: listing ${sessionDir} failed: ${message(error)}; the forward handoff is not saved, so no earlier call's files are overwritten`);
+      break;
     }
   }
   // Numbered from the directory and this process's own count, with no wait between the two reads and the claim.
   const seqKey = `${session}:${key}`;
   const seq = Math.max(nextSeq(existing), (st.forwardSeq.get(seqKey) ?? 0) + 1);
   st.forwardSeq.set(seqKey, seq);
-  let dir = st.configDir !== undefined && saved === '' ? forwardDir(st.configDir, session, seq, agentId) : undefined;
+  let dir = roots[0] !== undefined && saved === '' ? forwardDir(roots[0], session, seq, agentId) : undefined;
   const input = await gatherForward(st, $, parsed.args, { seq, ...(dir !== undefined ? { dir } : {}), session, ...(agentId !== undefined ? { agentId } : {}) });
   for (const problem of input.problems ?? []) record(st, $, { event: 'forward-invalid', party: key, seq, problem });
   const { text, blocks } = renderForward(input);
@@ -1058,8 +1176,7 @@ async function finishForward(st: State, $: EngineInterface, { meta, text, tokens
     if (!Array.isArray(got)) throw new Error(`messages: ${JSON.stringify(got).slice(0, 120)}`);
     held = heldForward(got as ApiMsg[])?.text ?? '';
   } catch (error) {
-    say(st, $, `sub-agent-compact: reading ${key} to check forward handoff ${meta.seq} failed: ${message(error)}; its install is unchecked`, 'warning');
-    record(st, $, { event: 'forward-unchecked', seq: meta.seq, error: message(error) });
+    say(st, $, `sub-agent-compact: reading ${key} to check forward handoff ${meta.seq} failed: ${message(error)}; its install is unchecked`, 'warning', { event: 'forward-unchecked', seq: meta.seq, error: message(error) });
     return;
   }
   const check = installCheck(meta.blocks, held, text);
@@ -1093,13 +1210,17 @@ export const register: Register = (on: On, options: PluginOptions) => {
     pluginWriting: Promise.resolve(),
     pluginFailing: false,
     types: new AgentTypes(),
+    agentCwd: new Map(),
     models: new Map(),
     parties: new Parties(),
     asked: new Set(),
-    haikuHeld: new Map(),
     warned: new Set(),
     logFailures: new Set(),
     pending: [],
+    rowsWriting: 0,
+    levelRowsWriting: 0,
+    modelWindows: new Map(),
+    skips: new SkipFold(),
     writing: Promise.resolve(),
     mainCompactedThisTurn: false,
     mainCompacting: false,
@@ -1141,9 +1262,12 @@ export const register: Register = (on: On, options: PluginOptions) => {
     const result = yield* next(e);
     const key = e.agentId ?? 'main';
     try {
+      const previous = st.models.get(key);
       st.models.set(key, e.model);
       const tokens = contextTokens(result.usage);
       const main = e.agentId === undefined;
+      // /model moves the main chat to another window: its forced point and nudges follow the new one.
+      if (main && previous !== undefined && previous !== e.model) await rereadWindow(st, $, e.model);
       // Only a reading of the session's first request is the base a handoff cuts back to; a plugin reloaded mid-session reads its first at a late one.
       // The main chat's prompt count is asked only when this could be that request.
       const mayBeFirst = e.index === 0 && typeof e.messageCount === 'number' && e.messageCount <= FRESH_MAX_MESSAGES && st.parties.firstReading(key) === undefined;
@@ -1151,18 +1275,28 @@ export const register: Register = (on: On, options: PluginOptions) => {
       // A sharp fall with no session.compact handled since is a compaction Claude Code never dispatched to the plugin.
       if (main && tokens !== undefined) {
         const before = st.parties.reading('main');
-        if (unseenCompaction(before, tokens, st.mainCompactSeen)) record(st, $, { event: 'compact-unseen', party: 'main', before: before ?? null, after: tokens });
+        // What that compaction summarized away is gone: a stored handoff would install stale, and the nudges start over.
+        if (unseenCompaction(before, tokens, st.mainCompactSeen)) {
+          const handoffDropped = st.parties.handoff('main') !== undefined;
+          st.parties.compacted('main', tokens);
+          st.forwardWoke.delete('main');
+          record(st, $, { event: 'compact-unseen', party: 'main', before: before ?? null, after: tokens, handoffDropped });
+        }
         st.mainCompactSeen = false;
       }
       if (tokens !== undefined) st.parties.read(key, tokens, isFirstRequest({ index: e.index, messageCount: e.messageCount, main, turns }));
+      // A step asking for tools got a response, from the API or a hook; a failed request (a prompt too long) asks for none, so its recovery ask stays unanswered.
+      else if (result.toolUses.length > 0) st.parties.answered(key);
       const installed = st.forwardInstalled.get(key);
       if (installed !== undefined) {
         st.forwardInstalled.delete(key);
         await finishForward(st, $, installed, e.agentId);
       }
       // A marker is read only with the final config: while start is still reading the environment, `config` holds the options alone and could disagree with it.
-      const handoff = st.configured && st.config.handoffTool ? handoffMarkerRequest({ answer: result.answer, toolCalls: result.toolUses.length, main }) : undefined;
-      const focus = st.configured && st.config.compactTool && handoff === undefined ? markerRequest({ answer: result.answer, toolCalls: result.toolUses.length, main }) : undefined;
+      // A Haiku party's markers are not read: it is left to Claude Code, so a marker it writes is neither stored nor refused.
+      const haiku = isHaiku(e.model);
+      const handoff = st.configured && st.config.handoffTool && !haiku ? handoffMarkerRequest({ answer: result.answer, toolCalls: result.toolUses.length, main }) : undefined;
+      const focus = st.configured && st.config.compactTool && !haiku && handoff === undefined ? markerRequest({ answer: result.answer, toolCalls: result.toolUses.length, main }) : undefined;
       if (handoff !== undefined) {
         const stored = storeHandoff(st, $, await partyOf(st, $, e.agentId), { text: handoff, anchor: { marker: true } }, 'marker');
         // The marker has no tool result to answer it: the agent reads the outcome on its next tool result.
@@ -1225,6 +1359,17 @@ export const register: Register = (on: On, options: PluginOptions) => {
   });
 
   // Every sub-agent's start names its type; a Workflow run's agents are never in $.agent.list(), so this is their only source.
+  on('agent.spawn', async ($, e, next) => {
+    const started = await next(e);
+    try {
+      // A spawn without its own directory runs in the parent's as it is now; the main chat's shell may move after.
+      if (started.agentId !== undefined) st.agentCwd.set(started.agentId, e.cwd ?? (await $.session.cwd()));
+    } catch (error) {
+      say(st, $, `sub-agent-compact: reading where sub-agent ${started.agentId} runs failed: ${message(error)}; its relative paths resolve under ${st.cwd ?? '.'}`, 'warning');
+    }
+    return started;
+  });
+
   on('classic.SubagentStart', async ($, e, next) => {
     st.types.learn(e.agent_id, e.agent_type);
     return next(e);
@@ -1233,6 +1378,8 @@ export const register: Register = (on: On, options: PluginOptions) => {
   // A sub-agent that sent its marker alone ended its run: arm it and refuse the stop once, so it compacts and carries on.
   on('classic.SubagentStop', async ($, e, next) => {
     st.types.learn(e.agent_id, e.agent_type);
+    // A Haiku sub-agent's stop is its own: its last message is not read for a marker.
+    if (isHaiku(st.models.get(e.agent_id))) return next(e);
     try {
       await start(st, $);
       const continued = st.parties.continued(e.agent_id);
@@ -1270,7 +1417,6 @@ export const register: Register = (on: On, options: PluginOptions) => {
   on('session.compact', async ($, e, next) => {
     const agentId = e.agentId;
     const key = agentId ?? 'main';
-    if (agentId === undefined) st.mainCompactSeen = true;
     // A trigger a newer Claude Code may add is handled as an automatic ask, and said once.
     const known = knownTrigger(e.trigger);
     const kind: Trigger = known ?? 'auto';
@@ -1286,18 +1432,19 @@ export const register: Register = (on: On, options: PluginOptions) => {
       tokens = currentTokens(agentId ? st.parties.reading(agentId) : (await $.session.usage()).context.tokens, messages, st.asked.has(key));
     } catch (error) {
       const line = `sub-agent-compact: deciding ${agentId ? `sub-agent ${agentId}` : 'main'} ${kind} compaction failed: ${message(error)}; letting it through`;
-      say(st, $, line);
-      record(st, $, { ...base, decision: 'pass', why: 'error', error: message(error) });
+      say(st, $, line, 'error', { ...base, decision: 'pass', why: 'error', error: message(error) });
       if (st.parties.handoff(key) !== undefined) st.parties.notify(key, handoffNotice('fallback', `deciding failed: ${message(error)}`));
-      return next(e);
+      const passed = await next(e);
+      if (!agentId && kind !== 'precompute' && passed.skip === undefined) mainCompacted(st);
+      return passed;
     }
-    const limit = limitOf(party);
+    const { limit, row: limitRow } = limitOf(st, $, party);
     const askPoint = askPointOf(st);
+    const tracked = !party.haiku && !party.unlisted;
     const shape = transcriptShapeProblem(e.messages);
-    if (shape !== undefined) {
+    if (shape !== undefined && tracked) {
       warnOnce(st, $, `shape:${key}`, `sub-agent-compact: the transcript of ${party.label} has an unexpected shape (${shape}); handoffs cannot be installed verbatim`);
     }
-    const tracked = haikuServed(party.haiku, st.forwardToolName !== undefined) && !party.unlisted;
     let handoff: ArmedHandoff | undefined = tracked ? st.parties.handoff(key) : undefined;
     let recovered = false;
     // A handoff the plugin lost (a reload, a resume) still stands in the transcript as a stored call: take it back.
@@ -1306,6 +1453,23 @@ export const register: Register = (on: On, options: PluginOptions) => {
       if (found !== undefined && 'toolUseId' in found.anchor && !st.settled.has(`${key}:${found.anchor.toolUseId}`)) {
         handoff = found;
         recovered = true;
+      }
+    }
+    // The same for a forward handoff: its text and record are read back from the files its call saved.
+    if (handoff === undefined && tracked && kind !== 'manual' && shape === undefined && st.forwardToolName !== undefined) {
+      const found = recoverForward(e.messages, st.forwardToolName, forwardRoots({ home: st.home, configDir: st.configDir }));
+      if (found !== undefined && !st.settled.has(`${key}:${found.toolUseId}`)) {
+        try {
+          const text = await $.fs.read(`${found.dir}/wake.txt`);
+          const record = JSON.parse(await $.fs.read(`${found.dir}/record.json`)) as Record<string, unknown>;
+          const blocks = Array.isArray(record.blocks) ? (record.blocks as BlockRecord[]) : [];
+          const seq = typeof record.seq === 'number' ? record.seq : 0;
+          if (text.trim() === '') throw new Error(`${found.dir}/wake.txt is empty`);
+          handoff = { text, anchor: { toolUseId: found.toolUseId }, forward: { seq, dir: found.dir, blocks, record } };
+          recovered = true;
+        } catch (error) {
+          say(st, $, `sub-agent-compact: recovering the forward handoff of ${party.label} from ${found.dir} failed: ${message(error)}; this compaction runs as it would without it`, 'warning');
+        }
       }
     }
     // Set when the handoff cannot be installed verbatim: the summarizer is told it for this call only, and the stored handoff is left as it is.
@@ -1337,7 +1501,7 @@ export const register: Register = (on: On, options: PluginOptions) => {
             if (installed !== undefined) {
               const tokensAfter = estimateTranscript(installed.messages);
               if (kind === 'auto') st.asked.add(key);
-              if (!agentId) st.mainCompactedThisTurn = true;
+              if (!agentId) mainCompacted(st);
               if ('toolUseId' in handoff.anchor) st.settled.add(`${key}:${handoff.anchor.toolUseId}`);
               st.parties.compacted(key, tokensAfter);
               const line = installLine({ label: party.label, before: tokens, after: tokensAfter, tail: installed.tail, recovered });
@@ -1355,7 +1519,7 @@ export const register: Register = (on: On, options: PluginOptions) => {
               if (wake.failed.length > 0) {
                 st.parties.notify(key, `sub-agent-compact: load_on_wake entries not loaded: ${wake.failed.join(', ')} — the installed handoff names them as NOT LOADED; load them yourself.`);
               }
-              record(st, $, { ...base, type: party.label, limit, tokens: tokens ?? null, messages: messages.length, decision: 'handoff', tail: installed.tail, siblings: installed.siblings, brief: brief !== undefined, chars: text.length, tokensAfter, recovered, loads: entries.length, loadsFailed: wake.failed.length, warn: line.warn });
+              record(st, $, { ...base, type: party.label, ...limitRow, tokens: tokens ?? null, messages: messages.length, decision: 'handoff', tail: installed.tail, siblings: installed.siblings, brief: brief !== undefined, chars: text.length, tokensAfter, recovered, loads: entries.length, loadsFailed: wake.failed.length, warn: line.warn });
               // What the session holds is readable only once the compaction is done: the next main request checks it.
               if (handoff.forward) {
                 st.forwardInstalled.set(key, { meta: handoff.forward, text, tokensAfter, before: tokens, label: party.label });
@@ -1368,8 +1532,7 @@ export const register: Register = (on: On, options: PluginOptions) => {
             reason = { kind: 'fallback', detail: `installing failed: ${message(error)}` };
           }
         }
-        say(st, $, `sub-agent-compact: the handoff of ${party.label} could not be installed verbatim (${reason.detail}); a summary that keeps it runs instead`, 'warning');
-        record(st, $, { event: 'handoff-fallback', party: key, type: party.label, why: reason.kind, detail: reason.detail });
+        say(st, $, `sub-agent-compact: the handoff of ${party.label} could not be installed verbatim (${reason.detail}); a summary that keeps it runs instead`, 'warning', { event: 'handoff-fallback', party: key, type: party.label, why: reason.kind, detail: reason.detail });
         st.parties.notify(key, handoffNotice(reason.kind, reason.detail));
         // Never hold a compaction: the summarizer runs with the handoff as what it keeps. Nothing is dropped: if the summary is skipped, the handoff stays stored.
         fallback = handoff.text;
@@ -1380,28 +1543,23 @@ export const register: Register = (on: On, options: PluginOptions) => {
     }
     const heldArm = tracked ? st.parties.armed(key) : undefined;
     const armed = fallback ?? heldArm;
-    const held = st.haikuHeld.get(key) ?? 0;
-    if (haikuHold({ haiku: party.haiku, forwardOn: st.forwardToolName !== undefined, trigger: kind, stored: handoff !== undefined, held })) {
-      st.haikuHeld.set(key, held + 1);
-      record(st, $, { ...base, type: party.label, limit, source: 'haiku', tokens: tokens ?? null, messages: messages.length, decision: 'skip', why: 'haiku-hold', held: held + 1 });
-      if (held === 0) st.parties.notify(key, forwardHoldText(st.forwardToolName!));
-      return { skip: `${party.label}: held for its forward handoff (${held + 1}/${HAIKU_HOLDS})` };
-    }
-    const decision = decide({ trigger: kind, label: party.label, limit, tokens, enabled: party.haiku || party.policy.enabled, armed, unlisted: party.unlisted, haiku: party.haiku });
-    if (decision.action === 'pass') st.haikuHeld.delete(key);
-    record(st, $, { ...base, type: party.label, limit, source: party.haiku ? 'haiku' : party.source, tokens: tokens ?? null, lastResponseTokens: st.parties.reading(key) ?? null, messages: messages.length, decision: decision.action, ...(decision.action === 'pass' ? { why: decision.why } : {}) });
+    const unanswered = kind === 'auto' && st.parties.unanswered(key);
+    const decision = decide({ trigger: kind, label: party.label, limit, tokens, enabled: party.haiku || party.policy.enabled, armed, unlisted: party.unlisted, haiku: party.haiku, unanswered });
+    record(st, $, { ...base, type: party.label, ...limitRow, source: party.haiku ? 'haiku' : party.source, tokens: tokens ?? null, lastResponseTokens: st.parties.reading(key) ?? null, messages: messages.length, decision: decision.action, ...(decision.action === 'pass' ? { why: decision.why } : {}) });
     if (decision.action === 'skip') {
-      if (kind === 'auto') st.asked.add(key);
+      if (kind === 'auto') {
+        st.asked.add(key);
+        st.parties.heldAsk(key);
+      }
       return { skip: decision.reason };
     }
     if (decision.why === 'no-reading') say(st, $, `sub-agent-compact: no token reading for ${party.label} and no transcript estimate to trust; letting the ${kind} compaction through`, 'warning');
     const firstAsk = !st.asked.has(key);
     if (kind === 'auto') st.asked.add(key);
     // With the window known, a first ask past the limit is one step's growth, not a window set too high.
-    if (kind === 'auto' && firstAsk && !party.unlisted && st.compactWindow === undefined && tokens !== undefined && tokens > limit * 1.1) {
+    if (kind === 'auto' && firstAsk && tracked && st.compactWindow === undefined && tokens !== undefined && tokens > limit * 1.1) {
       warnOnce(st, $, `late:${party.label}`, `sub-agent-compact: ${party.label} was first asked to compact at ${tokens}, past its limit ${limit}; CLAUDE_CODE_AUTO_COMPACT_WINDOW is unset, so Claude Code's native window is likely above this limit — set it to your smallest sub-agent limit`);
     }
-    if (!agentId) st.mainCompactedThisTurn = true;
     // A self-compaction's focus becomes what the summarizer is told; a person's or plugin's instructions come first.
     const input = (decision.why === 'self' || fallback !== undefined) && armed !== undefined ? { ...e, instructions: e.instructions ? `${e.instructions}\n\n${armed}` : armed } : e;
     // A compaction armed by the model that does not finish drops its focus: the person's interrupt, a skip beneath or a failure never leaves it to fire on the next request.
@@ -1439,6 +1597,7 @@ export const register: Register = (on: On, options: PluginOptions) => {
     const end = compactionEnd({ trigger: kind, skipped: outcome.skip !== undefined, aborted: false });
     if (end === 'compacted' && outcome.skip === undefined) {
       st.parties.compacted(key, outcome.tokensAfter);
+      if (!agentId) mainCompacted(st);
       if (fallback !== undefined && handoff !== undefined && 'toolUseId' in handoff.anchor) st.settled.add(`${key}:${handoff.anchor.toolUseId}`);
       if (manualOver !== undefined) {
         record(st, $, { event: 'disarmed', party: key, via: 'manual', what: 'handoff' });
@@ -1454,7 +1613,7 @@ export const register: Register = (on: On, options: PluginOptions) => {
       }
     }
     // A sub-agent's brief is its first message, which the summary replaces: seat it back right after the summary.
-    if (agentId && st.config.keepBrief && outcome.skip === undefined) {
+    if (agentId && st.config.keepBrief && !party.haiku && outcome.skip === undefined) {
       try {
         const reseated = reseatBrief(e.messages, outcome.messages, BRIEF_MAX_TOKENS);
         if (reseated !== outcome.messages) {
@@ -1462,8 +1621,7 @@ export const register: Register = (on: On, options: PluginOptions) => {
           return { ...outcome, messages: reseated };
         }
       } catch (error) {
-        say(st, $, `sub-agent-compact: seating the brief of sub-agent ${agentId} failed: ${message(error)}; leaving the compaction as Claude Code made it`, 'warning');
-        record(st, $, { event: 'brief-error', party: key, error: message(error) });
+        say(st, $, `sub-agent-compact: seating the brief of sub-agent ${agentId} failed: ${message(error)}; leaving the compaction as Claude Code made it`, 'warning', { event: 'brief-error', party: key, error: message(error) });
       }
     }
     return outcome;
@@ -1471,7 +1629,10 @@ export const register: Register = (on: On, options: PluginOptions) => {
 
   // Main between turns: the compaction its model armed below Claude Code's ask point, or its forced point.
   on('turn.complete', async ($, e, next) => {
-    const result = await next(e);
+    // A prompt too long is asked again inside its turn; once the turn ends (an Esc, an API error, or a failure under
+    // this hook), the held ask is answered, so the next turn's ask is held again.
+    let result: Awaited<ReturnType<typeof next>>;
+    try { result = await next(e); } finally { st.parties.turnEnded(e.agentId ?? 'main'); }
     if (e.agentId) return result;
     if (st.mainCompactedThisTurn) {
       st.mainCompactedThisTurn = false;
@@ -1480,17 +1641,23 @@ export const register: Register = (on: On, options: PluginOptions) => {
     if (st.mainCompacting) return result;
     try {
       const party = await partyOf(st, $, undefined);
-      const focus = party.haiku ? undefined : st.parties.armed('main');
-      const handoff = haikuServed(party.haiku, st.forwardToolName !== undefined) ? st.parties.handoff('main') : undefined;
+      // A Haiku main chat is left to Claude Code: no armed compaction, no handoff, no forced point.
+      if (party.haiku) return result;
+      const focus = st.parties.armed('main');
+      const handoff = st.parties.handoff('main');
       const tokens = (await $.session.usage()).context.tokens;
-      const limit = limitOf(party);
+      const limit = limitOf(st, $, party).limit;
       const forced = party.policy.enabled && tokens !== undefined && tokens >= limit;
       if (focus === undefined && handoff === undefined && !forced) return result;
       st.mainCompacting = true;
       record(st, $, { event: 'turn.complete', party: 'main', tokens: tokens ?? null, limit, action: 'compact', why: handoff !== undefined ? 'handoff' : focus !== undefined ? 'self' : 'at-limit' });
       const outcome = await $.session.compact(focus !== undefined ? { instructions: focus } : {});
-      st.mainCompactSeen = true;
       const skipped = 'skip' in outcome && outcome.skip ? outcome.skip : null;
+      // The plugin's own compaction ran even when its session.compact passed this hook by: main starts over from it.
+      if (skipped === null) {
+        st.parties.compacted('main', 'tokensAfter' in outcome ? outcome.tokensAfter : undefined);
+        st.mainCompactSeen = true;
+      }
       record(st, $, { event: 'turn.complete.compacted', party: 'main', skipped });
       if (skipped !== null) {
         // A skip beneath (a tool is running, another hook's veto) leaves the handoff stored: say so where the person and the model read it.
@@ -1498,8 +1665,7 @@ export const register: Register = (on: On, options: PluginOptions) => {
         if (handoff !== undefined) st.parties.notify('main', handoffNotice('skipped', skipped));
       }
     } catch (error) {
-      say(st, $, `sub-agent-compact: compacting main between turns failed: ${message(error)}`);
-      record(st, $, { event: 'turn.complete', party: 'main', error: message(error) });
+      say(st, $, `sub-agent-compact: compacting main between turns failed: ${message(error)}`, 'error', { event: 'turn.complete', party: 'main', error: message(error) });
       if (st.parties.handoff('main') !== undefined) st.parties.notify('main', handoffNotice('skipped', `the compaction failed: ${message(error)}`));
     } finally {
       st.mainCompacting = false;
@@ -1508,7 +1674,24 @@ export const register: Register = (on: On, options: PluginOptions) => {
     return result;
   });
   on('session.end', async ($, e, next) => {
-    await st.pluginWriting;
+    // A /clear or a resume ends the conversation, and the process goes on under a new session id with no session.start.
+    const goesOn = e.reason === 'clear' || e.reason === 'resume';
+    if (goesOn) record(st, $, { event: 'cleared', party: 'main', reason: e.reason, handoffDropped: st.parties.handoff('main') !== undefined });
+    // The open skip streaks close now, and the session ends only once every queued row is written.
+    if (st.config.logFile) {
+      for (const out of st.skips.drain()) st.pending.push(JSON.stringify(out));
+      flushDecisions(st, $);
+    }
+    // The whole end chain shares one short bound: the writes get what it leaves less core's share, and the conversation starts over either way.
+    const writes = Promise.all([st.writing, st.pluginWriting]);
+    const left = next.budget?.remainingMs ?? Infinity;
+    const outcome = Number.isFinite(left) ? await bounded(writes, Math.max(0, left - END_CORE_RESERVE_MS), (ms, fn) => afterOrNever(st, $, ms, fn, 'the session-end log flush')) : (await writes, { timedOut: false as const });
+    if (outcome.timedOut) {
+      const count = (n: number, log: string) => (n > 0 ? [`${n} ${log} ${n === 1 ? 'row' : 'rows'}`] : []);
+      const cut = [...count(st.pending.length + st.rowsWriting, 'decision'), ...count(st.levelRowsWriting, 'level')];
+      show($, `sub-agent-compact: the session-end bound (${next.budget?.ms ?? left} ms) ran out before the logs were written; ${cut.length > 0 ? cut.join(' and ') : 'the rows in flight'} may be lost`);
+    }
+    if (goesOn) startOver(st);
     return next(e);
   });
 };

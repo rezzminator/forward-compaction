@@ -6,19 +6,191 @@
 export function sessionLogPath(logFile: string, sessionId: string): string {
   if (sessionId === '') throw new Error('sub-agent-compact: empty session id; cannot name the log file');
   const safe = sessionId.replace(/[^A-Za-z0-9_-]/g, '_');
-  const slash = logFile.lastIndexOf('/');
-  const dir = logFile.slice(0, slash + 1);
-  const name = logFile.slice(slash + 1);
-  if (name === '.jsonl') return `${dir}${safe}.jsonl`;
-  const dot = name.lastIndexOf('.');
-  if (dot <= 0) return `${dir}${name}.${safe}`;
-  return `${dir}${name.slice(0, dot)}.${safe}${name.slice(dot)}`;
+  const { head, prefix, suffix } = sessionLogParts(logFile);
+  return `${head}${prefix}${safe}${suffix}`;
 }
 
-/** The file's rows followed by `rows`, blank lines dropped, the newest `cap` kept. */
-export function appendRows(existing: string, rows: string[], cap: number): string {
-  const all = [...existing.split('\n').filter((line) => line.trim() !== ''), ...rows];
-  return all.slice(-cap).join('\n') + '\n';
+/** What goes before and after the session id in a session's log name, by the rule sessionLogPath names it with. */
+function sessionLogParts(logFile: string): { head: string; dir: string; prefix: string; suffix: string } {
+  const slash = logFile.lastIndexOf('/');
+  const head = logFile.slice(0, slash + 1);
+  const dir = slash < 0 ? '.' : slash === 0 ? '/' : logFile.slice(0, slash);
+  const name = logFile.slice(slash + 1);
+  if (name === '.jsonl') return { head, dir, prefix: '', suffix: '.jsonl' };
+  const dot = name.lastIndexOf('.');
+  if (dot <= 0) return { head, dir, prefix: `${name}.`, suffix: '' };
+  return { head, dir, prefix: `${name.slice(0, dot)}.`, suffix: name.slice(dot) };
+}
+
+/** A session's decision log moves aside to `.1` past this size, so no one file grows without end. */
+export const DECISION_LOG_CAP_BYTES = 8388608;
+/** Old sessions' logs beside this one are deleted past this age or past this count, newest kept. */
+export const DECISION_LOG_RETENTION = { days: 14, keep: 200 } as const;
+
+/**
+ * A directory lock born with its holder's token (`pid epoch`) in `$lock/pid`: staged under a private name and
+ * renamed into place, so the lock never exists without its token. A lock whose holder is gone, or whose token is
+ * older than a minute (no append takes that long), is broken; a live one is waited on for about five seconds.
+ * Breaking and releasing first claim the token by renaming `$lock/pid` to a private name: only one mover wins that
+ * rename, and the claimer removes the lock only when the token it took is the one it saw stale (or its own), so no
+ * waiter removes a lock another has since broken and taken, and a holder outlived by an age break never removes its
+ * successor's lock.
+ */
+const LOCK_FN = `lk_claim() {
+  lk_c="$lk_lock/pid.claim.$$"
+  mv "$lk_lock/pid" "$lk_c" 2>/dev/null || return 1
+  if [ "$(cat "$lk_c" 2>/dev/null)" = "$1" ]; then
+    lk_gone="$lk_lock.dead.$$"
+    rm -rf "$lk_gone"
+    mv "$lk_lock" "$lk_gone" 2>/dev/null || return 1
+    rm -rf "$lk_gone" 2>/dev/null || :
+    return 0
+  fi
+  mv "$lk_c" "$lk_lock/pid" 2>/dev/null || :
+  return 1
+}
+lock() {
+  lk_lock=$1; tries=0
+  lk_token="$$ $(date +%s)"
+  lk_stage="$lk_lock.$$"
+  while :; do
+    rm -rf "$lk_stage"
+    mkdir "$lk_stage"
+    printf '%s\\n' "$lk_token" > "$lk_stage/pid"
+    if [ ! -e "$lk_lock" ] && mv "$lk_stage" "$lk_lock" 2>/dev/null && [ "$(cat "$lk_lock/pid" 2>/dev/null)" = "$lk_token" ]; then break; fi
+    # mv onto a lock that appeared meanwhile moves the stage into it.
+    rm -rf "$lk_stage" "$lk_lock/\${lk_stage##*/}"
+    tries=$((tries + 1))
+    [ "$tries" -le 100 ] || fail "$lk_lock" 'lock held by another writer'
+    holder=$(cat "$lk_lock/pid" 2>/dev/null) || holder=
+    if [ -n "$holder" ] && { ! kill -0 "\${holder%% *}" 2>/dev/null || [ -n "$(find "$lk_lock/pid" -mmin +1 2>/dev/null)" ]; }; then
+      lk_claim "$holder" || :
+      continue
+    fi
+    sleep 0.05
+  done
+  trap 'lk_claim "$lk_token" || :' EXIT
+  trap 'exit 1' HUP INT TERM
+}`;
+
+/** Appends the rows on stdin to the session's log under its lock, moving a file past the cap aside first; no row is rewritten. */
+export const DECISION_APPEND_SCRIPT = `set -eu
+umask 077
+path=$1; cap=$2
+fail() { printf '%s: %s\\n' "$1" "$2" >&2; exit 1; }
+${LOCK_FN}
+case $path in /*) ;; *) path=./$path;; esac
+dir=\${path%/*}
+[ -n "$dir" ] || dir=/
+mkdir -p "$dir"
+lock "$path.lock"
+if [ -f "$path" ]; then
+  bytes=$(wc -c < "$path")
+  bytes=$((bytes))
+  if [ "$bytes" -gt "$cap" ]; then mv -f "$path" "$path.1"; fi
+fi
+cat >> "$path"`;
+
+/** The append process for one session log; its rows go on stdin, one per line. */
+export function decisionAppendArgv(path: string, cap: number = DECISION_LOG_CAP_BYTES): string[] {
+  return ['/bin/sh', '-c', DECISION_APPEND_SCRIPT, 'decision-log', path, String(cap)];
+}
+
+const HEX = '[0-9a-fA-F]';
+/** Only a name whose session part is a session id's shape is ever deleted: a file beside the log that is not one of its sessions stays. */
+const SESSION_ID = [8, 4, 4, 4, 12].map((n) => HEX.repeat(n)).join('-');
+
+/**
+ * Deletes the sessions' logs of one logFile past the age, then past the newest count (the session's own among them), never the
+ * session's own; each with its `.1`. Only a file whose first line is a decision row is one: another tool's `<uuid>.jsonl` stays.
+ */
+export const RETENTION_SCRIPT = `set -eu
+dir=$1; prefix=$2; suffix=$3; days=$4; keep=$5; self=$6
+case $dir in /*) ;; *) dir=./$dir;; esac
+[ -d "$dir" ] || exit 0
+cd "$dir"
+named() {
+  case $1 in "$prefix"*"$suffix") ;; *) return 1;; esac
+  id=\${1#"$prefix"}; id=\${id%"$suffix"}
+  case $id in ${SESSION_ID}) ;; *) return 1;; esac
+}
+file() { [ -f "./$1" ] && ours "$1"; }
+ours() { IFS= read -r first < "./$1" || return 1; case $first in '{"ts":"'*'","event":"'*) ;; *) return 1;; esac; }
+old() { [ -n "$(find "./$1" -prune -mmin +$((days * 1440)))" ]; }
+kept=1
+ls -t . | while IFS= read -r name; do
+  [ "$name" != "$self" ] && named "$name" && file "$name" || continue
+  if [ "$kept" -lt "$keep" ] && ! old "$name"; then kept=$((kept + 1)); continue; fi
+  rm -f "./$name" "./$name.1"
+done
+# A rotated half whose session file is gone goes by its own age.
+ls . | while IFS= read -r name; do
+  case $name in *.1) ;; *) continue;; esac
+  base=\${name%.1}
+  [ "$base" != "$self" ] && named "$base" && [ ! -e "./$base" ] && file "$name" || continue
+  if old "$name"; then rm -f "./$name"; fi
+done`;
+
+/** The retention process for `logFile`'s sessions, sparing the session's own `sessionPath`. */
+export function retentionArgv(logFile: string, sessionPath: string, policy: { days: number; keep: number } = DECISION_LOG_RETENTION): string[] {
+  const { dir, prefix, suffix } = sessionLogParts(logFile);
+  return ['/bin/sh', '-c', RETENTION_SCRIPT, 'decision-retention', dir, prefix, suffix, String(policy.days), String(policy.keep), sessionPath.slice(sessionPath.lastIndexOf('/') + 1)];
+}
+
+type DecisionRow = Record<string, unknown>;
+type SkipStreak = { party: unknown; agentId: unknown; type: unknown; trigger: unknown; count: number; from?: unknown; to?: unknown; firstTokens?: unknown; lastTokens?: unknown; limit?: unknown };
+
+/**
+ * Routine skips fold: a party asked to compact below its point on every request writes the first skip of a
+ * streak and counts the rest, closed as one `skips` row at the party's next compaction decision, every
+ * `every` folded skips, and at session end. Every other row passes as it came.
+ */
+export class SkipFold {
+  private readonly open = new Map<string, SkipStreak>();
+  constructor(private readonly every = 100) {}
+
+  /** The rows to write for `row` (stamped with its `ts`), in order. */
+  add(row: DecisionRow): DecisionRow[] {
+    if (row.event !== 'session.compact') return [row];
+    const owner = String(row.agentId ?? 'main');
+    if (row.decision !== 'skip' || row.why !== undefined) return [...this.close(owner), row];
+    const key = `${owner}\u0000${String(row.trigger)}`;
+    const streak = this.open.get(key);
+    if (streak === undefined) {
+      this.open.set(key, { party: row.party, agentId: row.agentId, type: row.type, trigger: row.trigger, count: 0 });
+      return [row];
+    }
+    if (streak.count === 0) { streak.from = row.ts; streak.firstTokens = row.tokens; }
+    streak.count++;
+    streak.to = row.ts;
+    streak.lastTokens = row.tokens;
+    streak.limit = row.limit;
+    if (streak.count < this.every) return [];
+    const out = summary(streak);
+    streak.count = 0;
+    return [out];
+  }
+
+  /** Every open streak's `skips` row: the session is ending. */
+  drain(): DecisionRow[] {
+    const out = [...this.open.values()].filter((streak) => streak.count > 0).map(summary);
+    this.open.clear();
+    return out;
+  }
+
+  private close(owner: string): DecisionRow[] {
+    const out: DecisionRow[] = [];
+    for (const [key, streak] of this.open) {
+      if (!key.startsWith(`${owner}\u0000`)) continue;
+      if (streak.count > 0) out.push(summary(streak));
+      this.open.delete(key);
+    }
+    return out;
+  }
+}
+
+function summary(streak: SkipStreak): DecisionRow {
+  return { ts: streak.to, event: 'skips', party: streak.party, agentId: streak.agentId, type: streak.type, trigger: streak.trigger, count: streak.count, from: streak.from, to: streak.to, firstTokens: streak.firstTokens, lastTokens: streak.lastTokens, limit: streak.limit };
 }
 
 export type PluginLogLevel = 'error' | 'warning' | 'info';
@@ -85,12 +257,17 @@ export function levelRow(fields: PluginLogFields, nowMs: number): string {
 export const APPEND_SCRIPT = `set -eu
 umask 077
 dir=$1; plugin=$2; shift 2
-case "$dir" in -*) dir=./$dir;; esac
 fail() { printf '%s: %s\\n' "$1" "$2" >&2; exit 1; }
+# No operand starts with '-': a relative directory is passed as ./dir, so no command reads it as an option.
+case $dir in /*) ;; *) dir=./$dir;; esac
 mkdir -p "$dir"
+${LOCK_FN}
+# Cap, rotation and append happen under one lock: two writers never both move a full file aside.
+lock "$dir/.lock"
 cap() {
   if [ -f "$1" ]; then
     bytes=$(wc -c < "$1") || exit 1
+    bytes=$((bytes))
     if [ "$bytes" -gt ${PLUGIN_LOG_CAP_BYTES} ]; then mv -f "$1" "$1.1" || exit 1; return 0; fi
   fi
   return 1
@@ -101,7 +278,9 @@ capped() {
   truncated=false
   while :; do
     notice=$(printf '{"ts":"%s","plugin":"%s","level":"warning","event":"log-capped","msg":"%s","where":"src/log.ts#APPEND_SCRIPT"%s,"detail":%s}' "$ts" "$plugin" "$msg" "$session" "$detail")
+    # BSD wc pads its count with spaces, which would land in the row: arithmetic expansion drops them.
     bytes=$(printf '%s\\n' "$notice" | wc -c) || exit 1
+    bytes=$((bytes))
     [ "$bytes" -gt ${ROW_MAX_BYTES} ] || break
     if [ "$truncated" = false ]; then
       detail=$(printf '{"truncated":true,"bytes":%s}' "$bytes"); truncated=true
@@ -179,10 +358,10 @@ export class PluginLogQueue {
 export function pluginLogEvent(row: Record<string, unknown>): Omit<PluginLogFields, 'plugin' | 'session'> | undefined {
   row = Object.fromEntries(Object.entries(row).map(([key, value]) => [key, typeof value === 'string' ? pluginLogDiagnostic(value) : value]));
   let event = String(row.event);
-  if (event === 'session.compact') event = row.why === 'error' ? 'compact-error' : row.why === 'handoff-waits' ? 'handoff-waits-skipped' : row.why === 'haiku-hold' ? 'haiku-hold' : event;
+  if (event === 'session.compact') event = row.why === 'error' ? 'compact-error' : row.why === 'handoff-waits' ? 'handoff-waits-skipped' : event;
   if (event === 'turn.complete' && row.error !== undefined) event = 'turn-complete-error';
-  const errors = ['tool-register-failed', 'look-back-manual-error', 'brief-error', 'compact-error', 'turn-complete-error', 'hook-threw'];
-  const warnings = ['warning', 'option-error', 'resolve-error', 'handoff-invalid', 'forward-invalid', 'forward-unchecked', 'handoff-fallback', 'compact-unseen', 'handoff-waits-skipped', 'haiku-hold'];
+  const errors = ['tool-register-failed', 'look-back-manual-error', 'compact-error', 'turn-complete-error', 'hook-threw'];
+  const warnings = ['warning', 'brief-error', 'option-error', 'resolve-error', 'handoff-invalid', 'forward-invalid', 'forward-unchecked', 'handoff-fallback', 'compact-unseen', 'handoff-waits-skipped'];
   const infos = ['handoff-refused', 'arm-refused', 'forward-refused', 'stop-refused'];
   const level = errors.includes(event) ? 'error' : warnings.includes(event) ? 'warning' : infos.includes(event) ? 'info' : undefined;
   if (level === undefined) return undefined;
