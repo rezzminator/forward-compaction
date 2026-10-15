@@ -4,6 +4,8 @@ Every release of sub-agent-compact. Versions follow [semantic versioning](https:
 
 ## [Unreleased]
 
+## [0.7.1-dev.3] — 2026-10-15
+
 ### Changed
 
 - Haiku is left to Claude Code: no nudge, hold, forced point, brief re-seat or stored handoff for a Haiku party; every ask passes.
