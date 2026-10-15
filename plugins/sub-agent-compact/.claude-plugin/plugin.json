@@ -89,7 +89,7 @@
     "forwardHandoffTool": {
       "type": "boolean",
       "title": "Forward handoff tool",
-      "description": "On: every party (the main chat and each sub-agent) gets the forward_handoff tool. Code carries the last 25 prompts, skills, file trail, plan, running work and git state into the wake text; the model writes only its objective, done, remaining and next. Installed verbatim when its turn ends; the call's files are saved under the Claude config directory.",
+      "description": "On: every party (the main chat and each sub-agent) gets the forward_handoff tool; a Haiku party's call is refused, leaving it to Claude Code. Code carries the last 25 prompts, skills, file trail, plan, running work and git state into the wake text; the model writes only its objective, done, remaining and next. Installed verbatim when its turn ends; the call's files are saved under $HOME/.local/state/sub-agent-compact/forward-handoff (the Claude config directory without a HOME).",
       "default": false
     },
     "compactTool": {
@@ -107,7 +107,7 @@
     "logFile": {
       "type": "string",
       "title": "Decision log file",
-      "description": "Absolute path of the per-session JSONL decision log; empty uses PLUGIN_LOG_DIR when set, otherwise decision logging is off.",
+      "description": "Absolute path of the per-session JSONL decision log; empty uses PLUGIN_LOG_DIR when set, otherwise decision logging is off. A relative path is named as invalid and falls back to that default.",
       "default": ""
     }
   }

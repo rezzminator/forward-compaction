@@ -4,6 +4,26 @@ Every release of sub-agent-compact. Versions follow [semantic versioning](https:
 
 ## [Unreleased]
 
+### Changed
+
+- Haiku is left to Claude Code: no nudge, hold, forced point, brief re-seat or stored handoff for a Haiku party; every ask passes.
+- Forward handoff records live under `$HOME/.local/state/sub-agent-compact/forward-handoff/`, so a `CLAUDE_CONFIG_DIR` or account switch keeps the chain; records under the config directory are still read.
+- The decision log appends under a lock instead of rewriting the file: routine skips fold into `skips` rows, a file over 8 MiB moves to `.1`, rows queued at session end are flushed within the session-end bound, and other sessions' files (a file whose first line is a decision row) older than 14 days or beyond the newest 200, this session's counted, are removed.
+
+### Fixed
+
+- The plugin level log writes on macOS: BSD `chmod` read `--` as a file. A failing plugin log also reaches the decision log (`plugin-log-failed`).
+- A limit past the real window is clamped to Claude Code's ask point (`limit`, `limitSet`); the main window is re-read after `/model` (`window-changed`); a "prompt is too long" recovery ask passes (`unanswered`).
+- After a compaction the plugin did not see, a `/clear` or a resume, the main chat's stored handoff is dropped and its nudges re-armed (`handoffDropped`, `cleared`); a failed native compaction no longer delays the forced one by a turn; a precompute no longer masks an unseen compaction.
+- A sub-agent whose `tools:` lacks the forward handoff tool is never nudged toward it.
+- Each warning is written once to the level log; level-log rotation holds a lock across sessions.
+- A relative or non-string `logFile` falls back to the default instead of turning logging off; non-string `agentDirs` items, unknown option keys and a nudge start past the forced point are named.
+- `look_back` reads task notifications, attachments, `system` and `summary` entries, reports an unreadable entry as an error, reads `entry: null` as absent, ranks the caller's own forward handoff last, and answers "nothing compacted yet" before checking arguments. Claude Code's bookkeeping entries (queue operations, request copies, titles, modes, file history, cost) are skipped silently rather than reported as unreadable; tool references are named and a document block is noted, not failed.
+- A forward handoff stored before a plugin reload is installed from its saved files.
+- A symlinked agent definition is guarded on the direct `<type>.md` route too; `plugin:agent` types read their plugin's agent definitions; agent policies and list misses are re-read after 60 s, and a failed listing is not cached.
+- Haiku 5.5 (`claude-haiku-5-5`) is read as the 1M window Claude Code gives it, not 200k; Haiku 4.5 and older stay 200k. Haiku stays hands-off, so this corrects the logged `limit` and window only.
+- A sub-agent's relative shell writes in the forward handoff's `Files` block resolve under the directory it was spawned in.
+
 ## [0.7.0-dev.23] — 2026-10-14
 
 ### Added

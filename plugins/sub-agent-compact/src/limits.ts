@@ -145,7 +145,34 @@ function dirList(raw: unknown, errors: string[]): string[] {
     errors.push(`sub-agent-compact: option agentDirs is invalid (not a string or list: ${JSON.stringify(raw)}); ignoring it`);
     return [];
   }
-  return items.filter((item): item is string => typeof item === 'string').map((item) => item.trim()).filter(Boolean);
+  return items
+    .filter((item): item is string => {
+      if (typeof item === 'string') return true;
+      errors.push(`sub-agent-compact: option agentDirs item ${JSON.stringify(item)} is invalid (not a string); ignoring it`);
+      return false;
+    })
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+/** Every option key plugin.json's userConfig declares; any other key is named as unknown. */
+export const OPTION_KEYS: readonly string[] = [
+  ...(['main', 'subagent'] as const).flatMap((prefix) => Object.values(POLICY_KEYS).map((key) => prefix + key)),
+  'subagentKeepBrief',
+  'handoffTool',
+  'forwardHandoffTool',
+  'compactTool',
+  'agentDirs',
+  'logFile',
+];
+
+/** A nudge start at or past the forced point in the same unit: both are kept, the person is told. Across units only the window decides. */
+function nudgeAfterLimit(prefix: 'main' | 'subagent', policy: Policy): string | undefined {
+  const start = policy.nudgeStart;
+  const limit = policy.autoCompact;
+  const past = 'tokens' in start && 'tokens' in limit ? start.tokens >= limit.tokens : 'percent' in start && 'percent' in limit ? start.percent >= limit.percent : false;
+  if (!past) return undefined;
+  return `sub-agent-compact: option ${prefix}${POLICY_KEYS.nudgeStart} ${formatSize(start)} is not below ${prefix}${POLICY_KEYS.autoCompact} ${formatSize(limit)}; the forced point comes first and no nudge goes out before it`;
 }
 
 /** Validates the plugin options; every invalid value falls back and is named in `errors`. */
@@ -157,8 +184,14 @@ export function resolveOptions(options: Record<string, unknown>, env: { pluginLo
       fallback,
       (field, error, fallbackText) => errors.push(`sub-agent-compact: option ${prefix}${POLICY_KEYS[field]} is invalid (${error}); using the default ${fallbackText}`),
     ).policy;
+  const unknown = Object.keys(options).filter((key) => !OPTION_KEYS.includes(key));
+  if (unknown.length > 0) errors.push(`sub-agent-compact: unknown options ${unknown.join(', ')}; ignoring them`);
   const main = party('main', DEFAULT_MAIN);
   const subagent = party('subagent', DEFAULT_SUBAGENT);
+  for (const [prefix, policy] of [['main', main], ['subagent', subagent]] as const) {
+    const line = nudgeAfterLimit(prefix, policy);
+    if (line) errors.push(line);
+  }
   const flag = (name: string, fallback: boolean): boolean => {
     const raw = options[name];
     if (raw === undefined || raw === '') return fallback;
@@ -172,13 +205,17 @@ export function resolveOptions(options: Record<string, unknown>, env: { pluginLo
   const handoffTool = flag('handoffTool', DEFAULT_HANDOFF_TOOL);
   const forwardHandoffTool = flag('forwardHandoffTool', DEFAULT_FORWARD_HANDOFF_TOOL);
   const agentDirs = dirList(options.agentDirs, errors);
-  let logFile: string | undefined;
+  // Blank or invalid → the default: the plugin's decisions folder under PLUGIN_LOG_DIR, else no decision log.
+  const fallbackLog = env.pluginLogDir ? `${pluginLogDir(env.pluginLogDir, undefined, 'sub-agent-compact')}/decisions/.jsonl` : undefined;
+  let logFile = fallbackLog;
   const rawLog = options.logFile;
+  const badLog = (why: string) =>
+    errors.push(`sub-agent-compact: option logFile is invalid (${why}); using the default ${fallbackLog ?? '(no decision log)'}`);
   if (typeof rawLog === 'string' && rawLog.trim() !== '') {
     if (rawLog.trim().startsWith('/')) logFile = rawLog.trim();
-    else errors.push(`sub-agent-compact: option logFile must be an absolute path (got ${JSON.stringify(rawLog)}); logging off`);
-  } else if ((rawLog === undefined || (typeof rawLog === 'string' && rawLog.trim() === '')) && env.pluginLogDir) {
-    logFile = `${pluginLogDir(env.pluginLogDir, undefined, 'sub-agent-compact')}/decisions/.jsonl`;
+    else badLog(`not an absolute path: ${JSON.stringify(rawLog)}`);
+  } else if (rawLog !== undefined && typeof rawLog !== 'string') {
+    badLog(`not a string: ${JSON.stringify(rawLog)}`);
   }
   return { main, subagent, keepBrief, compactTool, handoffTool, forwardHandoffTool, agentDirs, ...(logFile ? { logFile } : {}), errors };
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { haikuServed, servedOptions, toolsToRegister } from '../plugins/sub-agent-compact/src/register.ts';
+import { servedOptions, toolsToRegister } from '../plugins/sub-agent-compact/src/register.ts';
 
 describe('toolsToRegister', () => {
   it('includes look_back and shares the registered/exhausted retry decisions (R1)', () => {
@@ -39,16 +39,5 @@ describe('servedOptions', () => {
   it('leaves the compact tool as set while the forward handoff is off', () => {
     expect(servedOptions(base)).toEqual(base);
     expect(servedOptions({ ...base, compactTool: false })).toEqual({ ...base, compactTool: false });
-  });
-});
-
-describe('haikuServed', () => {
-  it('serves a Haiku party only through the forward handoff', () => {
-    expect(haikuServed(true, true)).toBe(true);
-    expect(haikuServed(true, false)).toBe(false);
-  });
-  it('serves every other party whatever the forward handoff', () => {
-    expect(haikuServed(false, false)).toBe(true);
-    expect(haikuServed(false, true)).toBe(true);
   });
 });

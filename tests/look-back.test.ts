@@ -24,7 +24,9 @@ describe('look_back arguments and tool contract (R1–R2)', () => {
   it('publishes the tool, closed schema, required why and either query or entry, and a self-contained description', () => {
     expect(api('LOOK_BACK_TOOL')).toBe('look_back');
     const schema = api('LOOK_BACK_INPUT_SCHEMA');
-    expect(schema).toMatchObject({ type: 'object', additionalProperties: false, required: ['why'], properties: { why: { type: 'string' }, query: { type: 'string' }, entry: { type: 'integer', minimum: 1 } }, anyOf: [{ required: ['query'] }, { required: ['entry'] }] });
+    expect(schema).toMatchObject({ type: 'object', additionalProperties: false, required: ['why'], properties: { why: { type: 'string' }, query: { type: 'string' }, entry: { type: 'integer', minimum: 1 } } });
+    // No anyOf: the parser checks query-or-entry itself, and a client that sends `entry: null` is not refused by the schema.
+    expect(schema.anyOf).toBeUndefined();
     const description = api('LOOK_BACK_DESCRIPTION');
     expect(description.length).toBeLessThanOrEqual(450);
     for (const phrase of ['latest compaction', 'error', 'code', 'value', 'user', 'person']) expect(description).toContain(phrase);
@@ -33,6 +35,9 @@ describe('look_back arguments and tool contract (R1–R2)', () => {
     [{ why: '  lost\n detail  ', query: 'ERROR "two words" port' }, { why: 'lost detail', query: 'ERROR "two words" port', terms: ['ERROR', 'two words', 'port'] }],
     [{ why: 'detail', entry: 4, query: ' ignored ' }, { why: 'detail', entry: 4, query: 'ignored', terms: [] }],
     [{ why: 'x'.repeat(130), query: 'x' }, { why: 'x'.repeat(115) + '[cut]', terms: ['x'] }],
+    // A null beside the other argument is absent, as clients send unset optional fields.
+    [{ why: 'detail', query: 'alpha beta', entry: null }, { why: 'detail', query: 'alpha beta', terms: ['alpha', 'beta'] }],
+    [{ why: 'detail', entry: 4, query: null }, { why: 'detail', entry: 4, terms: [] }],
   ])('normalizes arguments %j', (input, expected) => {
     const got = api('parseLookBack')(input);
     expect(got).toMatchObject(expected);
@@ -97,6 +102,85 @@ describe('look_back readable transcript entries (R4)', () => {
     expect(out.text).toContain('No entry before the compaction at line 2 matches: needle');
     expect(out.text).toContain('fewer or other words');
     expect(out.text).toContain('unsupported entry type future_entry');
+    expect(out.error).toBe('1 entry could not be read: #1: unsupported entry type future_entry');
+  });
+  it('fails an entry fetch of an entry it cannot read, never returning its placeholder as the entry', () => {
+    const out = api('entryResult')(entries('1:{"type":"future_entry","payload":"needle"}'), 1, 2);
+    expect(out.error).toBe('entry 1 could not be read: unsupported entry type future_entry');
+  });
+  it.each([
+    ['a task notification', { type: 'attachment', attachment: { type: 'queued_command', prompt: '<task-notification>child result needle</task-notification>', commandMode: 'task-notification' } }, 'task-notification', '<task-notification>child result needle</task-notification>'],
+    ['a hook context attachment', { type: 'attachment', attachment: { type: 'hook_additional_context', content: ['first needle', 'second'] } }, 'attachment hook_additional_context', 'first needle\nsecond'],
+    ['a reminder attachment', { type: 'attachment', attachment: { type: 'silent_turn_reminder', text: 'say needle' } }, 'attachment silent_turn_reminder', 'say needle'],
+    ['a system entry', { type: 'system', subtype: 'informational', content: 'system needle' }, 'system', 'system needle'],
+    ['a summary entry', { type: 'summary', summary: 'summary needle' }, 'summary', 'summary needle'],
+  ])('reads %s', (_name, entry, kind, text) => {
+    const [e] = entries(`4:${JSON.stringify({ timestamp: '2026-01-02T03:04:05Z', ...entry })}`);
+    expect(e).toMatchObject({ line: 4, kind, text, warnings: [] });
+  });
+  // Claude Code 2.1.300's own non-message entries, shaped as a real transcript writes them (secrets and paths invented).
+  const BOOKKEEPING = [
+    { type: 'queue-operation', operation: 'dequeue', timestamp: '2026-10-14T23:48:35.247Z' },
+    { type: 'queue-operation', operation: 'remove', timestamp: '2026-10-14T23:37:23.772Z', content: 'needle prompt', reason: 'absorbed_mid_turn', commandUuid: 'c1', deliveryId: 'd1' },
+    { type: 'queue-operation', operation: 'popAll', timestamp: '2026-10-13T22:15:17.059Z', content: 'needle prompt' },
+    { type: 'api-request-blob', hash: 'h1', message: { role: 'user', content: [{ type: 'text', text: 'needle copy of a request' }] } },
+    { type: 'api-request', id: 'r1', timestamp: '2026-10-14T23:33:57.521Z', querySource: 'repl_main_thread', shapeHash: 's1', params: { model: 'needle' } },
+    { type: 'api-request-shape', shapeHash: 's1', shape: { system: [{ type: 'text', text: 'needle' }] } },
+    { type: 'last-prompt', lastPrompt: 'needle prompt', leafUuid: 'u1' },
+    { type: 'mode', mode: 'normal' },
+    { type: 'permission-mode', permissionMode: 'default' },
+    { type: 'atis-latch', atis: 'needle' },
+    { type: 'ai-title', aiTitle: 'needle title' },
+    { type: 'custom-title', customTitle: 'needle' },
+    { type: 'agent-name', agentName: 'needle' },
+    { type: 'bridge-session', bridgeSessionId: 'needle' },
+    { type: 'history-suppression', cause: 'needle' },
+    { type: 'frame-link', path: '/tmp/needle', frameUrl: 'https://example.invalid/a', title: 'needle' },
+    { type: 'pr-link', prNumber: 4, prUrl: 'https://example.invalid/pull/4', prRepository: 'needle/repo' },
+    { type: 'file-history-snapshot', messageId: 'm1', snapshot: { trackedFileBackups: { needle: {} } }, isSnapshotUpdate: false },
+    { type: 'file-history-delta', messageId: 'm1', trackingPath: '/tmp/needle', backup: {} },
+    { type: 'cost-state', totalCostUSD: 1, modelUsage: { needle: {} } },
+    { type: 'artifact-comment-monitor', v: 1, artifacts: { needle: {} } },
+    { type: 'artifact-autoreact-ledger', v: 1, artifacts: { needle: {} } },
+    { type: 'system', subtype: 'stop_hook_summary', hookCount: 1, hookInfos: [{ command: 'needle' }], level: 'suggestion' },
+    { type: 'system', subtype: 'turn_duration', durationMs: 5, messageCount: 2, isMeta: false, note: 'needle' },
+    { type: 'system', subtype: 'agents_killed', isMeta: false, note: 'needle' },
+  ];
+  it.each(BOOKKEEPING.map((entry) => [`${entry.type}${'operation' in entry ? ` ${entry.operation}` : ''}${'subtype' in entry ? ` ${entry.subtype}` : ''}`, entry]))('skips Claude Code bookkeeping silently: %s', (_name, entry) => {
+    const found = entries([`${BOOKKEEPING.indexOf(entry) + 1}:${JSON.stringify(entry)}`, row(40, [text('the needle the user said')])].join('\n'));
+    expect(found[0]).toMatchObject({ kind: 'bookkeeping', warnings: [] });
+    const out = api('searchResults')(found, ['needle'], 50);
+    expect(out).toEqual({ text: expect.stringMatching(/^#40 /), hits: 1 });
+    expect(out.text).not.toContain('unsupported');
+    expect(api('entryResult')(found, found[0].line, 50).error).toBe(`entry ${found[0].line} is Claude Code bookkeeping (${entry.type}), not part of the conversation`);
+  });
+  it('names a tool reference and notes a document without failing the search', () => {
+    const found = entries(row(5, [{ type: 'tool_result', tool_use_id: 't1', content: [{ type: 'tool_reference', name: 'mcp__docs__guide' }, { type: 'tool_reference', tool_name: 'Read' }, { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: 'AA==' } }, text('needle')] }]));
+    expect(found[0]).toMatchObject({ text: '[tool mcp__docs__guide]\n[tool Read]\n[document block]\nneedle', warnings: ['document block'] });
+    const out = api('searchResults')(found, ['needle'], 9);
+    expect(out.hits).toBe(1);
+    expect(out.error).toBeUndefined();
+  });
+  it('reads a queued prompt as one', () => {
+    const [e] = entries('7:{"type":"queue-operation","operation":"enqueue","timestamp":"2026-10-14T23:36:33.912Z","content":"pick max 10 needles"}');
+    expect(e).toMatchObject({ kind: 'queued prompt', text: 'pick max 10 needles', warnings: [] });
+  });
+  it('still reports an entry type it does not know, which could be a message', () => {
+    const found = entries('3:{"type":"future_message","message":{"role":"user","content":"needle"}}');
+    expect(api('searchResults')(found, ['needle'], 9).error).toBe('1 entry could not be read: #3: unsupported entry type future_message');
+  });
+  it('shows an attachment with no text field raw, hiding nothing', () => {
+    const [e] = entries('4:{"type":"attachment","attachment":{"type":"file","content":{"file":{"content":"needle"}}}}');
+    expect(e).toMatchObject({ kind: 'attachment file raw', text: '{"type":"file","content":{"file":{"content":"needle"}}}', warnings: [] });
+  });
+  it("ranks the party's own forward handoff call below every other hit", () => {
+    const found = entries([
+      row(3, [text('the needle as the user said it')]),
+      row(5, [{ type: 'tool_use', id: 'f1', name: 'mcp__sub-agent-compact__forward_handoff', input: { next: 'needle' } }], 'assistant'),
+      row(6, [{ type: 'tool_result', tool_use_id: 'f1', content: 'Forward handoff stored: needle' }]),
+    ].join('\n'));
+    const out = api('searchResults')(found, ['needle'], 9, api('toolNames')(found), 'mcp__sub-agent-compact__forward_handoff');
+    expect(out.text.split('\n\n').map((hit: string) => hit.split('  ')[0])).toEqual(['#3', '#6', '#5']);
   });
   it('resolves result tool names through ids and explicitly labels an unavailable name', () => {
     const uses = entries(row(1, [{ type: 'tool_use', id: 'r1', name: 'Bash', input: { command: 'true' } }], 'assistant'));

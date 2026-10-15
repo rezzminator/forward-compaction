@@ -504,7 +504,14 @@ describe('a handoff written between <handoff> tags', () => {
     await cc.subagent('a1');
     await cc.step(250_000, { agentId: 'a1', answer: MARKER });
     harness.listThrows = true;
-    expect((await cc.read('a1')).context?.join('\n')).toMatch(/handoff.*stored/);
+    // The list missed a1 at its first lookup: it is asked again only once that miss is 60 s old.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(Date.now() + 61_000);
+      expect((await cc.read('a1')).context?.join('\n')).toMatch(/handoff.*stored/);
+    } finally {
+      vi.useRealTimers();
+    }
     expect(cc.logs.join('\n')).toMatch(/nudging a1 failed: agent list unavailable/);
   });
 
@@ -558,6 +565,16 @@ describe('Haiku', () => {
     await cc.step(49_600, { model: 'claude-haiku-4-5' });
     await cc.ask('auto');
     expect(cc.summarized()).toBe(1);
+  });
+
+  it('leaves a Haiku sub-agent to Claude Code: its marker is not read and its brief is not seated back', async () => {
+    const cc = engine(HANDOFF_ONLY);
+    await cc.start();
+    await cc.subagent('a1');
+    await cc.step(150_000, { agentId: 'a1', model: 'claude-haiku-4-5', answer: MARKER });
+    expect((await cc.read('a1')).context ?? []).toEqual([]);
+    const out = await cc.ask('auto', cc.plain(), { agentId: 'a1' });
+    expect(out.messages).toEqual([{ role: 'user', text: 'summary', toolUses: [] }]);
   });
 });
 

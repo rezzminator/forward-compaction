@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { execFile } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { execFile, spawn } from 'node:child_process';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import * as log from '../plugins/sub-agent-compact/src/log.ts';
-import { appendRows, sessionLogPath } from '../plugins/sub-agent-compact/src/log.ts';
+import { sessionLogPath } from '../plugins/sub-agent-compact/src/log.ts';
 
 // Optional lookup lets the unimplemented writer fail on the required output, not an import error.
 const future: Record<string, any> = log;
@@ -34,20 +34,6 @@ describe('sessionLogPath', () => {
 
   it('rejects an empty session id', () => {
     expect(() => sessionLogPath('/tmp/sac/decisions.jsonl', '')).toThrow(/empty session id/);
-  });
-});
-
-describe('appendRows', () => {
-  it('keeps the rows already in the file and appends the new ones', () => {
-    expect(appendRows('{"a":1}\n{"a":2}\n', ['{"a":3}'], 10)).toBe('{"a":1}\n{"a":2}\n{"a":3}\n');
-  });
-
-  it('starts a missing or empty file', () => {
-    expect(appendRows('', ['{"a":1}'], 10)).toBe('{"a":1}\n');
-  });
-
-  it('drops blank lines and keeps only the newest rows past the cap', () => {
-    expect(appendRows('{"a":1}\n\n{"a":2}', ['{"a":3}', '{"a":4}'], 3)).toBe('{"a":2}\n{"a":3}\n{"a":4}\n');
   });
 });
 
@@ -213,12 +199,12 @@ describe('plugin log', () => {
     expect(await queue?.flush(async () => { throw new Error('empty queue executed'); })).toEqual({ dropped: 0 });
   });
   it.each([
-    ...['tool-register-failed', 'look-back-manual-error', 'brief-error', 'hook-threw'].map((event) => [event, 'error', event, {}] as [string, string, string, Record<string, unknown>]),
+    ...['tool-register-failed', 'look-back-manual-error', 'hook-threw'].map((event) => [event, 'error', event, {}] as [string, string, string, Record<string, unknown>]),
+    ['brief-error', 'warning', 'brief-error', {}],
     ...['warning', 'option-error', 'resolve-error', 'handoff-invalid', 'forward-invalid', 'forward-unchecked', 'handoff-fallback', 'compact-unseen'].map((event) => [event, 'warning', event, {}] as [string, string, string, Record<string, unknown>]),
     ...['handoff-refused', 'arm-refused', 'forward-refused', 'stop-refused'].map((event) => [event, 'info', event, {}] as [string, string, string, Record<string, unknown>]),
     ['session.compact', 'error', 'compact-error', { why: 'error', error: 'bad reading' }],
     ['session.compact', 'warning', 'handoff-waits-skipped', { why: 'handoff-waits' }],
-    ['session.compact', 'warning', 'haiku-hold', { why: 'haiku-hold' }],
     ['turn.complete', 'error', 'turn-complete-error', { error: 'compaction failed' }],
   ])('routes %s as %s without carrying tool bodies', (event, level, output, extra) => {
     const routed = future.pluginLogEvent?.({ event, ...extra as object, line: 'diagnostic', party: 'main', error: 'diagnostic failure', focus: 'private prompt', text: 'private handoff', query: 'private query', input: { body: 'private input' } });
@@ -230,6 +216,316 @@ describe('plugin log', () => {
   });
   it('selects actionable diagnostics among routine hook traffic', () => {
     const traffic = [{ event: 'nudge', focus: 'private' }, { event: 'brief-error', error: 'seating failed' }];
-    expect(traffic.flatMap((row) => future.pluginLogEvent?.(row) ?? []).map((row: any) => [row.level, row.event, row.msg])).toEqual([['error', 'brief-error', 'seating failed']]);
+    expect(traffic.flatMap((row) => future.pluginLogEvent?.(row) ?? []).map((row: any) => [row.level, row.event, row.msg])).toEqual([['warning', 'brief-error', 'seating failed']]);
+  });
+});
+
+describe('plugin log under BSD chmod', () => {
+  const realPath = process.env.PATH ?? '/usr/bin:/bin';
+  // macOS /bin/chmod reads `--` as a file ("chmod: --: No such file or directory"); GNU chmod takes it as the end of options.
+  const bsdChmod = (): string => {
+    const bin = mkdtempSync(join(tmpdir(), 'bsd-chmod-'));
+    writeFileSync(join(bin, 'chmod'), `#!/bin/sh\nfor a in "$@"; do if [ "$a" = -- ]; then echo 'chmod: --: No such file or directory' >&2; exit 1; fi; done\nPATH='${realPath}' exec chmod "$@"\n`);
+    chmodSync(join(bin, 'chmod'), 0o755);
+    return bin;
+  };
+  it.each([['the host chmod', false], ['a BSD chmod', true]])('creates the private directory and level file with %s, an absolute or dash-led directory alike', async (_name, bsd) => {
+    const parent = mkdtempSync(join(tmpdir(), 'plugin-chmod-')); const bin = bsdChmod();
+    const row = JSON.stringify({ ts: '2026-10-14T15:20:31.123Z', ...fields }) + '\n';
+    try {
+      for (const dir of [join(parent, 'levels'), '-levels']) {
+        await exec('/bin/sh', ['-c', future.APPEND_SCRIPT ?? ':', 'plugin-log', dir, 'sub-agent-compact', 'errors.jsonl', row], { cwd: parent, env: { ...process.env, PATH: bsd ? `${bin}:${realPath}` : realPath } });
+        const at = dir.startsWith('/') ? dir : join(parent, dir);
+        expect(rows(at, 'errors.jsonl')).toEqual([JSON.parse(row)]);
+        expect(statSync(at).mode & 0o777).toBe(0o700);
+        expect(statSync(join(at, 'errors.jsonl')).mode & 0o777).toBe(0o600);
+      }
+    } finally { rmSync(parent, { recursive: true, force: true }); rmSync(bin, { recursive: true, force: true }); }
+  });
+});
+
+
+describe('decision log', () => {
+  const runSh = (argv: string[], stdin = '', env: NodeJS.ProcessEnv = process.env): Promise<{ code: number | null; stderr: string }> =>
+    new Promise((resolve, reject) => {
+      const child = spawn(argv[0]!, argv.slice(1), { env });
+      let stderr = '';
+      child.stderr.on('data', (chunk) => { stderr += String(chunk); });
+      child.on('close', (code) => resolve({ code, stderr }));
+      // A child that exits before reading its stdin (the retention script reads none) closes the pipe: EPIPE is that race, any other error fails the test.
+      child.stdin.on('error', (err: NodeJS.ErrnoException) => { if (err.code !== 'EPIPE') reject(err); });
+      child.stdin.end(stdin);
+    });
+  const append = (path: string, lines: string[], cap?: number) => runSh(future.decisionAppendArgv?.(path, ...(cap === undefined ? [] : [cap])) ?? ['/bin/sh', '-c', 'exit 9'], lines.map((line) => `${line}\n`).join(''));
+  const lines = (path: string): string[] => existsSync(path) ? readFileSync(path, 'utf8').split('\n').filter(Boolean) : [];
+  const skip = (ts: string, tokens: number, agentId: string | null = null, trigger = 'auto') => ({ ts, event: 'session.compact', trigger, party: agentId ? 'sub' : 'main', agentId, type: agentId ? 'tracer' : 'main', limit: 120_000, tokens, decision: 'skip' });
+
+  it('writes the first skip of a streak, folds the rest, and closes the streak at the party\'s next decision', () => {
+    const fold = future.SkipFold ? new future.SkipFold() : undefined;
+    const out: any[] = [];
+    for (let i = 0; i < 5; i++) out.push(...(fold?.add(skip(`t${i}`, 1000 + i)) ?? []));
+    out.push(...(fold?.add({ ts: 't5', event: 'said', line: 'x' }) ?? []));
+    out.push(...(fold?.add({ ts: 't6', event: 'session.compact', trigger: 'auto', party: 'main', agentId: null, type: 'main', limit: 120_000, tokens: 125_000, decision: 'pass', why: 'self' }) ?? []));
+    expect(out).toEqual([
+      skip('t0', 1000),
+      { ts: 't5', event: 'said', line: 'x' },
+      { ts: 't4', event: 'skips', party: 'main', agentId: null, type: 'main', trigger: 'auto', count: 4, from: 't1', to: 't4', firstTokens: 1001, lastTokens: 1004, limit: 120_000 },
+      { ts: 't6', event: 'session.compact', trigger: 'auto', party: 'main', agentId: null, type: 'main', limit: 120_000, tokens: 125_000, decision: 'pass', why: 'self' },
+    ]);
+  });
+
+  it('folds each party and trigger on its own, closes every 100 folded skips, and drains what is open at the end', () => {
+    const fold = future.SkipFold ? new future.SkipFold() : undefined;
+    const out: any[] = [];
+    for (let i = 0; i < 102; i++) out.push(...(fold?.add(skip(`m${i}`, i)) ?? []));
+    out.push(...(fold?.add(skip('a0', 7, 'agent-1')) ?? []), ...(fold?.add(skip('a1', 8, 'agent-1')) ?? []));
+    out.push(...(fold?.add(skip('p0', 9, null, 'precompute')) ?? []));
+    out.push(...(fold?.add({ ts: 'w', event: 'session.compact', trigger: 'precompute', party: 'main', agentId: null, type: 'main', decision: 'skip', why: 'handoff-waits' }) ?? []));
+    out.push(...(fold?.drain() ?? []));
+    expect(out.map((row: any) => [row.event, row.ts, row.count ?? null, row.agentId ?? null])).toEqual([
+      ['session.compact', 'm0', null, null],
+      ['skips', 'm100', 100, null],
+      ['session.compact', 'a0', null, 'agent-1'],
+      ['session.compact', 'p0', null, null],
+      ['skips', 'm101', 1, null],
+      ['session.compact', 'w', null, null],
+      ['skips', 'a1', 1, 'agent-1'],
+    ]);
+    expect(fold?.drain()).toEqual([]);
+  });
+
+  it('appends the rows on stdin to a private file and keeps the rows already there', async () => {
+    const parent = mkdtempSync(join(tmpdir(), 'decision-log-'));
+    const path = join(parent, 'logs', 'decisions.s1.jsonl');
+    try {
+      expect((await append(path, ['{"a":1}', '{"a":2}'])).code).toBe(0);
+      expect((await append(path, ['{"a":3}'])).code).toBe(0);
+      expect(lines(path)).toEqual(['{"a":1}', '{"a":2}', '{"a":3}']);
+      expect(statSync(path).mode & 0o777).toBe(0o600);
+      expect(statSync(join(parent, 'logs')).mode & 0o777).toBe(0o700);
+      expect(existsSync(`${path}.lock`)).toBe(false);
+    } finally { rmSync(parent, { recursive: true, force: true }); }
+  });
+
+  it('loses no row when four writers append at once across a rotation', async () => {
+    const parent = mkdtempSync(join(tmpdir(), 'decision-log-'));
+    const path = join(parent, 'decisions.s1.jsonl');
+    try {
+      const writers = [0, 1, 2, 3].map(async (w) => {
+        for (let i = 0; i < 25; i++) {
+          const out = await append(path, [0, 1, 2, 3].map((k) => JSON.stringify({ w, i, k, pad: 'x'.repeat(40) })), 4096);
+          expect(out.code, out.stderr).toBe(0);
+        }
+      });
+      await Promise.all(writers);
+      const all = [...lines(`${path}.1`), ...lines(path)].map((line) => JSON.parse(line));
+      expect(statSync(`${path}.1`).size).toBeGreaterThan(4096);
+      expect(lines(path).length).toBeGreaterThan(0);
+      // .1 keeps only the last rotated part: every row of the current file and .1 parses, and nothing is cut.
+      expect(all.every((row) => typeof row.w === 'number' && row.pad.length === 40)).toBe(true);
+    } finally { rmSync(parent, { recursive: true, force: true }); }
+    // Real processes contending for one lock: about 2 s on an idle machine, past vitest's 5 s default on a loaded one.
+  }, 30_000);
+
+  it('moves a file past the cap aside before appending', async () => {
+    const parent = mkdtempSync(join(tmpdir(), 'decision-log-'));
+    const path = join(parent, 'decisions.s1.jsonl');
+    try {
+      writeFileSync(path, `${'{"old":1}\n'.repeat(20)}`);
+      expect((await append(path, ['{"new":1}'], 100)).code).toBe(0);
+      expect(lines(`${path}.1`)).toHaveLength(20);
+      expect(lines(path)).toEqual(['{"new":1}']);
+    } finally { rmSync(parent, { recursive: true, force: true }); }
+  });
+
+  it('waits on a lock its live holder keeps and appends once it is released', async () => {
+    const parent = mkdtempSync(join(tmpdir(), 'decision-log-'));
+    const path = join(parent, 'decisions.s1.jsonl');
+    try {
+      mkdirSync(`${path}.lock`); writeFileSync(join(`${path}.lock`, 'pid'), `${process.pid}\n`);
+      const pending = append(path, ['{"a":1}']);
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      expect(lines(path)).toEqual([]);
+      rmSync(`${path}.lock`, { recursive: true, force: true });
+      expect((await pending).code).toBe(0);
+      expect(lines(path)).toEqual(['{"a":1}']);
+    } finally { rmSync(parent, { recursive: true, force: true }); }
+  });
+
+  it('breaks a lock whose holder is gone', async () => {
+    const parent = mkdtempSync(join(tmpdir(), 'decision-log-'));
+    const path = join(parent, 'decisions.s1.jsonl');
+    const dead = 999_999;
+    expect(() => process.kill(dead, 0)).toThrow();
+    try {
+      mkdirSync(`${path}.lock`); writeFileSync(join(`${path}.lock`, 'pid'), `${dead}\n`);
+      const out = await append(path, ['{"a":1}']);
+      expect(out.code, out.stderr).toBe(0);
+      expect(lines(path)).toEqual(['{"a":1}']);
+      expect(existsSync(`${path}.lock`)).toBe(false);
+    } finally { rmSync(parent, { recursive: true, force: true }); }
+  });
+
+  // A writer whose stdin stays open holds the lock between its first and second half of a row.
+  const holding = (argv: string[], env: NodeJS.ProcessEnv = process.env) => {
+    const child = spawn(argv[0]!, argv.slice(1), { env });
+    let stderr = '';
+    child.stderr.on('data', (chunk) => { stderr += String(chunk); });
+    child.stdin.on('error', (err: NodeJS.ErrnoException) => { if (err.code !== 'EPIPE') throw err; });
+    const done = new Promise<{ code: number | null; stderr: string }>((resolve) => child.on('close', (code) => resolve({ code, stderr })));
+    return { child, done };
+  };
+  const until = async (test: () => boolean, ms: number): Promise<boolean> => {
+    for (const end = Date.now() + ms; Date.now() < end; await new Promise((resolve) => setTimeout(resolve, 20))) if (test()) return true;
+    return test();
+  };
+  const tokenPid = (lockDir: string): string => { try { return readFileSync(join(lockDir, 'pid'), 'utf8').trim().split(' ')[0]!; } catch { return ''; } };
+  const settle = async (pending: Promise<unknown>, ms: number) => Promise.race([pending.then(() => true), new Promise((resolve) => setTimeout(() => resolve(false), ms))]);
+
+  it('keeps the lock a second waiter broke and took while the first stalls between reading the dead holder and breaking', async () => {
+    const parent = mkdtempSync(join(tmpdir(), 'decision-log-'));
+    const path = join(parent, 'decisions.s1.jsonl');
+    const lockDir = `${path}.lock`;
+    const stall = mkdtempSync(join(tmpdir(), 'lock-stall-'));
+    const realPath = process.env.PATH ?? '/usr/bin:/bin';
+    const dead = 999_999;
+    expect(() => process.kill(dead, 0)).toThrow();
+    // Waiter B's cat: its second read of the dead holder's token returns what it read, after A has broken and taken the lock.
+    writeFileSync(join(stall, 'cat'), `#!/bin/sh
+if [ $# -eq 1 ] && [ -f "$1" ]; then
+  seen=$(PATH='${realPath}' cat "$1")
+  if [ "$seen" = '${dead}' ]; then
+    n=$(( $(PATH='${realPath}' cat '${stall}/count' 2>/dev/null || echo 0) + 1 )); echo "$n" > '${stall}/count'
+    if [ "$n" -eq 2 ]; then : > '${stall}/reached'; while [ ! -e '${stall}/go' ]; do PATH='${realPath}' sleep 0.02; done; fi
+    printf '%s\\n' "$seen"; exit 0
+  fi
+fi
+PATH='${realPath}' exec cat "$@"
+`);
+    chmodSync(join(stall, 'cat'), 0o755);
+    const argv = future.decisionAppendArgv?.(path) ?? ['/bin/sh', '-c', 'exit 9'];
+    try {
+      mkdirSync(lockDir); writeFileSync(join(lockDir, 'pid'), `${dead}\n`);
+      const b = holding(argv, { ...process.env, PATH: `${stall}:${realPath}` });
+      b.child.stdin.end('{"w":"B"}\n');
+      expect(await until(() => existsSync(join(stall, 'reached')), 5000)).toBe(true);
+      const a = holding(argv);
+      a.child.stdin.write('{"w":"A",');
+      await until(() => tokenPid(lockDir) === String(a.child.pid), 1500);
+      writeFileSync(join(stall, 'go'), '');
+      // B finishing now means it appended under A's lock.
+      await settle(b.done, 800);
+      if (tokenPid(lockDir) === String(a.child.pid)) {
+        expect(await settle(b.done, 0)).toBe(false);
+      } else {
+        expect(await until(() => tokenPid(lockDir) === String(a.child.pid), 4000)).toBe(true);
+      }
+      a.child.stdin.end('"half":2}\n');
+      const [outA, outB] = await Promise.all([a.done, b.done]);
+      expect(outA.code, outA.stderr).toBe(0);
+      expect(outB.code, outB.stderr).toBe(0);
+      expect(lines(path).map((line) => JSON.parse(line).w).sort()).toEqual(['A', 'B']);
+      expect(existsSync(lockDir)).toBe(false);
+      expect(readdirSync(parent).filter((name) => name.includes('.lock'))).toEqual([]);
+    } finally { rmSync(parent, { recursive: true, force: true }); rmSync(stall, { recursive: true, force: true }); }
+  }, 20_000);
+
+  it('leaves the successor\'s lock when a holder released after its lock was broken for age', async () => {
+    const parent = mkdtempSync(join(tmpdir(), 'decision-log-'));
+    const path = join(parent, 'decisions.s1.jsonl');
+    const lockDir = `${path}.lock`;
+    const argv = future.decisionAppendArgv?.(path) ?? ['/bin/sh', '-c', 'exit 9'];
+    try {
+      const first = holding(argv);
+      first.child.stdin.write('{"w":"first"}\n');
+      expect(await until(() => tokenPid(lockDir) === String(first.child.pid), 4000)).toBe(true);
+      const old = new Date(Date.now() - 120_000);
+      utimesSync(join(lockDir, 'pid'), old, old); utimesSync(lockDir, old, old);
+      const next = holding(argv);
+      next.child.stdin.write('{"w":"next"}\n');
+      expect(await until(() => tokenPid(lockDir) === String(next.child.pid), 4000)).toBe(true);
+      first.child.stdin.end();
+      expect((await first.done).code).toBe(0);
+      expect(tokenPid(lockDir)).toBe(String(next.child.pid));
+      next.child.stdin.end();
+      expect((await next.done).code).toBe(0);
+      expect(lines(path).map((line) => JSON.parse(line).w).sort()).toEqual(['first', 'next']);
+      expect(readdirSync(parent).filter((name) => name.includes('.lock'))).toEqual([]);
+    } finally { rmSync(parent, { recursive: true, force: true }); }
+  }, 20_000);
+
+  it('refuses a decision log that is a symlink', async () => {
+    const parent = mkdtempSync(join(tmpdir(), 'decision-log-'));
+    const path = join(parent, 'decisions.s1.jsonl');
+    try {
+      writeFileSync(join(parent, 'target'), '');
+      symlinkSync(join(parent, 'target'), path);
+      const out = await append(path, ['{"a":1}']);
+      expect(out.code).not.toBe(0);
+      expect(out.stderr).toContain('refusing decision log symlink');
+      expect(readFileSync(join(parent, 'target'), 'utf8')).toBe('');
+    } finally { rmSync(parent, { recursive: true, force: true }); }
+  });
+
+  it('holds the plugin log directory lock across its cap and append', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'plugin-lock-'));
+    const row = JSON.stringify({ ts: '2026-10-14T15:20:31.123Z', ...fields }) + '\n';
+    try {
+      mkdirSync(join(dir, '.lock')); writeFileSync(join(dir, '.lock', 'pid'), `${process.pid}\n`);
+      const pending = runSh(['/bin/sh', '-c', future.APPEND_SCRIPT ?? ':', 'plugin-log', dir, 'sub-agent-compact', 'errors.jsonl', row]);
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      expect(existsSync(join(dir, 'errors.jsonl'))).toBe(false);
+      rmSync(join(dir, '.lock'), { recursive: true, force: true });
+      expect((await pending).code).toBe(0);
+      expect(rows(dir, 'errors.jsonl')).toEqual([JSON.parse(row)]);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  describe('retention', () => {
+    const uuid = (n: number) => `0000000${n % 10}-aaaa-4bbb-8ccc-${String(n).padStart(12, '0')}`;
+    const age = (path: string, days: number) => { const t = (Date.now() - days * 86_400_000) / 1000; utimesSync(path, t, t); };
+    const retain = (logFile: string, self: string, policy?: { days: number; keep: number }) => runSh(future.retentionArgv?.(logFile, self, ...(policy ? [policy] : [])) ?? ['/bin/sh', '-c', 'exit 9']);
+
+    it('passes the 14-day, 200-file policy by default', () => {
+      expect(future.retentionArgv?.('/d/decisions.jsonl', `/d/decisions.${uuid(1)}.jsonl`)?.slice(3)).toEqual(['decision-retention', '/d', 'decisions.', '.jsonl', '14', '200', `decisions.${uuid(1)}.jsonl`]);
+      expect(future.retentionArgv?.('/d/logs/.jsonl', `/d/logs/${uuid(1)}.jsonl`)?.slice(4, 7)).toEqual(['/d/logs', '', '.jsonl']);
+      expect(future.retentionArgv?.('/d/decisions', `/d/decisions.${uuid(1)}`)?.slice(4, 7)).toEqual(['/d', 'decisions.', '']);
+    });
+
+    it('deletes this log\'s session files past the age and past the newest count, never the session\'s own or another file', async () => {
+      const dir = mkdtempSync(join(tmpdir(), 'decision-retention-'));
+      const file = (name: string, days: number, row = '{"ts":"2026-10-01T00:00:00.000Z","event":"start"}') => { writeFileSync(join(dir, name), `${row}\n`); age(join(dir, name), days); return name; };
+      try {
+        const self = file(`decisions.${uuid(0)}.jsonl`, 30);
+        const old = file(`decisions.${uuid(1)}.jsonl`, 20); const oldRotated = file(`${old}.1`, 20);
+        const orphan = file(`decisions.${uuid(2)}.jsonl.1`, 20);
+        const fresh = [3, 4, 5, 6].map((n) => file(`decisions.${uuid(n)}.jsonl`, n - 2));
+        const freshRotated = file(`${fresh[3]}.1`, 4);
+        const foreign = [file('decisions.notes.jsonl', 40), file('other.jsonl', 40), file(`audit.${uuid(7)}.jsonl`, 40), file(`decisions.${uuid(8)}.jsonl`, 40, '{"type":"user","sessionId":"x"}')];
+        const out = await retain(join(dir, 'decisions.jsonl'), join(dir, self), { days: 14, keep: 3 });
+        expect(out.code, out.stderr).toBe(0);
+        const left = readdirSync(dir).sort();
+        expect(left).toEqual([self, fresh[0], fresh[1], ...foreign].sort());
+        for (const gone of [old, oldRotated, orphan, fresh[2], fresh[3], freshRotated]) expect(left).not.toContain(gone);
+      } finally { rmSync(dir, { recursive: true, force: true }); }
+    });
+
+    it('deletes a session file just past the age and keeps one just short of it', async () => {
+      const dir = mkdtempSync(join(tmpdir(), 'decision-retention-'));
+      const file = (name: string, days: number) => { writeFileSync(join(dir, name), '{"ts":"2026-10-01T00:00:00.000Z","event":"start"}\n'); age(join(dir, name), days); return name; };
+      try {
+        const self = file(`decisions.${uuid(0)}.jsonl`, 0);
+        const short = file(`decisions.${uuid(1)}.jsonl`, 14 - 1 / 24);
+        file(`decisions.${uuid(2)}.jsonl`, 14 + 1 / 24);
+        const out = await retain(join(dir, 'decisions.jsonl'), join(dir, self), { days: 14, keep: 200 });
+        expect(out.code, out.stderr).toBe(0);
+        expect(readdirSync(dir).sort()).toEqual([self, short].sort());
+      } finally { rmSync(dir, { recursive: true, force: true }); }
+    });
+
+    it('passes over a log directory that does not exist', async () => {
+      const out = await retain('/nonexistent-sac/decisions.jsonl', `/nonexistent-sac/decisions.${uuid(0)}.jsonl`);
+      expect(out.code, out.stderr).toBe(0);
+    });
   });
 });

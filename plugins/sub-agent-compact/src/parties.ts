@@ -14,6 +14,7 @@ export class Parties {
   private readonly levels = new Map<string, number>();
   private readonly refused = new Set<string>();
   private readonly notices = new Map<string, string[]>();
+  private readonly held = new Set<string>();
 
   reading(key: string): number | undefined {
     return this.readings.get(key);
@@ -26,6 +27,7 @@ export class Parties {
    */
   read(key: string, tokens: number, fresh = true): void {
     this.readings.set(key, tokens);
+    this.held.delete(key);
     if (fresh && !this.firstReadings.has(key)) this.firstReadings.set(key, tokens);
   }
 
@@ -79,6 +81,26 @@ export class Parties {
     return queued;
   }
 
+  /** An automatic ask of the party was held: until its next reading, the request that hold let through is unanswered. */
+  heldAsk(key: string): void {
+    this.held.add(key);
+  }
+
+  /** True while no response came since the party's last held automatic ask. */
+  unanswered(key: string): boolean {
+    return this.held.has(key);
+  }
+
+  /** A response answered the party's held ask without a reading (a step with no usage that asks for tools): its next automatic ask is held again. */
+  answered(key: string): void {
+    this.held.delete(key);
+  }
+
+  /** The party's turn ended: an interrupt or an API error answered the held ask, so the next turn's ask is held again. */
+  turnEnded(key: string): void {
+    this.held.delete(key);
+  }
+
   continued(key: string): boolean {
     return this.refused.has(key);
   }
@@ -97,6 +119,13 @@ export class Parties {
     return level;
   }
 
+  /** The party starts over as if new: a /clear or a resume ended the conversation it held. */
+  forget(key: string): void {
+    for (const map of [this.readings, this.firstReadings, this.focuses, this.handoffs, this.levels, this.notices]) map.delete(key);
+    this.refused.delete(key);
+    this.held.delete(key);
+  }
+
   /**
    * After a compaction ran: the reading becomes the size after it (0 when none
    * was reported), so a tool call that lands before the next response reads no
@@ -108,6 +137,7 @@ export class Parties {
     this.handoffs.delete(key);
     this.levels.delete(key);
     this.refused.delete(key);
+    this.held.delete(key);
   }
 }
 

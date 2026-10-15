@@ -9,12 +9,15 @@ export const LOOK_BACK_INPUT_SCHEMA = {
     query: { type: 'string', description: 'All words must appear, case-insensitive, in one entry. Double quotes keep a phrase whole.' },
     entry: { type: 'integer', minimum: 1, description: 'Line number from a look_back result to fetch whole, before the latest compaction.' },
   },
-  required: ['why'], anyOf: [{ required: ['query'] }, { required: ['entry'] }], additionalProperties: false,
+  // Query-or-entry is parseLookBack's check, not the schema's: a client sending `entry: null` beside a query is not refused.
+  required: ['why'], additionalProperties: false,
 };
 export type LookBackArgs = { why: string; query?: string; entry?: number; terms: string[]; error?: string };
 export type LookBackResult = { text: string; hits?: number; error?: string };
 const oneLine = (s: string): string => s.replace(/\s+/g, ' ').trim();
-export function parseLookBack(input: Record<string, unknown>): LookBackArgs {
+export function parseLookBack(raw: Record<string, unknown>): LookBackArgs {
+  // A null query or entry is absent: clients send unset optional fields as null.
+  const input = Object.fromEntries(Object.entries(raw).filter(([key, value]) => !(value === null && (key === 'query' || key === 'entry'))));
   let why = typeof input.why === 'string' ? oneLine(input.why) : '';
   if (why.length > 120) why = why.slice(0, 115) + '[cut]';
   const args: LookBackArgs = { why: why || '[missing why]', terms: [] };
@@ -122,8 +125,14 @@ function readable(content: unknown, uses: ToolUse[], results: string[], warnings
       else { results.push('[missing id]'); warnings.push('tool result has no tool_use_id'); }
       return [readable(b.content, uses, [], warnings)];
     }
+    // A tool search's result names the tools it loaded.
+    if (b.type === 'tool_reference') {
+      const name = typeof b.tool_name === 'string' ? b.tool_name : typeof b.name === 'string' ? b.name : undefined;
+      if (name !== undefined) return [`[tool ${name}]`];
+    }
     const kind = typeof b.type === 'string' ? b.type : 'unknown';
-    const note = kind === 'image' ? 'image block' : `unsupported ${kind} block`;
+    // An image or a document is known and holds no text to search: a note, not a failure.
+    const note = kind === 'image' || kind === 'document' ? `${kind} block` : `unsupported ${kind} block`;
     warnings.push(note); return [`[${note}]`];
   }).join('\n');
 }
@@ -139,6 +148,13 @@ export function parseEntries(stdout: string): LookBackEntry[] {
     const msg = object(r?.message);
     const role = r?.type ?? msg?.role;
     if (typeof r?.timestamp === 'string' && Number.isFinite(Date.parse(r.timestamp))) e.time = new Date(r.timestamp).toISOString().slice(0, 16).replace('T', ' ');
+    if (r?.type === 'attachment') return attachmentEntry(e, object(r.attachment));
+    if (r?.type === 'queue-operation' && r.operation === 'enqueue' && typeof r.content === 'string') { e.kind = 'queued prompt'; e.text = r.content; return e; }
+    if (typeof r?.type === 'string' && (BOOKKEEPING.has(r.type) || (r.type === 'system' && typeof r.content !== 'string'))) {
+      e.kind = 'bookkeeping'; e.text = r.type; return e;
+    }
+    if (r?.type === 'system' && typeof r.content === 'string') { e.kind = 'system'; e.text = r.content; return e; }
+    if (r?.type === 'summary' && typeof r.summary === 'string') { e.kind = 'summary'; e.text = r.summary; return e; }
     if (!msg || !['user', 'assistant'].includes(String(role))) {
       e.kind = 'unknown'; e.text = `[unsupported entry type ${String(role)}]`; e.warnings.push(e.text.slice(1, -1)); return e;
     }
@@ -148,6 +164,39 @@ export function parseEntries(stdout: string): LookBackEntry[] {
     return e;
   });
 }
+/**
+ * Entry types Claude Code writes for its own bookkeeping, never part of the conversation (read off 2.1.300 transcripts):
+ * a queue operation other than an enqueued prompt (a dequeue, removal or pop repeats or empties it), a copy of a request
+ * sent, titles, modes, links, file history and cost. Skipped without a note; a `system` entry without text is too.
+ */
+const BOOKKEEPING = new Set([
+  'queue-operation', 'api-request', 'api-request-blob', 'api-request-shape', 'last-prompt', 'mode', 'permission-mode',
+  'atis-latch', 'ai-title', 'custom-title', 'agent-name', 'bridge-session', 'history-suppression', 'frame-link', 'pr-link',
+  'file-history-snapshot', 'file-history-delta', 'cost-state', 'artifact-comment-monitor', 'artifact-autoreact-ledger',
+]);
+/**
+ * An `attachment` entry: what Claude Code put into the conversation beside the messages. A task notification (a child's
+ * result) is a `queued_command` whose `commandMode` is `task-notification`; its text is `prompt`. Others carry `content`
+ * (a string or a list of strings) or `text`. One with none of these (engine records such as a prompt snapshot, or a
+ * file whose text is nested) is shown raw, its JSON verbatim, so nothing it holds is hidden.
+ */
+function attachmentEntry(e: LookBackEntry, a: Record<string, unknown> | undefined): LookBackEntry {
+  const type = typeof a?.type === 'string' ? a.type : 'unknown';
+  const content = a?.content;
+  const text = typeof a?.prompt === 'string' ? a.prompt
+    : typeof content === 'string' ? content
+    : Array.isArray(content) && content.every((item) => typeof item === 'string') ? content.join('\n')
+    : typeof a?.text === 'string' ? a.text
+    : undefined;
+  if (text === undefined) {
+    e.kind = `attachment ${type} raw`; e.text = JSON.stringify(a ?? null); return e;
+  }
+  e.kind = a?.commandMode === 'task-notification' ? 'task-notification' : `attachment ${type}`;
+  e.text = text;
+  return e;
+}
+/** A warning that leaves an entry, or part of one, unread: a failure the caller sees, not a routine note. */
+const unread = (warning: string): boolean => warning.startsWith('unsupported');
 export function toolNames(entries: readonly LookBackEntry[]): Record<string, string> {
   return Object.fromEntries(entries.flatMap((e) => e.uses.map((u) => [u.id, u.name])));
 }
@@ -164,9 +213,16 @@ export function snippet(text: string, terms: readonly string[]): string {
   const end = start + 400;
   return `${start > 0 ? '…' : ''}${text.slice(start, end)}${end < text.length ? '…' : ''}`;
 }
-export function searchResults(entries: readonly LookBackEntry[], terms: readonly string[], boundary: number, names: Record<string, string> = {}): LookBackResult {
-  const candidates = entries.filter((e) => e.line < boundary);
-  const matches = candidates.filter((e) => terms.every((term) => e.text.toLowerCase().includes(term.toLowerCase()))).sort((a, b) => b.line - a.line);
+/**
+ * The matches, newest first; the party's own calls of `demote` (its forward handoff, whose fields restate what it
+ * searches for) and their results rank below every other hit. An entry left unread is the result's error, hits still shown.
+ */
+export function searchResults(entries: readonly LookBackEntry[], terms: readonly string[], boundary: number, names: Record<string, string> = {}, demote?: string): LookBackResult {
+  const candidates = entries.filter((e) => e.line < boundary && e.kind !== 'bookkeeping');
+  const own = (e: LookBackEntry): boolean => demote !== undefined && (e.uses.some((u) => u.name === demote) || e.results.some((id) => names[id] === demote));
+  const matches = candidates
+    .filter((e) => terms.every((term) => e.text.toLowerCase().includes(term.toLowerCase())))
+    .sort((a, b) => Number(own(a)) - Number(own(b)) || b.line - a.line);
   const notes = [...new Set(candidates.flatMap((e) => e.warnings.map((w) => `#${e.line}: ${w}`)))].join('\n');
   const out: string[] = [];
   for (const e of matches) {
@@ -185,13 +241,24 @@ export function searchResults(entries: readonly LookBackEntry[], terms: readonly
   }
   if (notes) rendered += `\n${notes.slice(0, 1000)}${notes.length > 1000 ? '\n[unsupported-shape report cut]' : ''}`;
   if (more) rendered += `\n${more} more matches: narrow the query, or fetch one with entry`;
-  return { text: rendered, hits: out.length };
+  const failed = candidates.flatMap((e) => e.warnings.filter(unread).map((w) => `#${e.line}: ${w}`));
+  const unreadEntries = new Set(failed.map((f) => f.split(':')[0])).size;
+  const error = failed.length === 0 ? undefined : `${unreadEntries} ${unreadEntries === 1 ? 'entry' : 'entries'} could not be read: ${[...new Set(failed)].slice(0, 5).join('; ')}${failed.length > 5 ? '; …' : ''}`;
+  return { text: rendered, hits: out.length, ...(error ? { error } : {}) };
 }
 export function entryResult(entries: readonly LookBackEntry[], n: number, boundary: number, names: Record<string, string> = {}): LookBackResult {
   const error = n >= boundary ? `entry ${n} is at or after the compaction at line ${boundary}, so already in context` : undefined;
   if (error) return { text: error, error };
   const e = entries.find((e) => e.line === n);
   if (!e) { const error = `entry ${n} was not found in the transcript`; return { text: error, error }; }
+  if (e.kind === 'bookkeeping') {
+    const error = `entry ${n} is Claude Code bookkeeping (${e.text}), not part of the conversation`;
+    return { text: error, error };
+  }
+  if (e.kind === 'unknown') {
+    const error = `entry ${n} could not be read: ${e.warnings.join(', ')}`;
+    return { text: error, error };
+  }
   const text = e.text.slice(0, 24_000) + (e.text.length > 24_000 ? `\n[cut at 24k of ${e.text.length} chars]` : '');
   return { text: `${header(e, names)}\n${text}` };
 }

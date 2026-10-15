@@ -12,12 +12,14 @@ type AnyHook = (...args: any[]) => any;
 function engine() {
   const hooks = new Map<string, AnyHook>();
   const written: Record<string, string> = {};
+  // main's last reading: a compaction ask is judged against it, as Claude Code reports it.
+  let current = 0;
   const $ = {
     session: {
       id: async () => 'session-1',
       turns: async () => 1,
       cwd: async () => '/nowhere',
-      usage: async () => ({ context: { tokens: 0, window: 1_000_000 } }),
+      usage: async () => ({ context: { tokens: current, window: 1_000_000 } }),
       messages: async () => [],
       compact: async () => ({}),
     },
@@ -27,6 +29,12 @@ function engine() {
       read: async (path: string) => written[path] ?? '',
       write: async (path: string, content: string) => void (written[path] = content),
       list: async () => [],
+    },
+    process: {
+      run: async (argv: string[], init?: { stdin?: string }) => {
+        if (argv[3] === 'decision-log') written[argv[4]!] = (written[argv[4]!] ?? '') + (init?.stdin ?? '');
+        return { exitCode: 0, stdout: '', stderr: '' };
+      },
     },
     clock: { after: (ms: number, fn: () => void) => ({ cancel: () => clearTimeout(setTimeout(fn, ms)) }) },
     ui: { log: () => {} },
@@ -42,6 +50,7 @@ function engine() {
   return {
     start: () => dispatch('session.start', {}, async () => ({})),
     step: async (tokens: number, agentId?: string) => {
+      if (agentId === undefined) current = tokens;
       const gen = dispatch('turn.step', { model: 'claude-opus-4-5[1m]', index: 3, messageCount: 40, ...(agentId ? { agentId } : {}) }, async function* () {
         return { usage: { input_tokens: tokens }, answer: 'working', toolUses: [{}] };
       });
@@ -85,13 +94,22 @@ describe('a main compaction the plugin never saw, through the adapter', () => {
     expect(await cc.unseen()).toEqual([expect.objectContaining({ event: 'compact-unseen', party: 'main', before: 68_239, after: 12_753 })]);
   });
 
-  it('records nothing when session.compact was handled in between', async () => {
+  it('records nothing when a compaction session.compact let through ran in between', async () => {
     const cc = engine();
     await cc.start();
     await cc.step(700_000);
-    await cc.ask('auto');
+    expect(await cc.ask('auto')).toHaveProperty('messages');
     await cc.step(12_753);
     expect(await cc.unseen()).toEqual([]);
+  });
+
+  it('records the drop after an ask the plugin skipped: that compaction never ran', async () => {
+    const cc = engine();
+    await cc.start();
+    await cc.step(100_000);
+    expect(await cc.ask('auto')).toHaveProperty('skip');
+    await cc.step(12_753);
+    expect(await cc.unseen()).toEqual([expect.objectContaining({ before: 100_000, after: 12_753 })]);
   });
 
   it('records nothing for a steady main chat or for a sub-agent', async () => {

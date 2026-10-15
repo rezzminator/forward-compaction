@@ -2,6 +2,16 @@ import { describe, expect, it } from 'vitest';
 import { isFirstRequest, Parties } from '../plugins/sub-agent-compact/src/parties.ts';
 
 describe('Parties', () => {
+  it('marks a held automatic ask unanswered until the party\'s next reading', () => {
+    const parties: any = new Parties();
+    parties.read('a', 150_000);
+    expect(parties.unanswered?.('a')).toBe(false);
+    parties.heldAsk?.('a');
+    expect(parties.unanswered?.('a')).toBe(true);
+    parties.read('a', 151_000);
+    expect(parties.unanswered?.('a')).toBe(false);
+  });
+
   it('owes each nudge level once, and none while armed', () => {
     const parties = new Parties();
     parties.read('a', 105_000);

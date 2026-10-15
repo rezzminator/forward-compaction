@@ -30,3 +30,35 @@ function scalar(raw: string): string {
   if (/^(["']).*\1$/.test(value)) return value.slice(1, -1);
   return value.replace(/\s+#.*$/, '');
 }
+
+/**
+ * A list key of the leading frontmatter, as Claude Code's agent definitions
+ * write `tools` and `disallowedTools`: a comma scalar (`a, b`), a flow list
+ * (`[a, b]`) or a block list (`- a` lines under the key). An absent key, an
+ * empty value or no frontmatter → undefined.
+ */
+export function frontmatterList(text: string, key: string): string[] | undefined {
+  const lines = text.replace(/^﻿/, '').split(/\r?\n/);
+  if (lines[0]?.trim() !== '---') return undefined;
+  const end = lines.findIndex((line, i) => i > 0 && line.trim() === '---');
+  if (end < 0) return undefined;
+  for (let i = 1; i < end; i++) {
+    const top = /^([A-Za-z_][\w-]*)\s*:\s*(.*)$/.exec(lines[i] ?? '');
+    if (!top || top[1] !== key) continue;
+    const value = (top[2] ?? '').replace(/\s+#.*$/, '').trim();
+    const items: string[] = [];
+    if (value !== '') {
+      const flow = /^\[(.*)\]$/.exec(value);
+      items.push(...(flow ? (flow[1] ?? '') : value).split(','));
+    } else {
+      for (let j = i + 1; j < end; j++) {
+        const item = /^\s*-\s+(.*)$/.exec(lines[j] ?? '');
+        if (!item) break;
+        items.push(item[1] ?? '');
+      }
+    }
+    const list = items.map((item) => scalar(item)).filter((item) => item !== '');
+    return list.length > 0 ? list : undefined;
+  }
+  return undefined;
+}

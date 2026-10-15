@@ -7,7 +7,7 @@
 [![Claude Code plugin](https://img.shields.io/badge/Claude%20Code-plugin-D97757)](https://docs.claude.com/en/docs/claude-code/plugins)
 [![Version](https://img.shields.io/badge/version-0.7.0--dev.23-blue)](./CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
-[![Tests](https://img.shields.io/badge/tests-622%20passing-brightgreen)](#development)
+[![Tests](https://img.shields.io/badge/tests-740%20passing-brightgreen)](#development)
 [![Built with Professor](https://img.shields.io/badge/built%20with-Professor-8A2BE2)](https://github.com/rezzminator/professor)
 
 **34% cheaper** than a sub-agent that never compacts · **52% less context** re-sent on every request
@@ -46,12 +46,10 @@ the model decide *when* to compact.
   and names what the summary must keep.
 - 🛟 **A forced point as the safety net.** A party whose model ignores the
   nudges is still compacted when it reaches its ceiling.
-- 🪶 **Haiku is left alone, except for the forward handoff.** Small, fast
-  agents compact at Claude Code's own point; with `forwardHandoffTool` on they
-  are nudged and can call `forward_handoff`, whose text installs at that point.
-  When Claude Code asks to compact a Haiku party that has not handed off yet,
-  the ask is held up to 3 times and the model is told to call it now; then it
-  compacts with or without it.
+- 🪶 **Haiku is left to Claude Code.** For a Haiku party the plugin does
+  nothing: no nudge, no hold, no forced point, no brief seated back after a
+  compaction, and a `forward_handoff` or `handoff` call is refused unstored.
+  Every compaction ask passes, and Claude Code's own protocol runs.
 - 📜 **Every decision logged** to a JSONL file per session, when you want to
   see why a compaction ran or was held. Every line the plugin says lands there
   too, as a `said` row: failures still show on screen, while routine successes
@@ -59,7 +57,23 @@ the model decide *when* to compact.
   screen only when no `logFile` is set. A main-chat compaction Claude Code
   ran without asking the plugin (its reading fell to half or less, with no
   `session.compact` in between) is logged as `compact-unseen` with the
-  readings `before` and `after`.
+  readings `before` and `after`; its stored handoff is dropped
+  (`handoffDropped`) and its nudges start over. A `/clear` or a resume
+  writes a `cleared` row and starts the main chat over.
+- 🧾 **The log keeps its evidence.** Rows are only ever appended, under a
+  lock, by every chat and sub-agent of the machine at once. Routine skips
+  fold: the first of a streak is written, the rest become one `skips` row
+  (`count`, `from`, `to`, `firstTokens`, `lastTokens`, `limit`) at the
+  party's next decision, every 100 skips, and at session end, so a skip
+  never evicts a compaction, nudge, handoff, error or start row. A session
+  file over 8 MiB moves to `.1`. Rows queued at session end are written
+  before the plugin exits, within Claude Code's short session-end bound; a
+  row the bound cuts off is counted on the screen. Retention: once per
+  session, the files of other sessions beside it (each with its `.1`) older
+  than 14 days go, then all but the newest 200, this session's counted. Only
+  a `<uuid>.jsonl` file whose first line has a decision row's shape
+  (`{"ts":"…","event":"…`) is a session's file, so retention treats the
+  `logFile` folder as the plugin's own: keep it in a folder of its own.
 
 ## 📊 Benchmark
 
@@ -129,7 +143,9 @@ flowchart LR
    file, what is done, what is left, the next step. A sub-agent whose
    definition has a `tools:` allowlist can't see a plugin's tool, so it
    writes `<compact-now>its focus</compact-now>` in a response that also
-   calls a tool.
+   calls a tool. A sub-agent whose `tools:` list lacks the forward handoff
+   tool (or whose `disallowedTools` names it, or its server) is never nudged
+   toward it.
 3. **Running.** The request arms the party. The next time Claude Code asks
    to compact it, the plugin lets it through, and the focus becomes the
    summarizer's instructions. A party that never asks is held until its
@@ -207,10 +223,18 @@ Guards keep this honest:
   `handoffTool` and `compactTool` off the plugin says so once.
 - A compaction event whose trigger or transcript shape the plugin does not
   recognise (a Claude Code change) is treated as automatic and logged once
-  by name, never read as absence. A Haiku-class party is compacted at Claude
-  Code's own point and never held: its ask comes near 51k, below the 67k
-  the plugin assumes for others (measured on 255 non-Haiku sub-agent asks,
-  median 65.2k, p90 67.0k).
+  by name, never read as absence. A Haiku-class party is left to Claude
+  Code: its ask comes near 51k, below the 67k the plugin assumes for others
+  (measured on 255 non-Haiku sub-agent asks, median 65.2k, p90 67.0k).
+- A limit past the party's real window is clamped to Claude Code's ask
+  point for that window (said once per party type); decision rows carry the
+  clamped `limit`, and `limitSet` beside it when it was clamped. The main
+  chat's window is read again when its model changes (`/model`), logged as
+  `window-changed`. An automatic ask that comes again after the last one
+  was skipped (Claude Code's "prompt is too long" recovery) passes, as
+  `unanswered`, within the turn, until a response arrives (a reading, or a
+  step that asks for tools); once that turn ends, the next turn's ask is
+  held again.
 - You can always call a self-compaction or a handoff off. A message you
   send cancels a compaction the main chat armed or a handoff it stored, and
   the model is told not to ask or hand off again until your ask is done. An
@@ -255,13 +279,13 @@ With `forwardHandoffTool` on, the main chat and every sub-agent a policy governs
 | `Unresolved` | a skill or file that could not be read, an unknown `drop_skills` name, a failed git or transcript read; ends with the `look_back` hint | one line each |
 | `Objective`, `Done`, `Remaining`, `Blocked`, `Findings`, `Next` | the model's arguments; an over-limit field is trimmed and marked `[trimmed]`, a missing required field returns one error naming it | per field, in characters: `objective` 600, `next` 400; items: `done` and `remaining` 15 of 200, `blocked` 10 of 200, `findings` 15 of 300 |
 
-Every call is saved under `<Claude config directory>/sub-agent-compact/forward-handoff/<session>/<n>/` (`<session>/agent-<id>/<n>/` for a sub-agent): `args.json` (the arguments as received), `wake.txt` (the installed text, literally) and `record.json` (the chars and estimated tokens of every block and of the total, the context before and after, and the install check that each block landed, made at the first request after the install against what the session then holds). The path is logged and named in the `Paths` block. With no Claude config directory, or when the session's directory cannot be listed, nothing is saved and the tool's reply says so. Results of tool calls made in the same response as `forward_handoff` are kept in a message of their own, before the installed text. Carried text cannot forge the structure: a line that reads as a block label, an item marker or the header gets a backslash in front.
+Every call is saved under `$HOME/.local/state/sub-agent-compact/forward-handoff/<session>/<n>/` (`<session>/agent-<id>/<n>/` for a sub-agent; without `HOME`, under `<Claude config directory>/sub-agent-compact/forward-handoff/`): `args.json` (the arguments as received), `wake.txt` (the installed text, literally) and `record.json` (the chars and estimated tokens of every block and of the total, the context before and after, and the install check that each block landed, made at the first request after the install against what the session then holds). The path is logged and named in the `Paths` block. The `HOME` root survives a `CLAUDE_CONFIG_DIR` or account switch, so the chain holds; records an earlier version kept under the config directory are still read, and numbering continues past them. A handoff stored before a plugin reload is installed from these files at the next compaction, as long as its call still stands in the transcript and no person's message came after it. A sub-agent's relative shell writes are placed in the directory it was spawned in, not where the main chat's shell is at handoff time. With neither `HOME` nor a Claude config directory, or when the session's directory cannot be listed, nothing is saved and the tool's reply says so. Results of tool calls made in the same response as `forward_handoff` are kept in a message of their own, before the installed text. Carried text cannot forge the structure: a line that reads as a block label, an item marker or the header gets a backslash in front.
 
 ### Look back
 
 `look_back` is always available to the main chat and every sub-agent. It searches only the caller's own transcript before its latest compaction, including a forward handoff. Supply `why` (what the compaction lost) and `query` (all words must appear in one entry, case-insensitive; double quotes keep a phrase whole). Results are numbered, newest first, with readable snippets. Fetch an exact entry with `entry: N` instead of a query; entries already in context are refused.
 
-Every call is a counted compaction miss: the decision log records `look-back` and the one line explaining what was missed when `logFile` is configured; the line reaches the screen when the call failed or no `logFile` is set. Manual `Read`, `Grep` or `Bash` calls naming the caller's transcript are also logged as `look-back-manual`, the same way, without changing the call. No compaction yet, no matching entry, and lookup failures have distinct replies.
+Every call is a counted compaction miss: the decision log records `look-back` and the one line explaining what was missed when `logFile` is configured; the line reaches the screen when the call failed or no `logFile` is set. Manual `Read`, `Grep` or `Bash` calls naming the caller's transcript are also logged as `look-back-manual`, the same way, without changing the call. No compaction yet, no matching entry, and lookup failures have distinct replies; with no compaction yet the reply says so before any argument is checked. Task notifications (a child's result), other attachments, `system` and `summary` entries are searchable; an attachment with no text field is shown raw, and a queued prompt is read as one. Claude Code's own bookkeeping entries (queue operations, request copies, titles, modes, links, file history, cost, a `system` entry without text) are skipped without a note; an entry of any other type it cannot read makes the call an error naming it, the hits still shown. `entry: null` or `query: null` is read as absent. The caller's own `forward_handoff` calls and their replies rank below every other hit.
 
 Search keeps the newest 200 raw candidates, re-checks the words against readable text, and returns up to 20 hits / 12k characters; an entry fetch keeps up to 24k characters with a cut marker. Tool results name their tool when its call can be found; unavailable names and unsupported transcript shapes are explicit. Missing details beyond these bounds need a narrower query or an entry fetch.
 
@@ -292,12 +316,14 @@ name and replaced by the default, never ignored silently.
 | `forwardHandoffTool` | `false` | On: every party gets the `forward_handoff` tool (see [Forward handoff](#forward-handoff)). Code carries the user messages, skills, file trail, plan and tasks, running work and git state; the model writes only its frontier. Installed verbatim when its turn ends. |
 | `handoffTool` | `false` | On: models get the `handoff` tool. Its typed fields (`goal` and `next_step` required) are rendered to short markdown sections that replace the model's whole conversation so far, installed with no summarizer request; what it does after the call is kept. |
 | `compactTool` | `true` | On: models get the `compact` tool (hidden while `forwardHandoffTool` is on: the forward handoff replaces it), whose focus a summarizer turns into a summary, and `<compact-now>` markers count; while `handoffTool` is also on, the nudges name the handoff. Off: no `compact` tool, and `<compact-now>` markers count for nothing. |
-| `agentDirs` | empty | Comma-separated extra directories of agent definitions. |
-| `logFile` | empty | Absolute path of the JSONL decision log. Each session writes its own file: `decisions.jsonl` becomes `decisions.{session-id}.jsonl`. Empty uses `$PLUGIN_LOG_DIR/sub-agent-compact/decisions/{session-id}.jsonl` when that variable is set, otherwise decision logging is off. |
+| `agentDirs` | empty | Comma-separated extra directories of agent definitions. A list item that is not a string is named and ignored. |
+| `logFile` | empty | Absolute path of the JSONL decision log. Each session writes its own file: `decisions.jsonl` becomes `decisions.{session-id}.jsonl`. Empty uses `$PLUGIN_LOG_DIR/sub-agent-compact/decisions/{session-id}.jsonl` when that variable is set, otherwise decision logging is off. A relative path or a non-string is named as invalid and falls back to that default. |
 
 ### Logs
 
-Errors, warnings and info append JSONL rows to `$PLUGIN_LOG_DIR/sub-agent-compact/{errors,warnings,info}.jsonl`. With the variable unset, they use `$HOME/.local/state/sub-agent-compact/logs/`. Each session writes one `logger-ready` info row. Rows name the event, component and session; diagnostic details never include handoff or transcript bodies. Rows are bounded to 4096 bytes, directories and files are private, and a level file over 20 MiB moves to `.1` with a `log-capped` warning. A failed log write reports its directory and error once per failing streak without changing compaction or tool results.
+Errors, warnings and info append JSONL rows to `$PLUGIN_LOG_DIR/sub-agent-compact/{errors,warnings,info}.jsonl`. With the variable unset, they use `$HOME/.local/state/sub-agent-compact/logs/`. Each plugin process writes one `logger-ready` info row, and its decision log one `start` row; after a `/clear` or a resume the new session id's files carry neither. Rows name the event, component and session; diagnostic details never include handoff or transcript bodies. Rows are bounded to 4096 bytes, directories and files are private, and a level file over 20 MiB moves to `.1` with a `log-capped` warning. A failed log write reports its directory and error once per failing streak without changing compaction or tool results.
+
+Each warning is one level row: a line said with its diagnostic row (an option error, a resolve error, a warning) is written once, at the level said. A failing plugin log is named once per failing streak on screen and as a `plugin-log-failed` decision row; a failing decision log as a `decision-log-failed` error row, and a failed cleanup of old decision logs as a `decision-retention-failed` warning row. The level files rotate under a lock shared by every session. Option keys the plugin does not know are named in one line; a nudge start at or past the forced point in the same unit is named and kept.
 
 Existing screen notices and the per-session decision log stay separate. An explicit `logFile` always wins; only the blank default follows `PLUGIN_LOG_DIR`. With neither `PLUGIN_LOG_DIR` nor `HOME`, the screen reports that plugin logging is off.
 
@@ -341,7 +367,7 @@ You read files...
 ### Model windows
 
 Percentages are of each model's own window. The main chat's comes from
-Claude Code. A sub-agent's comes from its model id: Haiku 200k, Sonnet 5 and
+Claude Code. A sub-agent's comes from its model id: Haiku 4.5 and older 200k, Haiku 5.5, Sonnet 5 and
 any `[1m]` model 1M, a model that is not Claude (a GPT model behind a
 gateway) Claude Code's 200k default, and any other Claude model the main
 chat's window.
