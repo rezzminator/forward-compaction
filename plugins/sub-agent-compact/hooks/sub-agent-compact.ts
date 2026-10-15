@@ -85,7 +85,8 @@ function message(error: unknown): string {
 
 type State = {
   config: ResolvedOptions;
-  rawOptions: Record<string, unknown>;
+  /** The names of the options handed to `register`: none is read, the environment is the only home of an option. */
+  ignoredOptions: string[];
   pluginLog?: PluginLogQueue;
   pluginInitialized: boolean;
   pluginRows: Omit<PluginLogFields, 'plugin' | 'session'>[];
@@ -310,7 +311,7 @@ function warnOnce(st: State, $: EngineInterface, key: string, line: string): voi
 
 /**
  * The environment variable of each option, by name. Claude Code reads only a name spelled as a string
- * literal, so each is written out twice here (the key and the call); a test holds them to plugin.json.
+ * literal, so each is written out twice here (the key and the call); a test holds them to `OPTION_ENV`.
  */
 async function readOptionEnv($: EngineInterface): Promise<Pick<OptionEnvironment, 'vars' | 'readErrors'>> {
   const vars: Record<string, string> = {};
@@ -320,7 +321,7 @@ async function readOptionEnv($: EngineInterface): Promise<Pick<OptionEnvironment
       const value = await get();
       if (value !== undefined) vars[name] = value;
     } catch (error) {
-      readErrors.push(`sub-agent-compact: reading ${name} failed: ${message(error)}; its option decides`);
+      readErrors.push(`sub-agent-compact: reading ${name} failed: ${message(error)}; using the default`);
     }
   };
   await Promise.all([
@@ -371,10 +372,14 @@ function start(st: State, $: EngineInterface): Promise<void> {
     else show($, 'plugin log off: no PLUGIN_LOG_DIR and no HOME');
     const earlyRows = st.pluginRows.splice(0);
     if (st.pluginLog !== undefined) for (const fields of earlyRows) plog(st, $, fields);
-    st.config = servedOptions(resolveOptions(st.rawOptions, { pluginLogDir: override, ...(await readOptionEnv($)) }));
+    st.config = servedOptions(resolveOptions({ pluginLogDir: override, ...(await readOptionEnv($)) }));
     settleConfig(st, $);
     for (const line of st.config.errors) {
       say(st, $, line, 'warning', { event: 'option-error', line });
+    }
+    if (st.ignoredOptions.length > 0) {
+      const line = `sub-agent-compact: options ${st.ignoredOptions.join(', ')} are not read; set SUB_AGENT_COMPACT_* environment variables instead (README, Central options); their values are not applied`;
+      warnOnce(st, $, 'options-ignored', line);
     }
     try {
       st.configDir = (await $.env.get('CLAUDE_CONFIG_DIR')) || (home ? `${home}/.claude` : undefined);
@@ -1203,8 +1208,8 @@ async function answerCompactTool(st: State, $: EngineInterface, agentId: string 
 
 export const register: Register = (on: On, options: PluginOptions) => {
   const st: State = {
-    config: servedOptions(resolveOptions(options as Record<string, unknown>)),
-    rawOptions: options as Record<string, unknown>,
+    config: servedOptions(resolveOptions()),
+    ignoredOptions: options !== null && typeof options === 'object' ? Object.keys(options) : [],
     pluginRows: [],
     pluginInitialized: false,
     pluginWriting: Promise.resolve(),

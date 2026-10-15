@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { register } from '../plugins/sub-agent-compact/hooks/sub-agent-compact.ts';
+import { optionVars } from './option-env.ts';
 
 // A log directory that cannot be written fails every flush the same way. The person is told once per
 // distinct failure, not on every row, while every hook keeps deciding as if the log were fine.
@@ -18,7 +19,7 @@ function engine(writeError: () => Error) {
       messages: async () => [],
       compact: async () => ({}),
     },
-    env: { get: async () => undefined },
+    env: { get: async (name: string) => optionVars({ logFile: '/logs/decisions.jsonl' })[name] },
     fs: {
       exists: async () => false,
       read: async () => '',
@@ -34,7 +35,7 @@ function engine(writeError: () => Error) {
     agent: { list: async () => [] },
     tool: { register: async (spec: { name: string }) => ({ tool: `mcp__sub-agent-compact__${spec.name}` }) },
   };
-  register(((event: string, hook: AnyHook) => void hooks.set(event, hook)) as never, { logFile: '/logs/decisions.jsonl' } as never);
+  register(((event: string, hook: AnyHook) => void hooks.set(event, hook)) as never, {} as never);
   const dispatch = (event: string, e: unknown, impl: (e: any) => any): any => {
     const next = Object.assign((input: unknown) => impl(input), { signal: new AbortController().signal });
     const hook = hooks.get(event);

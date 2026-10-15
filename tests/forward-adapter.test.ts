@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { register } from '../plugins/sub-agent-compact/hooks/sub-agent-compact.ts';
+import { optionVars } from './option-env.ts';
 
 // The forward handoff through the adapter: the tool collects what code carries, stores the text and
 // persists the call's files; the next automatic ask installs the stored text verbatim and checks it landed.
@@ -28,7 +29,7 @@ const api = (extra: unknown[] = []) => [
   { role: 'assistant', content: [{ type: 'tool_use', id: 'f1', name: 'mcp__sub-agent-compact__forward_handoff', input: FIELDS }] },
 ];
 
-type Env = { homeGate?: Promise<void>; timers?: (() => void)[]; cwdFails?: boolean; vars?: Record<string, string>; envReadFails?: string[]; window?: number; decisionSessionFailsOnce?: boolean; decisionWriteFails?: boolean; uiFailsOnce?: boolean; home?: string; pluginLogDir?: string; pluginRunFails?: boolean; readFails?: string[]; denied?: string[]; listFails?: boolean; noHome?: boolean; noTranscript?: boolean; cwd?: string; agentRows?: Record<string, unknown[]>; agents?: { id: string; type: string }[]; run?: (argv: string[], init?: { cwd?: string }) => { exitCode: number; stdout: string; stderr: string } | undefined; appendWaits?: Promise<void>; pluginWaits?: Promise<void>; timersFire?: boolean; noClock?: boolean };
+type Env = { registerOptions?: Record<string, unknown>; homeGate?: Promise<void>; timers?: (() => void)[]; cwdFails?: boolean; vars?: Record<string, string>; envReadFails?: string[]; window?: number; decisionSessionFailsOnce?: boolean; decisionWriteFails?: boolean; uiFailsOnce?: boolean; home?: string; pluginLogDir?: string; pluginRunFails?: boolean; readFails?: string[]; denied?: string[]; listFails?: boolean; noHome?: boolean; noTranscript?: boolean; cwd?: string; agentRows?: Record<string, unknown[]>; agents?: { id: string; type: string }[]; run?: (argv: string[], init?: { cwd?: string }) => { exitCode: number; stdout: string; stderr: string } | undefined; appendWaits?: Promise<void>; pluginWaits?: Promise<void>; timersFire?: boolean; noClock?: boolean };
 const pluginExec = promisify(execFile);
 
 function engine(options: Record<string, unknown> = { forwardHandoffTool: true }, files: Record<string, string> = {}, apiRows: unknown[] = api(), git = true, refused: string[] = [], env: Env = {}) {
@@ -45,6 +46,8 @@ function engine(options: Record<string, unknown> = { forwardHandoffTool: true },
   let compactCalls = 0;
   let usageCalls = 0;
   const known: Record<string, string> = { [TRANSCRIPT]: '', ...files };
+  // The options are set the only way the plugin reads them: as variables of the environment, which a test's own `vars` override.
+  const vars: Record<string, string> = { ...optionVars(options), ...env.vars };
   const $ = {
     session: {
       id: async () => {
@@ -64,7 +67,7 @@ function engine(options: Record<string, unknown> = { forwardHandoffTool: true },
       get: async (key: string) => {
         if (env.envReadFails?.includes(key)) throw new Error('environment unavailable');
         if (key === 'HOME') await env.homeGate;
-        return env.vars?.[key] ?? (key === 'PLUGIN_LOG_DIR' ? env.pluginLogDir : key === 'HOME' && !env.noHome ? env.home ?? '/h/u' : undefined);
+        return vars[key] ?? (key === 'PLUGIN_LOG_DIR' ? env.pluginLogDir : key === 'HOME' && !env.noHome ? env.home ?? '/h/u' : undefined);
       },
     },
     fs: {
@@ -141,7 +144,7 @@ function engine(options: Record<string, unknown> = { forwardHandoffTool: true },
     },
   };
   const on = (event: string, hook: AnyHook) => void hooks.set(event, hook);
-  register(on as never, options as never);
+  register(on as never, (env.registerOptions ?? {}) as never);
   const dispatch = (event: string, e: unknown, impl: (e: any) => any, budgetMs?: number): any => {
     const next = Object.assign((input: unknown) => impl(input), { signal: new AbortController().signal }, budgetMs === undefined ? {} : { budget: { ms: budgetMs, remainingMs: budgetMs } });
     const hook = hooks.get(event);
@@ -220,31 +223,56 @@ describe('the forward handoff tool through the adapter', () => {
 
   const FORWARD = 'SUB_AGENT_COMPACT_FORWARD_HANDOFF_TOOL';
 
-  it('registers forward_handoff from the environment alone, with no option set', async () => {
-    const cc = engine({}, {}, api(), true, [], { vars: { [FORWARD]: '1' } });
+  // R5: with no pluginConfigs entry (an empty options object), the variable alone offers the tool.
+  it.each(['1', 'true', ' TRUE '])('registers forward_handoff from the environment alone: %j, options {}', async (value) => {
+    const cc = engine({}, {}, api(), true, [], { vars: { [FORWARD]: value }, registerOptions: {} });
     await cc.start();
     expect(cc.registered.sort()).toEqual(['forward_handoff', 'look_back']);
     expect(cc.logs.filter((line) => line.includes(FORWARD))).toEqual([]);
   });
 
-  it('lets the environment turn the forward handoff off over an option that turns it on', async () => {
+  it('lets the environment turn the forward handoff off', async () => {
     const cc = engine({ forwardHandoffTool: true }, {}, api(), true, [], { vars: { [FORWARD]: 'false' } });
     await cc.start();
     expect(cc.registered.sort()).toEqual(['compact', 'look_back']);
   });
 
   it('names a bad environment value on the screen and registers by the default', async () => {
-    const cc = engine({ forwardHandoffTool: true }, {}, api(), true, [], { vars: { [FORWARD]: 'sure' } });
+    const cc = engine({}, {}, api(), true, [], { vars: { [FORWARD]: 'sure' } });
     await cc.start();
     expect(cc.registered.sort()).toEqual(['compact', 'look_back']);
     expect(cc.logs.filter((line) => line.includes(FORWARD))).toEqual([expect.stringMatching(/env SUB_AGENT_COMPACT_FORWARD_HANDOFF_TOOL is invalid.*"sure".*using the default false/)]);
   });
 
-  it('names a variable that could not be read and lets the option layer register the tool', async () => {
+  it('names a variable that could not be read and registers by the default', async () => {
     const cc = engine({ forwardHandoffTool: true }, {}, api(), true, [], { envReadFails: [FORWARD] });
     await cc.start();
-    expect(cc.registered.sort()).toEqual(['forward_handoff', 'look_back']);
-    expect(cc.logs.filter((line) => line.includes(FORWARD))).toEqual([expect.stringMatching(/reading SUB_AGENT_COMPACT_FORWARD_HANDOFF_TOOL failed: environment unavailable/)]);
+    expect(cc.registered.sort()).toEqual(['compact', 'look_back']);
+    expect(cc.logs.filter((line) => line.includes(FORWARD))).toEqual([expect.stringMatching(/reading SUB_AGENT_COMPACT_FORWARD_HANDOFF_TOOL failed: environment unavailable.*using the default/)]);
+  });
+
+  describe('options handed to register (a leftover pluginConfigs entry)', () => {
+    const left = { forwardHandoffTool: true, mainAutoCompact: '300k', logFile: '/logs/decisions.jsonl' };
+    it('applies none of them and says so once, naming the variables', async () => {
+      const cc = engine({}, {}, api(), true, [], { registerOptions: left });
+      await cc.start();
+      await cc.start();
+      expect(cc.registered.sort()).toEqual(['compact', 'look_back']);
+      const said = cc.logs.filter((line) => line.includes('SUB_AGENT_COMPACT_'));
+      expect(said).toEqual([expect.stringMatching(/^options forwardHandoffTool, mainAutoCompact, logFile are not read; set SUB_AGENT_COMPACT_\* environment variables instead.*not applied/)]);
+      expect(said[0]).not.toContain('300k');
+      expect(said[0]).not.toContain('/logs/decisions.jsonl');
+    });
+    it('lets the environment decide beside them', async () => {
+      const cc = engine({}, {}, api(), true, [], { registerOptions: left, vars: { [FORWARD]: '1' } });
+      await cc.start();
+      expect(cc.registered.sort()).toEqual(['forward_handoff', 'look_back']);
+    });
+    it('says nothing for an empty options object', async () => {
+      const cc = engine({}, {}, api(), true, [], { registerOptions: {} });
+      await cc.start();
+      expect(cc.logs.filter((line) => line.includes('SUB_AGENT_COMPACT_'))).toEqual([]);
+    });
   });
 
   const MARKER = 'Parts 1-2 done.\n<compact-now>next: part 3</compact-now>';
@@ -1048,7 +1076,7 @@ describe('plugin log through the forward adapter', () => {
       expect(errors.filter((row) => row.event === 'tool-register-failed').map((row) => [row.level, row.where, row.session, row.detail.tool])).toEqual([['error', 'hooks/sub-agent-compact.ts#record', 'session-1', 'look_back'], ['error', 'hooks/sub-agent-compact.ts#record', 'session-1', 'look_back']]);
       expect(warnings.filter((row) => row.event === 'option-error').map((row) => [row.level, row.where, row.session])).toEqual([['warning', 'hooks/sub-agent-compact.ts#record', 'session-1']]);
       // Each warning is one level row: the said line and its diagnostic row are one entry, not two.
-      expect(warnings.filter((row) => JSON.stringify(row).includes('mainAutoCompact')).map((row) => row.event)).toEqual(['option-error']);
+      expect(warnings.filter((row) => JSON.stringify(row).includes('SUB_AGENT_COMPACT_MAIN_AUTO_COMPACT')).map((row) => row.event)).toEqual(['option-error']);
       expect(warnings.filter((row) => JSON.stringify(row).includes('registering the look_back tool failed')).map((row) => row.event)).toEqual(['warning']);
       // The first row on disk is a real diagnostic, never a startup row.
       expect(errors[0]).toMatchObject({ level: 'error', event: 'tool-register-failed', session: 'session-1', detail: { tool: 'look_back' } });
@@ -1084,8 +1112,8 @@ describe('plugin log through the forward adapter', () => {
       await expect(cc.start()).rejects.toThrow('screen unavailable');
       await cc.end();
       // The option error is said with its diagnostic row: one level row, the row's, at the level said.
-      expect(diskRows(join(temp, 'logs/sub-agent-compact'), 'warnings.jsonl').filter((row) => JSON.stringify(row).includes('mainAutoCompact'))).toEqual([expect.objectContaining({
-        level: 'warning', event: 'option-error', where: 'hooks/sub-agent-compact.ts#record', session: 'session-1', msg: expect.stringContaining('mainAutoCompact'),
+      expect(diskRows(join(temp, 'logs/sub-agent-compact'), 'warnings.jsonl').filter((row) => JSON.stringify(row).includes('SUB_AGENT_COMPACT_MAIN_AUTO_COMPACT'))).toEqual([expect.objectContaining({
+        level: 'warning', event: 'option-error', where: 'hooks/sub-agent-compact.ts#record', session: 'session-1', msg: expect.stringContaining('SUB_AGENT_COMPACT_MAIN_AUTO_COMPACT'),
       })]);
     } finally { rmSync(temp, { recursive: true, force: true }); }
   });

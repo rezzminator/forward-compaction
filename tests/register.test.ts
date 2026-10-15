@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { formatSize, OPTION_ENV, resolveOptions } from '../plugins/sub-agent-compact/src/limits.ts';
 import { servedOptions, toolsToRegister } from '../plugins/sub-agent-compact/src/register.ts';
 
 describe('toolsToRegister', () => {
@@ -48,13 +49,40 @@ describe('servedOptions', () => {
 describe('the environment reads in the hooks module', () => {
   const root = join(dirname(fileURLToPath(import.meta.url)), '..');
   const source = readFileSync(join(root, 'plugins/sub-agent-compact/hooks/sub-agent-compact.ts'), 'utf8');
-  const manifest = JSON.parse(readFileSync(join(root, 'plugins/sub-agent-compact/.claude-plugin/plugin.json'), 'utf8')) as { userConfig: Record<string, unknown> };
-  const envName = (option: string) => `SUB_AGENT_COMPACT_${option.replace(/([A-Z])/g, '_$1').toUpperCase()}`;
+  const readme = readFileSync(join(root, 'README.md'), 'utf8');
+  const manifest = JSON.parse(readFileSync(join(root, 'plugins/sub-agent-compact/.claude-plugin/plugin.json'), 'utf8')) as Record<string, unknown>;
 
-  it('spells each option\'s variable as its own string literal, once, the name Claude Code lists', () => {
-    const options = Object.keys(manifest.userConfig);
-    expect(options).toHaveLength(14);
+  it('declares no userConfig: the environment is the only home of an option', () => {
+    expect(Object.keys(manifest)).not.toContain('userConfig');
+  });
+
+  it('spells each variable of OPTION_ENV as its own string literal, once, the name Claude Code lists', () => {
+    const names = Object.values(OPTION_ENV);
+    expect(names).toHaveLength(14);
     const spelled = [...source.matchAll(/readOptionVar\('([A-Z_]+)', \(\) => \$\.env\.get\('([A-Z_]+)'\)\)/g)].map((match) => [match[1], match[2]]);
-    expect(spelled).toEqual(options.map((option) => [envName(option), envName(option)]));
+    expect(spelled).toEqual(names.map((name) => [name, name]));
+  });
+
+  it('documents exactly the variables of OPTION_ENV in the README options table, with the default the code holds', () => {
+    const rows = [...readme.matchAll(/^\| `([A-Za-z]+)` \| `(SUB_AGENT_COMPACT_[A-Z_]+)` \| ([^|]+) \|/gm)].map((match) => [match[1], match[2], match[3]!.trim()]);
+    expect(rows.map(([option, name]) => [option, name]).sort()).toEqual(Object.entries(OPTION_ENV).sort());
+    const defaults = resolveOptions();
+    const held: Record<string, string> = {
+      mainAutoCompact: formatSize(defaults.main.autoCompact),
+      mainAutoCompactNudgeStart: formatSize(defaults.main.nudgeStart),
+      mainAutoCompactNudgeEvery: formatSize(defaults.main.nudgeEvery),
+      mainAutoCompactEnabled: String(defaults.main.enabled),
+      subagentAutoCompact: formatSize(defaults.subagent.autoCompact),
+      subagentAutoCompactNudgeStart: formatSize(defaults.subagent.nudgeStart),
+      subagentAutoCompactNudgeEvery: formatSize(defaults.subagent.nudgeEvery),
+      subagentAutoCompactEnabled: String(defaults.subagent.enabled),
+      subagentKeepBrief: String(defaults.keepBrief),
+      forwardHandoffTool: String(defaults.forwardHandoffTool),
+      handoffTool: String(defaults.handoffTool),
+      compactTool: String(defaults.compactTool),
+      agentDirs: 'empty',
+      logFile: 'empty',
+    };
+    expect(Object.fromEntries(rows.map(([option, , shown]) => [option, shown!.replace(/`/g, '')]))).toEqual(held);
   });
 });

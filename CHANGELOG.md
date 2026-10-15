@@ -4,6 +4,17 @@ Every release of sub-agent-compact. Versions follow [semantic versioning](https:
 
 ## [Unreleased]
 
+## [0.8.0-dev.1] — 2026-10-15
+
+### Removed
+
+- The plugin's `userConfig` (and with it `pluginConfigs["sub-agent-compact@sub-agent-compact"].options`, `/config` and the option layer): every option is read from its `SUB_AGENT_COMPACT_*` environment variable alone, an unset, empty or blank variable giving the default. A non-empty options object handed to the plugin is not applied; the plugin names its keys in one warning, once.
+
+### Changed
+
+- `resolveOptions` resolves variable over default; a bad value is named by its variable and the default applies, and so does a variable that could not be read.
+- Migration: move each value from `pluginConfigs["sub-agent-compact@sub-agent-compact"].options` to the variable in the README options table (`mainAutoCompact: "600k"` becomes `SUB_AGENT_COMPACT_MAIN_AUTO_COMPACT=600k`; `forwardHandoffTool: true` becomes `SUB_AGENT_COMPACT_FORWARD_HANDOFF_TOOL=1`), in the `env` block of `settings.json` or the shell that starts Claude Code, then delete the `pluginConfigs` entry.
+
 ## [0.7.1-dev.3] — 2026-10-15
 
 ### Changed

@@ -51,34 +51,37 @@ const handoffUse = (id = 'h1', text = HANDOFF): Use => ({ tool_use_id: id, tool:
 const read = (id: string, path: string): Use => ({ tool_use_id: id, tool: 'Read', input: { file_path: path } });
 
 describe('resolveOptions: the two tool flags', () => {
+  const COMPACT = 'SUB_AGENT_COMPACT_COMPACT_TOOL';
+  const HANDOFF = 'SUB_AGENT_COMPACT_HANDOFF_TOOL';
   it('turns the compact tool on and the handoff tool off by default', () => {
-    const options = resolveOptions({});
+    const options = resolveOptions();
     expect(options.compactTool).toBe(true);
     expect(options.handoffTool).toBe(false);
   });
 
-  it('reads both as on/off values', () => {
-    const options = resolveOptions({ compactTool: 'off', handoffTool: true });
+  it('reads both as 1/0 or true/false', () => {
+    const options = resolveOptions({ vars: { [COMPACT]: '0', [HANDOFF]: 'true' } });
     expect(options.compactTool).toBe(false);
     expect(options.handoffTool).toBe(true);
   });
 
   it('names a bad value and keeps the default', () => {
-    const options = resolveOptions({ compactTool: 'sometimes', handoffTool: 7 });
+    const options = resolveOptions({ vars: { [COMPACT]: 'sometimes', [HANDOFF]: '7' } });
     expect(options.compactTool).toBe(true);
     expect(options.handoffTool).toBe(false);
-    expect(options.errors.some((line) => line.includes('compactTool'))).toBe(true);
-    expect(options.errors.some((line) => line.includes('handoffTool'))).toBe(true);
+    expect(options.errors.some((line) => line.includes(COMPACT))).toBe(true);
+    expect(options.errors.some((line) => line.includes(HANDOFF))).toBe(true);
   });
 });
 
-describe('resolveOptions: forwardHandoffTool', () => {
-  it('is off by default, reads on/off, and names a bad value keeping the default', () => {
-    expect(resolveOptions({}).forwardHandoffTool).toBe(false);
-    expect(resolveOptions({ forwardHandoffTool: 'on' }).forwardHandoffTool).toBe(true);
-    const bad = resolveOptions({ forwardHandoffTool: 7 });
+describe('resolveOptions: the forward handoff variable', () => {
+  const FORWARD = 'SUB_AGENT_COMPACT_FORWARD_HANDOFF_TOOL';
+  it('is off by default, reads 1/0, and names a bad value keeping the default', () => {
+    expect(resolveOptions().forwardHandoffTool).toBe(false);
+    expect(resolveOptions({ vars: { [FORWARD]: '1' } }).forwardHandoffTool).toBe(true);
+    const bad = resolveOptions({ vars: { [FORWARD]: '7' } });
     expect(bad.forwardHandoffTool).toBe(false);
-    expect(bad.errors.some((line) => line.includes('forwardHandoffTool'))).toBe(true);
+    expect(bad.errors.some((line) => line.includes(FORWARD))).toBe(true);
   });
 });
 

@@ -5,9 +5,9 @@
 **Smart auto-compact for Claude Code: a separate compaction point for every sub-agent, and self-compaction at a milestone the model chooses.**
 
 [![Claude Code plugin](https://img.shields.io/badge/Claude%20Code-plugin-D97757)](https://docs.claude.com/en/docs/claude-code/plugins)
-[![Version](https://img.shields.io/badge/version-0.7.1--dev.3-blue)](./CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.8.0--dev.1-blue)](./CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
-[![Tests](https://img.shields.io/badge/tests-793%20passing-brightgreen)](#development)
+[![Tests](https://img.shields.io/badge/tests-798%20passing-brightgreen)](#development)
 [![Built with Professor](https://img.shields.io/badge/built%20with-Professor-8A2BE2)](https://github.com/rezzminator/professor)
 
 **34% cheaper** than a sub-agent that never compacts · **52% less context** re-sent on every request
@@ -293,22 +293,30 @@ Search keeps the newest 200 raw candidates, re-checks the words against readable
 
 ### Central options
 
-Set these through `/config`, or under
-`pluginConfigs["sub-agent-compact@sub-agent-compact"].options` in
-`settings.json`. The key must be the full plugin id: Claude Code silently
-ignores options under any other key.
+Every option is an environment variable, `SUB_AGENT_COMPACT_` plus the option in
+upper snake case (the table's second column). Set them in the shell that
+starts Claude Code or in the `env` block of `settings.json`. There is no
+plugin configuration: the plugin declares no `userConfig`, needs no
+`pluginConfigs` entry and has no `/config` screen. An unset, empty or blank
+variable is absent and the default applies.
 
 A **size** is a percentage of the model's own window (`"10%"`), an integer,
-or a number with a k/m suffix (`"150k"`, `"0.6m"`). A bad value is logged by
-name and replaced by the default, never ignored silently.
+or a number with a k/m suffix (`"150k"`, `"0.6m"`). A flag variable is `1`,
+`0`, `true` or `false` in any case; a directory list is comma- or
+newline-separated; the log file is an absolute path. A bad value is named by
+its variable on the screen and the default is used, never ignored silently.
+A variable that could not be read is named the same way and its default is used.
 
-Every option can also be set with an environment variable: `SUB_AGENT_COMPACT_`
-plus the option in upper snake case, the table's second column. Precedence:
-the environment variable, then the option above, then the default. A variable
-that is unset, empty or blank is absent and the option decides. A flag
-variable is `1`, `0`, `true` or `false` in any case; a size, a directory list
-and the log file take the option's own grammar. A bad value is named by its
-variable on the screen and the default is used, not the option's value.
+**Migrating from 0.7.** Values under
+`pluginConfigs["sub-agent-compact@sub-agent-compact"].options` are no longer
+read. If that object is not empty, the plugin says so once on the screen,
+naming its keys, and applies none of them. Move each value to its variable
+(`"mainAutoCompact": "600k"` becomes `SUB_AGENT_COMPACT_MAIN_AUTO_COMPACT=600k`;
+`"forwardHandoffTool": true` becomes `SUB_AGENT_COMPACT_FORWARD_HANDOFF_TOOL=1`),
+then delete the `pluginConfigs` entry.
+
+`SUB_AGENT_COMPACT_PROBE_DIR` is not an option: only the host probe
+(`npm run probe:installed`) reads it, to find the installed copy it checks.
 
 | Option | Environment variable | Default | Meaning |
 | --- | --- | --- | --- |
@@ -324,8 +332,8 @@ variable on the screen and the default is used, not the option's value.
 | `forwardHandoffTool` | `SUB_AGENT_COMPACT_FORWARD_HANDOFF_TOOL` | `false` | On: every party gets the `forward_handoff` tool (see [Forward handoff](#forward-handoff)). Code carries the user messages, skills, file trail, plan and tasks, running work and git state; the model writes only its frontier. Installed verbatim when its turn ends. |
 | `handoffTool` | `SUB_AGENT_COMPACT_HANDOFF_TOOL` | `false` | On: models get the `handoff` tool. Its typed fields (`goal` and `next_step` required) are rendered to short markdown sections that replace the model's whole conversation so far, installed with no summarizer request; what it does after the call is kept. |
 | `compactTool` | `SUB_AGENT_COMPACT_COMPACT_TOOL` | `true` | On: models get the `compact` tool (hidden while `forwardHandoffTool` is on: the forward handoff replaces it), whose focus a summarizer turns into a summary, and `<compact-now>` markers count; while `handoffTool` is also on, the nudges name the handoff. Off: no `compact` tool, and `<compact-now>` markers count for nothing. |
-| `agentDirs` | `SUB_AGENT_COMPACT_AGENT_DIRS` | empty | Comma-separated extra directories of agent definitions. A list item that is not a string is named and ignored. |
-| `logFile` | `SUB_AGENT_COMPACT_LOG_FILE` | empty | Absolute path of the JSONL decision log. Each session writes its own file: `decisions.jsonl` becomes `decisions.{session-id}.jsonl`. Empty uses `$PLUGIN_LOG_DIR/sub-agent-compact/decisions/{session-id}.jsonl` when that variable is set, otherwise decision logging is off. A relative path or a non-string is named as invalid and falls back to that default. |
+| `agentDirs` | `SUB_AGENT_COMPACT_AGENT_DIRS` | empty | Comma-separated extra directories of agent definitions. Blank items are dropped. |
+| `logFile` | `SUB_AGENT_COMPACT_LOG_FILE` | empty | Absolute path of the JSONL decision log. Each session writes its own file: `decisions.jsonl` becomes `decisions.{session-id}.jsonl`. Empty uses `$PLUGIN_LOG_DIR/sub-agent-compact/decisions/{session-id}.jsonl` when that variable is set, otherwise decision logging is off. A relative path is named as invalid and falls back to that default. |
 
 ### Logs
 
@@ -337,11 +345,12 @@ Existing screen notices and the per-session decision log stay separate. An expli
 
 ```json
 {
-  "env": { "CLAUDE_CODE_ENABLE_FUNCTION_HOOKS": "1", "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "100000" },
-  "pluginConfigs": {
-    "sub-agent-compact@sub-agent-compact": {
-      "options": { "mainAutoCompact": "600k", "subagentAutoCompact": "60%", "subagentAutoCompactNudgeStart": "20%" }
-    }
+  "env": {
+    "CLAUDE_CODE_ENABLE_FUNCTION_HOOKS": "1",
+    "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "100000",
+    "SUB_AGENT_COMPACT_MAIN_AUTO_COMPACT": "600k",
+    "SUB_AGENT_COMPACT_SUBAGENT_AUTO_COMPACT": "60%",
+    "SUB_AGENT_COMPACT_SUBAGENT_AUTO_COMPACT_NUDGE_START": "20%"
   }
 }
 ```
@@ -473,7 +482,7 @@ Work lands on `develop`; `main` holds only releases, and each one is tagged `sub
 
 | Module | Role |
 | --- | --- |
-| `limits.ts` | Sizes and options, parsed into a policy per party |
+| `limits.ts` | Sizes and the `SUB_AGENT_COMPACT_*` variables, parsed into a policy per party |
 | `frontmatter.ts` | Agent frontmatter, one level of nesting |
 | `agents.ts` | Resolves an agent type to its policy |
 | `window.ts` | Model windows and Claude Code's ask point |

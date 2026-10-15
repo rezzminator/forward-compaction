@@ -1,11 +1,8 @@
-import { readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { AgentPolicies, AgentTypes, type AgentFs } from '../plugins/sub-agent-compact/src/agents.ts';
 import { compactionEnd, contextTokens, decide, knownTrigger, personPrompt } from '../plugins/sub-agent-compact/src/decide.ts';
 import { parseFrontmatter } from '../plugins/sub-agent-compact/src/frontmatter.ts';
-import { DEFAULT_KEEP_BRIEF, DEFAULT_MAIN, DEFAULT_SUBAGENT, OPTION_KEYS, parseEnabled, parseSize, resolveOptions, sizeTokens } from '../plugins/sub-agent-compact/src/limits.ts';
+import { DEFAULT_KEEP_BRIEF, DEFAULT_MAIN, DEFAULT_SUBAGENT, OPTION_ENV, parseEnabled, parseSize, resolveOptions, sizeTokens } from '../plugins/sub-agent-compact/src/limits.ts';
 
 describe('parseSize', () => {
   it.each([
@@ -48,37 +45,42 @@ describe('parseEnabled', () => {
 });
 
 describe('resolveOptions', () => {
-  it('uses the plugin decision folder only for a blank logFile with PLUGIN_LOG_DIR (R6)', () => {
-    const resolve = resolveOptions as (...args: any[]) => ReturnType<typeof resolveOptions>;
+  type Resolved = ReturnType<typeof resolveOptions>;
+  const withVars = (vars: Record<string, string | undefined>, rest: { pluginLogDir?: string; readErrors?: string[] } = {}): Resolved => resolveOptions({ vars, ...rest });
+  const LOG_DEFAULT = '/x/logs/sub-agent-compact/decisions/.jsonl';
+
+  it('uses the plugin decision folder only for a blank log file with PLUGIN_LOG_DIR (R6)', () => {
     expect([
-      resolve({ logFile: '' }, { pluginLogDir: '/x/logs' }).logFile,
-      resolve({ logFile: '/tmp/a.jsonl' }, { pluginLogDir: '/x/logs' }).logFile,
-      resolve({ logFile: '' }, {}).logFile,
-      resolve({}, { pluginLogDir: '/x/logs/' }).logFile,
-    ]).toEqual(['/x/logs/sub-agent-compact/decisions/.jsonl', '/tmp/a.jsonl', undefined, '/x/logs/sub-agent-compact/decisions/.jsonl']);
+      withVars({ SUB_AGENT_COMPACT_LOG_FILE: '' }, { pluginLogDir: '/x/logs' }).logFile,
+      withVars({ SUB_AGENT_COMPACT_LOG_FILE: '/tmp/a.jsonl' }, { pluginLogDir: '/x/logs' }).logFile,
+      withVars({ SUB_AGENT_COMPACT_LOG_FILE: '' }).logFile,
+      withVars({}, { pluginLogDir: '/x/logs/' }).logFile,
+    ]).toEqual([LOG_DEFAULT, '/tmp/a.jsonl', undefined, LOG_DEFAULT]);
   });
+
   it('defaults when nothing is set', () => {
-    expect(resolveOptions({})).toEqual({ main: DEFAULT_MAIN, subagent: DEFAULT_SUBAGENT, keepBrief: true, compactTool: true, handoffTool: false, forwardHandoffTool: false, agentDirs: [], errors: [] });
+    expect(resolveOptions()).toEqual({ main: DEFAULT_MAIN, subagent: DEFAULT_SUBAGENT, keepBrief: true, compactTool: true, handoffTool: false, forwardHandoffTool: false, agentDirs: [], errors: [] });
+    expect(resolveOptions({ vars: {} })).toEqual(resolveOptions());
     expect(DEFAULT_KEEP_BRIEF).toBe(true);
     expect(DEFAULT_MAIN).toEqual({ enabled: true, autoCompact: { percent: 60 }, nudgeStart: { percent: 20 }, nudgeEvery: { percent: 10 } });
     expect(DEFAULT_SUBAGENT).toEqual({ enabled: true, autoCompact: { percent: 60 }, nudgeStart: { percent: 20 }, nudgeEvery: { percent: 10 } });
   });
 
-  it('reads every party key, suffixed values, dir lists and an absolute log file', () => {
-    const options = resolveOptions({
-      mainAutoCompact: '0.6m',
-      mainAutoCompactNudgeStart: '25%',
-      mainAutoCompactNudgeEvery: '50k',
-      mainAutoCompactEnabled: 'off',
-      subagentAutoCompact: '90k',
-      subagentAutoCompactNudgeStart: '40k',
-      subagentAutoCompactNudgeEvery: '5%',
-      subagentAutoCompactEnabled: true,
-      subagentKeepBrief: 'off',
-      compactTool: 'off',
-      handoffTool: 'on',
-      agentDirs: 'a, /b/c ,',
-      logFile: '/tmp/x.jsonl',
+  it('reads every party variable, suffixed values, dir lists and an absolute log file', () => {
+    const options = withVars({
+      SUB_AGENT_COMPACT_MAIN_AUTO_COMPACT: '0.6m',
+      SUB_AGENT_COMPACT_MAIN_AUTO_COMPACT_NUDGE_START: '25%',
+      SUB_AGENT_COMPACT_MAIN_AUTO_COMPACT_NUDGE_EVERY: '50k',
+      SUB_AGENT_COMPACT_MAIN_AUTO_COMPACT_ENABLED: '0',
+      SUB_AGENT_COMPACT_SUBAGENT_AUTO_COMPACT: '90k',
+      SUB_AGENT_COMPACT_SUBAGENT_AUTO_COMPACT_NUDGE_START: '40k',
+      SUB_AGENT_COMPACT_SUBAGENT_AUTO_COMPACT_NUDGE_EVERY: '5%',
+      SUB_AGENT_COMPACT_SUBAGENT_AUTO_COMPACT_ENABLED: 'true',
+      SUB_AGENT_COMPACT_SUBAGENT_KEEP_BRIEF: 'false',
+      SUB_AGENT_COMPACT_COMPACT_TOOL: '0',
+      SUB_AGENT_COMPACT_HANDOFF_TOOL: '1',
+      SUB_AGENT_COMPACT_AGENT_DIRS: 'a, /b/c ,',
+      SUB_AGENT_COMPACT_LOG_FILE: '/tmp/x.jsonl',
     });
     expect(options).toEqual({
       main: { enabled: false, autoCompact: { tokens: 600000 }, nudgeStart: { percent: 25 }, nudgeEvery: { tokens: 50000 } },
@@ -91,128 +93,117 @@ describe('resolveOptions', () => {
       logFile: '/tmp/x.jsonl',
       errors: [],
     });
-    expect(resolveOptions({ agentDirs: ['/x', ' /y '] }).agentDirs).toEqual(['/x', '/y']);
   });
 
-  it('falls back on a bad value and names it, never silently', () => {
-    const options = resolveOptions({ mainAutoCompact: 'lots', subagentAutoCompact: '-3', subagentAutoCompactEnabled: 'maybe', subagentKeepBrief: 'sometimes', logFile: 'relative.jsonl' });
+  it('falls back on a bad value and names its variable, never silently', () => {
+    const options = withVars({
+      SUB_AGENT_COMPACT_MAIN_AUTO_COMPACT: 'lots',
+      SUB_AGENT_COMPACT_SUBAGENT_AUTO_COMPACT: '-3',
+      SUB_AGENT_COMPACT_SUBAGENT_AUTO_COMPACT_ENABLED: 'maybe',
+      SUB_AGENT_COMPACT_SUBAGENT_KEEP_BRIEF: 'sometimes',
+      SUB_AGENT_COMPACT_LOG_FILE: 'relative.jsonl',
+    });
     expect(options.main.autoCompact).toEqual(DEFAULT_MAIN.autoCompact);
     expect(options.subagent.autoCompact).toEqual(DEFAULT_SUBAGENT.autoCompact);
     expect(options.subagent.enabled).toBe(true);
     expect(options.keepBrief).toBe(true);
     expect(options.logFile).toBeUndefined();
     expect(options.errors).toHaveLength(5);
-    expect(options.errors[0]).toMatch(/mainAutoCompact is invalid.*"lots".*60%/);
-    expect(options.errors[1]).toMatch(/subagentAutoCompact is invalid/);
-    expect(options.errors[2]).toMatch(/subagentAutoCompactEnabled is invalid.*"maybe".*true/);
-    expect(options.errors[3]).toMatch(/subagentKeepBrief is invalid.*"sometimes".*true/);
-    expect(options.errors[4]).toMatch(/option logFile is invalid \(not an absolute path/);
+    expect(options.errors[0]).toMatch(/env SUB_AGENT_COMPACT_MAIN_AUTO_COMPACT is invalid.*"lots".*60%/);
+    expect(options.errors[1]).toMatch(/env SUB_AGENT_COMPACT_SUBAGENT_AUTO_COMPACT is invalid/);
+    expect(options.errors[2]).toMatch(/env SUB_AGENT_COMPACT_SUBAGENT_AUTO_COMPACT_ENABLED is invalid.*"maybe".*true/);
+    expect(options.errors[3]).toMatch(/env SUB_AGENT_COMPACT_SUBAGENT_KEEP_BRIEF is invalid.*"sometimes".*true/);
+    expect(options.errors[4]).toMatch(/env SUB_AGENT_COMPACT_LOG_FILE is invalid \(not an absolute path/);
   });
 
   it.each([
-    ['a relative logFile falls back to the PLUGIN_LOG_DIR default', { logFile: 'relative.jsonl' }, { pluginLogDir: '/x/logs' }, '/x/logs/sub-agent-compact/decisions/.jsonl', /option logFile is invalid \(not an absolute path: "relative.jsonl"\); using the default \/x\/logs\/sub-agent-compact\/decisions\/.jsonl/],
-    ['a relative logFile without PLUGIN_LOG_DIR keeps the default, no log', { logFile: 'relative.jsonl' }, {}, undefined, /option logFile is invalid \(not an absolute path: "relative.jsonl"\); using the default \(no decision log\)/],
-    ['a non-string logFile falls back too', { logFile: 42 }, { pluginLogDir: '/x/logs' }, '/x/logs/sub-agent-compact/decisions/.jsonl', /option logFile is invalid \(not a string: 42\)/],
-  ])('%s', (_name, options, env, logFile, error) => {
-    const resolved = resolveOptions(options as Record<string, unknown>, env);
+    ['a relative log file falls back to the PLUGIN_LOG_DIR default', 'relative.jsonl', '/x/logs', LOG_DEFAULT, /env SUB_AGENT_COMPACT_LOG_FILE is invalid \(not an absolute path: "relative.jsonl"\); using the default \/x\/logs\/sub-agent-compact\/decisions\/.jsonl/],
+    ['a relative log file without PLUGIN_LOG_DIR keeps the default, no log', 'relative.jsonl', undefined, undefined, /env SUB_AGENT_COMPACT_LOG_FILE is invalid \(not an absolute path: "relative.jsonl"\); using the default \(no decision log\)/],
+  ])('%s', (_name, value, pluginLogDir, logFile, error) => {
+    const resolved = withVars({ SUB_AGENT_COMPACT_LOG_FILE: value }, { pluginLogDir });
     expect(resolved.logFile).toBe(logFile);
     expect(resolved.errors).toEqual([expect.stringMatching(error)]);
   });
 
-  it('names a non-string agentDirs item and keeps the rest', () => {
-    const resolved = resolveOptions({ agentDirs: ['/x', 7, '/y'] });
-    expect(resolved.agentDirs).toEqual(['/x', '/y']);
-    expect(resolved.errors).toEqual(['sub-agent-compact: option agentDirs item 7 is invalid (not a string); ignoring it']);
+  it('lets an environment log file win over PLUGIN_LOG_DIR, trimmed', () => {
+    expect(withVars({ SUB_AGENT_COMPACT_LOG_FILE: ' /e/d.jsonl ' }, { pluginLogDir: '/x/logs' }).logFile).toBe('/e/d.jsonl');
   });
 
-  it('names unknown option keys in one line, and knows every key plugin.json declares', () => {
-    const declared = Object.keys(JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), '../plugins/sub-agent-compact/.claude-plugin/plugin.json'), 'utf8')).userConfig);
-    expect([...OPTION_KEYS].sort()).toEqual(declared.sort());
-    expect(resolveOptions(Object.fromEntries(declared.map((key) => [key, undefined]))).errors).toEqual([]);
-    expect(resolveOptions({ mainAutoCompat: '300k', handofTool: true }).errors).toEqual(['sub-agent-compact: unknown options mainAutoCompat, handofTool; ignoring them']);
+  it('splits a directory list at commas and newlines and drops blank items', () => {
+    expect(withVars({ SUB_AGENT_COMPACT_AGENT_DIRS: '/x\n /y ,,/z' }).agentDirs).toEqual(['/x', '/y', '/z']);
   });
 
   it.each([
-    ['main', { mainAutoCompact: '300k', mainAutoCompactNudgeStart: '300k' }, /mainAutoCompactNudgeStart 300000 is not below mainAutoCompact 300000/],
-    ['subagent', { subagentAutoCompact: '40%', subagentAutoCompactNudgeStart: '50%' }, /subagentAutoCompactNudgeStart 50% is not below subagentAutoCompact 40%/],
-  ])('says a %s nudge start at or past its forced point, keeping both', (_name, options, error) => {
-    const resolved = resolveOptions(options);
+    ['main', { SUB_AGENT_COMPACT_MAIN_AUTO_COMPACT: '300k', SUB_AGENT_COMPACT_MAIN_AUTO_COMPACT_NUDGE_START: '300k' }, /env SUB_AGENT_COMPACT_MAIN_AUTO_COMPACT_NUDGE_START 300000 is not below SUB_AGENT_COMPACT_MAIN_AUTO_COMPACT 300000/],
+    ['subagent', { SUB_AGENT_COMPACT_SUBAGENT_AUTO_COMPACT: '40%', SUB_AGENT_COMPACT_SUBAGENT_AUTO_COMPACT_NUDGE_START: '50%' }, /env SUB_AGENT_COMPACT_SUBAGENT_AUTO_COMPACT_NUDGE_START 50% is not below SUB_AGENT_COMPACT_SUBAGENT_AUTO_COMPACT 40%/],
+  ])('says a %s nudge start at or past its forced point, keeping both', (_name, vars, error) => {
+    const resolved = withVars(vars);
     expect(resolved.errors).toEqual([expect.stringMatching(error)]);
   });
 
   it('says nothing across units, where only the window decides', () => {
-    expect(resolveOptions({ mainAutoCompact: '50%', mainAutoCompactNudgeStart: '600k' }).errors).toEqual([]);
+    expect(withVars({ SUB_AGENT_COMPACT_MAIN_AUTO_COMPACT: '50%', SUB_AGENT_COMPACT_MAIN_AUTO_COMPACT_NUDGE_START: '600k' }).errors).toEqual([]);
   });
 });
 
-describe('resolveOptions: the environment layer', () => {
+describe('resolveOptions: one variable per option', () => {
   type Resolved = ReturnType<typeof resolveOptions>;
-  const resolve = resolveOptions as (options: Record<string, unknown>, env?: Record<string, unknown>) => Resolved;
-  const withVars = (options: Record<string, unknown>, vars: Record<string, string | undefined>) => resolve(options, { vars });
-  // One row per option: the variable it reads, a value in each layer, a value its grammar refuses, and where it lands.
-  const rows: { option: string; name: string; optionValue: unknown; envValue: string; bad?: string; pick: (r: Resolved) => unknown; fromEnv: unknown; fromOption: unknown; fromDefault: unknown }[] = [
-    { option: 'mainAutoCompact', name: 'SUB_AGENT_COMPACT_MAIN_AUTO_COMPACT', optionValue: '50%', envValue: '300k', bad: 'lots', pick: (r) => r.main.autoCompact, fromEnv: { tokens: 300000 }, fromOption: { percent: 50 }, fromDefault: { percent: 60 } },
-    { option: 'mainAutoCompactNudgeStart', name: 'SUB_AGENT_COMPACT_MAIN_AUTO_COMPACT_NUDGE_START', optionValue: '30%', envValue: '25%', bad: '0%', pick: (r) => r.main.nudgeStart, fromEnv: { percent: 25 }, fromOption: { percent: 30 }, fromDefault: { percent: 20 } },
-    { option: 'mainAutoCompactNudgeEvery', name: 'SUB_AGENT_COMPACT_MAIN_AUTO_COMPACT_NUDGE_EVERY', optionValue: '15%', envValue: '50k', bad: '-3', pick: (r) => r.main.nudgeEvery, fromEnv: { tokens: 50000 }, fromOption: { percent: 15 }, fromDefault: { percent: 10 } },
-    { option: 'mainAutoCompactEnabled', name: 'SUB_AGENT_COMPACT_MAIN_AUTO_COMPACT_ENABLED', optionValue: true, envValue: '0', bad: 'maybe', pick: (r) => r.main.enabled, fromEnv: false, fromOption: true, fromDefault: true },
-    { option: 'subagentAutoCompact', name: 'SUB_AGENT_COMPACT_SUBAGENT_AUTO_COMPACT', optionValue: '70%', envValue: '90k', bad: '101%', pick: (r) => r.subagent.autoCompact, fromEnv: { tokens: 90000 }, fromOption: { percent: 70 }, fromDefault: { percent: 60 } },
-    { option: 'subagentAutoCompactNudgeStart', name: 'SUB_AGENT_COMPACT_SUBAGENT_AUTO_COMPACT_NUDGE_START', optionValue: '35%', envValue: '40k', bad: 'soon', pick: (r) => r.subagent.nudgeStart, fromEnv: { tokens: 40000 }, fromOption: { percent: 35 }, fromDefault: { percent: 20 } },
-    { option: 'subagentAutoCompactNudgeEvery', name: 'SUB_AGENT_COMPACT_SUBAGENT_AUTO_COMPACT_NUDGE_EVERY', optionValue: '20%', envValue: '5%', bad: '150kb', pick: (r) => r.subagent.nudgeEvery, fromEnv: { percent: 5 }, fromOption: { percent: 20 }, fromDefault: { percent: 10 } },
-    { option: 'subagentAutoCompactEnabled', name: 'SUB_AGENT_COMPACT_SUBAGENT_AUTO_COMPACT_ENABLED', optionValue: true, envValue: 'FALSE', bad: 'nope', pick: (r) => r.subagent.enabled, fromEnv: false, fromOption: true, fromDefault: true },
-    { option: 'subagentKeepBrief', name: 'SUB_AGENT_COMPACT_SUBAGENT_KEEP_BRIEF', optionValue: true, envValue: '0', bad: '2', pick: (r) => r.keepBrief, fromEnv: false, fromOption: true, fromDefault: true },
-    { option: 'handoffTool', name: 'SUB_AGENT_COMPACT_HANDOFF_TOOL', optionValue: false, envValue: 'true', bad: 'enabled', pick: (r) => r.handoffTool, fromEnv: true, fromOption: false, fromDefault: false },
-    { option: 'forwardHandoffTool', name: 'SUB_AGENT_COMPACT_FORWARD_HANDOFF_TOOL', optionValue: false, envValue: '1', bad: 'yes please', pick: (r) => r.forwardHandoffTool, fromEnv: true, fromOption: false, fromDefault: false },
-    { option: 'compactTool', name: 'SUB_AGENT_COMPACT_COMPACT_TOOL', optionValue: true, envValue: 'false', bad: 'off', pick: (r) => r.compactTool, fromEnv: false, fromOption: true, fromDefault: true },
-    { option: 'agentDirs', name: 'SUB_AGENT_COMPACT_AGENT_DIRS', optionValue: '/from/option', envValue: '/a, /b/c ,', pick: (r) => r.agentDirs, fromEnv: ['/a', '/b/c'], fromOption: ['/from/option'], fromDefault: [] },
-    { option: 'logFile', name: 'SUB_AGENT_COMPACT_LOG_FILE', optionValue: '/from/option.jsonl', envValue: ' /from/env.jsonl ', bad: 'relative.jsonl', pick: (r) => r.logFile, fromEnv: '/from/env.jsonl', fromOption: '/from/option.jsonl', fromDefault: undefined },
+  const withVars = (vars: Record<string, string | undefined>): Resolved => resolveOptions({ vars });
+  // One row per option: the variable it reads, a value in its grammar, a value its grammar refuses, and where it lands.
+  const rows: { option: string; name: string; envValue: string; bad?: string; pick: (r: Resolved) => unknown; fromEnv: unknown; fromDefault: unknown }[] = [
+    { option: 'mainAutoCompact', name: 'SUB_AGENT_COMPACT_MAIN_AUTO_COMPACT', envValue: '300k', bad: 'lots', pick: (r) => r.main.autoCompact, fromEnv: { tokens: 300000 }, fromDefault: { percent: 60 } },
+    { option: 'mainAutoCompactNudgeStart', name: 'SUB_AGENT_COMPACT_MAIN_AUTO_COMPACT_NUDGE_START', envValue: '25%', bad: '0%', pick: (r) => r.main.nudgeStart, fromEnv: { percent: 25 }, fromDefault: { percent: 20 } },
+    { option: 'mainAutoCompactNudgeEvery', name: 'SUB_AGENT_COMPACT_MAIN_AUTO_COMPACT_NUDGE_EVERY', envValue: '50k', bad: '-3', pick: (r) => r.main.nudgeEvery, fromEnv: { tokens: 50000 }, fromDefault: { percent: 10 } },
+    { option: 'mainAutoCompactEnabled', name: 'SUB_AGENT_COMPACT_MAIN_AUTO_COMPACT_ENABLED', envValue: '0', bad: 'maybe', pick: (r) => r.main.enabled, fromEnv: false, fromDefault: true },
+    { option: 'subagentAutoCompact', name: 'SUB_AGENT_COMPACT_SUBAGENT_AUTO_COMPACT', envValue: '90k', bad: '101%', pick: (r) => r.subagent.autoCompact, fromEnv: { tokens: 90000 }, fromDefault: { percent: 60 } },
+    { option: 'subagentAutoCompactNudgeStart', name: 'SUB_AGENT_COMPACT_SUBAGENT_AUTO_COMPACT_NUDGE_START', envValue: '40k', bad: 'soon', pick: (r) => r.subagent.nudgeStart, fromEnv: { tokens: 40000 }, fromDefault: { percent: 20 } },
+    { option: 'subagentAutoCompactNudgeEvery', name: 'SUB_AGENT_COMPACT_SUBAGENT_AUTO_COMPACT_NUDGE_EVERY', envValue: '5%', bad: '150kb', pick: (r) => r.subagent.nudgeEvery, fromEnv: { percent: 5 }, fromDefault: { percent: 10 } },
+    { option: 'subagentAutoCompactEnabled', name: 'SUB_AGENT_COMPACT_SUBAGENT_AUTO_COMPACT_ENABLED', envValue: 'FALSE', bad: 'nope', pick: (r) => r.subagent.enabled, fromEnv: false, fromDefault: true },
+    { option: 'subagentKeepBrief', name: 'SUB_AGENT_COMPACT_SUBAGENT_KEEP_BRIEF', envValue: '0', bad: '2', pick: (r) => r.keepBrief, fromEnv: false, fromDefault: true },
+    { option: 'handoffTool', name: 'SUB_AGENT_COMPACT_HANDOFF_TOOL', envValue: 'true', bad: 'enabled', pick: (r) => r.handoffTool, fromEnv: true, fromDefault: false },
+    { option: 'forwardHandoffTool', name: 'SUB_AGENT_COMPACT_FORWARD_HANDOFF_TOOL', envValue: '1', bad: 'yes please', pick: (r) => r.forwardHandoffTool, fromEnv: true, fromDefault: false },
+    { option: 'compactTool', name: 'SUB_AGENT_COMPACT_COMPACT_TOOL', envValue: 'false', bad: 'off', pick: (r) => r.compactTool, fromEnv: false, fromDefault: true },
+    { option: 'agentDirs', name: 'SUB_AGENT_COMPACT_AGENT_DIRS', envValue: '/a, /b/c ,', pick: (r) => r.agentDirs, fromEnv: ['/a', '/b/c'], fromDefault: [] },
+    { option: 'logFile', name: 'SUB_AGENT_COMPACT_LOG_FILE', envValue: ' /from/env.jsonl ', bad: 'relative.jsonl', pick: (r) => r.logFile, fromEnv: '/from/env.jsonl', fromDefault: undefined },
   ];
 
-  it.each(rows)('$name overrides $option', ({ option, name, optionValue, envValue, pick, fromEnv }) => {
-    const result = withVars({ [option]: optionValue }, { [name]: envValue });
+  it('has a row for every variable the plugin reads', () => {
+    expect(rows.map((row) => [row.option, row.name])).toEqual(Object.entries(OPTION_ENV));
+  });
+
+  it.each(rows)('$name sets $option', ({ name, envValue, pick, fromEnv }) => {
+    const result = withVars({ [name]: envValue });
     expect(pick(result)).toEqual(fromEnv);
     expect(result.errors).toEqual([]);
   });
 
-  it.each(rows)('$option keeps the option layer while $name is unset, empty or blank, and the default when neither is set', ({ option, name, optionValue, pick, fromOption, fromDefault }) => {
+  it.each(rows)('$option is its default while $name is unset, empty or blank', ({ name, pick, fromDefault }) => {
     for (const vars of [{}, { [name]: undefined }, { [name]: '' }, { [name]: '  \t ' }]) {
-      const result = withVars({ [option]: optionValue }, vars);
-      expect(pick(result)).toEqual(fromOption);
+      const result = withVars(vars);
+      expect(pick(result)).toEqual(fromDefault);
       expect(result.errors).toEqual([]);
     }
-    expect(pick(withVars({}, {}))).toEqual(fromDefault);
   });
 
-  it.each(rows.filter((row) => row.bad !== undefined))('a bad $name is named and the default is used, not the option layer', ({ option, name, optionValue, bad, pick, fromDefault }) => {
-    const result = withVars({ [option]: optionValue }, { [name]: bad });
+  it.each(rows.filter((row) => row.bad !== undefined))('a bad $name is named and the default is used', ({ name, bad, pick, fromDefault }) => {
+    const result = withVars({ [name]: bad });
     expect(pick(result)).toEqual(fromDefault);
     expect(result.errors).toHaveLength(1);
     expect(result.errors[0]).toMatch(new RegExp(`^sub-agent-compact: env ${name} is invalid \\(.+\\); using the default`));
   });
 
   it('reads an environment boolean as 1, 0, true or false in any case, with surrounding space', () => {
-    const flag = (value: string) => withVars({}, { SUB_AGENT_COMPACT_HANDOFF_TOOL: value });
+    const flag = (value: string) => withVars({ SUB_AGENT_COMPACT_HANDOFF_TOOL: value });
     expect(['1', 'TRUE', ' True ', 'true'].map((value) => flag(value).handoffTool)).toEqual([true, true, true, true]);
-    expect(['0', 'FALSE', ' False ', 'false'].map((value) => withVars({ handoffTool: true }, { SUB_AGENT_COMPACT_HANDOFF_TOOL: value }).handoffTool)).toEqual([false, false, false, false]);
+    expect(['0', 'FALSE', ' False ', 'false'].map((value) => withVars({ SUB_AGENT_COMPACT_COMPACT_TOOL: value }).compactTool)).toEqual([false, false, false, false]);
     expect(['on', 'yes', 'off', '01'].map((value) => flag(value).errors.length)).toEqual([1, 1, 1, 1]);
   });
 
-  it('reports a variable that could not be read by name, and lets the option layer decide', () => {
-    const result = resolve({ forwardHandoffTool: true }, { vars: {}, readErrors: ['sub-agent-compact: reading SUB_AGENT_COMPACT_FORWARD_HANDOFF_TOOL failed: denied; using the option layer'] });
-    expect(result.forwardHandoffTool).toBe(true);
-    expect(result.errors).toEqual(['sub-agent-compact: reading SUB_AGENT_COMPACT_FORWARD_HANDOFF_TOOL failed: denied; using the option layer']);
-  });
-
-  it('still names a bad option under a valid environment value', () => {
-    const result = resolve({ logFile: 'relative.jsonl', subagentKeepBrief: 'sometimes', agentDirs: 7 }, { vars: { SUB_AGENT_COMPACT_LOG_FILE: '/e.jsonl', SUB_AGENT_COMPACT_SUBAGENT_KEEP_BRIEF: '0', SUB_AGENT_COMPACT_AGENT_DIRS: '/a' } });
-    expect(result.logFile).toBe('/e.jsonl');
-    expect(result.keepBrief).toBe(false);
-    expect(result.agentDirs).toEqual(['/a']);
-    expect(result.errors.map((line) => line.replace(/\(.*$/, ''))).toEqual(['sub-agent-compact: option subagentKeepBrief is invalid ', 'sub-agent-compact: option agentDirs is invalid ', 'sub-agent-compact: option logFile is invalid ']);
-  });
-
-  it('lets an environment log file win over a blank option and over PLUGIN_LOG_DIR', () => {
-    expect(resolve({ logFile: '' }, { pluginLogDir: '/x/logs', vars: { SUB_AGENT_COMPACT_LOG_FILE: '/e/d.jsonl' } }).logFile).toBe('/e/d.jsonl');
-    expect(resolve({ logFile: '/o.jsonl' }, { pluginLogDir: '/x/logs', vars: { SUB_AGENT_COMPACT_LOG_FILE: 'rel.jsonl' } }).logFile).toBe('/x/logs/sub-agent-compact/decisions/.jsonl');
+  it('reports a variable that could not be read by name and uses its default', () => {
+    const line = 'sub-agent-compact: reading SUB_AGENT_COMPACT_FORWARD_HANDOFF_TOOL failed: denied; using the default';
+    const result = resolveOptions({ vars: {}, readErrors: [line] });
+    expect(result.forwardHandoffTool).toBe(false);
+    expect(result.errors).toEqual([line]);
   });
 });
 

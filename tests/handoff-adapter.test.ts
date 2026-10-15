@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { register } from '../plugins/sub-agent-compact/hooks/sub-agent-compact.ts';
+import { optionVars } from './option-env.ts';
 import { HANDOFF_OPENING } from '../plugins/sub-agent-compact/src/handoff.ts';
 
 // The handoff path end to end through the adapter: the tool stores the text,
@@ -60,7 +61,7 @@ function engine(options: Record<string, unknown> = {}, harness: Harness = {}) {
         return dispatch('session.compact', { trigger: 'plugin', messages: transcript(), ...(args as object) }, async () => harness.compactResult ?? { messages: [], tokensAfter: 1 });
       },
     },
-    env: { get: async (key: string) => (key === 'HOME' ? '/h/u' : undefined) },
+    env: { get: async (key: string) => (key === 'HOME' ? '/h/u' : optionVars(options)[key]) },
     fs: {
       exists: async (path: string) => path in files,
       read: async (path: string) => files[path] ?? '',
@@ -94,7 +95,7 @@ function engine(options: Record<string, unknown> = {}, harness: Harness = {}) {
       },
     },
   };
-  register(on as never, options as never);
+  register(on as never, {} as never);
   const dispatch = (event: string, e: unknown, impl: (e: any) => any): any => {
     const next = Object.assign((input: unknown) => impl(input), { signal: new AbortController().signal });
     const hook = hooks.get(event);

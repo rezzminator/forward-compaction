@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { register } from '../plugins/sub-agent-compact/hooks/sub-agent-compact.ts';
+import { optionVars } from './option-env.ts';
 import { unseenCompaction } from '../plugins/sub-agent-compact/src/unseen.ts';
 
 // Claude Code 2.1.299 on a machine with managed settings passes every user plugin's session.compact over
@@ -23,7 +24,7 @@ function engine() {
       messages: async () => [],
       compact: async () => ({}),
     },
-    env: { get: async () => undefined },
+    env: { get: async (name: string) => optionVars({ logFile: '/logs/decisions.jsonl' })[name] },
     fs: {
       exists: async (path: string) => path in written,
       read: async (path: string) => written[path] ?? '',
@@ -41,7 +42,7 @@ function engine() {
     agent: { list: async () => [] },
     tool: { register: async (spec: { name: string }) => ({ tool: `mcp__sub-agent-compact__${spec.name}` }) },
   };
-  register(((event: string, hook: AnyHook) => void hooks.set(event, hook)) as never, { logFile: '/logs/decisions.jsonl' } as never);
+  register(((event: string, hook: AnyHook) => void hooks.set(event, hook)) as never, {} as never);
   const dispatch = (event: string, e: unknown, impl: (e: any) => any): any => {
     const next = Object.assign((input: unknown) => impl(input), { signal: new AbortController().signal });
     const hook = hooks.get(event);
