@@ -2,9 +2,16 @@
 
 Every release of sub-agent-compact. Versions follow [semantic versioning](https://semver.org); each release is the `main` commit tagged `sub-agent-compact--v<version>`, with a GitHub release carrying the section below.
 
-## [Unreleased]
+## [0.8.0] — 2026-10-16
 
-## [0.8.0-dev.2] — 2026-10-16
+### Removed
+
+- The plugin's `userConfig` (and with it `pluginConfigs["sub-agent-compact@sub-agent-compact"].options`, `/config` and the option layer): every option is read from its `SUB_AGENT_COMPACT_*` environment variable alone, an unset, empty or blank variable giving the default. A non-empty options object handed to the plugin is not applied; the plugin finds a leftover entry in any settings source and names its keys in one warning, once.
+
+### Changed
+
+- `resolveOptions` resolves variable over default; a bad value is named by its variable and the default applies, and so does a variable that could not be read.
+- Migration: move each value from `pluginConfigs["sub-agent-compact@sub-agent-compact"].options` to the variable in the README options table (`mainAutoCompact: "600k"` becomes `SUB_AGENT_COMPACT_MAIN_AUTO_COMPACT=600k`; `forwardHandoffTool: true` becomes `SUB_AGENT_COMPACT_FORWARD_HANDOFF_TOOL=1`), in the `env` block of `settings.json` or the shell that starts Claude Code, then delete the `pluginConfigs` entry.
 
 ### Fixed
 
@@ -16,17 +23,6 @@ Every release of sub-agent-compact. Versions follow [semantic versioning](https:
 - An install's after-size is labelled as the messages only (`tokens in messages (system prompt and tools not counted)`, row and forward `record.json` `tokensAfterScope`).
 - `look_back` reads `\"` in a query as a literal quote, in a phrase or a word, and finds a term holding a quote or a backslash in a message or a tool call's input (the transcript stores them escaped in a string, bare in a tool input's JSON); a bad query, an entry at or after the boundary, or one not found is logged as a warning, not an error.
 - A forward handoff claims its call number with one `mkdir` that sees the real directory, so a call the listing missed is never written over; the record of the handoff the session holds is also read through the `saved` path its text names, when that call is this party's own; a record still missing names the handoff's number, every place looked and a saved path that is not this chat's.
-
-## [0.8.0-dev.1] — 2026-10-15
-
-### Removed
-
-- The plugin's `userConfig` (and with it `pluginConfigs["sub-agent-compact@sub-agent-compact"].options`, `/config` and the option layer): every option is read from its `SUB_AGENT_COMPACT_*` environment variable alone, an unset, empty or blank variable giving the default. A non-empty options object handed to the plugin is not applied; the plugin finds a leftover entry in any settings source and names its keys in one warning, once.
-
-### Changed
-
-- `resolveOptions` resolves variable over default; a bad value is named by its variable and the default applies, and so does a variable that could not be read.
-- Migration: move each value from `pluginConfigs["sub-agent-compact@sub-agent-compact"].options` to the variable in the README options table (`mainAutoCompact: "600k"` becomes `SUB_AGENT_COMPACT_MAIN_AUTO_COMPACT=600k`; `forwardHandoffTool: true` becomes `SUB_AGENT_COMPACT_FORWARD_HANDOFF_TOOL=1`), in the `env` block of `settings.json` or the shell that starts Claude Code, then delete the `pluginConfigs` entry.
 
 ## [0.7.1-dev.3] — 2026-10-15
 
@@ -340,7 +336,7 @@ Every release of sub-agent-compact. Versions follow [semantic versioning](https:
 ### Added
 - Separate auto-compact points for the main chat and each sub-agent type, through Claude Code function hooks.
 
-[Unreleased]: https://github.com/rezzminator/sub-agent-compact/compare/sub-agent-compact--v0.4.0...develop
+[0.8.0]: https://github.com/rezzminator/sub-agent-compact/compare/sub-agent-compact--v0.4.1...sub-agent-compact--v0.8.0
 [0.4.0]: https://github.com/rezzminator/sub-agent-compact/compare/sub-agent-compact--v0.3.1...sub-agent-compact--v0.4.0
 [0.3.1]: https://github.com/rezzminator/sub-agent-compact/compare/sub-agent-compact--v0.3.0...sub-agent-compact--v0.3.1
 [0.3.0]: https://github.com/rezzminator/sub-agent-compact/compare/sub-agent-compact--v0.2.6...sub-agent-compact--v0.3.0
