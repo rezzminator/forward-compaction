@@ -89,11 +89,52 @@ if [ -f "$path" ]; then
   bytes=$((bytes))
   if [ "$bytes" -gt "$cap" ]; then mv -f "$path" "$path.1"; fi
 fi
+# An append killed mid-row leaves a torn last line; the rows retried after it start on their own line.
+if [ -s "$path" ] && [ -n "$(tail -c 1 "$path")" ]; then printf '\\n' >> "$path"; fi
 cat >> "$path"`;
 
 /** The append process for one session log; its rows go on stdin, one per line. */
 export function decisionAppendArgv(path: string, cap: number = DECISION_LOG_CAP_BYTES): string[] {
   return ['/bin/sh', '-c', DECISION_APPEND_SCRIPT, 'decision-log', path, String(cap)];
+}
+
+/** At most this many unwritten decision rows are held for the next flush; past it the oldest go, counted. */
+export const DECISION_HOLD_ROWS = 2_000;
+
+/** A failed append's batch goes back to the front of the queue, order kept, for the next flush; past the hold the oldest go. Returns how many went. */
+export function requeueRows(pending: string[], rows: readonly string[], hold: number = DECISION_HOLD_ROWS): number {
+  pending.unshift(...rows);
+  const dropped = Math.max(0, pending.length - hold);
+  if (dropped > 0) pending.splice(0, dropped);
+  return dropped;
+}
+
+/** What a failed append's line says of its rows: kept for the next write unless it is the last one (session end), and the oldest the hold let go. */
+export function keptRowsText(rows: number, dropped: number, last: boolean, hold: number = DECISION_HOLD_ROWS): string {
+  const kept = last ? '' : `; its ${rows} ${rows === 1 ? 'row is' : 'rows are'} kept and written with the next`;
+  const gone = dropped > 0 ? `${last ? ';' : ', and'} the ${dropped} oldest held ${dropped === 1 ? 'row was' : 'rows were'} dropped past the ${hold}-row hold` : '';
+  return `${kept}${gone}`;
+}
+
+/** The session-end line for the decision rows no append wrote: those still held, and those the hold dropped. */
+export function rowsLostLine(i: { path: string; held: number; dropped: number; error: string; hold?: number }): string {
+  const n = i.held + i.dropped;
+  const gone = i.dropped > 0 ? ` (${i.dropped} of them dropped past the ${i.hold ?? DECISION_HOLD_ROWS}-row hold)` : '';
+  return `sub-agent-compact: ${n} decision ${n === 1 ? 'row was' : 'rows were'} not written to ${i.path}${gone}: ${i.error}`;
+}
+
+/**
+ * The session-end report: the line for what the end bound cut off, and the rows no append wrote. The held rows are lost
+ * only when the bound did not cut the end flush that tried them (else the cut counts them); the hold's drops always are.
+ */
+export function endReport(i: { timedOut: boolean; boundMs: number; decisionRows: number; levelRows: number; held: number; dropped: number; error: string; path: string; hold?: number }): { cut?: string; lost?: { line: string; rows: number; dropped: number; error: string } } {
+  const count = (n: number, log: string) => (n > 0 ? [`${n} ${log} ${n === 1 ? 'row' : 'rows'}`] : []);
+  const parts = [...count(i.decisionRows, 'decision'), ...count(i.levelRows, 'level')];
+  const cut = i.timedOut ? `sub-agent-compact: the session-end bound (${i.boundMs} ms) ran out ${parts.length > 0 ? `before the logs were written; ${parts.join(' and ')} may be lost` : 'while the log writes were finishing; no row was in flight'}` : undefined;
+  const held = i.timedOut ? 0 : i.held;
+  const rows = held + i.dropped;
+  const lost = rows > 0 ? { line: rowsLostLine({ path: i.path, held, dropped: i.dropped, error: i.error, hold: i.hold }), rows, dropped: i.dropped, error: i.error } : undefined;
+  return { ...(cut !== undefined ? { cut } : {}), ...(lost !== undefined ? { lost } : {}) };
 }
 
 const HEX = '[0-9a-fA-F]';
@@ -103,6 +144,7 @@ const SESSION_ID = [8, 4, 4, 4, 12].map((n) => HEX.repeat(n)).join('-');
 /**
  * Deletes the sessions' logs of one logFile past the age, then past the newest count (the session's own among them), never the
  * session's own; each with its `.1`. Only a file whose first line is a decision row is one: another tool's `<uuid>.jsonl` stays.
+ * One `find` reads every age, never one per file (a process per file took past 15 s under load); only each file deleted costs an `rm`.
  */
 export const RETENTION_SCRIPT = `set -eu
 dir=$1; prefix=$2; suffix=$3; days=$4; keep=$5; self=$6
@@ -116,7 +158,12 @@ named() {
 }
 file() { [ -f "./$1" ] && ours "$1"; }
 ours() { IFS= read -r first < "./$1" || return 1; case $first in '{"ts":"'*'","event":"'*) ;; *) return 1;; esac; }
-old() { [ -n "$(find "./$1" -prune -mmin +$((days * 1440)))" ]; }
+# One find lists every entry past the age, a symlink by its own; old() looks a name up in it, so no process runs per file.
+# An entry another session removes mid-listing makes find exit 1: the names it printed stand, the rest read as not old.
+nl='
+'
+olds=$(find . -maxdepth 1 -mmin +$((days * 1440)) -print) || :
+old() { case "$nl$olds$nl" in *"$nl./$1$nl"*) return 0;; esac; return 1; }
 kept=1
 ls -t . | while IFS= read -r name; do
   [ "$name" != "$self" ] && named "$name" && file "$name" || continue
@@ -361,7 +408,7 @@ export function pluginLogEvent(row: Record<string, unknown>): Omit<PluginLogFiel
   if (event === 'session.compact') event = row.why === 'error' ? 'compact-error' : row.why === 'handoff-waits' ? 'handoff-waits-skipped' : event;
   if (event === 'turn.complete' && row.error !== undefined) event = 'turn-complete-error';
   const errors = ['tool-register-failed', 'look-back-manual-error', 'compact-error', 'turn-complete-error', 'hook-threw'];
-  const warnings = ['warning', 'brief-error', 'option-error', 'resolve-error', 'handoff-invalid', 'forward-invalid', 'forward-unchecked', 'handoff-fallback', 'compact-unseen', 'handoff-waits-skipped'];
+  const warnings = ['warning', 'decision-retention-failed', 'brief-error', 'option-error', 'resolve-error', 'handoff-invalid', 'forward-invalid', 'forward-unchecked', 'handoff-fallback', 'compact-unseen', 'handoff-waits-skipped'];
   const infos = ['handoff-refused', 'arm-refused', 'forward-refused', 'stop-refused'];
   const level = errors.includes(event) ? 'error' : warnings.includes(event) ? 'warning' : infos.includes(event) ? 'info' : undefined;
   if (level === undefined) return undefined;

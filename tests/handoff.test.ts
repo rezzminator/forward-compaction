@@ -603,7 +603,7 @@ describe('what the model reads about its handoff', () => {
   });
 
   it('draws an install as sizes before and after, and warns when most of the context was kept', () => {
-    expect(installLine({ label: 'main', before: 250_000, after: 25_000, tail: 0, recovered: false })).toEqual({ line: expect.stringMatching(/main.*250k.*25k/), warn: false });
+    expect(installLine({ label: 'main', before: 250_000, after: 25_000, tail: 0, recovered: false })).toEqual({ line: 'sub-agent-compact: installed the handoff of main: 250k -> 25k tokens in messages (system prompt and tools not counted)', warn: false });
     expect(installLine({ label: 'main', before: 250_000, after: 200_000, tail: 80, recovered: false }).warn).toBe(true);
     expect(installLine({ label: 'a1', before: undefined, after: 20_000, tail: 0, recovered: true }).line).toMatch(/recovered/);
   });

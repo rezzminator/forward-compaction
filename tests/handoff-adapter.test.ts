@@ -283,6 +283,19 @@ describe('registering the tools is bounded', () => {
     expect((await cc.read()).context?.[0]).toContain(TOOL);
   });
 
+  it('says the registration goes on past the limit, and names the tools and the wait once it finishes', async () => {
+    vi.useFakeTimers();
+    const { gate, release } = deferred();
+    const cc = engine(HANDOFF_ONLY, { registerGate: gate });
+    void cc.step(1_000);
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(cc.logs.filter((line) => /did not finish within 5s/.test(line))).toEqual(['registering the tools did not finish within 5s; it goes on, turns do not wait for it, and the tools come into use once it finishes']);
+    await vi.advanceTimersByTimeAsync(2_000);
+    release();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(cc.logs.filter((line) => /finished after/.test(line))).toEqual([expect.stringMatching(/^registering the tools finished after 7s: mcp__sub-agent-compact__handoff, mcp__sub-agent-compact__look_back$/)]);
+  });
+
   it('spends the tries left on a later turn once a registration that outlived the limit has failed', async () => {
     vi.useFakeTimers();
     const { gate, release } = deferred();

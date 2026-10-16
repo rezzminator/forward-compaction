@@ -243,8 +243,8 @@ export function installCheck(blocks: readonly BlockRecord[], installed: string, 
 /** A token count as the person reads it: exact below 1k, else in k. */
 const size = (tokens: number | undefined): string => (tokens === undefined ? 'unknown' : tokens < 1000 ? String(tokens) : `${Math.round(tokens / 1000)}k`);
 
-/** The one line the person reads for a forward handoff, once its install is checked: sizes, the blocks, where its files are. */
+/** The one line the person reads for a forward handoff, once its install is checked: sizes (after: the messages only), the blocks, where its files are. */
 export function forwardInstalledLine(i: { seq: number; label: string; before: number | undefined; after: number; landed: number; missing: readonly string[]; dir?: string }): string {
   const blocks = i.missing.length === 0 ? `all ${i.landed} blocks landed` : `blocks missing: ${i.missing.join(', ')}`;
-  return `forward handoff ${i.seq} of ${i.label}: ${size(i.before)} -> ${size(i.after)} tokens, ${blocks}${i.dir !== undefined ? `, files in ${i.dir}` : ''}`;
+  return `forward handoff ${i.seq} of ${i.label}: ${size(i.before)} -> ${size(i.after)} tokens in messages (system prompt and tools not counted), ${blocks}${i.dir !== undefined ? `, files in ${i.dir}` : ''}`;
 }

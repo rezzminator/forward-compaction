@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { execFile, spawn } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
+import { appendFileSync, chmodSync, existsSync, lutimesSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
@@ -250,6 +250,23 @@ exec /bin/chmod "$@"
 });
 
 describe('decision log', () => {
+  it('puts a failed batch back in front of the queue, order kept, and lets the oldest go past the hold, counted', () => {
+    const pending = ['c'];
+    expect(future.requeueRows?.(pending, ['a', 'b'], 5)).toBe(0);
+    expect(pending).toEqual(['a', 'b', 'c']);
+    expect(future.requeueRows?.(pending, ['x', 'y', 'z'], 4)).toBe(2);
+    expect(pending).toEqual(['z', 'a', 'b', 'c']);
+  });
+  it('reports at session end what the bound cut and every row the hold dropped, the cut branch included', () => {
+    const at = { boundMs: 400, levelRows: 0, error: 'EACCES', path: '/logs/d.jsonl' };
+    const cut = future.endReport?.({ ...at, timedOut: true, decisionRows: 7, held: 7, dropped: 3 });
+    expect(cut?.cut).toBe('sub-agent-compact: the session-end bound (400 ms) ran out before the logs were written; 7 decision rows may be lost');
+    expect(cut?.lost).toEqual({ line: 'sub-agent-compact: 3 decision rows were not written to /logs/d.jsonl (3 of them dropped past the 2000-row hold): EACCES', rows: 3, dropped: 3, error: 'EACCES' });
+    expect(future.endReport?.({ ...at, timedOut: true, decisionRows: 0, held: 0, dropped: 0 })).toEqual({ cut: 'sub-agent-compact: the session-end bound (400 ms) ran out while the log writes were finishing; no row was in flight' });
+    expect(future.endReport?.({ ...at, timedOut: false, decisionRows: 2, held: 2, dropped: 0 })?.lost?.rows).toBe(2);
+    expect(future.endReport?.({ ...at, timedOut: false, decisionRows: 0, held: 0, dropped: 0 })).toEqual({});
+  });
+
   const runSh = (argv: string[], stdin = '', env: NodeJS.ProcessEnv = process.env): Promise<{ code: number | null; stderr: string }> =>
     new Promise((resolve, reject) => {
       const child = spawn(argv[0]!, argv.slice(1), { env });
@@ -308,6 +325,10 @@ describe('decision log', () => {
       expect(statSync(path).mode & 0o777).toBe(0o600);
       expect(statSync(join(parent, 'logs')).mode & 0o777).toBe(0o700);
       expect(existsSync(`${path}.lock`)).toBe(false);
+      // An append killed mid-row left a torn last line: the retried rows start on a line of their own.
+      appendFileSync(path, '{"torn":');
+      expect((await append(path, ['{"a":4}'])).code).toBe(0);
+      expect(lines(path).slice(-2)).toEqual(['{"torn":', '{"a":4}']);
     } finally { rmSync(parent, { recursive: true, force: true }); }
   });
 
@@ -512,6 +533,67 @@ PATH='${realPath}' exec cat "$@"
         expect(out.code, out.stderr).toBe(0);
         expect(readdirSync(dir).sort()).toEqual([self, short].sort());
       } finally { rmSync(dir, { recursive: true, force: true }); }
+    });
+
+    it('prunes 260 session files to the 200-file cap with one find, not one process per file', async () => {
+      const dir = mkdtempSync(join(tmpdir(), 'decision-retention-'));
+      const bin = mkdtempSync(join(tmpdir(), 'decision-retention-bin-'));
+      const counter = join(bin, 'finds');
+      const realFind = ['/usr/bin/find', '/bin/find'].find((path) => existsSync(path))!;
+      writeFileSync(join(bin, 'find'), `#!/bin/sh\necho x >> '${counter}'\nexec '${realFind}' "$@"\n`);
+      chmodSync(join(bin, 'find'), 0o755);
+      try {
+        const names = Array.from({ length: 260 }, (_, n) => `decisions.${uuid(n + 1)}.jsonl`);
+        names.forEach((name, n) => { writeFileSync(join(dir, name), '{"ts":"2026-10-01T00:00:00.000Z","event":"start"}\n'); age(join(dir, name), n / 1000); });
+        const self = names[259]!;
+        const started = Date.now();
+        const out = await runSh(future.retentionArgv?.(join(dir, 'decisions.jsonl'), join(dir, self)) ?? ['/bin/sh', '-c', 'exit 9'], '', { ...process.env, PATH: `${bin}:${process.env.PATH}` });
+        const ms = Date.now() - started;
+        expect(out.code, out.stderr).toBe(0);
+        const left = readdirSync(dir);
+        expect(left).toHaveLength(200);
+        expect(left).toContain(self);
+        expect(left).toEqual(expect.arrayContaining(names.slice(0, 199)));
+        expect(existsSync(counter) ? readFileSync(counter, 'utf8').split('\n').filter(Boolean).length : 0).toBeLessThanOrEqual(1);
+        expect(ms).toBeLessThan(5_000);
+      } finally { rmSync(dir, { recursive: true, force: true }); rmSync(bin, { recursive: true, force: true }); }
+    });
+
+    it('goes on with the names find printed when an entry vanishes mid-listing', async () => {
+      const dir = mkdtempSync(join(tmpdir(), 'decision-retention-'));
+      const bin = mkdtempSync(join(tmpdir(), 'decision-retention-bin-'));
+      const realFind = ['/usr/bin/find', '/bin/find'].find((path) => existsSync(path))!;
+      // find exits 1 when an entry another session removes goes missing under it, after printing the rest.
+      writeFileSync(join(bin, 'find'), `#!/bin/sh\n'${realFind}' "$@"\nexit 1\n`);
+      chmodSync(join(bin, 'find'), 0o755);
+      try {
+        const old = `decisions.${uuid(1)}.jsonl`;
+        const self = `decisions.${uuid(2)}.jsonl`;
+        for (const name of [old, self]) writeFileSync(join(dir, name), '{"ts":"2026-10-01T00:00:00.000Z","event":"start"}\n');
+        age(join(dir, old), 30);
+        const out = await runSh(future.retentionArgv?.(join(dir, 'decisions.jsonl'), join(dir, self)) ?? ['/bin/sh', '-c', 'exit 9'], '', { ...process.env, PATH: `${bin}:${process.env.PATH}` });
+        expect(out.code, out.stderr).toBe(0);
+        expect(readdirSync(dir)).toEqual([self]);
+      } finally { rmSync(dir, { recursive: true, force: true }); rmSync(bin, { recursive: true, force: true }); }
+    });
+
+    it('ages a symlinked session file by the link\'s own time, as it deletes the link and never its target', async () => {
+      const dir = mkdtempSync(join(tmpdir(), 'decision-retention-'));
+      const elsewhere = mkdtempSync(join(tmpdir(), 'decision-retention-target-'));
+      try {
+        const target = join(elsewhere, 'kept.jsonl');
+        writeFileSync(target, '{"ts":"2026-10-01T00:00:00.000Z","event":"start"}\n');
+        const link = `decisions.${uuid(1)}.jsonl`;
+        const self = `decisions.${uuid(2)}.jsonl`;
+        symlinkSync(target, join(dir, link));
+        writeFileSync(join(dir, self), '{"ts":"2026-10-01T00:00:00.000Z","event":"start"}\n');
+        const t = (Date.now() - 30 * 86_400_000) / 1000;
+        lutimesSync(join(dir, link), t, t);
+        const out = await retain(join(dir, 'decisions.jsonl'), join(dir, self));
+        expect(out.code, out.stderr).toBe(0);
+        expect(readdirSync(dir)).toEqual([self]);
+        expect(existsSync(target)).toBe(true);
+      } finally { rmSync(dir, { recursive: true, force: true }); rmSync(elsewhere, { recursive: true, force: true }); }
     });
 
     it('passes over a log directory that does not exist', async () => {

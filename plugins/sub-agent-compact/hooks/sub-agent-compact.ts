@@ -4,7 +4,7 @@ import { LOOK_BACK_TOOL, LOOK_BACK_DESCRIPTION, LOOK_BACK_INPUT_SCHEMA, parseLoo
 import { servedOptions, toolsToRegister } from '../src/register.ts';
 import { FORWARD_INPUT_SCHEMA, FORWARD_TOOL, FORWARD_TOOL_DESCRIPTION, forwardNudgeText, forwardRefusal, forwardStoredText, parseForwardArgs, rereadNudge, type ForwardArgs } from '../src/forward-args.ts';
 import { absPath, fileTrail, handoffInReply, findTranscriptArgv, firstFound, gitBlock, gitLine, GIT_REPOS, heldForward, outsideRepository, opensWithSummary, openingSummary, summaryKnowledge, outline, OUTLINE_FILE_MAX_BYTES, priorCalls, priorPrompts, mergeTrail, invocationPaths, invocations, parseLineRange, parsePorcelain, planAndTasks, runningWork, sliceLines, trailDirs, userMessages, type ApiMsg, type LiveWork, type TrailEntry } from '../src/forward-carry.ts';
-import { buildRecord, carriedFrom, forwardDir, forwardRoots, forwardSessionDir, nextSeq, previousDir, recoverForward, withInstall } from '../src/forward-record.ts';
+import { buildRecord, carriedFrom, forwardClaimArgv, forwardDir, forwardRoots, forwardSessionDir, dropSkillProblem, missingRecordProblem, nextSeq, ownCall, previousDir, recoverForward, savedOf, withInstall } from '../src/forward-record.ts';
 import { chainUsers, forwardInstalledLine, installCheck, renderForward, TRAIL_MAX, type BlockRecord, type RenderInput } from '../src/forward-text.ts';
 import { BRIEF_MAX_TOKENS, reseatBrief, seatedBrief } from '../src/brief.ts';
 import { engineAgentFs } from '../src/agent-fs.ts';
@@ -33,7 +33,7 @@ import {
   type ForwardMeta,
 } from '../src/handoff.ts';
 import { SETTINGS_SOURCES, leftoverOptionKeys, resolveOptions, sizeTokens, type OptionEnvironment, type Policy, type ResolvedOptions } from '../src/limits.ts';
-import { sessionLogPath, decisionAppendArgv, retentionArgv, SkipFold, pluginLogDir, levelRow, pluginLogEvent, PluginLogQueue, type PluginLogLevel, type PluginLogFields } from '../src/log.ts';
+import { sessionLogPath, decisionAppendArgv, retentionArgv, requeueRows, keptRowsText, endReport, SkipFold, pluginLogDir, levelRow, pluginLogEvent, PluginLogQueue, type PluginLogLevel, type PluginLogFields } from '../src/log.ts';
 import { armedText, CONTINUE_AFTER_MARKER, disarmedText, earlyArm, markerRequest, nudgeText, stopRequest } from '../src/nudge.ts';
 import { FRESH_MAX_MESSAGES, isFirstRequest, Parties } from '../src/parties.ts';
 import { engineAskPoint, forcedPoint, isHaiku, modelWindow } from '../src/window.ts';
@@ -156,6 +156,10 @@ type State = {
   skips: SkipFold;
   /** Old sessions' logs were cleaned up once this session (or tried). */
   retained?: boolean;
+  /** Why the last decision append failed, while its rows wait in `pending`; cleared by the next append that succeeds. */
+  writeError?: string;
+  /** Rows the hold let go this session, and the failure that dropped the last of them: counted at session end. */
+  rowsDropped?: { rows: number; error: string };
   logPath?: Promise<string | undefined>;
   /** Reading the session id failed: no row is written this session, so a routine line goes to the screen. */
   logOff?: boolean;
@@ -226,7 +230,8 @@ function settleConfig(st: State, $: EngineInterface): void {
   }
 }
 
-function flushDecisions(st: State, $: EngineInterface): void {
+/** `last`: the session-end flush, after which no write comes, so a failure promises none. */
+function flushDecisions(st: State, $: EngineInterface, last = false): void {
   const file = st.config.logFile;
   if (!file) return;
   st.logPath ??= $.session.id().then(
@@ -249,19 +254,37 @@ function flushDecisions(st: State, $: EngineInterface): void {
       const rows = pending.splice(0);
       if (!path || rows.length === 0) return;
       st.rowsWriting = rows.length;
+      try {
+        const out = await $.process.run(decisionAppendArgv(path), { stdin: rows.map((line) => `${line}\n`).join(''), timeoutMs: 15_000 });
+        if (out.exitCode !== 0) throw new Error(out.stderr.split('\n')[0]?.trim() || `the append script exited ${out.exitCode}`);
+        st.writeError = undefined;
+      } catch (error) {
+        // The `$` of an abandoned dispatch (an interrupt, a rejected tool) aborts its run: the batch goes back to
+        // the front of the queue and the next flush, under a live dispatch, writes it. A run rejected after its
+        // child appended them writes them twice: a duplicate row, never a lost one; a child killed mid-row leaves a torn
+        // line, and the append script starts the retried rows on a line of their own.
+        st.writeError = message(error);
+        const dropped = requeueRows(pending, rows);
+        if (dropped > 0) st.rowsDropped = { rows: (st.rowsDropped?.rows ?? 0) + dropped, error: message(error) };
+        throw new DecisionWriteError(message(error), rows.length, dropped);
+      }
+      // Written: no longer in flight while the cleanup runs.
+      st.rowsWriting = 0;
+      // Once per session, after its first rows are written: they never wait behind the cleanup.
       if (!st.retained) {
         st.retained = true;
         await retainLogs(st, $, file, path);
       }
-      const out = await $.process.run(decisionAppendArgv(path), { stdin: rows.map((line) => `${line}\n`).join(''), timeoutMs: 15_000 });
-      if (out.exitCode !== 0) throw new Error(out.stderr.split('\n')[0]?.trim() || `the append script exited ${out.exitCode}`);
     })
     .finally(() => { st.rowsWriting = 0; })
     // Screen and level log only, once per distinct failure: never queue another decision write. The key drops
     // numbers, so one failure whose text carries a varying size or offset is still shown once.
     .catch((error) => {
-      const line = `sub-agent-compact: writing the decision log for ${file} failed: ${message(error)}`;
-      const key = line.replace(/\d+/g, '#');
+      const kept = error instanceof DecisionWriteError ? keptRowsText(error.rows, error.dropped, last) : '';
+      const failed = `sub-agent-compact: writing the decision log for ${file} failed: ${message(error)}`;
+      const line = `${failed}${kept}`;
+      // The first drop past the hold is told even when its failure already was; the session-end line counts them all.
+      const key = `${failed}${error instanceof DecisionWriteError && error.dropped > 0 ? ' (hold)' : ''}`.replace(/\d+/g, '#');
       if (st.logFailures.has(key)) return;
       st.logFailures.add(key);
       plog(st, $, { level: 'error', event: 'decision-log-write-error', msg: screenLine(line), where: 'hooks/sub-agent-compact.ts#record', detail: { error: message(error) } });
@@ -269,15 +292,21 @@ function flushDecisions(st: State, $: EngineInterface): void {
     });
 }
 
-/** Once per session, before its first append: old sessions' logs beside this one go; a failure is told once and the log goes on. */
+/** A failed append whose rows went back to the queue: how many, and how many old ones the hold let go. */
+class DecisionWriteError extends Error {
+  constructor(cause: string, readonly rows: number, readonly dropped: number) {
+    super(cause);
+  }
+}
+
+/** Once per session, after its first append: old sessions' logs beside this one go; a failure is told once, in both logs, and the log goes on. */
 async function retainLogs(st: State, $: EngineInterface, file: string, path: string): Promise<void> {
   try {
     const out = await $.process.run(retentionArgv(file, path), { timeoutMs: 15_000 });
     if (out.exitCode !== 0) throw new Error(out.stderr.split('\n')[0]?.trim() || `the retention script exited ${out.exitCode}`);
   } catch (error) {
     const line = `sub-agent-compact: cleaning up old decision logs beside ${file} failed: ${message(error)}; they stay`;
-    plog(st, $, { level: 'warning', event: 'decision-retention-failed', msg: line, where: 'hooks/sub-agent-compact.ts#retainLogs', detail: { file, error: message(error) } });
-    show($, line);
+    say(st, $, line, 'warning', { event: 'decision-retention-failed', file, error: message(error), line: screenLine(line) });
   }
 }
 
@@ -301,6 +330,8 @@ function startOver(st: State): void {
   st.logPath = undefined;
   st.pending = [];
   st.retained = false;
+  st.writeError = undefined;
+  st.rowsDropped = undefined;
 }
 
 function warnOnce(st: State, $: EngineInterface, key: string, line: string): void {
@@ -632,7 +663,7 @@ async function answerLookBackTool(st: State, $: EngineInterface, e: Record<strin
     boundary = boundaryLine(bounds) ?? null;
     // Before any argument check: with nothing compacted there is no earlier transcript, whatever was asked.
     if (boundary === null) result = { text: 'Nothing has been compacted yet, so everything is still in context.', hits: 0 };
-    else if (args.error) throw new Error(args.error);
+    else if (args.error) result = { text: `Look back failed: ${args.error}`, error: args.error, input: true };
     else if (args.entry !== undefined && args.entry >= boundary) result = entryResult([], args.entry, boundary);
     else {
       const argv = args.entry !== undefined ? entryArgv(file, args.entry) : searchArgv(file, boundary, args.terms);
@@ -651,7 +682,8 @@ async function answerLookBackTool(st: State, $: EngineInterface, e: Record<strin
     result = { text: `Look back failed: ${reason}`, error: reason };
   }
   record(st, $, { event: 'look-back', party, why: args.why, ...(args.query !== undefined ? { query: args.query } : {}), ...(args.entry !== undefined ? { entry: args.entry } : {}), ...(result.hits !== undefined ? { hits: result.hits } : {}), boundary, ...(result.error !== undefined ? { error: result.error } : {}) });
-  say(st, $, lookBackNotice(label, args, result), result.error === undefined ? 'info' : 'error');
+  // A failure the caller's input caused is a warning; only the plugin's own fault is an error.
+  say(st, $, lookBackNotice(label, args, result), result.error === undefined ? 'info' : result.input ? 'warning' : 'error');
   return result.text;
 }
 
@@ -725,6 +757,9 @@ async function ensureTools(st: State, $: EngineInterface): Promise<void> {
       st.toolTries,
       REGISTER_TRIES,
     );
+  const began = Date.now();
+  const names = () => [st.toolName, st.handoffToolName, st.forwardToolName, st.lookBackToolName].filter((name): name is string => name !== undefined);
+  const had = new Set(names());
   const registered = (async () => {
     await start(st, $);
     st.registering = (st.registering ?? Promise.resolve())
@@ -755,10 +790,16 @@ async function ensureTools(st: State, $: EngineInterface): Promise<void> {
   const outcome = await bounded(registered, ENSURE_TOOLS_TIMEOUT_MS, (ms, fn) => afterOrNever(st, $, ms, fn, 'registering the tools'));
   if (!outcome.timedOut) return;
   st.toolsAbandoned = true;
-  // Once the slow registration settles, a later hook spends the tries left.
+  // Once the slow registration settles, a later hook spends the tries left, and the late finish is told with the tools it named.
   const resume = () => void (st.toolsAbandoned = false);
-  void registered.then(resume, resume);
-  warnOnce(st, $, 'tools-timeout', `sub-agent-compact: registering the tools did not finish within ${ENSURE_TOOLS_TIMEOUT_MS / 1000}s; turns go on without waiting for it`);
+  void registered.then(() => {
+    resume();
+    const ms = Date.now() - began;
+    // The tools this attempt registered, never an earlier one's; none is said as such, with the tries left still to come.
+    const tools = names().filter((name) => !had.has(name));
+    say(st, $, `sub-agent-compact: registering the tools finished after ${Math.round(ms / 1000)}s: ${tools.length > 0 ? tools.join(', ') : 'it registered none'}`, 'info', { event: 'tools-late', ms, tools });
+  }, resume);
+  warnOnce(st, $, 'tools-timeout', `sub-agent-compact: registering the tools did not finish within ${ENSURE_TOOLS_TIMEOUT_MS / 1000}s; it goes on, turns do not wait for it, and the tools come into use once it finishes`);
 }
 
 /** How many prompts the person has sent this session, or undefined (and a warning once) when it cannot be read. */
@@ -879,6 +920,8 @@ async function earlierRecords(st: State, $: EngineInterface, at: { session: stri
   const records: unknown[] = [];
   for (const [seq, dir] of [...found.entries()].sort((a, b) => b[0] - a[0])) {
     try {
+      // A number claimed by a call that saved no record (told then as not saved) holds no record to read; a failed look reads on.
+      if (!(await $.fs.exists(`${dir}/record.json`).catch(() => true))) continue;
       records.push(JSON.parse(await $.fs.read(`${dir}/record.json`)));
     } catch (error) {
       unreadable.push(`record ${seq} unreadable (${message(error)})`);
@@ -896,9 +939,10 @@ async function gatherForward(st: State, $: EngineInterface, args: ForwardArgs, a
   const abs = (path: string): string => absPath(path, cwd, st.home ?? '');
   const problems: string[] = [...(args.problems ?? [])];
   let api: ApiMsg[] = [];
+  let read = false;
   try {
     const got = await $.session.messages({ as: 'api', ...(at.agentId !== undefined ? { agentId: at.agentId } : {}) });
-    if (Array.isArray(got)) api = got as ApiMsg[];
+    if (Array.isArray(got)) { api = got as ApiMsg[]; read = true; }
     else problems.push(`transcript: unreadable (${JSON.stringify(got).slice(0, 120)})`);
   } catch (error) {
     problems.push(`transcript: unreadable (${message(error)})`);
@@ -906,7 +950,7 @@ async function gatherForward(st: State, $: EngineInterface, args: ForwardArgs, a
 
   const dropped = new Set(args.dropSkills);
   const invoked = invocations(api);
-  for (const name of args.dropSkills) if (!invoked.some((x) => x.name === name)) problems.push(`drop_skills ${name}: not invoked`);
+  for (const name of args.dropSkills) if (!invoked.some((x) => x.name === name)) problems.push(dropSkillProblem(name, read));
   const roots = await wakeRoots(st, $);
   const skills: RenderInput['skills'] = [];
   for (const inv of invoked.filter((x) => !dropped.has(x.name))) {
@@ -983,7 +1027,7 @@ async function gatherForward(st: State, $: EngineInterface, args: ForwardArgs, a
   for (const root of forwardRoots({ home: st.home, configDir: st.configDir })) {
     const previous = previousDir(root, at.session, at.seq, at.agentId);
     if (previous === undefined) break;
-    if (await $.fs.exists(previous).catch(() => false)) { paths.push(`previous ${previous}`); break; }
+    if (await $.fs.exists(`${previous}/record.json`).catch(() => false)) { paths.push(`previous ${previous}`); break; }
   }
   if (at.dir !== undefined) paths.push(`saved ${at.dir}`);
 
@@ -999,10 +1043,33 @@ async function gatherForward(st: State, $: EngineInterface, args: ForwardArgs, a
   // The prompts: those an earlier handoff carried (from its record, never its text), then those written since it.
   // The held handoff is the newest text a record of this party holds, else the one an install put at the start; a paste elsewhere is a person's words.
   const unreadable: string[] = [];
-  const records = heldForward(api, () => true) !== undefined ? await earlierRecords(st, $, at, unreadable) : [];
+  const callRoots = forwardRoots({ home: st.home, configDir: st.configDir });
+  const newest = heldForward(api, () => true);
+  const records = newest !== undefined ? await earlierRecords(st, $, at, unreadable) : [];
+  // A listing can miss a call it holds: the record a held text names as saved is read there, when that call is this party's own.
+  const looked = callRoots.map((root) => forwardSessionDir(root, at.session, at.agentId));
+  const others: string[] = [];
+  for (const candidate of new Set([newest?.text, heldForward(api)?.text])) {
+    const saved = candidate !== undefined && carriedFrom(records, candidate) === undefined ? savedOf(candidate) : undefined;
+    if (saved === undefined || ownCall(saved, callRoots, at.session, at.agentId) === undefined) continue;
+    looked.unshift(`${saved}/record.json`);
+    try {
+      const rec: unknown = JSON.parse(await $.fs.read(`${saved}/record.json`));
+      records.push(rec);
+      // Found, but holding another handoff's record: the text and its saved files disagree.
+      if (carriedFrom([rec], candidate!) === undefined) others.push(`${saved}/record.json`);
+    } catch (error) {
+      unreadable.push(`record ${saved} unreadable (${message(error)})`);
+    }
+  }
   const held = heldForward(api, (t) => carriedFrom(records, t) !== undefined);
   const before = held?.recorded ? carriedFrom(records, held.text) : undefined;
-  if (held !== undefined && !held.recorded) problems.push(`earlier handoff: its record is missing, so the prompts before it are not carried${unreadable.length > 0 ? ` (${unreadable.join('; ')})` : ''}`);
+  if (held !== undefined && !held.recorded) {
+    const number = /^\[forward handoff (\d+)/.exec(held.text)?.[1];
+    const saved = savedOf(held.text);
+    const foreign = saved !== undefined && ownCall(saved, callRoots, at.session, at.agentId) === undefined ? ` (its saved ${saved} is not this ${at.agentId !== undefined ? 'agent' : 'chat'}'s)` : '';
+    problems.push(missingRecordProblem({ number, looked, foreign, others, unreadable }));
+  }
   // After Claude Code's own compaction the context opens with its summary: the prompts before it come from the transcript file.
   let prior: { users: string[]; dropped: number } | undefined;
   let priorTrail: TrailEntry[] | undefined;
@@ -1159,10 +1226,28 @@ async function answerForwardTool(st: State, $: EngineInterface, e: Record<string
       break;
     }
   }
-  // Numbered from the directory and this process's own count, with no wait between the two reads and the claim.
+  // Numbered from the listing and this process's own count, then claimed by one process that sees the real directory:
+  // a listing can miss a call it holds, and a write over it loses that call's files.
   const seqKey = `${session}:${key}`;
-  const seq = Math.max(nextSeq(existing), (st.forwardSeq.get(seqKey) ?? 0) + 1);
+  let seq = Math.max(nextSeq(existing), (st.forwardSeq.get(seqKey) ?? 0) + 1);
   st.forwardSeq.set(seqKey, seq);
+  if (roots[0] !== undefined && saved === '') {
+    const sessionDir = forwardSessionDir(roots[0], session, agentId);
+    const other = roots[1] !== undefined ? forwardSessionDir(roots[1], session, agentId) : undefined;
+    let failure = '';
+    try {
+      const out = await $.process.run(forwardClaimArgv(sessionDir, seq, other), { timeoutMs: 15_000 });
+      if (out.exitCode === 0 && /^\d+$/.test(out.stdout.trim())) seq = Number(out.stdout.trim());
+      else failure = `exit ${out.exitCode}${out.stderr.trim() !== '' ? `: ${out.stderr.trim()}` : ''}`;
+    } catch (error) {
+      failure = message(error);
+    }
+    if (failure !== '') {
+      saved = ` Not saved to disk: claiming a call number in ${sessionDir} failed: ${failure}.`;
+      say(st, $, `sub-agent-compact: claiming a call number in ${sessionDir} failed: ${failure}; the forward handoff is not saved, so no earlier call's files are overwritten`);
+    }
+    st.forwardSeq.set(seqKey, Math.max(st.forwardSeq.get(seqKey) ?? 0, seq));
+  }
   let dir = roots[0] !== undefined && saved === '' ? forwardDir(roots[0], session, seq, agentId) : undefined;
   const input = await gatherForward(st, $, parsed.args, { seq, ...(dir !== undefined ? { dir } : {}), session, ...(agentId !== undefined ? { agentId } : {}) });
   for (const problem of input.problems ?? []) record(st, $, { event: 'forward-invalid', party: key, seq, problem });
@@ -1206,7 +1291,7 @@ async function finishForward(st: State, $: EngineInterface, { meta, text, tokens
       say(st, $, `sub-agent-compact: writing the install check of forward handoff ${meta.seq} to ${meta.dir} failed: ${message(error)}`, 'warning');
     }
   }
-  record(st, $, { event: 'forward-installed', party: key, seq: meta.seq, tokensAfter, landed: check.landed, missing: check.missing, hash: check.hash });
+  record(st, $, { event: 'forward-installed', party: key, seq: meta.seq, tokensAfter, tokensAfterScope: 'messages', landed: check.landed, missing: check.missing, hash: check.hash });
   say(st, $, forwardInstalledLine({ seq: meta.seq, label, before, after: tokensAfter, landed: check.landed, missing: check.missing, ...(meta.dir !== undefined ? { dir: meta.dir } : {}) }), check.ok ? 'info' : 'warning');
   if (check.ok) return;
   st.parties.notify(key, `sub-agent-compact: forward handoff blocks did not land: ${check.missing.join(', ')}; ${meta.dir !== undefined ? `the full text is in ${meta.dir}/wake.txt` : 'the text was not saved to disk'}.`);
@@ -1538,7 +1623,7 @@ export const register: Register = (on: On, options: PluginOptions) => {
               if (wake.failed.length > 0) {
                 st.parties.notify(key, `sub-agent-compact: load_on_wake entries not loaded: ${wake.failed.join(', ')} — the installed handoff names them as NOT LOADED; load them yourself.`);
               }
-              record(st, $, { ...base, type: party.label, ...limitRow, tokens: tokens ?? null, messages: messages.length, decision: 'handoff', tail: installed.tail, siblings: installed.siblings, brief: brief !== undefined, chars: text.length, tokensAfter, recovered, loads: entries.length, loadsFailed: wake.failed.length, warn: line.warn });
+              record(st, $, { ...base, type: party.label, ...limitRow, tokens: tokens ?? null, messages: messages.length, decision: 'handoff', tail: installed.tail, siblings: installed.siblings, brief: brief !== undefined, chars: text.length, tokensAfter, tokensAfterScope: 'messages', recovered, loads: entries.length, loadsFailed: wake.failed.length, warn: line.warn });
               // What the session holds is readable only once the compaction is done: the next main request checks it.
               if (handoff.forward) {
                 st.forwardInstalled.set(key, { meta: handoff.forward, text, tokensAfter, before: tokens, label: party.label });
@@ -1699,16 +1784,35 @@ export const register: Register = (on: On, options: PluginOptions) => {
     // The open skip streaks close now, and the session ends only once every queued row is written.
     if (st.config.logFile) {
       for (const out of st.skips.drain()) st.pending.push(JSON.stringify(out));
-      flushDecisions(st, $);
+      flushDecisions(st, $, true);
     }
-    // The whole end chain shares one short bound: the writes get what it leaves less core's share, and the conversation starts over either way.
-    const writes = Promise.all([st.writing, st.pluginWriting]);
+    // The whole end chain shares one short bound: the writes get what it leaves less core's share, and the conversation
+    // starts over either way. A write queued while the end waits (a cleanup failure said) is waited for too.
+    const settled = async (): Promise<void> => {
+      for (;;) {
+        const writing = st.writing, plugin = st.pluginWriting;
+        await Promise.all([writing, plugin]);
+        if (writing === st.writing && plugin === st.pluginWriting) return;
+      }
+    };
     const left = next.budget?.remainingMs ?? Infinity;
-    const outcome = Number.isFinite(left) ? await bounded(writes, Math.max(0, left - END_CORE_RESERVE_MS), (ms, fn) => afterOrNever(st, $, ms, fn, 'the session-end log flush')) : (await writes, { timedOut: false as const });
-    if (outcome.timedOut) {
-      const count = (n: number, log: string) => (n > 0 ? [`${n} ${log} ${n === 1 ? 'row' : 'rows'}`] : []);
-      const cut = [...count(st.pending.length + st.rowsWriting, 'decision'), ...count(st.levelRowsWriting, 'level')];
-      show($, `sub-agent-compact: the session-end bound (${next.budget?.ms ?? left} ms) ran out before the logs were written; ${cut.length > 0 ? cut.join(' and ') : 'the rows in flight'} may be lost`);
+    const outcome = Number.isFinite(left) ? await bounded(settled(), Math.max(0, left - END_CORE_RESERVE_MS), (ms, fn) => afterOrNever(st, $, ms, fn, 'the session-end log flush')) : (await settled(), { timedOut: false as const });
+    const report = endReport({
+      timedOut: outcome.timedOut, boundMs: next.budget?.ms ?? left, decisionRows: st.pending.length + st.rowsWriting, levelRows: st.levelRowsWriting,
+      held: st.config.logFile && st.writeError !== undefined ? st.pending.length : 0, dropped: st.config.logFile ? st.rowsDropped?.rows ?? 0 : 0,
+      error: st.writeError ?? st.rowsDropped?.error ?? 'unknown', // a cut chain may hold the path's own lookup: it is awaited only once settled, or once an append ran
+      path: !st.config.logFile ? '' : !outcome.timedOut || st.rowsDropped !== undefined ? (await st.logPath) ?? st.config.logFile : st.config.logFile,
+    });
+    if (report.cut !== undefined) show($, report.cut);
+    if (report.lost !== undefined) {
+      // The rows a failing append kept have no later flush, and the hold's drops were told only once: they are lost, and said so, never silently.
+      const { line, rows, dropped, error } = report.lost;
+      plog(st, $, { level: 'error', event: 'decision-log-rows-lost', msg: screenLine(line), where: 'hooks/sub-agent-compact.ts#session.end', detail: { rows, dropped, error } });
+      show($, line);
+      // The level row is the record of the loss: the end waits for it, within what the bound leaves.
+      const rest = next.budget?.remainingMs ?? Infinity;
+      if (Number.isFinite(rest)) await bounded(st.pluginWriting, Math.max(0, rest - END_CORE_RESERVE_MS), (ms, fn) => afterOrNever(st, $, ms, fn, 'the session-end log flush'));
+      else await st.pluginWriting;
     }
     if (goesOn) startOver(st);
     return next(e);

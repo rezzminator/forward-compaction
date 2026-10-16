@@ -38,6 +38,9 @@ describe('look_back arguments and tool contract (R1–R2)', () => {
     // A null beside the other argument is absent, as clients send unset optional fields.
     [{ why: 'detail', query: 'alpha beta', entry: null }, { why: 'detail', query: 'alpha beta', terms: ['alpha', 'beta'] }],
     [{ why: 'detail', entry: 4, query: null }, { why: 'detail', entry: 4, terms: [] }],
+    // A backslash-escaped quote is a literal quote character, inside a phrase or a word (the live devbox query).
+    [{ why: 'x', query: '"Agent \\"rr" total_tokens' }, { why: 'x', query: '"Agent \\"rr" total_tokens', terms: ['Agent "rr', 'total_tokens'] }],
+    [{ why: 'x', query: 'say \\"hi C:\\dir' }, { why: 'x', terms: ['say', '"hi', 'C:\\dir'] }],
   ])('normalizes arguments %j', (input, expected) => {
     const got = api('parseLookBack')(input);
     expect(got).toMatchObject(expected);
@@ -47,7 +50,7 @@ describe('look_back arguments and tool contract (R1–R2)', () => {
   it.each([
     [{ query: 'x' }, 'why'], [{ why: ' ' , query: 'x' }, 'why'], [{ why: 'x' }, 'query or entry'],
     [{ why: 'x', query: ' "" ' }, 'query'], [{ why: 'x', entry: 0 }, 'entry'], [{ why: 'x', entry: 1.2 }, 'entry'],
-    [{ why: 'x', query: '"unclosed' }, 'quote'], [{ why: 'x', query: 'x\u0000y' }, 'query'],
+    [{ why: 'x', query: '"unclosed' }, 'quote'], [{ why: 'x', query: '"open \\"' }, 'quote'], [{ why: 'x', query: 'x\u0000y' }, 'query'],
     [{ why: 'x', query: '"two\nwords"' }, 'query'], [{ why: 'x', query: 7 }, 'query'],
     [{ why: 'x', query: 'x', other: true }, 'other'],
   ])('reports invalid arguments %j', (input, problem) => expect(api('parseLookBack')(input).error).toContain(problem));
@@ -152,7 +155,7 @@ describe('look_back readable transcript entries (R4)', () => {
     const out = api('searchResults')(found, ['needle'], 50);
     expect(out).toEqual({ text: expect.stringMatching(/^#40 /), hits: 1 });
     expect(out.text).not.toContain('unsupported');
-    expect(api('entryResult')(found, found[0].line, 50).error).toBe(`entry ${found[0].line} is Claude Code bookkeeping (${entry.type}), not part of the conversation`);
+    expect(api('entryResult')(found, found[0].line, 50)).toMatchObject({ error: `entry ${found[0].line} is Claude Code bookkeeping (${entry.type}), not part of the conversation`, input: true });
   });
   it('names a tool reference and notes a document without failing the search', () => {
     const found = entries(row(5, [{ type: 'tool_result', tool_use_id: 't1', content: [{ type: 'tool_reference', name: 'mcp__docs__guide' }, { type: 'tool_reference', tool_name: 'Read' }, { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: 'AA==' } }, text('needle')] }]));
@@ -221,10 +224,31 @@ describe('look_back entry fetch (R5)', () => {
     expect(out.error).toMatch(/already in context/);
     expect(out.text).not.toContain('held');
   });
-  it('reports a missing entry rather than treating it as a blank entry', () => expect(api('entryResult')([], 4, 10).error).toContain('entry 4'));
+  it('reports a missing entry rather than treating it as a blank entry, as the caller\'s input', () => expect(api('entryResult')([], 4, 10)).toMatchObject({ error: expect.stringContaining('entry 4'), input: true }));
 });
 
 describe('look_back shell protocol (R3–R4)', () => {
+  it('finds a term holding a quote or a backslash in the raw JSONL, where JSON escapes them', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'look-back-escape-'));
+    try {
+      const file = join(directory, 'party.jsonl');
+      writeFileSync(file, [JSON.stringify({ type: 'user', message: { content: 'ran Agent "rr" for total_tokens in C:\\dir' } }), JSON.stringify({ subtype: 'compact_boundary' })].join('\n'));
+      const terms = api('parseLookBack')({ why: 'x', query: '"Agent \\"rr" C:\\dir' }).terms;
+      expect(terms).toEqual(['Agent "rr', 'C:\\dir']);
+      const argv = api('searchArgv')(file, 2, terms);
+      const found = entries(api('processOutput')({ exitCode: 0, stdout: execFileSync(argv[0], argv.slice(1), { encoding: 'utf8' }), stderr: '' }, 'search', true));
+      expect(api('searchResults')(found, terms, 2)).toMatchObject({ hits: 1 });
+      // A tool call's input is nested JSON: a quote in a value is escaped in the line, a structural quote is bare.
+      const call = join(directory, 'call.jsonl');
+      writeFileSync(call, [JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'git commit -m "fix" in C:\\dir', subagent_type: 'rr' } }] } }), JSON.stringify({ subtype: 'compact_boundary' })].join('\n'));
+      for (const query of ['"-m \\"fix"', 'C:\\dir', '"\\"subagent_type\\":\\"rr\\""']) {
+        const t = api('parseLookBack')({ why: 'x', query }).terms;
+        const a = api('searchArgv')(call, 2, t);
+        const hit = entries(api('processOutput')({ exitCode: 0, stdout: execFileSync(a[0], a.slice(1), { encoding: 'utf8' }), stderr: '' }, 'search', true));
+        expect(api('searchResults')(hit, t, 2), query).toMatchObject({ hits: 1 });
+      }
+    } finally { rmSync(directory, { recursive: true, force: true }); }
+  });
   it('passes terms separately, cuts below the boundary, keeps newest 200, and runs safely on real JSONL', () => {
     const search = api('searchArgv');
     const directory = mkdtempSync(join(tmpdir(), 'look-back-test-'));

@@ -362,11 +362,11 @@ export function handoffNotice(kind: HandoffNoticeKind, detail = ''): string {
   }
 }
 
-/** The line the person reads for an install: sizes before and after, and a warning when most of the context was kept. */
+/** The line the person reads for an install: sizes before and after (after: the messages only), and a warning when most of the context was kept. */
 export function installLine({ label, before, after, tail, recovered }: { label: string; before: number | undefined; after: number; tail: number; recovered: boolean }): { line: string; warn: boolean } {
   const warn = before !== undefined && after >= before / 2;
   const line =
-    `sub-agent-compact: installed the handoff of ${label}: ${before === undefined ? 'unknown' : k(before)} -> ${k(after)} tokens` +
+    `sub-agent-compact: installed the handoff of ${label}: ${before === undefined ? 'unknown' : k(before)} -> ${k(after)} tokens in messages (system prompt and tools not counted)` +
     `${tail > 0 ? `, ${tail} later messages kept` : ''}${recovered ? ' (recovered from the transcript)' : ''}` +
     `${warn ? '; most of the context stayed (the work after the handoff call is kept whole), so the cut is small' : ''}`;
   return { line, warn };

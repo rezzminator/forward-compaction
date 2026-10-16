@@ -4,6 +4,16 @@ Every release of sub-agent-compact. Versions follow [semantic versioning](https:
 
 ## [Unreleased]
 
+### Fixed
+
+- A decision-log append that fails, such as one an interrupt aborts, keeps its rows for the next write instead of dropping them; rows still unwritten at session end, and any the 2,000-row hold let go, are counted on screen and as a `decision-log-rows-lost` error row.
+- Cleaning up old decision logs runs one `find` instead of one per file (past 15 s under load at 200 files), after the session's first rows are written; its failure is also a `decision-retention-failed` decision row.
+- A tool registration past 5s says it goes on, and its late finish is a `tools-late` row naming the tools and the wait.
+- `drop_skills` naming a skill not invoked since the last compaction says so and to leave it out, instead of "not invoked".
+- An install's after-size is labelled as the messages only (`tokens in messages (system prompt and tools not counted)`, row and forward `record.json` `tokensAfterScope`).
+- `look_back` reads `\"` in a query as a literal quote, in a phrase or a word, and finds a term holding a quote or a backslash in a message or a tool call's input (the transcript stores them escaped in a string, bare in a tool input's JSON); a bad query, an entry at or after the boundary, or one not found is logged as a warning, not an error.
+- A forward handoff claims its call number with one `mkdir` that sees the real directory, so a call the listing missed is never written over; the record of the handoff the session holds is also read through the `saved` path its text names, when that call is this party's own; a record still missing names the handoff's number, every place looked and a saved path that is not this chat's.
+
 ## [0.8.0-dev.1] — 2026-10-15
 
 ### Removed

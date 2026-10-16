@@ -38,6 +38,41 @@ export function nextSeq(names: readonly string[]): number {
   return top + 1;
 }
 
+/**
+ * The claim of a call number in one process, so the answer is the directory's own: from $2, the first number free in
+ * the session's directory $1 and, when $3 names one, in the other root's; mkdir makes it, atomically, so an earlier
+ * call's files are never written over. Prints the number; exits 1 when $1 cannot hold one.
+ */
+export const FORWARD_CLAIM_SCRIPT = `mkdir -p "$1" || exit 1
+n=$2
+while :; do
+  if [ -n "$3" ] && [ -e "$3/$n" ]; then n=$((n + 1)); continue; fi
+  if mkdir "$1/$n" 2>/dev/null; then printf %s "$n"; exit 0; fi
+  [ -e "$1/$n" ] || exit 1
+  n=$((n + 1))
+done`;
+
+/** The argv of the claim: the session directory a call is saved in, the number to start from, the other root's session directory or none. */
+export function forwardClaimArgv(sessionDir: string, start: number, otherSessionDir?: string): string[] {
+  return ['/bin/sh', '-c', FORWARD_CLAIM_SCRIPT, 'forward-claim', sessionDir, String(start), otherSessionDir ?? ''];
+}
+
+/** The `saved {dir}` a wake text's Paths line names, the last such line's; undefined when it names none. */
+export function savedOf(text: string): string | undefined {
+  const lines = [...text.matchAll(/^Paths\n(.+)$/gm)];
+  const item = lines.at(-1)?.[1]?.split(' · ').find((part) => part.startsWith('saved /'));
+  return item?.slice('saved '.length);
+}
+
+/** The number of the call `dir` is when it is one of this party's own, under a root: `<root>/<session>[/agent-<id>]/<n>`. */
+export function ownCall(dir: string, roots: readonly string[], session: string, agentId?: string): number | undefined {
+  for (const root of roots) {
+    const prefix = `${forwardSessionDir(root, session, agentId)}/`;
+    if (dir.startsWith(prefix) && /^\d+$/.test(dir.slice(prefix.length))) return Number(dir.slice(prefix.length));
+  }
+  return undefined;
+}
+
 /** The directory of the call before this one, undefined for the first. */
 export function previousDir(root: string, session: string, seq: number, agentId?: string): string | undefined {
   return seq > 1 ? forwardDir(root, session, seq - 1, agentId) : undefined;
@@ -66,9 +101,23 @@ export function buildRecord(i: { seq: number; session: string; agentId?: string;
   };
 }
 
-/** The record once installed: the size after, and what the install check found. */
+/** The record once installed: the size after (the messages only), and what the install check found. */
 export function withInstall(record: ForwardRecord, i: { tokensAfter: number; check: { landed: number; missing: string[]; hash: string; ok: boolean } }): ForwardRecord {
-  return { ...record, tokensAfter: i.tokensAfter, install: i.check };
+  return { ...record, tokensAfter: i.tokensAfter, tokensAfterScope: 'messages', install: i.check };
+}
+
+/**
+ * The wake's line for a held handoff no record carries: every place looked, the saved one that is another party's,
+ * the saved records found holding another handoff, and the records that could not be read.
+ */
+export function missingRecordProblem(i: { number?: string; looked: readonly string[]; foreign?: string; others: readonly string[]; unreadable: readonly string[] }): string {
+  const others = i.others.length > 0 ? ` (${i.others.join(', ')} ${i.others.length === 1 ? 'holds' : 'hold'} another handoff's record)` : '';
+  return `earlier handoff${i.number !== undefined ? ` ${i.number}` : ''}: its record is missing from ${i.looked.join(', ')}${i.foreign ?? ''}${others}, so the prompts before it are not carried${i.unreadable.length > 0 ? ` (${i.unreadable.join('; ')})` : ''}`;
+}
+
+/** The wake's line for a drop_skills name no invocation in the session matches: nothing to drop, or unchecked when the transcript could not be read. */
+export function dropSkillProblem(name: string, read: boolean): string {
+  return read ? `drop_skills ${name}: not invoked since the last compaction (any earlier invocation was compacted away), so there is nothing to drop; leave it out of drop_skills` : `drop_skills ${name}: unchecked, the transcript is unreadable`;
 }
 
 /** The prompts, file trail and summary knowledge an earlier handoff carried, from its record: the one whose text is the one the session holds. Undefined when no record is. */

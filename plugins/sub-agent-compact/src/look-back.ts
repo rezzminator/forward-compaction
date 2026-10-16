@@ -6,14 +6,15 @@ export const LOOK_BACK_INPUT_SCHEMA = {
   type: 'object',
   properties: {
     why: { type: 'string', description: 'What compaction lost that you need; trimmed to 120 characters, longer marked [cut].' },
-    query: { type: 'string', description: 'All words must appear, case-insensitive, in one entry. Double quotes keep a phrase whole.' },
+    query: { type: 'string', description: 'All words must appear, case-insensitive, in one entry. Double quotes keep a phrase whole; \\" is a literal quote.' },
     entry: { type: 'integer', minimum: 1, description: 'Line number from a look_back result to fetch whole, before the latest compaction.' },
   },
   // Query-or-entry is parseLookBack's check, not the schema's: a client sending `entry: null` beside a query is not refused.
   required: ['why'], additionalProperties: false,
 };
 export type LookBackArgs = { why: string; query?: string; entry?: number; terms: string[]; error?: string };
-export type LookBackResult = { text: string; hits?: number; error?: string };
+/** `input`: the error is the caller's input (a bad argument, an entry it cannot fetch), not a plugin fault. */
+export type LookBackResult = { text: string; hits?: number; error?: string; input?: true };
 const oneLine = (s: string): string => s.replace(/\s+/g, ' ').trim();
 export function parseLookBack(raw: Record<string, unknown>): LookBackArgs {
   // A null query or entry is absent: clients send unset optional fields as null.
@@ -31,11 +32,13 @@ export function parseLookBack(raw: Record<string, unknown>): LookBackArgs {
   else if (args.entry === undefined) {
     if (args.query === undefined) args.error = 'query or entry is required';
     else {
+      // A backslash-escaped quote is a literal quote character, never a phrase delimiter; any other backslash is literal.
       // A newline inside a phrase would turn grep -e into OR patterns; refuse it.
-      const pieces = args.query.match(/"[^"\r\n]*"|[^\s"]+/g) ?? [];
-      if ((args.query.match(/"/g)?.length ?? 0) % 2 !== 0) args.error = 'query has an unclosed quote';
-      else if (args.query.includes('\0') || /"[^"\n]*[\r\n]/.test(args.query)) args.error = 'query terms must not contain NUL or newlines';
-      else args.terms = pieces.map((s) => s.startsWith('"') ? s.slice(1, -1) : s).filter(Boolean);
+      const pieces = args.query.match(/"(?:\\"|\\(?!")|[^"\\\r\n])*"|(?:\\"|\\(?!")|[^\s"\\])+/g) ?? [];
+      const delimiters = args.query.replace(/\\"/g, '');
+      if ((delimiters.match(/"/g)?.length ?? 0) % 2 !== 0) args.error = 'query has an unclosed quote';
+      else if (args.query.includes('\0') || /"[^"\n]*[\r\n]/.test(delimiters)) args.error = 'query terms must not contain NUL or newlines';
+      else args.terms = pieces.map((s) => (s.startsWith('"') ? s.slice(1, -1) : s).replace(/\\"/g, '"')).filter(Boolean);
       if (!args.error && args.terms.length === 0) args.error = 'query must contain at least one word or quoted phrase';
     }
   }
@@ -48,10 +51,16 @@ const finish = `; printf '\\n[look-back-complete]\\n'`;
 // grep's rc=1 alone means no matches, not an error.
 const checked = `checked() { empty="$1"; shift; "$@"; rc=$?; if [ "$rc" -ne 0 ] && ! { [ "$empty" = 1 ] && [ "$rc" -eq 1 ]; }; then printf 'look-back subprocess failed (exit %s): %s\\n' "$rc" "$*" >&2; return "$rc"; fi; }; `;
 const prefix = 'checked 0 sed -n "1,$(($2 - 1))p" "$1"';
-/** The script contains only fixed code and argument indexes; values stay in argv. */
+/**
+ * The script contains only fixed code and argument indexes; values stay in argv. grep reads the raw JSONL line, where a
+ * term sits as typed (a tool input's own JSON structure) or in the form JSON writes a string value (a quote as \", a
+ * backslash as \\): a term whose two forms differ goes to grep as both; searchResults matches the decoded text.
+ */
 export function searchArgv(file: string, boundary: number, terms: readonly string[]): string[] {
-  const filters = terms.map((_, i) => `checked 1 grep -a ${i === 0 ? '-n ' : ''}-i -F -e "\${${i + 3}}"`);
-  return ['sh', '-c', `${checked}${prefix} | ${filters.join(' | ')} | checked 0 tail -n 200${finish}`, 'sh', file, String(boundary), ...terms];
+  const forms = terms.map((term) => [...new Set([term, JSON.stringify(term).slice(1, -1)])]);
+  let next = 3;
+  const filters = forms.map((f, i) => `checked 1 grep -a ${i === 0 ? '-n ' : ''}-i -F ${f.map(() => `-e "\${${next++}}"`).join(' ')}`);
+  return ['sh', '-c', `${checked}${prefix} | ${filters.join(' | ')} | checked 0 tail -n 200${finish}`, 'sh', file, String(boundary), ...forms.flat()];
 }
 // Filter candidate lines while streaming: nested tool input is not a boundary.
 // Track JSON depth outside strings; escaped quotes/braces must not change it.
@@ -213,6 +222,8 @@ export function snippet(text: string, terms: readonly string[]): string {
   const end = start + 400;
   return `${start > 0 ? '…' : ''}${text.slice(start, end)}${end < text.length ? '…' : ''}`;
 }
+// A tool call's text shows its input as JSON, a quote in a value as \": a term holding the quote itself matches it there too.
+const unescaped = (text: string): string => text.replace(/\\(?:["\\/bfnrt]|u[0-9a-fA-F]{4})/g, (m) => JSON.parse(`"${m}"`) as string);
 /**
  * The matches, newest first; the party's own calls of `demote` (its forward handoff, whose fields restate what it
  * searches for) and their results rank below every other hit. An entry left unread is the result's error, hits still shown.
@@ -221,7 +232,7 @@ export function searchResults(entries: readonly LookBackEntry[], terms: readonly
   const candidates = entries.filter((e) => e.line < boundary && e.kind !== 'bookkeeping');
   const own = (e: LookBackEntry): boolean => demote !== undefined && (e.uses.some((u) => u.name === demote) || e.results.some((id) => names[id] === demote));
   const matches = candidates
-    .filter((e) => terms.every((term) => e.text.toLowerCase().includes(term.toLowerCase())))
+    .filter((e) => { const text = e.text.toLowerCase(), plain = unescaped(text); return terms.every((term) => text.includes(term.toLowerCase()) || plain.includes(term.toLowerCase())); })
     .sort((a, b) => Number(own(a)) - Number(own(b)) || b.line - a.line);
   const notes = [...new Set(candidates.flatMap((e) => e.warnings.map((w) => `#${e.line}: ${w}`)))].join('\n');
   const out: string[] = [];
@@ -248,12 +259,12 @@ export function searchResults(entries: readonly LookBackEntry[], terms: readonly
 }
 export function entryResult(entries: readonly LookBackEntry[], n: number, boundary: number, names: Record<string, string> = {}): LookBackResult {
   const error = n >= boundary ? `entry ${n} is at or after the compaction at line ${boundary}, so already in context` : undefined;
-  if (error) return { text: error, error };
+  if (error) return { text: error, error, input: true };
   const e = entries.find((e) => e.line === n);
-  if (!e) { const error = `entry ${n} was not found in the transcript`; return { text: error, error }; }
+  if (!e) { const error = `entry ${n} was not found in the transcript`; return { text: error, error, input: true }; }
   if (e.kind === 'bookkeeping') {
     const error = `entry ${n} is Claude Code bookkeeping (${e.text}), not part of the conversation`;
-    return { text: error, error };
+    return { text: error, error, input: true };
   }
   if (e.kind === 'unknown') {
     const error = `entry ${n} could not be read: ${e.warnings.join(', ')}`;

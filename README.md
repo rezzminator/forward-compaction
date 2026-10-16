@@ -7,7 +7,7 @@
 [![Claude Code plugin](https://img.shields.io/badge/Claude%20Code-plugin-D97757)](https://docs.claude.com/en/docs/claude-code/plugins)
 [![Version](https://img.shields.io/badge/version-0.8.0--dev.1-blue)](./CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
-[![Tests](https://img.shields.io/badge/tests-800%20passing-brightgreen)](#development)
+[![Tests](https://img.shields.io/badge/tests-825%20passing-brightgreen)](#development)
 [![Built with Professor](https://img.shields.io/badge/built%20with-Professor-8A2BE2)](https://github.com/rezzminator/professor)
 
 **34% cheaper** than a sub-agent that never compacts · **52% less context** re-sent on every request
@@ -68,9 +68,17 @@ the model decide *when* to compact.
   never evicts a compaction, nudge, handoff, error or start row. A session
   file over 8 MiB moves to `.1`. Rows queued at session end are written
   before the plugin exits, within Claude Code's short session-end bound; a
-  row the bound cuts off is counted on the screen. Retention: once per
-  session, the files of other sessions beside it (each with its `.1`) older
-  than 14 days go, then all but the newest 200, this session's counted. Only
+  row the bound cuts off is counted on the screen. An append that fails (an
+  interrupt aborts the hook's run, a full disk) keeps its rows, at most
+  2,000, for the next write; an append rejected after it wrote leaves a
+  duplicate row, never a lost one, and one killed mid-row a torn line the
+  retried rows start after. Rows still unwritten at session end, and
+  any the 2,000-row hold let go, are counted on the screen and in a
+  `decision-log-rows-lost` error row. Retention: once
+  per session, after its first rows are written, the files of other sessions
+  beside it (each with its `.1`) older than 14 days go, then all but the
+  newest 200, this session's counted; one `find` reads every age, so only
+  each file deleted costs a process. Only
   a `<uuid>.jsonl` file whose first line has a decision row's shape
   (`{"ts":"…","event":"…`) is a session's file, so retention treats the
   `logFile` folder as the plugin's own: keep it in a folder of its own.
@@ -339,7 +347,7 @@ then delete the `pluginConfigs` entry.
 
 Errors, warnings and info append JSONL rows to `$PLUGIN_LOG_DIR/sub-agent-compact/{errors,warnings,info}.jsonl`. With the variable unset, they use `$HOME/.local/state/sub-agent-compact/logs/`. Each plugin process's decision log gets one `start` row; after a `/clear` or a resume the new session id's file carries none. Rows name the event, component and session; diagnostic details never include handoff or transcript bodies. Rows are bounded to 4096 bytes, new directories and files are private, and a level file over 20 MiB moves to `.1` with a `log-capped` warning. A failed log write reports its directory and error once per failing streak without changing compaction or tool results.
 
-Each warning is one level row: a line said with its diagnostic row (an option error, a resolve error, a warning) is written once, at the level said. A failing plugin log is named once per failing streak on screen and as a `plugin-log-failed` decision row; a failed decision-log session lookup as a `decision-log-session-error` warning row, a failing decision-log write as a `decision-log-write-error` error row, and a failed cleanup of old decision logs as a `decision-retention-failed` warning row. The level files rotate under a lock shared by every session. Option keys the plugin does not know are named in one line; a nudge start at or past the forced point in the same unit is named and kept.
+Each warning is one level row: a line said with its diagnostic row (an option error, a resolve error, a warning) is written once, at the level said. A failing plugin log is named once per failing streak on screen and as a `plugin-log-failed` decision row; a failed decision-log session lookup as a `decision-log-session-error` warning row, a failing decision-log write as a `decision-log-write-error` error row (its rows kept for the next write), and a failed cleanup of old decision logs as a `decision-retention-failed` warning row in both logs. Registering the tools holds a turn at most 5s; past it a `tools-timeout` warning says registration goes on, and its late finish is a `tools-late` row (`ms`, `tools`). An install's after-size counts the messages only, as its line says (`250k -> 6k tokens in messages (system prompt and tools not counted)`) and its row and the forward handoff's `record.json` (`tokensAfterScope: "messages"`); the next request reads the whole. The level files rotate under a lock shared by every session. Option keys the plugin does not know are named in one line; a nudge start at or past the forced point in the same unit is named and kept.
 
 Existing screen notices and the per-session decision log stay separate. An explicit `logFile` always wins; only the blank default follows `PLUGIN_LOG_DIR`. With neither `PLUGIN_LOG_DIR` nor `HOME`, the screen reports that plugin logging is off.
 

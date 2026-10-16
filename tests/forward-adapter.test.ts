@@ -29,7 +29,7 @@ const api = (extra: unknown[] = []) => [
   { role: 'assistant', content: [{ type: 'tool_use', id: 'f1', name: 'mcp__sub-agent-compact__forward_handoff', input: FIELDS }] },
 ];
 
-type Env = { registerOptions?: Record<string, unknown>; settings?: Record<string, Record<string, unknown>>; settingsReadFails?: string[]; homeGate?: Promise<void>; timers?: (() => void)[]; cwdFails?: boolean; vars?: Record<string, string>; envReadFails?: string[]; window?: number; decisionSessionFailsOnce?: boolean; decisionWriteFails?: boolean; uiFailsOnce?: boolean; home?: string; pluginLogDir?: string; pluginRunFails?: boolean; readFails?: string[]; denied?: string[]; listFails?: boolean; noHome?: boolean; noTranscript?: boolean; cwd?: string; agentRows?: Record<string, unknown[]>; agents?: { id: string; type: string }[]; run?: (argv: string[], init?: { cwd?: string }) => { exitCode: number; stdout: string; stderr: string } | undefined; appendWaits?: Promise<void>; pluginWaits?: Promise<void>; timersFire?: boolean; noClock?: boolean };
+type Env = { registerOptions?: Record<string, unknown>; settings?: Record<string, Record<string, unknown>>; settingsReadFails?: string[]; homeGate?: Promise<void>; timers?: (() => void)[]; cwdFails?: boolean; vars?: Record<string, string>; envReadFails?: string[]; window?: number; decisionSessionFailsOnce?: boolean; decisionWriteFails?: boolean; uiFailsOnce?: boolean; home?: string; pluginLogDir?: string; pluginRunFails?: boolean; readFails?: string[]; denied?: string[]; listFails?: boolean; noHome?: boolean; noTranscript?: boolean; cwd?: string; agentRows?: Record<string, unknown[]>; agents?: { id: string; type: string }[]; run?: (argv: string[], init?: { cwd?: string }) => { exitCode: number; stdout: string; stderr: string } | undefined; appendWaits?: Promise<void>; decisionWriteAbortsOnce?: boolean; retentionFails?: string; retentionWaits?: Promise<void>; messagesFail?: boolean; pluginWaits?: Promise<void>; timersFire?: boolean; noClock?: boolean; claimFails?: boolean };
 const pluginExec = promisify(execFile);
 
 function engine(options: Record<string, unknown> = { forwardHandoffTool: true }, files: Record<string, string> = {}, apiRows: unknown[] = api(), git = true, refused: string[] = [], env: Env = {}) {
@@ -46,6 +46,7 @@ function engine(options: Record<string, unknown> = { forwardHandoffTool: true },
   let compactCalls = 0;
   let usageCalls = 0;
   const known: Record<string, string> = { [TRANSCRIPT]: '', ...files };
+  const made = new Set<string>();
   // The options are set the only way the plugin reads them: as variables of the environment, which a test's own `vars` override.
   const vars: Record<string, string> = { ...optionVars(options), ...env.vars };
   const $ = {
@@ -60,7 +61,10 @@ function engine(options: Record<string, unknown> = { forwardHandoffTool: true },
         return env.cwd ?? '/nowhere';
       },
       usage: async () => { usageCalls++; return { context: { tokens: current, window: env.window ?? 1_000_000 } }; },
-      messages: async (a?: { agentId?: string }) => (a?.agentId !== undefined ? (env.agentRows?.[a.agentId] ?? []) : apiRows),
+      messages: async (a?: { agentId?: string }) => {
+        if (env.messagesFail) throw new Error('transcript gone');
+        return a?.agentId !== undefined ? (env.agentRows?.[a.agentId] ?? []) : apiRows;
+      },
       compact: async () => { compactCalls++; return {}; },
     },
     env: {
@@ -98,11 +102,26 @@ function engine(options: Record<string, unknown> = { forwardHandoffTool: true },
         if (argv[0] === '/bin/sh' && argv[3] === 'decision-log') {
           const path = argv[4]!;
           await env.appendWaits;
+          if (env.decisionWriteAbortsOnce) { env.decisionWriteAbortsOnce = false; throw new Error('sub-agent-compact: $.process.run(/bin/sh) aborted'); }
           if (env.decisionWriteFails) throw new Error('decision write unavailable');
           written[path] = (written[path] ?? '') + (init?.stdin ?? '');
           return { exitCode: 0, stdout: '', stderr: '' };
         }
-        if (argv[0] === '/bin/sh' && argv[3] === 'decision-retention') return { exitCode: 0, stdout: '', stderr: '' };
+        // The claim of a call number, as its script's contract says: the first number from $2 free in both session directories is made in the first.
+        if (argv[0] === '/bin/sh' && argv[3] === 'forward-claim') {
+          if (env.claimFails) return { exitCode: 1, stdout: '', stderr: 'mkdir: Permission denied' };
+          const [dir, start, other] = [argv[4]!, Number(argv[5]), argv[6] ?? ''];
+          const taken = (path: string) => made.has(path) || [...Object.keys(known), ...Object.keys(written)].some((p) => p.startsWith(`${path}/`));
+          let n = start;
+          while ((other !== '' && taken(`${other}/${n}`)) || taken(`${dir}/${n}`)) n++;
+          made.add(`${dir}/${n}`);
+          return { exitCode: 0, stdout: String(n), stderr: '' };
+        }
+        if (argv[0] === '/bin/sh' && argv[3] === 'decision-retention') {
+          await env.retentionWaits;
+          if (env.retentionFails !== undefined) throw new Error(env.retentionFails);
+          return { exitCode: 0, stdout: '', stderr: '' };
+        }
         if (argv[0] === '/bin/sh' && argv[3] === 'plugin-log') {
           if (env.pluginRunFails) throw new Error('plugin process unavailable');
           await env.pluginWaits;
@@ -365,8 +384,23 @@ describe('the forward handoff tool through the adapter', () => {
     expect(record.tokensAfter).toBe(out.tokensAfter);
     expect(record.install).toMatchObject({ ok: true, missing: [], landed: record.blocks.length });
     const after = out.tokensAfter < 1000 ? String(out.tokensAfter) : `${Math.round(out.tokensAfter / 1000)}k`;
-    expect(cc.logs.filter((line) => /handoff/.test(line))).toEqual([`forward handoff 1 of main: 250k -> ${after} tokens, all ${record.blocks.length} blocks landed, files in ${DIR}`]);
+    expect(cc.logs.filter((line) => /handoff/.test(line))).toEqual([`forward handoff 1 of main: 250k -> ${after} tokens in messages (system prompt and tools not counted), all ${record.blocks.length} blocks landed, files in ${DIR}`]);
     expect(cc.logs.filter((line) => line.startsWith('sub-agent-compact:'))).toEqual([]);
+  });
+
+  it('says in the installed row and its said line that the after-size counts the messages only', async () => {
+    const cc = engine({ forwardHandoffTool: true, compactTool: false, logFile: '/logs/decisions.jsonl' });
+    await cc.start();
+    await cc.step(250_000);
+    await cc.forward();
+    const wake = cc.written[`${DIR}/wake.txt`]!;
+    await cc.ask('auto');
+    cc.rows.splice(0, cc.rows.length, { role: 'user', content: [text(wake)] });
+    await cc.step(30_000);
+    const rows = await cc.decisions();
+    expect(rows.filter((r: any) => r.event === 'forward-installed').map((r: any) => r.tokensAfterScope)).toEqual(['messages']);
+    expect(rows.filter((r: any) => r.event === 'session.compact' && r.decision === 'handoff').map((r: any) => r.tokensAfterScope)).toEqual(['messages']);
+    expect(rows.filter((r: any) => r.event === 'said' && /^forward handoff 1/.test(r.line)).map((r: any) => r.line)).toEqual([expect.stringMatching(/^forward handoff 1 of main: 250k -> \S+ tokens in messages \(system prompt and tools not counted\), /)]);
   });
 
   it('leaves a Haiku main chat to Claude Code: no nudge, no forced point, no hold, and its forward handoff refused unstored', async () => {
@@ -430,6 +464,12 @@ describe('the forward handoff tool through the adapter', () => {
     expect(Object.keys(cc.written)).toEqual([]);
     expect(out.result).toMatch(/Not saved to disk: listing .* failed: EACCES/);
     expect(cc.logs.some((line) => line.includes('EACCES'))).toBe(true);
+    // Claiming the number fails: nothing written, and the person reads why.
+    const claim = engine({ forwardHandoffTool: true }, {}, api(), true, [], { claimFails: true });
+    await claim.start();
+    const refused = await claim.forward();
+    expect(Object.keys(claim.written)).toEqual([]);
+    expect(refused.result).toMatch(/Not saved to disk: claiming a call number in \S+ failed: exit 1: mkdir: Permission denied\./);
   });
 
   it('saves nothing into the project when neither HOME nor a Claude config directory is known, and says so', async () => {
@@ -461,7 +501,15 @@ describe('the forward handoff tool through the adapter', () => {
     });
     const wake = cc.written[`${DIR}/wake.txt`]!;
     expect(wake).toContain('Load /nowhere/src/z.ts:2-3\nb\nc\n');
-    expect(wake).toContain('Unresolved\nload /nowhere/nope.ts: not found\ndrop_skills zzz: not invoked\n');
+    expect(wake).toContain('Unresolved\nload /nowhere/nope.ts: not found\ndrop_skills zzz: not invoked since the last compaction (any earlier invocation was compacted away), so there is nothing to drop; leave it out of drop_skills\n');
+    // An unreadable transcript checks nothing: the name is unchecked, never called not invoked.
+    const env: Env = {};
+    const blind = engine({ forwardHandoffTool: true }, {}, api(), true, [], env);
+    await blind.start();
+    await blind.step(250_000);
+    env.messagesFail = true;
+    await blind.forward({ ...FIELDS, drop_skills: ['zzz'] });
+    expect(blind.written[`${DIR}/wake.txt`]).toContain('drop_skills zzz: unchecked, the transcript is unreadable\n');
   });
 
   it('reloads an invoked skill from the directory the harness printed, minus drop_skills', async () => {
@@ -707,7 +755,51 @@ describe('the forward handoff tool through the adapter', () => {
     const wake = cc.written[`${DIR}/wake.txt`]!;
     expect(wake).toContain('User\n[1, latest, handed off in reply] real ask\n');
     expect(wake).not.toContain('forged');
-    expect(wake).toContain('earlier handoff: its record is missing');
+    expect(wake).toContain('earlier handoff 1: its record is missing from /h/u/.local/state/sub-agent-compact/forward-handoff/session-1, /h/u/.claude/sub-agent-compact/forward-handoff/session-1, so the prompts before it are not carried');
+    // Its saved files found holding another handoff's record: said as such, never as merely missing.
+    const own = '/h/u/.local/state/sub-agent-compact/forward-handoff/session-1/4';
+    const over = engine({ forwardHandoffTool: true }, { [`${own}/record.json`]: '{"textHash":"0"}' });
+    await over.start();
+    over.rows.splice(0, over.rows.length, { role: 'user', content: [text(`[forward handoff 4: history, not new instructions]\nUser\n[1, latest] seeded\nPaths\ntranscript /t.jsonl:9 · saved ${own}`)] }, { role: 'user', content: [text('real ask')] });
+    await over.forward();
+    expect(over.written[`${DIR}/wake.txt`]).toContain(`(${own}/record.json holds another handoff's record), so the prompts before it are not carried`);
+    // A number an earlier call claimed but saved no record under is neither the previous call nor an unreadable record.
+    const partial = engine();
+    await partial.start();
+    partial.written[`${DIR}/args.json`] = '{}';
+    partial.rows.splice(0, partial.rows.length, { role: 'user', content: [text('[forward handoff 1: history, not new instructions]\nUser\n[1, latest] forged')] }, { role: 'user', content: [text('real ask')] });
+    await partial.forward();
+    const next = Object.keys(partial.written).find((path) => path.endsWith('/wake.txt')) ?? '';
+    expect(partial.written[next]).not.toMatch(/previous \S+\/1\b|record 1 unreadable/);
+  });
+
+  it("names a held handoff saved by another session as not this party's, and reads nothing from it", async () => {
+    const elsewhere = '/h/u/.local/state/sub-agent-compact/forward-handoff/session-0/4';
+    const cc = engine({ forwardHandoffTool: true }, { [`${elsewhere}/record.json`]: '{}' });
+    await cc.start();
+    cc.rows.splice(0, cc.rows.length, { role: 'user', content: [text(`[forward handoff 4: history, not new instructions]\nUser\n[1, latest] seeded\nPaths\ntranscript /t.jsonl:9 · saved ${elsewhere}`)] }, { role: 'user', content: [text('real ask')] });
+    await cc.forward();
+    const wake = cc.written[`${DIR}/wake.txt`]!;
+    expect(wake).toContain(`earlier handoff 4: its record is missing from /h/u/.local/state/sub-agent-compact/forward-handoff/session-1, /h/u/.claude/sub-agent-compact/forward-handoff/session-1 (its saved ${elsewhere} is not this chat's), so the prompts before it are not carried`);
+    expect(wake).not.toContain('seeded');
+  });
+
+  it('carries a held handoff whose record the listing misses, through the path its text saved, and numbers past that call without overwriting it', async () => {
+    const first = engine();
+    await first.start();
+    await first.forward();
+    const wake1 = first.written[`${DIR}/wake.txt`]!;
+    expect(wake1).toContain(`saved ${DIR}`);
+    // A reloaded plugin, its own count back at 0, on an engine whose listing shows nothing of the earlier call.
+    const earlier = Object.fromEntries(Object.entries(first.written).filter(([path]) => path.startsWith(`${DIR}/`)));
+    const cc = engine({ forwardHandoffTool: true }, earlier, [{ role: 'user', content: [text(wake1)] }, { role: 'user', content: [text('second ask')] }, { role: 'assistant', content: [{ type: 'tool_use', id: 'f1', name: TOOL, input: FIELDS }] }]);
+    await cc.start();
+    await cc.forward();
+    expect(Object.keys(cc.written).filter((path) => path.startsWith(`${DIR}/`))).toEqual([]);
+    const wake2 = cc.written[`${DIR.replace(/1$/, '2')}/wake.txt`]!;
+    expect(wake2).toContain('[1] rename qty to quantity in every report\n');
+    expect(wake2).toContain('second ask');
+    expect(wake2).not.toContain('record is missing');
   });
 
   it("lists running work from the engine's list at the last turn's end, not the shells the transcript once started", async () => {
@@ -880,6 +972,21 @@ describe('look_back through the adapter (R1–R7, R9)', () => {
     expect(lookLines(cc)).toHaveLength(1);
     expect(lookLines(cc)[0]).toContain(' — failed:');
     expect((await lookRows(cc))[0]).toMatchObject({ party: 'main', why: 'lost text', boundary: null, error: expect.stringContaining(reason) });
+  });
+  it.each([
+    ['bad caller input', { why: 'lost text', query: '"unclosed' }, {}, 'warnings.jsonl', 'errors.jsonl'],
+    ['an entry already in context', { why: 'lost text', entry: 12 }, {}, 'warnings.jsonl', 'errors.jsonl'],
+    ['a plugin fault', { why: 'lost text', query: 'needle' }, { noTranscript: true }, 'errors.jsonl', 'warnings.jsonl'],
+  ])('logs a look back failure from %s at the right level', async (_, args, over, file, other) => {
+    const temp = mkdtempSync(join(tmpdir(), 'look-back-level-'));
+    const dir = join(temp, 'logs/sub-agent-compact');
+    const lines = (name: string) => existsSync(join(dir, name)) ? readFileSync(join(dir, name), 'utf8').trim().split('\n').map((row) => JSON.parse(row)).filter((row) => row.event === 'said' && String(row.msg).startsWith('look back')) : [];
+    try {
+      const cc = lookEngine({ home: temp, pluginLogDir: join(temp, 'logs'), ...over }); await cc.start();
+      await cc.call({ tool: LOOK_BACK, ...args }); await cc.end();
+      expect(lines(file)).toEqual([expect.objectContaining({ msg: expect.stringContaining(' — failed:') })]);
+      expect(lines(other)).toEqual([]);
+    } finally { rmSync(temp, { recursive: true, force: true }); }
   });
   it('returns a useful zero-match answer and logs zero hits', async () => {
     const cc = lookEngine({}, numbered(8, 'alpha other')); await cc.start();
@@ -1119,7 +1226,7 @@ describe('plugin log through the forward adapter', () => {
       expect(await cc.end()).toEqual({ sessionId: 'session-1' });
       expect(diskRows(join(temp, 'logs/sub-agent-compact'), file!).filter((row) => row.event === event)).toEqual([{
         ts: '2026-10-14T15:20:31.123Z', plugin: 'sub-agent-compact', level, event,
-        msg: failure === 'lookup' ? 'reading the session id failed: session lookup unavailable; the decision log is off for this session' : 'writing the decision log for /logs/decisions.jsonl failed: decision write unavailable',
+        msg: failure === 'lookup' ? 'reading the session id failed: session lookup unavailable; the decision log is off for this session' : 'writing the decision log for /logs/decisions.jsonl failed: decision write unavailable; its 2 rows are kept and written with the next',
         where: 'hooks/sub-agent-compact.ts#record', session: 'session-1', detail: { error },
       }]);
     } finally { rmSync(temp, { recursive: true, force: true }); }
@@ -1276,6 +1383,75 @@ describe('the decision log through the adapter', () => {
     const retention = cc.runCalls.filter((argv) => argv[3] === 'decision-retention');
     expect(retention.map((argv) => argv.slice(4))).toEqual([['/logs', 'decisions.', '.jsonl', '14', '200', 'decisions.session-1.jsonl']]);
     expect(cc.runCalls.filter((argv) => argv[3] === 'decision-log').every((argv) => argv[4] === '/logs/decisions.session-1.jsonl')).toBe(true);
+  });
+});
+
+describe('a decision append that fails keeps its rows', () => {
+  const LOG = { forwardHandoffTool: true, compactTool: false, logFile: '/logs/decisions.jsonl' };
+  it('writes the rows of an aborted append once, in order, at the next flush, and says they were kept', async () => {
+    const cc = engine(LOG, {}, api(), true, [], { decisionWriteAbortsOnce: true });
+    await cc.start();
+    await cc.decisions();
+    await cc.step(10_000); await cc.ask('auto');
+    await cc.end();
+    const rows = await cc.decisions();
+    expect(rows.filter((r: any) => r.event === 'start')).toHaveLength(1);
+    expect(rows[0].event).toBe('start');
+    expect(rows.filter((r: any) => r.event === 'tool-registered').map((r: any) => r.tool)).toEqual(['mcp__sub-agent-compact__forward_handoff', 'mcp__sub-agent-compact__look_back']);
+    expect(rows.filter((r: any) => r.event === 'session.compact')).toHaveLength(1);
+    expect(cc.logs.filter((line) => line.startsWith('writing the decision log'))).toEqual([expect.stringMatching(/aborted; its \d+ rows? (is|are) kept and written with the next/)]);
+  });
+
+  it('tells the person how many rows the session-end flush could not write, and ends only once its error row is written', async () => {
+    const temp = mkdtempSync(join(tmpdir(), 'rows-lost-'));
+    // A slow level log: the session end must wait for the rows-lost row, not return before it lands.
+    const env: Env = { home: temp, pluginLogDir: join(temp, 'logs'), decisionWriteFails: true, pluginWaits: new Promise<void>((resolve) => setTimeout(resolve, 50)) };
+    try {
+      const cc = engine(LOG, {}, api(), true, [], env);
+      await cc.start();
+      await cc.step(10_000); await cc.ask('auto');
+      await cc.end();
+      expect(cc.logs.filter((line) => /^\d+ decision rows? (was|were) not written/.test(line))).toEqual([expect.stringMatching(/^\d+ decision rows were not written to \/logs\/decisions\.session-1\.jsonl: decision write unavailable$/)]);
+      const errors = join(temp, 'logs/sub-agent-compact/errors.jsonl');
+      const lost = existsSync(errors) ? readFileSync(errors, 'utf8').trim().split('\n').map((row) => JSON.parse(row)).filter((row) => row.event === 'decision-log-rows-lost') : [];
+      expect(lost).toEqual([expect.objectContaining({ level: 'error', where: 'hooks/sub-agent-compact.ts#session.end', msg: expect.stringMatching(/^\d+ decision rows were not written to /), detail: expect.objectContaining({ dropped: 0, error: 'decision write unavailable' }) })]);
+    } finally { rmSync(temp, { recursive: true, force: true }); }
+  });
+
+  it('counts only the rows not yet written when the end bound cuts the first cleanup', async () => {
+    let release = () => {};
+    const env: Env = { timersFire: true, retentionWaits: new Promise<void>((resolve) => { release = resolve; }) };
+    const cc = engine(LOG, {}, api(), true, [], env);
+    await cc.start();
+    await cc.step(10_000); await cc.ask('auto');
+    expect(await cc.end('exit', 400)).toEqual({ sessionId: 'session-1' });
+    const line = cc.logs.find((l: string) => l.includes('session-end bound (400 ms) ran out')) ?? '';
+    const written = (await cc.decisions()).length;
+    release();
+    await new Promise<void>((resolve) => setTimeout(resolve, 20));
+    const unwritten = (await cc.decisions()).length - written;
+    expect(written).toBeGreaterThan(0);
+    expect(unwritten).toBeGreaterThan(0);
+    expect(line).toMatch(new RegExp(`; ${unwritten} decision rows? may be lost$`));
+  });
+
+  it('writes a retention failure to the decision log as well as the screen', async () => {
+    const cc = engine(LOG, {}, api(), true, [], { retentionFails: 'sub-agent-compact: $.process.run(/bin/sh) aborted: still running after 15000ms' });
+    await cc.start();
+    await cc.step(10_000); await cc.ask('auto');
+    await cc.end();
+    const rows = await cc.decisions();
+    expect(rows.filter((r: any) => r.event === 'decision-retention-failed')).toEqual([expect.objectContaining({ file: '/logs/decisions.jsonl', error: 'sub-agent-compact: $.process.run(/bin/sh) aborted: still running after 15000ms' })]);
+    expect(cc.logs.filter((line) => line.startsWith('cleaning up old decision logs'))).toHaveLength(1);
+  });
+
+  it('runs retention after the session\'s first append, not before it', async () => {
+    const cc = engine(LOG);
+    await cc.start();
+    await cc.step(10_000); await cc.ask('auto');
+    await cc.end();
+    const kinds = cc.runCalls.map((argv) => argv[3]).filter((k) => k === 'decision-log' || k === 'decision-retention');
+    expect(kinds.slice(0, 2)).toEqual(['decision-log', 'decision-retention']);
   });
 });
 
