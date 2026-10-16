@@ -4,8 +4,11 @@ Every release of sub-agent-compact. Versions follow [semantic versioning](https:
 
 ## [Unreleased]
 
+## [0.8.0-dev.2] — 2026-10-16
+
 ### Fixed
 
+- A log or lock directory that cannot be created names its path on stderr, so the error is useful where `mkdir` omits the path (uutils coreutils prints only `Permission denied`).
 - A decision-log append that fails, such as one an interrupt aborts, keeps its rows for the next write instead of dropping them; rows still unwritten at session end, and any the 2,000-row hold let go, are counted on screen and as a `decision-log-rows-lost` error row.
 - Cleaning up old decision logs runs one `find` instead of one per file (past 15 s under load at 200 files), after the session's first rows are written; its failure is also a `decision-retention-failed` decision row.
 - A tool registration past 5s says it goes on, and its late finish is a `tools-late` row naming the tools and the wait.

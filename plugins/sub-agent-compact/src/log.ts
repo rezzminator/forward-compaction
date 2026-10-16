@@ -55,7 +55,7 @@ lock() {
   lk_stage="$lk_lock.$$"
   while :; do
     rm -rf "$lk_stage"
-    mkdir "$lk_stage"
+    mkdir "$lk_stage" || fail "$lk_stage" 'cannot create the lock directory'
     printf '%s\\n' "$lk_token" > "$lk_stage/pid"
     if [ ! -e "$lk_lock" ] && mv "$lk_stage" "$lk_lock" 2>/dev/null && [ "$(cat "$lk_lock/pid" 2>/dev/null)" = "$lk_token" ]; then break; fi
     # mv onto a lock that appeared meanwhile moves the stage into it.
@@ -82,7 +82,7 @@ ${LOCK_FN}
 case $path in /*) ;; *) path=./$path;; esac
 dir=\${path%/*}
 [ -n "$dir" ] || dir=/
-mkdir -p "$dir"
+mkdir -p "$dir" || fail "$dir" 'cannot create the log directory'
 lock "$path.lock"
 if [ -f "$path" ]; then
   bytes=$(wc -c < "$path")
@@ -307,7 +307,7 @@ dir=$1; plugin=$2; shift 2
 fail() { printf '%s: %s\\n' "$1" "$2" >&2; exit 1; }
 # No operand starts with '-': a relative directory is passed as ./dir, so no command reads it as an option.
 case $dir in /*) ;; *) dir=./$dir;; esac
-mkdir -p "$dir"
+mkdir -p "$dir" || fail "$dir" 'cannot create the log directory'
 ${LOCK_FN}
 # Cap, rotation and append happen under one lock: two writers never both move a full file aside.
 lock "$dir/.lock"
