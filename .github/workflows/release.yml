@@ -16,6 +16,11 @@ jobs:
           fetch-depth: 0
       - name: The tag sits on main
         run: git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
       - name: The tag matches the manifest and CHANGELOG
         run: |
           v="${GITHUB_REF_NAME#sub-agent-compact--v}"

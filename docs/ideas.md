@@ -84,7 +84,6 @@ one engine behaviour the types leave open, so each starts with a probe.
 
 ## For the test suite
 
-12. **Mutation audit of the bites.** A scheduled StrykerJS run over the diff
-    only, never a gate, checks that each test still turns red when the code
-    it guards breaks. It comes after the integration suite closes (the
-    suite design's ruling 4).
+12. **Mutation audit.** A scheduled StrykerJS run over the diff only, never
+    a gate, checks that each test still turns red when the code it guards
+    breaks.

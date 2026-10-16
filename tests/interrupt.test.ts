@@ -19,12 +19,13 @@ function engine() {
       compact: async () => ({ skip: 'not in this test' }),
     },
     env: { get: async (name: string) => (name === 'CLAUDE_CODE_AUTO_COMPACT_WINDOW' ? '100000' : undefined) },
+    settings: { read: async () => ({}) },
     fs: { exists: async () => false, read: async () => '', write: async () => {}, list: async () => [] },
     ui: { log: () => {} },
     agent: { list: async () => [] },
     tool: { register: async (spec: { name: string }) => ({ tool: `mcp__sub-agent-compact__${spec.name}` }) },
   };
-  register(on as never, { compactTool: true } as never);
+  register(on as never, {} as never);
 
   /** One dispatch of `event`; with no hook for it, the engine's own `impl` answers, as core would. */
   const dispatch = (event: string, e: unknown, impl: (e: any) => Promise<unknown>, signal = new AbortController().signal) => {

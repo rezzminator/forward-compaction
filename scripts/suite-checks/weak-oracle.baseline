@@ -1,2 +1,0 @@
-# ceiling 2026-09-25 1
-falls back on a bad value and names it, never silently	expect(options.errors).toHaveLength(3);

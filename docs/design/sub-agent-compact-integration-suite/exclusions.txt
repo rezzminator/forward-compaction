@@ -1,7 +1,0 @@
-# glob	tag
-docs/*	hash
-docs/*	scope
-scripts/suite-checks/corpus/*	scope
-tests/fixtures/synthetic-log/*	scope
-node_modules/*	scope
-types/claude-code.d.ts	scope

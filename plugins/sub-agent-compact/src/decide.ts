@@ -17,10 +17,14 @@ export type DecideInput = {
   armed?: string;
   /** True for an engine loop missing from `$.agent.list()`: no policy governs it. */
   unlisted?: boolean;
+  /** True for a Haiku loop: Claude Code asks it at its own point, whatever the plugin's limit. */
+  haiku?: boolean;
+  /** True for an automatic ask with no response since the party's last automatic ask was held: the request after it got none, as a prompt too long gets none. */
+  unanswered?: boolean;
 };
 
 export type Decision =
-  | { action: 'pass'; why: 'requested' | 'self' | 'at-limit' | 'no-reading' | 'unlisted' }
+  | { action: 'pass'; why: 'requested' | 'self' | 'at-limit' | 'no-reading' | 'unlisted' | 'haiku' | 'unanswered' }
   | { action: 'skip'; reason: string };
 
 /**
@@ -30,16 +34,29 @@ export type Decision =
  * the party is below its limit. A party with no count at all (neither a usage
  * reading nor a transcript estimate) is never held while enabled, and
  * an engine loop the session does not list (a fork of its own) is never held.
+ * An ask that follows a held one with no response between passes: the
+ * request the hold let through got no answer, so holding again would leave
+ * the party with a prompt too long and no way back.
  */
-export function decide({ trigger, label, limit, tokens, enabled = true, armed, unlisted = false }: DecideInput): Decision {
+export function decide({ trigger, label, limit, tokens, enabled = true, armed, unlisted = false, haiku = false, unanswered = false }: DecideInput): Decision {
   if (trigger === 'manual' || trigger === 'plugin') return { action: 'pass', why: 'requested' };
   if (unlisted) return { action: 'pass', why: 'unlisted' };
+  // Claude Code asks a Haiku loop near 51k whatever the plugin's limit; holding that ask would run it into its window.
+  if (haiku) return { action: 'pass', why: 'haiku' };
   if (armed !== undefined) return { action: 'pass', why: 'self' };
   if (!enabled) return { action: 'skip', reason: `${label}: auto-compact off` };
+  if (unanswered) return { action: 'pass', why: 'unanswered' };
   if (tokens === undefined || !Number.isFinite(tokens)) return { action: 'pass', why: 'no-reading' };
   if (tokens >= limit) return { action: 'pass', why: 'at-limit' };
   // Claude Code draws this reason as a notice on every hold ("not compacted · main 311k/600k"), so it stays short.
   return { action: 'skip', reason: `${label} ${k(tokens)}/${k(limit)}` };
+}
+
+const TRIGGERS: readonly Trigger[] = ['auto', 'manual', 'plugin', 'precompute'];
+
+/** The trigger when the plugin knows it; undefined for any other value a newer Claude Code may send. */
+export function knownTrigger(trigger: unknown): Trigger | undefined {
+  return TRIGGERS.find((known) => known === trigger);
 }
 
 /** The context a response was answered over: uncached input plus cache reads and writes. */

@@ -1,5 +1,0 @@
-timestamp
-session-id
-agent-id
-compaction-duration
-token-count-overshoot

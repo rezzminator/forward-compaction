@@ -21,6 +21,7 @@ function engine() {
       usage: async () => ({ context: { tokens: 50_000, window: 200_000 } }),
     },
     env: { get: async () => undefined },
+    settings: { read: async () => ({}) },
     fs: { exists: async () => false, read: async () => '', write: async () => {}, list: async () => [] },
     ui: { log: (line: string) => void logs.push(line) },
     agent: { list: async () => [] },

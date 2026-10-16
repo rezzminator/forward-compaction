@@ -2,7 +2,15 @@ import { describe, expect, it } from 'vitest';
 import { BRIEF_MARKER, BRIEF_MAX_TOKENS, seatedBrief, type BriefMessage } from '../plugins/sub-agent-compact/src/brief.ts';
 import {
   CONTINUE_AFTER_HANDOFF,
-  HANDOFF_INPUT_DESCRIPTION,
+  HANDOFF_INPUT_SCHEMA,
+  HANDOFF_MAX_CHARS,
+  HANDOFF_STORED_PREFIX,
+  handoffInputOf,
+  handoffNotice,
+  installLine,
+  parseHandoff,
+  recoverHandoff,
+  transcriptShapeProblem,
   HANDOFF_MIN_CHARS,
   HANDOFF_OPENING,
   HANDOFF_TOOL_DESCRIPTION,
@@ -11,6 +19,7 @@ import {
   handoffMarkerRequest,
   handoffNudgeText,
   handoffProblem,
+  isHarnessText,
   handoffRefusal,
   handoffStopRequest,
   handoffStoredText,
@@ -42,24 +51,37 @@ const handoffUse = (id = 'h1', text = HANDOFF): Use => ({ tool_use_id: id, tool:
 const read = (id: string, path: string): Use => ({ tool_use_id: id, tool: 'Read', input: { file_path: path } });
 
 describe('resolveOptions: the two tool flags', () => {
+  const COMPACT = 'SUB_AGENT_COMPACT_COMPACT_TOOL';
+  const HANDOFF = 'SUB_AGENT_COMPACT_HANDOFF_TOOL';
   it('turns the compact tool on and the handoff tool off by default', () => {
-    const options = resolveOptions({});
+    const options = resolveOptions();
     expect(options.compactTool).toBe(true);
     expect(options.handoffTool).toBe(false);
   });
 
-  it('reads both as on/off values', () => {
-    const options = resolveOptions({ compactTool: 'off', handoffTool: true });
+  it('reads both as 1/0 or true/false', () => {
+    const options = resolveOptions({ vars: { [COMPACT]: '0', [HANDOFF]: 'true' } });
     expect(options.compactTool).toBe(false);
     expect(options.handoffTool).toBe(true);
   });
 
   it('names a bad value and keeps the default', () => {
-    const options = resolveOptions({ compactTool: 'sometimes', handoffTool: 7 });
+    const options = resolveOptions({ vars: { [COMPACT]: 'sometimes', [HANDOFF]: '7' } });
     expect(options.compactTool).toBe(true);
     expect(options.handoffTool).toBe(false);
-    expect(options.errors.some((line) => line.includes('compactTool'))).toBe(true);
-    expect(options.errors.some((line) => line.includes('handoffTool'))).toBe(true);
+    expect(options.errors.some((line) => line.includes(COMPACT))).toBe(true);
+    expect(options.errors.some((line) => line.includes(HANDOFF))).toBe(true);
+  });
+});
+
+describe('resolveOptions: the forward handoff variable', () => {
+  const FORWARD = 'SUB_AGENT_COMPACT_FORWARD_HANDOFF_TOOL';
+  it('is off by default, reads 1/0, and names a bad value keeping the default', () => {
+    expect(resolveOptions().forwardHandoffTool).toBe(false);
+    expect(resolveOptions({ vars: { [FORWARD]: '1' } }).forwardHandoffTool).toBe(true);
+    const bad = resolveOptions({ vars: { [FORWARD]: '7' } });
+    expect(bad.forwardHandoffTool).toBe(false);
+    expect(bad.errors.some((line) => line.includes(FORWARD))).toBe(true);
   });
 });
 
@@ -97,8 +119,8 @@ describe('the handoff tool teaches what to pass', () => {
   });
 
   it('lists what goes in: fixed values, evidence, the facts with their anchors, decisions, what is left, the next step', () => {
-    for (const part of [/fixed/, /evidence/, /file:line/, /rejected/, /in flight/, /next step/]) expect(HANDOFF_TOOL_DESCRIPTION).toMatch(part);
-    expect(HANDOFF_INPUT_DESCRIPTION).toMatch(/only memory/);
+    for (const part of [/only memory|whole memory|all you will have/, /next_step/, /goal/]) expect(HANDOFF_TOOL_DESCRIPTION).toMatch(part);
+    expect(HANDOFF_INPUT_SCHEMA.properties.goal?.description).toMatch(/verbatim/);
   });
 
   it('says when not to call it', () => {
@@ -210,6 +232,29 @@ describe('installHandoff', () => {
     expect(only!.text.startsWith(HANDOFF_OPENING)).toBe(true);
     expect(only!.text).toContain(HANDOFF);
     expect(out!.tail).toBe(0);
+  });
+
+  it('installs the text as the whole message when the caller frames it itself', () => {
+    const out = installHandoff(history(), { text: 'WAKE TEXT', anchor: { toolUseId: 'h1' }, frame: (text) => text })!;
+    expect(out.messages).toHaveLength(1);
+    expect(out.messages[0]!.text).toBe('WAKE TEXT');
+  });
+
+  it('keeps the results of calls made beside a self-framed handoff in a message of their own before its text, the text untouched', () => {
+    const input = [
+      user('task', 'm0'),
+      say('', 'm1', [handoffUse(), read('r9', 'reports/z.sql')]),
+      results('m2', ['h1', 'Handoff stored.'], ['r9', 'SELECT zebra FROM ledger']),
+    ];
+    const out = installHandoff(input, { text: 'WAKE TEXT', anchor: { toolUseId: 'h1' }, frame: (text) => text })!;
+    expect(out.siblings).toBe(1);
+    expect(out.messages).toHaveLength(2);
+    expect(out.messages[0]!.role).toBe('user');
+    expect(out.messages[0]!.text.startsWith(HANDOFF_OPENING)).toBe(true);
+    expect(out.messages[0]!.text).toContain('SELECT zebra FROM ledger');
+    expect(out.messages[0]!.text).toContain('reports/z.sql');
+    expect(out.messages[0]!.text).not.toContain('Handoff stored.');
+    expect(out.messages[1]!.text).toBe('WAKE TEXT');
   });
 
   it('keeps every message after the call, whole, with its handle', () => {
@@ -332,5 +377,255 @@ describe('Parties: handoffs', () => {
     parties.compacted('main', 3_000);
     parties.read('main', 44_000);
     expect(parties.firstReading('main')).toBe(41_000);
+  });
+});
+
+// ---- the typed handoff ----
+
+const GOAL = 'Rename the ledger column qty to quantity in every report (person, verbatim).';
+const NEXT = 'Edit reports/c.sql:12, then run npm test.';
+const mustFail = (input: Record<string, unknown>): string => {
+  const parsed = parseHandoff(input);
+  if (!('problem' in parsed)) throw new Error(`expected a problem, got a handoff: ${parsed.text}`);
+  return parsed.problem;
+};
+
+describe('parseHandoff', () => {
+  it('renders the two required fields alone, goal first and next step last', () => {
+    expect(parseHandoff({ goal: GOAL, next_step: NEXT })).toEqual({ text: `**Goal**\n${GOAL}\n\n**Next step**\n${NEXT}`, loads: [] });
+  });
+
+  it('renders every filled field in a fixed order and omits the empty ones', () => {
+    const parsed = parseHandoff({
+      goal: GOAL,
+      next_step: NEXT,
+      standing_rules: ['no push'],
+      done_verified: ['a.sql, b.sql: npm test 41/41'],
+      decisions: ['keep the alias: other reports read qty'],
+      dead_ends: ['sed across files: breaks c.sql'],
+      files: ['reports/c.sql:12'],
+      in_flight: ['nothing running'],
+      notes: 'free text',
+      load_on_wake: [],
+    });
+    if (!('text' in parsed)) throw new Error(parsed.problem);
+    const labels = ['**Goal**', '**Standing rules**', '**Done (verified)**', '**Decisions**', '**Dead ends (do not retry)**', '**Files**', '**In flight**', '**Notes**', '**Next step**'];
+    const at = labels.map((l) => parsed.text.indexOf(l));
+    expect(at.every((i) => i >= 0)).toBe(true);
+    expect([...at].sort((a, b) => a - b)).toEqual(at);
+    expect(parsed.text).toContain('**Files**\n- reports/c.sql:12');
+    const bare = parseHandoff({ goal: GOAL, next_step: NEXT, done_verified: [], decisions: '', files: ['  '], notes: '   ' });
+    if (!('text' in bare)) throw new Error(bare.problem);
+    expect(bare.text).toBe(`**Goal**\n${GOAL}\n\n**Next step**\n${NEXT}`);
+  });
+
+  it('adds little around the content: a full handoff is its words plus at most 200 characters of labels', () => {
+    const fields = { goal: GOAL, next_step: NEXT, standing_rules: ['r1'], done_verified: ['d1'], decisions: ['x1'], dead_ends: ['e1'], files: ['f1'], in_flight: ['i1'], notes: 'n1' };
+    const parsed = parseHandoff(fields);
+    if (!('text' in parsed)) throw new Error(parsed.problem);
+    const content = Object.values(fields).flat().join('').length;
+    expect(parsed.text.length - content).toBeLessThanOrEqual(200);
+  });
+
+  it('names every missing or short required field at once', () => {
+    const problem = mustFail({});
+    expect(problem).toMatch(/^Not stored/);
+    expect(problem).toMatch(/`goal`/);
+    expect(problem).toMatch(/`next_step`/);
+    expect(mustFail({ goal: GOAL })).toMatch(/`next_step`.*required/);
+    expect(mustFail({ goal: 'rename it', next_step: NEXT })).toMatch(/`goal`.*characters/);
+  });
+
+  it('refuses a wrong type and an over-long field, naming the field and the limit', () => {
+    expect(mustFail({ goal: GOAL, next_step: NEXT, done_verified: 5 })).toMatch(/`done_verified`.*list/);
+    expect(mustFail({ goal: 'g'.repeat(3_001), next_step: NEXT })).toMatch(/`goal`.*3000/);
+    expect(mustFail({ goal: GOAL, next_step: 'n'.repeat(1_001) })).toMatch(/`next_step`.*1000/);
+    expect(mustFail({ goal: GOAL, next_step: NEXT, notes: 'n'.repeat(1_501) })).toMatch(/`notes`.*1500/);
+    expect(mustFail({ goal: GOAL, next_step: NEXT, files: Array.from({ length: 13 }, (_, i) => `f${i}`) })).toMatch(/`files`.*12/);
+    expect(mustFail({ goal: GOAL, next_step: NEXT, decisions: ['d'.repeat(501)] })).toMatch(/`decisions`.*500/);
+  });
+
+  it('refuses a total past the cap, with the size', () => {
+    const big = Array.from({ length: 12 }, () => 'x'.repeat(500));
+    const problem = mustFail({ goal: 'g'.repeat(3_000), next_step: NEXT, done_verified: big, decisions: big });
+    expect(problem).toMatch(new RegExp(`${HANDOFF_MAX_CHARS}`));
+  });
+
+  it('takes a list as newline-separated lines, dropping dashes', () => {
+    const parsed = parseHandoff({ goal: GOAL, next_step: NEXT, files: '- a.ts:1\n- b.ts:2\n\n' });
+    if (!('text' in parsed)) throw new Error(parsed.problem);
+    expect(parsed.text).toContain('**Files**\n- a.ts:1\n- b.ts:2\n');
+  });
+
+  it('still takes the free-text form of the earlier tool, validated as before', () => {
+    expect(parseHandoff({ handoff: `  ${HANDOFF}  ` })).toEqual({ text: HANDOFF, loads: [] });
+    expect(mustFail({ handoff: 'next: c.sql' })).toMatch(/^Not stored/);
+    expect(mustFail({ handoff: 'x'.repeat(HANDOFF_MAX_CHARS + 1) })).toMatch(new RegExp(`${HANDOFF_MAX_CHARS}`));
+  });
+
+  it('returns the names to load when the model woke, and refuses a bad name or too many', () => {
+    expect(parseHandoff({ goal: GOAL, next_step: NEXT, load_on_wake: ['/pfm-testing-manual', 'quality:prompt'] })).toMatchObject({ loads: ['pfm-testing-manual', 'quality:prompt'] });
+    expect(mustFail({ goal: GOAL, next_step: NEXT, load_on_wake: ['../etc/passwd'] })).toMatch(/`load_on_wake`.*\.\.\/etc\/passwd/);
+    // A colon becomes a path separator for commands: a segment that does not start alphanumeric could climb out.
+    expect(mustFail({ goal: GOAL, next_step: NEXT, load_on_wake: ['x:..:..:etc'] })).toMatch(/`load_on_wake`.*x:\.\.:\.\.:etc/);
+    expect(mustFail({ goal: GOAL, next_step: NEXT, load_on_wake: Array.from({ length: 9 }, (_, i) => `s${i}`) })).toMatch(/`load_on_wake`.*8/);
+  });
+});
+
+describe('the tool text stays no longer than the free-text tool it replaces', () => {
+  it('describes the tool and its fields in at most the 1568 characters of the earlier description and input text', () => {
+    const fields = Object.values(HANDOFF_INPUT_SCHEMA.properties).map((p) => p.description.length);
+    expect(Object.keys(HANDOFF_INPUT_SCHEMA.properties).sort()).toEqual(['decisions', 'dead_ends', 'done_verified', 'files', 'goal', 'in_flight', 'load_on_wake', 'next_step', 'notes', 'standing_rules'].sort());
+    expect(HANDOFF_INPUT_SCHEMA.required).toEqual(['goal', 'next_step']);
+    expect(HANDOFF_INPUT_SCHEMA.additionalProperties).toBe(false);
+    expect(HANDOFF_TOOL_DESCRIPTION.length + fields.reduce((a, b) => a + b, 0)).toBeLessThanOrEqual(1568);
+  });
+});
+
+describe('handoffInputOf', () => {
+  it('reads the fields from the event itself, or from its input when they are not at the top', () => {
+    expect(handoffInputOf({ tool: 't', goal: 'a', next_step: 'b', tool_use_id: 'h1' })).toMatchObject({ goal: 'a', next_step: 'b' });
+    expect(handoffInputOf({ tool: 't', input: { goal: 'a', next_step: 'b' } })).toEqual({ goal: 'a', next_step: 'b' });
+    expect(handoffInputOf({ tool: 't', handoff: 'x' })).toMatchObject({ handoff: 'x' });
+  });
+
+  it('keeps a key that is not a field, so the check names it rather than dropping it unseen', () => {
+    const input = handoffInputOf({ tool: 't', tool_use_id: 'h1', agentId: 'a1', goal: GOAL, next_step: NEXT, dead_end: ['x'] });
+    expect(input).toEqual({ goal: GOAL, next_step: NEXT, dead_end: ['x'] });
+    expect(mustFail(input)).toMatch(/`dead_end` is not a field/);
+  });
+});
+
+describe('recoverHandoff', () => {
+  const NAME = 'mcp__sub-agent-compact__handoff';
+  const stored = (id: string, input: Record<string, unknown>, result = 'Handoff stored (1k tokens). At your next ...'): Msg[] => [
+    say('', `a-${id}`, [{ tool_use_id: id, tool: NAME, input }]),
+    results(`r-${id}`, [id, result]),
+  ];
+  const typed = { goal: GOAL, next_step: NEXT };
+
+  it('finds the handoff the transcript shows stored, rendered, anchored on its call', () => {
+    const found = recoverHandoff([user('go', 'u0'), ...stored('h1', typed)], NAME);
+    expect(found).toEqual({ text: `**Goal**\n${GOAL}\n\n**Next step**\n${NEXT}`, anchor: { toolUseId: 'h1' }, loads: [] });
+  });
+
+  it('takes the last of two, and the free-text input of the earlier tool', () => {
+    expect(recoverHandoff([...stored('h1', typed), ...stored('h2', { handoff: HANDOFF })], NAME)).toMatchObject({ text: HANDOFF, anchor: { toolUseId: 'h2' } });
+  });
+
+  it('ignores a call whose result says it was not stored, a call without a result, another tool and an invalid input', () => {
+    expect(recoverHandoff(stored('h1', typed, 'Not stored: too early'), NAME)).toBeUndefined();
+    expect(recoverHandoff([say('', 'a', [{ tool_use_id: 'h1', tool: NAME, input: typed }])], NAME)).toBeUndefined();
+    expect(recoverHandoff(stored('h1', typed), 'mcp__other__handoff')).toBeUndefined();
+    expect(recoverHandoff(stored('h1', { goal: GOAL }), NAME)).toBeUndefined();
+  });
+
+  it('never falls back to an earlier handoff when the latest stored one no longer reads: the latest replaced it', () => {
+    expect(recoverHandoff([...stored('h1', typed), ...stored('h2', { handoff: 'x'.repeat(HANDOFF_MAX_CHARS + 1) })], NAME)).toBeUndefined();
+  });
+
+  it('reads the result from the call itself when the transcript records it there', () => {
+    const msgs: Msg[] = [say('', 'a', [{ tool_use_id: 'h1', tool: NAME, input: typed, text: `${HANDOFF_STORED_PREFIX} (1k tokens).` }])];
+    expect(recoverHandoff(msgs, NAME)).toMatchObject({ anchor: { toolUseId: 'h1' } });
+  });
+
+  it('leaves out a handoff the person spoke after: their message cancelled it', () => {
+    expect(recoverHandoff([...stored('h1', typed), user('stop, do something else', 'u2')], NAME)).toBeUndefined();
+    const carried: Msg = { ...results('r2', ['x', 'ok']), text: 'note delivered with the result' };
+    expect(recoverHandoff([...stored('h1', typed), say('', 'a2', [{ tool_use_id: 'x', tool: 'Read', input: {} }]), carried], NAME)).toMatchObject({ anchor: { toolUseId: 'h1' } });
+  });
+
+  it('keeps a handoff a task notification or a system reminder followed: the harness spoke, not the person; a person after it still cancels', () => {
+    const notice = user('<task-notification>\n<task-id>b1</task-id>\n<status>completed</status>\n</task-notification>', 'u2');
+    const reminder = user('<system-reminder>\nnote\n</system-reminder>', 'u3');
+    expect(recoverHandoff([...stored('h1', typed), notice, reminder], NAME)).toMatchObject({ anchor: { toolUseId: 'h1' } });
+    expect(recoverHandoff([...stored('h1', typed), notice, user('stop that', 'u4')], NAME)).toBeUndefined();
+    expect(recoverHandoff([...stored('h1', typed), user('stop that', 'u4'), notice], NAME)).toBeUndefined();
+    expect(recoverHandoff([...stored('h1', typed), user('[Request interrupted by user]', 'u5')], NAME)).toBeUndefined();
+  });
+});
+
+describe('isHarnessText', () => {
+  it.each([
+    ['a task notification', '<task-notification>\n<task-id>b1</task-id>\n<status>completed</status>\n</task-notification>'],
+    ['a system reminder', '<system-reminder>\nThe task tools have not been used recently.\n</system-reminder>'],
+    ['two blocks and the space between them', '<task-notification>done</task-notification>\n\n<system-reminder>x</system-reminder>\n'],
+    ['local command output', '<local-command-stdout>Compacted</local-command-stdout>'],
+    ['the caveat line and its output', 'Caveat: The messages below were generated by the user while running local commands. DO NOT respond to these messages or otherwise consider them in your response unless the user explicitly asks you to.\n<local-command-stdout>ok</local-command-stdout>'],
+    ['a teammate message', '<teammate-message teammate_id="a">hi</teammate-message>'],
+    ['an installed handoff', `${HANDOFF_OPENING} Your context was reset. Below is the handoff you wrote.`],
+  ])('reads %s as the harness, not a person', (_name, text) => {
+    expect(isHarnessText(text)).toBe(true);
+  });
+
+  it.each([
+    ['plain words', 'stop, do something else'],
+    ['an interrupt', '[Request interrupted by user]'],
+    ['a block that never closes', '<task-notification>\n<task-id>b1</task-id>'],
+    ['words before a block', 'stop <system-reminder>x</system-reminder>'],
+    ['words after a block', '<task-notification>done</task-notification> and now stop everything'],
+    ['a block name the harness does not use', '<note>stop</note>'],
+    ['a handoff opening quoted mid-text', `please undo ${HANDOFF_OPENING}`],
+  ])('reads %s as a person', (_name, text) => {
+    expect(isHarnessText(text)).toBe(false);
+  });
+});
+
+describe('transcriptShapeProblem', () => {
+  it('passes a transcript in the shape installs read, and names the first thing wrong otherwise', () => {
+    expect(transcriptShapeProblem([user('a', 'u0'), say('b', 'a0', [])])).toBeUndefined();
+    expect(transcriptShapeProblem(undefined)).toMatch(/not a list/);
+    expect(transcriptShapeProblem([user('a', 'u0'), { role: 'assistant', text: 'x' }])).toMatch(/message 1.*toolUses/);
+    expect(transcriptShapeProblem([{ role: 'system', text: 'x', toolUses: [] }])).toMatch(/message 0.*role/);
+    expect(transcriptShapeProblem([{ role: 'user', text: 5, toolUses: [] }])).toMatch(/message 0.*text/);
+  });
+});
+
+describe('what the model reads about its handoff', () => {
+  it('opens every notice with the plugin name and carries the detail', () => {
+    for (const kind of ['recovered', 'skipped', 'fallback', 'manual', 'marker-stored', 'marker-refused', 'shape'] as const) {
+      expect(handoffNotice(kind, 'DETAIL')).toMatch(/^sub-agent-compact: /);
+    }
+    expect(handoffNotice('skipped', 'busy')).toMatch(/busy.*still stored|still stored.*busy/);
+    expect(handoffNotice('fallback', 'not anchored')).toMatch(/not anchored.*summary|summary.*not anchored/);
+    expect(handoffNotice('manual')).toMatch(/\/compact/);
+    expect(handoffNotice('recovered')).toMatch(/transcript/);
+    expect(handoffNotice('marker-refused', 'too short')).toMatch(/too short/);
+  });
+
+  it('says when a handoff installs: a sub-agent at Claude Code\'s ask, the main chat at the end of its turn', () => {
+    const sub = handoffStoredText({ chars: 4_000, main: false, askPoint: 67_000 });
+    expect(sub.startsWith(HANDOFF_STORED_PREFIX)).toBe(true);
+    expect(sub).toMatch(/about 67k/);
+    expect(sub).toMatch(/nothing is installed/);
+    expect(handoffStoredText({ chars: 4_000, main: false })).toMatch(/next compaction ask/);
+    expect(handoffStoredText({ chars: 4_000, main: true })).toMatch(/this turn ends/);
+  });
+
+  it('draws an install as sizes before and after, and warns when most of the context was kept', () => {
+    expect(installLine({ label: 'main', before: 250_000, after: 25_000, tail: 0, recovered: false })).toEqual({ line: 'sub-agent-compact: installed the handoff of main: 250k -> 25k tokens in messages (system prompt and tools not counted)', warn: false });
+    expect(installLine({ label: 'main', before: 250_000, after: 200_000, tail: 80, recovered: false }).warn).toBe(true);
+    expect(installLine({ label: 'a1', before: undefined, after: 20_000, tail: 0, recovered: true }).line).toMatch(/recovered/);
+  });
+
+  it('leaves out the tool name only for a sub-agent whose tool did not register, and says nothing to the main chat', () => {
+    const base = { tokens: 120_000, level: 0, autoCompact: 600_000, firstReading: 40_000 };
+    expect(handoffNudgeText({ ...base, main: true, toolName: undefined })).toBeUndefined();
+    const sub = handoffNudgeText({ ...base, main: false, toolName: undefined });
+    expect(sub).toMatch(/<handoff>/);
+    expect(sub).not.toMatch(/undefined|mcp__/);
+  });
+
+  it('is no longer than the nudge of the free-text tool it replaces', () => {
+    const base = { tokens: 120_000, level: 0, autoCompact: 600_000, toolName: 'mcp__sub-agent-compact__handoff', firstReading: 40_000 };
+    expect(handoffNudgeText({ ...base, main: true })!.length).toBeLessThanOrEqual(997);
+    expect(handoffNudgeText({ ...base, main: false })!.length).toBeLessThanOrEqual(1032);
+  });
+
+  it('teaches the typed fields and carrying an earlier handoff forward', () => {
+    const text = handoffNudgeText({ tokens: 120_000, level: 0, autoCompact: 600_000, main: true, toolName: 'mcp__sub-agent-compact__handoff', firstReading: undefined });
+    expect(text).toMatch(/next_step/);
+    expect(text).toMatch(/goal/);
+    expect(text).toMatch(/earlier handoff/);
   });
 });

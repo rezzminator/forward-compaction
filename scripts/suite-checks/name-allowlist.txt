@@ -1,1 +1,0 @@
-# segments of one or two letters plus digits the names check admits, one per line

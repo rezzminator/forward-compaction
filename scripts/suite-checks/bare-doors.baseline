@@ -1,2 +1,0 @@
-# ceiling 2026-09-25 1
-record	st.pending.push(JSON.stringify({ ts: new Date().toISOString(), ...row }));

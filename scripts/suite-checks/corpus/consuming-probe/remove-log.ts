@@ -1,1 +1,0 @@
-rmSync(logPath, { force: true });

@@ -1,1 +1,0 @@
-# third-party lint rules the suite relies on, one per line with its bite in bites.tsv; the project ships no linter today

@@ -1,7 +1,17 @@
 import { describe, expect, it } from 'vitest';
-import { Parties } from '../plugins/sub-agent-compact/src/parties.ts';
+import { isFirstRequest, Parties } from '../plugins/sub-agent-compact/src/parties.ts';
 
 describe('Parties', () => {
+  it('marks a held automatic ask unanswered until the party\'s next reading', () => {
+    const parties: any = new Parties();
+    parties.read('a', 150_000);
+    expect(parties.unanswered?.('a')).toBe(false);
+    parties.heldAsk?.('a');
+    expect(parties.unanswered?.('a')).toBe(true);
+    parties.read('a', 151_000);
+    expect(parties.unanswered?.('a')).toBe(false);
+  });
+
   it('owes each nudge level once, and none while armed', () => {
     const parties = new Parties();
     parties.read('a', 105_000);
@@ -49,5 +59,61 @@ describe('Parties', () => {
 
   it('reports nothing to disarm for a party that never armed', () => {
     expect(new Parties().disarm('main')).toBe(false);
+  });
+});
+
+describe('the first reading as a base for the size of a cut', () => {
+  it('is set only by a reading taken on the session\'s first request', () => {
+    const parties = new Parties();
+    parties.read('main', 208_000, false);
+    expect(parties.firstReading('main')).toBeUndefined();
+    parties.read('main', 40_000, true);
+    expect(parties.firstReading('main')).toBe(40_000);
+    parties.read('main', 90_000, true);
+    expect(parties.firstReading('main')).toBe(40_000);
+  });
+});
+
+describe('notices to a party\'s model', () => {
+  it('queue in order, are taken once, and survive a compaction', () => {
+    const parties = new Parties();
+    parties.notify('a1', 'first');
+    parties.notify('a1', 'second');
+    parties.notify('main', 'other');
+    parties.compacted('a1', 5_000);
+    expect(parties.takeNotices('a1')).toEqual(['first', 'second']);
+    expect(parties.takeNotices('a1')).toEqual([]);
+    expect(parties.takeNotices('main')).toEqual(['other']);
+  });
+
+  it('queue a line once while it waits unread, so two layers reporting the same skip show it once', () => {
+    const parties = new Parties();
+    parties.notify('main', 'skipped: busy');
+    parties.notify('main', 'skipped: busy');
+    expect(parties.takeNotices('main')).toEqual(['skipped: busy']);
+    parties.notify('main', 'skipped: busy');
+    expect(parties.takeNotices('main')).toEqual(['skipped: busy']);
+  });
+});
+
+describe('isFirstRequest', () => {
+  it('takes a sub-agent\'s step 0 of a turn that carries at most the prompt and its context lines', () => {
+    expect(isFirstRequest({ index: 0, messageCount: 1, main: false })).toBe(true);
+    expect(isFirstRequest({ index: 0, messageCount: 3, main: false })).toBe(true);
+    expect(isFirstRequest({ index: 0, messageCount: 4, main: false })).toBe(false);
+    expect(isFirstRequest({ index: 1, messageCount: 1, main: false })).toBe(false);
+    expect(isFirstRequest({ index: 0, main: false })).toBe(false);
+  });
+
+  it('takes the main chat\'s only when it is also the session\'s first prompt: after a reload, the step after a CLI compaction (summary and prompt, 2 messages) is not', () => {
+    expect(isFirstRequest({ index: 0, messageCount: 1, main: true, turns: 1 })).toBe(true);
+    expect(isFirstRequest({ index: 0, messageCount: 2, main: true, turns: 5 })).toBe(false);
+    expect(isFirstRequest({ index: 0, messageCount: 1, main: true, turns: 2 })).toBe(false);
+    expect(isFirstRequest({ index: 0, messageCount: 1, main: true, turns: 0 })).toBe(false);
+  });
+
+  it('is not first for the main chat when the prompt count is unknown, rather than guessing', () => {
+    expect(isFirstRequest({ index: 0, messageCount: 1, main: true })).toBe(false);
+    expect(isFirstRequest({ index: 0, messageCount: 1, main: true, turns: Number.NaN })).toBe(false);
   });
 });
