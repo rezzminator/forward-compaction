@@ -738,3 +738,24 @@ export function outline(path: string, text: string, max = OUTLINE_LINE_MAX): str
   }
   return body;
 }
+
+/**
+ * The skills and commands a handoff carries: those the earlier wake carried, oldest first, then those invoked since in
+ * last-use order (an invoked one moves after the carried and wins, so its newest directory is kept), once each, minus
+ * the names `drop_skills` lists.
+ */
+export function chainSkills(carried: readonly Invocation[] | undefined, invoked: readonly Invocation[], dropped: readonly string[]): Invocation[] {
+  const fresh = new Set(invoked.map((x) => x.name));
+  const gone = new Set(dropped);
+  return [...(carried ?? []).filter((x) => !fresh.has(x.name)), ...invoked].filter((x) => !gone.has(x.name));
+}
+
+/**
+ * The prompts written since the wake the context holds (userMessages after heldForward), for the early-wake ask.
+ * Undefined when it holds none: nothing is then "since the wake", and the whole context (a brief the plugin seated
+ * among it) is never read as the person's ask.
+ */
+export function promptsSinceWake(msgs: readonly ApiMsg[]): string[] | undefined {
+  const held = heldForward(msgs);
+  return held === undefined ? undefined : userMessages(msgs.slice(held.index + 1));
+}

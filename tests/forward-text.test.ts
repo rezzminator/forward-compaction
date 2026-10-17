@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { ForwardArgs } from '../plugins/sub-agent-compact/src/forward-args.ts';
-import { estimateTokens, fnv1a, FORWARD_OPENING, installCheck, LOAD_MAX_CHARS, LOADS_MAX_CHARS, chainUsers, escapeLine, renderForward, renderUsers, SKILL_MAX_CHARS, SKILLS_MAX_CHARS, TRAIL_MAX, USERS_MAX_CHARS, OUTLINES_MAX_CHARS, type RenderInput } from '../plugins/sub-agent-compact/src/forward-text.ts';
+import { estimateTokens, fnv1a, FORWARD_OPENING, GIT_CURRENT, installCheck, LOAD_MAX_CHARS, LOADS_MAX_CHARS, chainUsers, escapeLine, renderForward, renderUsers, SKILL_MAX_CHARS, SKILLS_MAX_CHARS, TRAIL_MAX, USERS_MAX_CHARS, OUTLINES_MAX_CHARS, type RenderInput } from '../plugins/sub-agent-compact/src/forward-text.ts';
 
 const args: ForwardArgs = { objective: 'Ship it', done: ['a (npm test 3/3)'], remaining: ['b', 'c'], next: 'run npm test', blocked: [], findings: [], loadFiles: [], dropSkills: [], trimmed: [] };
 const input = (over: Partial<RenderInput> = {}): RenderInput => ({ seq: 1, users: [], skills: [], trail: [], loaded: [], tasks: [], running: [], paths: [], problems: [], args, ...over });
@@ -315,5 +315,50 @@ describe('look_back forward wake hint (R8)', () => {
     expect(text.match(/look_back/g)).toHaveLength(1);
     expect(lines(text).slice(-2)).toEqual(['Next', 'run npm test']);
     expect(installCheck(blocks, text.replace(hint, ''), text).missing).toEqual(['Unresolved']);
+  });
+});
+
+describe('what the wake tells the model', () => {
+  const SHAPE = 'Call mcp__x__forward_handoff with an object: objective (string, at most 600 characters)';
+
+  it('says in the Git block that git was read at handoff time, right before this wake, so git status need not be run again', () => {
+    const { text, blocks } = renderForward(input({ git: 'main@abc1234, clean' }));
+    expect(text).toContain(`\nGit\nmain@abc1234, clean\n${GIT_CURRENT}\nUnresolved\n`);
+    expect(blocks.find((b) => b.name === 'Git')?.items).toBe(1);
+    expect(renderForward(input()).text).not.toContain('\nGit\n');
+  });
+
+  it('puts the call shape after the look_back hint in Unresolved, when it is given', () => {
+    const { text } = renderForward(input({ callShape: SHAPE }));
+    expect(text).toContain(`Unresolved\nNeed an exact detail from before this handoff? look_back finds it.\n${SHAPE}\nObjective\n`);
+    expect(renderForward(input()).text).not.toContain(SHAPE);
+  });
+
+  it('returns what the caller asked for and the text does not hold: load_files problems, skills with no body, the total-cap drops', () => {
+    const big = 'x'.repeat(LOAD_MAX_CHARS);
+    const loaded = [{ label: 'a.ts', body: big }, { label: 'b.ts', body: big }, { label: 'c.ts', body: big }, { label: 'd.ts', body: big }, { label: 'e.ts', body: 'late' }, { label: 'nope.ts', problem: 'not found' }];
+    const out = renderForward(input({ loaded, skills: [{ name: 'gone', problem: 'no file' }], problems: ['transcript: unreadable'] }));
+    expect(out.unloaded).toEqual(['skill gone: no file', 'load e.ts: not loaded, total cap', 'load nope.ts: not found']);
+    expect(renderForward(input()).unloaded).toEqual([]);
+  });
+
+  it('returns the skills whose block it holds, oldest first, without those the total cap dropped', () => {
+    const body = 'y'.repeat(SKILL_MAX_CHARS);
+    const many = Array.from({ length: SKILLS_MAX_CHARS / SKILL_MAX_CHARS + 1 }, (_, n) => ({ name: `s${n}`, body }));
+    const out = renderForward(input({ skills: [...many, { name: 'gone', problem: 'no file' }] }));
+    expect(out.skills).toEqual(many.slice(1).map((x) => x.name));
+    expect(out.unloaded).toEqual(['skill gone: no file', 'skill s0: dropped, total cap']);
+  });
+
+  it('names a skill whose body is blank as not in the wake, and leaves it out of the skills it holds', () => {
+    const out = renderForward(input({ skills: [{ name: 'bare', body: ' \n ' }, { name: 'real', body: 'do it' }] }));
+    expect(out.skills).toEqual(['real']);
+    expect(out.unloaded).toEqual(['skill bare: no content']);
+  });
+
+  it('counts the call shape among the items of Unresolved', () => {
+    const items = (over: Partial<RenderInput>) => renderForward(input(over)).blocks.find((b) => b.name === 'Unresolved')?.items;
+    expect(items({ callShape: SHAPE })).toBe(2);
+    expect(items({})).toBe(1);
   });
 });

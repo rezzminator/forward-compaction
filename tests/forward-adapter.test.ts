@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { register } from '../plugins/sub-agent-compact/hooks/sub-agent-compact.ts';
+import { GIT_CURRENT } from '../plugins/sub-agent-compact/src/forward-text.ts';
 import { optionVars } from './option-env.ts';
 
 // The forward handoff through the adapter: the tool collects what code carries, stores the text and
@@ -501,7 +502,7 @@ describe('the forward handoff tool through the adapter', () => {
     });
     const wake = cc.written[`${DIR}/wake.txt`]!;
     expect(wake).toContain('Load /nowhere/src/z.ts:2-3\nb\nc\n');
-    expect(wake).toContain('Unresolved\nload /nowhere/nope.ts: not found\ndrop_skills zzz: not invoked since the last compaction (any earlier invocation was compacted away), so there is nothing to drop; leave it out of drop_skills\n');
+    expect(wake).toContain('Unresolved\nload /nowhere/nope.ts: not found\ndrop_skills zzz: not among the skills the last wake carried or invoked since, so there is nothing to drop; leave it out of drop_skills\n');
     // An unreadable transcript checks nothing: the name is unchecked, never called not invoked.
     const env: Env = {};
     const blind = engine({ forwardHandoffTool: true }, {}, api(), true, [], env);
@@ -1143,7 +1144,8 @@ describe('the Git block describes the repositories the work touched', () => {
     await cc.forward();
     return cc.written[`${DIR}/wake.txt`]!;
   };
-  const gitBlockOf = (wake: string) => /\nGit\n((?:(?!Paths\n|Unresolved\n)[^\n]*\n)*)/.exec(wake)?.[1];
+  // The repositories' lines: the block closes on the line saying it was read at handoff time.
+  const gitBlockOf = (wake: string) => new RegExp(`\\nGit\\n((?:(?!Paths\\n|Unresolved\\n|Read when this handoff)[^\\n]*\\n)*)${GIT_CURRENT.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\n`).exec(wake)?.[1];
 
   it("names a linked worktree's branch and dirty files when the session started in the main checkout", async () => {
     const wake = await wakeOf([use('r1', 'Read', { file_path: '/a/README.md' }), use('e1', 'Edit', { file_path: '/a/.worktrees/fix/src/x.ts' })]);
@@ -1543,5 +1545,128 @@ describe('main state after a compaction the plugin did not handle, through the a
     expect(await cc.askUnfinished('auto')).toEqual({ skip: 'prompt is too long' });
     await cc.turnComplete();
     expect(cc.compacts()).toBe(1);
+  });
+});
+
+describe('what the forward handoff reply and wake tell the model', () => {
+  const DIR2 = DIR.replace(/1$/, '2');
+  const DIR3 = DIR.replace(/1$/, '3');
+  const skillFiles = { '/plug/skills/design/SKILL.md': '# Design\nbody d', '/plug/skills/review/SKILL.md': '# Review\nbody r' };
+  const skillRows = () => api([
+    { role: 'user', content: [text('<command-message>design</command-message>\n<command-name>/design</command-name>\n<command-args></command-args>')] },
+    { role: 'user', content: [text('Base directory for this skill: /plug/skills/design\n\nold')] },
+    { role: 'user', content: [text('<command-message>review</command-message>\n<command-name>/review</command-name>\n<command-args></command-args>')] },
+    { role: 'user', content: [text('Base directory for this skill: /plug/skills/review\n\nold')] },
+  ]);
+  const forwardCall = { role: 'assistant', content: [{ type: 'tool_use', id: 'f1', name: TOOL, input: FIELDS }] };
+
+  it('carries the skills the earlier wake carried when no Skill call followed, and still drops one by drop_skills', async () => {
+    const cc = engine({ forwardHandoffTool: true }, skillFiles, skillRows());
+    await cc.start();
+    await cc.step(250_000);
+    await cc.forward();
+    const wake1 = cc.written[`${DIR}/wake.txt`]!;
+    expect(wake1).toContain('Skill design\n# Design\nbody d\n');
+    expect(JSON.parse(cc.written[`${DIR}/record.json`]!).skills).toEqual([{ name: 'design', baseDir: '/plug/skills/design' }, { name: 'review', baseDir: '/plug/skills/review' }]);
+    await cc.ask('auto');
+    cc.rows.splice(0, cc.rows.length, { role: 'user', content: [text(wake1)] }, { role: 'user', content: [text('second ask')] }, forwardCall);
+    await cc.step(250_000);
+    await cc.forward();
+    const wake2 = cc.written[`${DIR2}/wake.txt`]!;
+    expect(wake2).toContain('Skill design\n# Design\nbody d\n');
+    expect(wake2).toContain('Skill review\n# Review\nbody r\n');
+    expect(JSON.parse(cc.written[`${DIR2}/record.json`]!).skills).toEqual([{ name: 'design', baseDir: '/plug/skills/design' }, { name: 'review', baseDir: '/plug/skills/review' }]);
+    await cc.forward({ ...FIELDS, drop_skills: ['review'] });
+    const wake3 = cc.written[`${DIR3}/wake.txt`]!;
+    expect(wake3).toContain('Skill design\n');
+    expect(wake3).not.toContain('Skill review');
+    expect(wake3).not.toContain('drop_skills review');
+    expect(JSON.parse(cc.written[`${DIR3}/record.json`]!).skills).toEqual([{ name: 'design', baseDir: '/plug/skills/design' }]);
+  });
+
+  it('reports every trimmed field in the stored reply, and a second call in the same turn replaces the first', async () => {
+    const cc = engine();
+    await cc.start();
+    await cc.step(250_000);
+    const out = await cc.forward({ ...FIELDS, objective: 'o'.repeat(804) });
+    expect(out.result).toMatch(/^Forward handoff stored \([^)]*\)\. Cut to fit: objective 804 -> 600 characters\. /);
+    expect(out.result).toContain(`the uncut arguments are in ${DIR}/args.json`);
+    expect(out.result).toContain(`Calling ${TOOL} again in this turn replaces this call. Saved to ${DIR}. It installs when this turn ends`);
+    expect(JSON.parse(cc.written[`${DIR}/args.json`]!).objective).toHaveLength(804);
+    const again = await cc.forward({ ...FIELDS, objective: 'short' });
+    expect(again.result).not.toContain('Cut to fit');
+    const wake2 = cc.written[`${DIR2}/wake.txt`]!;
+    const installed = await cc.ask('auto');
+    expect(installed.messages[0].text).toBe(wake2);
+    expect(installed.messages[0].text).toContain('Objective\nshort\n');
+  });
+
+  it('refuses a malformed Haiku call with the Haiku reason, not a call-shape nudge', async () => {
+    const cc = engine({ forwardHandoffTool: true, compactTool: false });
+    await cc.start();
+    await cc.step(170_000, 'claude-haiku-4-5');
+    const out = await cc.forward({ objective: 'x' });
+    expect(out.result).toMatch(/^Not stored: .*Haiku/);
+    expect(out.result).not.toContain('required');
+  });
+
+  it('names a load_files entry that was not loaded, and why, in the stored reply', async () => {
+    const cc = engine({ forwardHandoffTool: true }, { '/nowhere/ok.ts': 'fine' });
+    await cc.start();
+    await cc.step(250_000);
+    const out = await cc.forward({ ...FIELDS, load_files: [{ path: 'ok.ts', why: 'a' }, { path: 'nope.ts', why: 'b' }, { why: 'c' }] });
+    expect(out.result).toContain(` Not in the wake: load /nowhere/nope.ts: not found; load_files item 3: no path. Calling ${TOOL} again in this turn replaces this call. Saved to ${DIR}. It installs`);
+  });
+
+  it('accepts a list sent as a string, splits inline numbering, and says how many items it became', async () => {
+    const cc = engine();
+    await cc.start();
+    await cc.step(250_000);
+    const out = await cc.forward({ ...FIELDS, remaining: '1) edit c.sql 2) run npm test' });
+    expect(out.result).toContain(' remaining was a string, read as 2 items: send lists as arrays of strings. Saved to ');
+    expect(cc.written[`${DIR}/wake.txt`]).toContain('Remaining\n1. edit c.sql\n2. run npm test\n');
+  });
+
+  it('states the call shape in the reply to a missing field and in the wake', async () => {
+    const cc = engine();
+    await cc.start();
+    await cc.step(250_000);
+    const bad = await cc.forward({ objective: 'x', done: 'a', remaining: [] });
+    expect(bad.result).toMatch(new RegExp(`^Not stored: required field missing: next\\. Call ${TOOL} with an object: objective \\(string, at most 600 characters\\)`));
+    await cc.forward();
+    const wake = cc.written[`${DIR}/wake.txt`]!;
+    expect(wake).toContain(`look_back finds it.\nCall ${TOOL} with an object: objective (string`);
+  });
+
+  it("lets a woken party's handoff through below its first nudge point once the person asked for it after the wake, never on the ask it handed off in reply to", async () => {
+    const asked = { role: 'user', content: [text('compact now please')] };
+    const cc = engine({ forwardHandoffTool: true }, {}, api([asked]));
+    await cc.start();
+    await cc.step(250_000);
+    await cc.forward();
+    const wake = cc.written[`${DIR}/wake.txt`]!;
+    expect(wake).toContain('compact now please');
+    await cc.ask('auto');
+    const call2 = { role: 'assistant', content: [{ type: 'tool_use', id: 'f2', name: TOOL, input: FIELDS }] };
+    cc.rows.splice(0, cc.rows.length, { role: 'user', content: [text(wake)] }, { role: 'assistant', content: [text('continuing')] }, call2);
+    await cc.step(30_000);
+    expect((await cc.forward()).result).toMatch(/^Not stored: you woke from a forward handoff/);
+    expect(cc.written[`${DIR2}/wake.txt`]).toBeUndefined();
+    cc.rows.splice(2, 0, { role: 'user', content: [text('When it was back compact and standby')] });
+    expect((await cc.forward()).result).toMatch(/^Forward handoff stored/);
+    expect(cc.written[`${DIR2}/wake.txt`]).toContain('\n[3, latest, handed off in reply] When it was back compact and standby\n');
+  });
+
+  it('keeps the refusal when the transcript cannot be read to find the ask', async () => {
+    const env: Env = {};
+    const cc = engine({ forwardHandoffTool: true, logFile: '/logs/decisions.jsonl' }, {}, api(), true, [], env);
+    await cc.start();
+    await cc.step(250_000);
+    await cc.forward();
+    await cc.ask('auto');
+    await cc.step(30_000);
+    env.messagesFail = true;
+    expect((await cc.forward()).result).toMatch(/^Not stored: you woke from a forward handoff/);
+    expect((await cc.decisions()).some((row) => row.event === 'forward-woke-unchecked' && /transcript: unreadable \(transcript gone\)/.test(row.problem))).toBe(true);
   });
 });

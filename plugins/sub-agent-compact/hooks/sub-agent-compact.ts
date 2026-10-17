@@ -2,8 +2,8 @@ import type { EngineInterface, On, PluginOptions, Register } from 'claude-code';
 import { bounded } from '../src/bounded.ts';
 import { LOOK_BACK_TOOL, LOOK_BACK_DESCRIPTION, LOOK_BACK_INPUT_SCHEMA, parseLookBack, boundaryArgv, boundaryLine, searchArgv, entryArgv, namesArgv, processOutput, parseEntries, toolNames, resultIds, searchResults, entryResult, manualTranscriptCall, lookBackNotice, type LookBackResult } from '../src/look-back.ts';
 import { servedOptions, toolsToRegister } from '../src/register.ts';
-import { FORWARD_INPUT_SCHEMA, FORWARD_TOOL, FORWARD_TOOL_DESCRIPTION, forwardNudgeText, forwardRefusal, forwardStoredText, parseForwardArgs, rereadNudge, type ForwardArgs } from '../src/forward-args.ts';
-import { absPath, fileTrail, handoffInReply, findTranscriptArgv, firstFound, gitBlock, gitLine, GIT_REPOS, heldForward, outsideRepository, opensWithSummary, openingSummary, summaryKnowledge, outline, OUTLINE_FILE_MAX_BYTES, priorCalls, priorPrompts, mergeTrail, invocationPaths, invocations, parseLineRange, parsePorcelain, planAndTasks, runningWork, sliceLines, trailDirs, userMessages, type ApiMsg, type LiveWork, type TrailEntry } from '../src/forward-carry.ts';
+import { askedToCompact, FORWARD_INPUT_SCHEMA, FORWARD_TOOL, FORWARD_TOOL_DESCRIPTION, forwardCallShape, forwardNudgeText, forwardRefusal, forwardStoredText, parseForwardArgs, rereadNudge, type ForwardArgs } from '../src/forward-args.ts';
+import { absPath, fileTrail, handoffInReply, findTranscriptArgv, firstFound, gitBlock, gitLine, GIT_REPOS, heldForward, outsideRepository, opensWithSummary, openingSummary, summaryKnowledge, outline, OUTLINE_FILE_MAX_BYTES, priorCalls, priorPrompts, mergeTrail, chainSkills, promptsSinceWake, invocationPaths, invocations, parseLineRange, parsePorcelain, planAndTasks, runningWork, sliceLines, trailDirs, userMessages, type ApiMsg, type LiveWork, type TrailEntry } from '../src/forward-carry.ts';
 import { buildRecord, carriedFrom, forwardClaimArgv, forwardDir, forwardRoots, forwardSessionDir, dropSkillProblem, missingRecordProblem, nextSeq, ownCall, previousDir, recoverForward, savedOf, withInstall } from '../src/forward-record.ts';
 import { chainUsers, forwardInstalledLine, installCheck, renderForward, TRAIL_MAX, type BlockRecord, type RenderInput } from '../src/forward-text.ts';
 import { BRIEF_MAX_TOKENS, reseatBrief, seatedBrief } from '../src/brief.ts';
@@ -948,25 +948,6 @@ async function gatherForward(st: State, $: EngineInterface, args: ForwardArgs, a
     problems.push(`transcript: unreadable (${message(error)})`);
   }
 
-  const dropped = new Set(args.dropSkills);
-  const invoked = invocations(api);
-  for (const name of args.dropSkills) if (!invoked.some((x) => x.name === name)) problems.push(dropSkillProblem(name, read));
-  const roots = await wakeRoots(st, $);
-  const skills: RenderInput['skills'] = [];
-  for (const inv of invoked.filter((x) => !dropped.has(x.name))) {
-    const paths = invocationPaths(inv, roots);
-    let found: RenderInput['skills'][number] = { name: inv.name, problem: paths.length === 0 ? 'not a skill or command name' : `no file (tried ${paths.length} paths)` };
-    for (const path of paths) {
-      const read = await readOne(st, $, path, WAKE_FILE_MAX_BYTES);
-      if ('content' in read) {
-        found = { name: inv.name, body: stripFrontmatter(read.content) };
-        break;
-      }
-      if (read.problem !== 'not found') found = { name: inv.name, problem: `${path} ${read.problem}` };
-    }
-    skills.push(found);
-  }
-
   const loaded: RenderInput['loaded'] = [];
   for (const file of args.loadFiles) {
     const target = abs(file.path);
@@ -1092,6 +1073,26 @@ async function gatherForward(st: State, $: EngineInterface, args: ForwardArgs, a
       problems.push(`prompts before the summary: ${message(error)}`);
     }
   }
+  // The skills: those the earlier wake carried (its record says which), then those invoked since, minus drop_skills.
+  // A skill a wake installed is no invocation afterwards: from the invocations alone, a chained handoff loses it.
+  const invoked = invocations(api);
+  for (const name of args.dropSkills) if (!invoked.some((x) => x.name === name) && !(before?.skills ?? []).some((x) => x.name === name)) problems.push(dropSkillProblem(name, read));
+  const roots = await wakeRoots(st, $);
+  const skills: RenderInput['skills'] = [];
+  for (const inv of chainSkills(before?.skills, invoked, args.dropSkills)) {
+    const paths = invocationPaths(inv, roots);
+    const dir = inv.baseDir !== undefined ? { baseDir: inv.baseDir } : {};
+    let found: RenderInput['skills'][number] = { name: inv.name, ...dir, problem: paths.length === 0 ? 'not a skill or command name' : `no file (tried ${paths.length} paths)` };
+    for (const path of paths) {
+      const read = await readOne(st, $, path, WAKE_FILE_MAX_BYTES);
+      if ('content' in read) {
+        found = { name: inv.name, ...dir, body: stripFrontmatter(read.content) };
+        break;
+      }
+      if (read.problem !== 'not found') found = { name: inv.name, ...dir, problem: `${path} ${read.problem}` };
+    }
+    skills.push(found);
+  }
   const since = held !== undefined ? api.slice(held.index + 1) : api;
   const chain = chainUsers(before ?? prior, userMessages(since), handoffInReply(since));
   // What Claude Code's own summary knew: from the one the context opens with, else from the earlier handoff's record.
@@ -1170,7 +1171,29 @@ async function gatherForward(st: State, $: EngineInterface, args: ForwardArgs, a
   const git = gitBlock(repos, { ...('top' in own ? { own: own.top } : {}), more: tops.slice(GIT_REPOS) });
   const live = at.agentId === undefined && st.live !== undefined ? { tasks: st.live.tasks, crons: st.live.crons, started: st.live.started, now: Date.now() } : undefined;
 
-  return { seq: at.seq, users: chain.users, usersDropped: chain.dropped, ...(chain.inReply ? { handoffInReply: true } : {}), ...(summary !== undefined ? { summary } : {}), skills, trail, outlines, loaded, ...(plan !== undefined ? { plan } : {}), tasks: work.tasks, running: runningWork(api, live), ...(git !== undefined ? { git } : {}), paths: paths.length > 0 ? [paths.join(' · ')] : [], problems, args };
+  return { seq: at.seq, users: chain.users, usersDropped: chain.dropped, ...(chain.inReply ? { handoffInReply: true } : {}), ...(summary !== undefined ? { summary } : {}), skills, trail, outlines, loaded, ...(plan !== undefined ? { plan } : {}), tasks: work.tasks, running: runningWork(api, live), ...(git !== undefined ? { git } : {}), paths: paths.length > 0 ? [paths.join(' · ')] : [], problems, args, callShape: forwardCallShape(st.forwardToolName ?? FORWARD_TOOL) };
+}
+
+/**
+ * Whether the person asked to compact or hand off since the party's wake (askedToCompact over promptsSinceWake). A
+ * context holding no wake, or an unreadable transcript, is no ask, and is recorded: the refusal then stands, saying how to get one.
+ */
+async function askedSinceWake(st: State, $: EngineInterface, key: string, agentId: string | undefined): Promise<boolean> {
+  try {
+    const got = await $.session.messages({ as: 'api', ...(agentId !== undefined ? { agentId } : {}) });
+    if (!Array.isArray(got)) throw new Error(`not a list (${JSON.stringify(got).slice(0, 120)})`);
+    const since = promptsSinceWake(got as ApiMsg[]);
+    if (since === undefined) {
+      record(st, $, { event: 'forward-woke-unchecked', party: key, problem: 'no wake held in the context' });
+      return false;
+    }
+    const asked = askedToCompact(since);
+    if (asked) record(st, $, { event: 'forward-woke-asked', party: key });
+    return asked;
+  } catch (error) {
+    record(st, $, { event: 'forward-woke-unchecked', party: key, problem: `transcript: unreadable (${message(error)})` });
+    return false;
+  }
 }
 
 /** Stores a forward handoff: the text code carried and the model's frontier, and the call's files on disk. Main chat and sub-agent alike. */
@@ -1178,11 +1201,7 @@ async function answerForwardTool(st: State, $: EngineInterface, e: Record<string
   const agentId = typeof e.agentId === 'string' ? e.agentId : undefined;
   const key = agentId ?? 'main';
   const raw = handoffInputOf(e);
-  const parsed = parseForwardArgs(raw);
-  if ('nudge' in parsed) {
-    record(st, $, { event: 'forward-invalid', party: key, problem: parsed.nudge.slice(0, 300) });
-    return parsed.nudge;
-  }
+  // The party's refusals come first: a call nothing would install is refused for that, never sent back to be fixed.
   const party = await partyOf(st, $, agentId);
   // Haiku is left to Claude Code's own compaction: nothing is stored, so nothing waits to install.
   if (party.haiku) {
@@ -1194,9 +1213,15 @@ async function answerForwardTool(st: State, $: EngineInterface, e: Record<string
     record(st, $, { event: 'forward-refused', party: key, why: 'unlisted' });
     return handoffRefusal({ haiku: false, unlisted: true, tokens: undefined, nudgeStart: 0 })!;
   }
+  const parsed = parseForwardArgs(raw, st.forwardToolName ?? FORWARD_TOOL);
+  if ('nudge' in parsed) {
+    record(st, $, { event: 'forward-invalid', party: key, problem: parsed.nudge.slice(0, 300) });
+    return parsed.nudge;
+  }
   const now = st.parties.reading(key);
   const early = forwardRefusal({ woke: st.forwardWoke.has(key), tokens: now, nudgeStart: sizeTokens(party.policy.nudgeStart, party.window) });
-  if (early !== undefined) {
+  // The person's own ask since the wake lets the call through: the carried order sits in the wake, before them, so a woken model cannot loop on it.
+  if (early !== undefined && !(await askedSinceWake(st, $, key, agentId))) {
     record(st, $, { event: 'forward-refused', party: key, why: 'woke-early', tokens: now ?? null });
     return early;
   }
@@ -1251,9 +1276,11 @@ async function answerForwardTool(st: State, $: EngineInterface, e: Record<string
   let dir = roots[0] !== undefined && saved === '' ? forwardDir(roots[0], session, seq, agentId) : undefined;
   const input = await gatherForward(st, $, parsed.args, { seq, ...(dir !== undefined ? { dir } : {}), session, ...(agentId !== undefined ? { agentId } : {}) });
   for (const problem of input.problems ?? []) record(st, $, { event: 'forward-invalid', party: key, seq, problem });
-  const { text, blocks } = renderForward(input);
+  const { text, blocks, unloaded, skills: rendered } = renderForward(input);
   const reading = st.parties.reading(key);
-  const base = buildRecord({ seq, session, ...(agentId !== undefined ? { agentId } : {}), dir: dir ?? '', text, blocks, users: input.users, usersDropped: input.usersDropped ?? 0, ...(input.handoffInReply === true ? { handoffInReply: true } : {}), trail: input.trail, ...(input.summary !== undefined ? { summary: input.summary } : {}), ...(reading !== undefined ? { tokensBefore: reading } : {}), trimmed: parsed.args.trimmed, at: new Date().toISOString() });
+  // The skills the wake holds, for the next handoff to carry: one that failed to load is named in this one's reply and wake, never carried on.
+  const skills = input.skills.filter((s) => rendered.includes(s.name)).map((s) => ({ name: s.name, ...(s.baseDir !== undefined ? { baseDir: s.baseDir } : {}) }));
+  const base = buildRecord({ seq, session, ...(agentId !== undefined ? { agentId } : {}), dir: dir ?? '', text, blocks, users: input.users, usersDropped: input.usersDropped ?? 0, ...(input.handoffInReply === true ? { handoffInReply: true } : {}), trail: input.trail, ...(input.summary !== undefined ? { summary: input.summary } : {}), ...(reading !== undefined ? { tokensBefore: reading } : {}), trimmed: parsed.args.trimmed, skills, at: new Date().toISOString() });
   if (dir !== undefined) {
     try {
       await $.fs.write(`${dir}/args.json`, JSON.stringify(raw, null, 2));
@@ -1268,7 +1295,7 @@ async function answerForwardTool(st: State, $: EngineInterface, e: Record<string
   st.parties.armHandoff(key, { text, anchor: { toolUseId }, forward: { seq, ...(dir !== undefined ? { dir } : {}), blocks, record: base } });
   const tokens = Math.ceil(text.length / 4);
   record(st, $, { event: 'forward-stored', party: key, seq, dir, chars: text.length, tokens, blocks: blocks.map((b) => ({ name: b.name, chars: b.chars, items: b.items })) });
-  return forwardStoredText({ tokens, ...(dir !== undefined ? { dir } : {}), blocks }) + saved;
+  return forwardStoredText({ tokens, ...(dir !== undefined ? { dir } : {}), blocks, cuts: parsed.args.cuts ?? [], converted: parsed.args.converted ?? [], unloaded: [...unloaded, ...(parsed.args.problems ?? [])], toolName: st.forwardToolName ?? FORWARD_TOOL }) + saved;
 }
 
 /** At the first request of a party after its forward handoff installed: confirm each block is in what it holds, write the record with the check, and tell it of any that is not. */

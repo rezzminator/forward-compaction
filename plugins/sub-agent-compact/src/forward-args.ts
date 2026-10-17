@@ -25,6 +25,12 @@ export const FORWARD_LIMITS = {
 
 export type LoadFileArg = { path: string; lines?: string; why: string };
 
+/** A field cut to its limit: what it held and what it holds, in characters or, for a count of entries, in items. */
+export type Cut = { field: string; unit: 'characters' | 'items'; before: number; after: number; itemsBefore?: number; itemsAfter?: number };
+
+/** A list field that arrived as a string, and the number of items it became. */
+export type Converted = { field: string; items: number };
+
 export type ForwardArgs = {
   objective: string;
   done: string[];
@@ -36,6 +42,10 @@ export type ForwardArgs = {
   dropSkills: string[];
   /** The names of the fields that were cut to their limits. */
   trimmed: string[];
+  /** Each cut with its size before and after; absent when none. */
+  cuts?: Cut[];
+  /** The list fields that arrived as a string; absent when none. */
+  converted?: Converted[];
   /** What in the arguments could not be used, for the wake text's Unresolved block; absent when nothing. */
   problems?: string[];
 };
@@ -76,11 +86,39 @@ function trimText(text: string, max: number): string {
 }
 
 /** A string field: undefined when it is missing (not a string, or blank). */
-function stringField(value: unknown, max: number, name: string, trimmed: string[]): string | undefined {
+function stringField(value: unknown, max: number, name: string, trimmed: string[], cuts: Cut[]): string | undefined {
   if (typeof value !== 'string' || value.trim() === '') return undefined;
   const text = value.trim();
-  if (text.length > max) trimmed.push(name);
-  return trimText(text, max);
+  const out = trimText(text, max);
+  if (text.length > max) {
+    trimmed.push(name);
+    cuts.push({ field: name, unit: 'characters', before: text.length, after: out.length });
+  }
+  return out;
+}
+
+const INLINE_MARK = /(?:^|\s)\(?(\d{1,2})[.)]\s+/g;
+
+/** A string sent for a list, as its items: a JSON array's, one line's inline `1) a 2) b` numbering, else its lines without bullets or numbers. */
+function splitText(value: string): string[] {
+  const text = value.trim();
+  if (text.startsWith('[')) {
+    try {
+      const parsed: unknown = JSON.parse(text);
+      if (Array.isArray(parsed)) return parsed.map((item) => (typeof item === 'string' ? item : JSON.stringify(item) ?? ''));
+    } catch {
+      // Not JSON: read as lines below.
+    }
+  }
+  const lines = value.split('\n');
+  if (lines.filter((line) => line.trim() !== '').length === 1) {
+    const marks = [...text.matchAll(INLINE_MARK)].map((m) => ({ at: m.index, end: m.index + m[0].length, n: Number(m[1]) }));
+    if (marks.length >= 2 && marks.every((m, at) => m.n === at + 1)) {
+      const items = marks.map((m, at) => text.slice(m.end, marks[at + 1]?.at ?? text.length));
+      return [text.slice(0, marks[0]!.at), ...items];
+    }
+  }
+  return lines.map((line) => line.replace(/^\s*(?:[-*•]|\d{1,2}[.)])\s+/, ''));
 }
 
 /**
@@ -88,34 +126,44 @@ function stringField(value: unknown, max: number, name: string, trimmed: string[
  * (items x chars) and its item count, never an item alone: a model that writes one long line keeps it whole
  * while the field fits. The list is cut once, where it crosses either, and marked.
  */
-function listField(value: unknown, items: number, chars: number, name: string, trimmed: string[]): string[] | undefined {
+function listField(value: unknown, items: number, chars: number, name: string, trimmed: string[], cuts: Cut[], converted: Converted[]): string[] | undefined {
   if (value === undefined || value === null) return undefined;
   let raw: unknown[];
-  if (typeof value === 'string') raw = value.split('\n').map((line) => line.replace(/^\s*[-*•]\s+/, ''));
+  if (typeof value === 'string') raw = splitText(value);
   else if (Array.isArray(value)) raw = value;
   else return undefined;
   const all = raw.map((item) => (typeof item === 'string' ? item : item === undefined || item === null ? '' : String(item)).trim()).filter((item) => item !== '');
+  if (typeof value === 'string' && all.length > 0) converted.push({ field: name, items: all.length });
   const budget = items * chars;
   const out: string[] = [];
   let used = 0;
   let cut = false;
+  // The mark appended to a kept item is not what the field kept: the reported size leaves it out.
+  let marks = 0;
   for (const item of all) {
     if (out.length === items) {
       out[items - 1] = `${out[items - 1]!} ${TRIMMED}`;
+      marks += TRIMMED.length + 1;
       cut = true;
       break;
     }
     if (used + item.length > budget) {
       const room = budget - used;
       if (room > TRIMMED.length + 20) out.push(trimText(item, room));
-      else if (out.length > 0) out[out.length - 1] = `${out[out.length - 1]!} ${TRIMMED}`;
+      else if (out.length > 0) {
+        out[out.length - 1] = `${out[out.length - 1]!} ${TRIMMED}`;
+        marks += TRIMMED.length + 1;
+      }
       cut = true;
       break;
     }
     out.push(item);
     used += item.length;
   }
-  if (cut) trimmed.push(name);
+  if (cut) {
+    trimmed.push(name);
+    cuts.push({ field: name, unit: 'characters', before: all.reduce((n, item) => n + item.length, 0), after: out.reduce((n, item) => n + item.length, 0) - marks, itemsBefore: all.length, itemsAfter: out.length });
+  }
   return out;
 }
 
@@ -126,7 +174,7 @@ function unknownFields(input: Record<string, unknown>): string[] {
     .map(([key, value]) => `${key}: ${(value as string).trim()}`);
 }
 
-function loadFiles(value: unknown, trimmed: string[], problems: string[]): LoadFileArg[] {
+function loadFiles(value: unknown, trimmed: string[], problems: string[], cuts: Cut[]): LoadFileArg[] {
   if (value === undefined || value === null) return [];
   if (!Array.isArray(value)) {
     problems.push('load_files: not a list of {path, lines?, why}');
@@ -141,41 +189,85 @@ function loadFiles(value: unknown, trimmed: string[], problems: string[]): LoadF
     }
     const { lines, why } = item as Record<string, unknown>;
     const range = typeof lines === 'number' ? String(lines) : typeof lines === 'string' && lines.trim() !== '' ? lines.trim() : undefined;
-    out.push({ path: path.trim(), ...(range !== undefined ? { lines: range } : {}), why: trimText(typeof why === 'string' ? why.trim() : '', FORWARD_LIMITS.whyChars) });
+    const reason = typeof why === 'string' ? why.trim() : '';
+    const kept = trimText(reason, FORWARD_LIMITS.whyChars);
+    if (reason.length > FORWARD_LIMITS.whyChars) cuts.push({ field: `load_files why (${path.trim()})`, unit: 'characters', before: reason.length, after: kept.length });
+    out.push({ path: path.trim(), ...(range !== undefined ? { lines: range } : {}), why: kept });
   }
   if (out.length > FORWARD_LIMITS.loadFiles) {
+    cuts.push({ field: 'load_files', unit: 'items', before: out.length, after: FORWARD_LIMITS.loadFiles });
     out.length = FORWARD_LIMITS.loadFiles;
     trimmed.push('load_files');
   }
   return out;
 }
 
-/** The model's arguments read into limits, or the one nudge naming every required field that is missing. */
-export function parseForwardArgs(input: Record<string, unknown>): ForwardParse {
+/** What a field holds, in the words of the reply that names one of the wrong type. */
+function kindOf(value: unknown): string {
+  if (value === null) return 'null';
+  if (Array.isArray(value)) return 'an array';
+  if (typeof value === 'string') return value.trim() === '' ? 'a blank string' : 'a string';
+  if (typeof value === 'object') return 'an object';
+  return `a ${typeof value}`;
+}
+
+/** The order the tool lists its fields in: every report about them follows it. */
+const FIELD_ORDER = ['objective', 'done', 'remaining', 'next', 'blocked', 'findings', 'load_files', 'drop_skills'];
+const rank = (field: string): number => FIELD_ORDER.indexOf(field.split(' ')[0]!);
+
+/**
+ * The model's arguments read into limits, or the one nudge naming every required field that is missing, each one of the
+ * wrong type with what it got, and the call's whole shape: after a wake the deferred tool's schema is not in context.
+ */
+export function parseForwardArgs(input: Record<string, unknown>, toolName: string = FORWARD_TOOL): ForwardParse {
   const trimmed: string[] = [];
-  const objective = stringField(input.objective, FORWARD_LIMITS.objective, 'objective', trimmed);
-  const done = listField(input.done, FORWARD_LIMITS.doneItems, FORWARD_LIMITS.doneChars, 'done', trimmed);
-  const remaining = listField(input.remaining, FORWARD_LIMITS.remainingItems, FORWARD_LIMITS.remainingChars, 'remaining', trimmed);
-  const next = stringField(input.next, FORWARD_LIMITS.next, 'next', trimmed);
-  const missing = [['objective', objective], ['done', done], ['remaining', remaining], ['next', next]].filter(([, v]) => v === undefined).map(([k]) => k as string);
-  if (missing.length > 0) return { nudge: `Not stored: required ${missing.length === 1 ? 'field' : 'fields'} missing: ${missing.join(', ')}. Call forward_handoff again with ${missing.length === 1 ? 'it' : 'them'}.` };
-  const blocked = listField(input.blocked, FORWARD_LIMITS.blockedItems, FORWARD_LIMITS.blockedChars, 'blocked', trimmed) ?? [];
-  const findings = listField([...(listField(input.findings, Infinity, Infinity, 'findings', []) ?? []), ...unknownFields(input)], FORWARD_LIMITS.findingsItems, FORWARD_LIMITS.findingsChars, 'findings', trimmed) ?? [];
+  const cuts: Cut[] = [];
+  const converted: Converted[] = [];
+  const objective = stringField(input.objective, FORWARD_LIMITS.objective, 'objective', trimmed, cuts);
+  const done = listField(input.done, FORWARD_LIMITS.doneItems, FORWARD_LIMITS.doneChars, 'done', trimmed, cuts, converted);
+  const remaining = listField(input.remaining, FORWARD_LIMITS.remainingItems, FORWARD_LIMITS.remainingChars, 'remaining', trimmed, cuts, converted);
+  const next = stringField(input.next, FORWARD_LIMITS.next, 'next', trimmed, cuts);
+  const required: [string, unknown, string][] = [['objective', objective, 'a string'], ['done', done, 'an array of strings'], ['remaining', remaining, 'an array of strings'], ['next', next, 'a string']];
+  const missing = required.filter(([, got]) => got === undefined);
+  if (missing.length > 0) {
+    const wrong = missing.filter(([name]) => input[name] !== undefined).map(([name, , expects]) => `${name}: got ${kindOf(input[name])}, expects ${expects}.`);
+    const head = `Not stored: required ${missing.length === 1 ? 'field' : 'fields'} missing: ${missing.map(([name]) => name).join(', ')}.`;
+    return { nudge: [head, ...wrong, forwardCallShape(toolName)].join(' ') };
+  }
+  const blocked = listField(input.blocked, FORWARD_LIMITS.blockedItems, FORWARD_LIMITS.blockedChars, 'blocked', trimmed, cuts, converted) ?? [];
+  // A string sent for findings is converted once, by the first read; the second only caps the list the unknown fields join.
+  const findings = listField([...(listField(input.findings, Infinity, Infinity, 'findings', [], [], converted) ?? []), ...unknownFields(input)], FORWARD_LIMITS.findingsItems, FORWARD_LIMITS.findingsChars, 'findings', trimmed, cuts, []) ?? [];
   const problems: string[] = [];
-  const files = loadFiles(input.load_files, trimmed, problems);
+  const files = loadFiles(input.load_files, trimmed, problems, cuts);
   const dropSkills: string[] = [];
-  for (const raw of listField(input.drop_skills, 100, 100, 'drop_skills', []) ?? []) {
+  for (const raw of listField(input.drop_skills, 100, 100, 'drop_skills', [], [], converted) ?? []) {
     const name = raw.startsWith('/') ? raw.slice(1) : raw;
     if (name !== '' && !dropSkills.includes(name)) dropSkills.push(name);
   }
   // Report order is the field order of the tool, not of the checks.
-  const order = ['objective', 'done', 'remaining', 'next', 'blocked', 'findings', 'load_files'];
-  trimmed.sort((a, b) => order.indexOf(a) - order.indexOf(b));
-  return { args: { objective: objective!, done: done!, remaining: remaining!, next: next!, blocked, findings, loadFiles: files, dropSkills, trimmed, ...(problems.length > 0 ? { problems } : {}) } };
+  trimmed.sort((a, b) => rank(a) - rank(b));
+  cuts.sort((a, b) => rank(a.field) - rank(b.field));
+  converted.sort((a, b) => rank(a.field) - rank(b.field));
+  return { args: { objective: objective!, done: done!, remaining: remaining!, next: next!, blocked, findings, loadFiles: files, dropSkills, trimmed, ...(cuts.length > 0 ? { cuts } : {}), ...(converted.length > 0 ? { converted } : {}), ...(problems.length > 0 ? { problems } : {}) } };
 }
 
 function k(tokens: number): string {
   return `${Math.round(tokens / 1000)}k`;
+}
+
+const listShape = (items: number, chars: number): string => `array of strings, at most ${items} items, ${items * chars} characters in all`;
+
+/**
+ * The call's whole shape in one sentence: every field's name, type and limit. The tool is deferred, so a woken model
+ * sees only its name; every text that sends it toward the tool carries this.
+ */
+export function forwardCallShape(toolName: string): string {
+  const L = FORWARD_LIMITS;
+  return [
+    `Call ${toolName} with an object: objective (string, at most ${L.objective} characters), done (${listShape(L.doneItems, L.doneChars)}), remaining (${listShape(L.remainingItems, L.remainingChars)}), next (string, at most ${L.next} characters);`,
+    `optional: blocked (${listShape(L.blockedItems, L.blockedChars)}), findings (${listShape(L.findingsItems, L.findingsChars)}), load_files (array of {path, lines?, why} objects, at most ${L.loadFiles}, why at most ${L.whyChars} characters), drop_skills (array of strings).`,
+    'A field over its limit is trimmed, never refused.',
+  ].join(' ');
 }
 
 /** What the main chat reads after a tool result once its context passes a nudge point, with the forward handoff tool on. */
@@ -186,22 +278,55 @@ export function forwardNudgeText({ tokens, level, autoCompact, toolName }: { tok
     level > 0 ? `Nudge ${level + 1}: at the next clean point, not mid-edit, call ${toolName}.` : `At the next clean point, not mid-edit, call ${toolName}.`,
     'Code carries the user messages, skills, files, plan, git and running work; you write the objective, done, remaining, findings and next.',
     `Compaction is forced at ${k(autoCompact)} whether you hand off or not.`,
+    forwardCallShape(toolName),
   ].join(' ');
 }
 
-/** The tool's reply once the forward handoff is stored: its size by block, where it is saved, and to end the turn. */
-export function forwardStoredText({ tokens, dir, blocks }: { tokens: number; dir?: string; blocks: { name: string; tokens: number }[] }): string {
+const cutText = (c: Cut): string =>
+  c.itemsBefore !== undefined && c.itemsAfter !== undefined && c.itemsBefore !== c.itemsAfter
+    ? `${c.field} ${c.itemsBefore} -> ${c.itemsAfter} items, ${c.before} -> ${c.after} ${c.unit}`
+    : `${c.field} ${c.before} -> ${c.after} ${c.unit}`;
+
+/**
+ * The tool's reply once the forward handoff is stored: its size by block; each field cut to fit, with its size before
+ * and after, and how to keep what was cut; each list read from a string and into how many items; each entry the wake
+ * does not hold, and why; where it is saved; and to end the turn. A call again in the turn replaces this one.
+ */
+export function forwardStoredText({ tokens, dir, blocks, cuts = [], converted = [], unloaded = [], toolName = FORWARD_TOOL }: { tokens: number; dir?: string; blocks: { name: string; tokens: number }[]; cuts?: readonly Cut[]; converted?: readonly Converted[]; unloaded?: readonly string[]; toolName?: string }): string {
   const sizes = blocks.map((b) => `${b.name} ${k(b.tokens)}`).join(', ');
-  return `Forward handoff stored (${k(tokens)} tokens: ${sizes}).${dir !== undefined ? ` Saved to ${dir}.` : ''} It installs when this turn ends: end your turn now with one line to the person; do not call more tools.`;
+  const notes: string[] = [];
+  if (cuts.length > 0) {
+    notes.push(`Cut to fit: ${cuts.map(cutText).join('; ')}.`);
+    notes.push(`The wake holds what fit, each cut text ending in ${TRIMMED}${dir !== undefined ? `; the uncut arguments are in ${dir}/args.json` : ''}. To keep what was cut, send those fields again within their limits, longer detail in a file named in load_files.`);
+  }
+  if (converted.length > 0) notes.push(`${converted.map((c) => `${c.field} was a string, read as ${c.items} ${c.items === 1 ? 'item' : 'items'}`).join('; ')}: send lists as arrays of strings.`);
+  if (unloaded.length > 0) notes.push(`Not in the wake: ${unloaded.join('; ')}.`);
+  const again = cuts.length > 0 || unloaded.length > 0;
+  if (again) notes.push(`Calling ${toolName} again in this turn replaces this call.`);
+  // The saved directory stays right before the last sentence: a recovery reads it from there, the last such clause.
+  return [`Forward handoff stored (${k(tokens)} tokens: ${sizes}).`, ...notes, ...(dir !== undefined ? [`Saved to ${dir}.`] : []), `It installs when this turn ends: end your turn now with one line to the person; ${again ? 'do not call any other tool' : 'do not call more tools'}.`].join(' ');
 }
 
 /**
  * The reply to a forward handoff from a party that woke from one and is still below its first nudge point: a second
  * handoff there saves nothing, and a woken model that reads its handoff order as open would loop. Undefined otherwise.
+ * The person's own ask after the wake lets the call through (askedToCompact), so the reply says how to get one.
  */
 export function forwardRefusal({ woke, tokens, nudgeStart }: { woke: boolean; tokens: number | undefined; nudgeStart: number }): string | undefined {
   if (!woke || tokens === undefined || tokens >= nudgeStart) return undefined;
-  return `Not stored: you woke from a forward handoff, and your context is ${Math.floor(tokens / 1000)}k, below ${k(nudgeStart)}, where a handoff first pays. It is installed: continue its work from its Next block.`;
+  return `Not stored: you woke from a forward handoff, and your context is ${Math.floor(tokens / 1000)}k, below ${k(nudgeStart)}, where a handoff first pays. It is installed: continue its work from its Next block. A handoff the person asks for is stored: a message of theirs after this wake that asks to compact or hand off lets the call through, and their /compact compacts at once.`;
+}
+
+const ASK = /(?<![\w-])(?:compact\w*|hand[ -]?offs?|forward[_ ]handoff)\b/gi;
+const NOT = /\b(?:don'?t|do not|never|not|no|stop|without)\b/i;
+
+/**
+ * Whether the person asked for a compaction or a handoff in one of these messages, the ones written since the wake: a
+ * word for it (compact, compaction, handoff, hand off, forward_handoff) with no negation before it in its clause. A
+ * name that only ends in it (sub-agent-compact, auto-compact) is no ask.
+ */
+export function askedToCompact(prompts: readonly string[]): boolean {
+  return prompts.some((prompt) => [...prompt.matchAll(ASK)].some((m) => !NOT.test(prompt.slice(0, m.index).split(/[.!?;:,\n]/).pop() ?? '')));
 }
 
 const READ_VERB = /^\s*(?:re-?read|read|reload|open|cat|view|skim|review|look at)\b/i;

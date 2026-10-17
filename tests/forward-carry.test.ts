@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { bashWrites, handoffInReply, collapseWhitespace, fileTrail, gitBlock, gitLine, GIT_REPOS, outsideRepository, trailDirs, invocationPaths, invocations, parseLineRange, parsePorcelain, planAndTasks, runningWork, sliceLines, stripNoise, userMessages, absPath, findTranscriptArgv, firstFound, heldForward, opensWithSummary, priorPrompts, priorCalls, mergeTrail, openingSummary, summaryKnowledge, outline, parsePorcelain as porcelain, type ApiMsg } from '../plugins/sub-agent-compact/src/forward-carry.ts';
+import { chainSkills, promptsSinceWake, bashWrites, handoffInReply, collapseWhitespace, fileTrail, gitBlock, gitLine, GIT_REPOS, outsideRepository, trailDirs, invocationPaths, invocations, parseLineRange, parsePorcelain, planAndTasks, runningWork, sliceLines, stripNoise, userMessages, absPath, findTranscriptArgv, firstFound, heldForward, opensWithSummary, priorPrompts, priorCalls, mergeTrail, openingSummary, summaryKnowledge, outline, parsePorcelain as porcelain, type ApiMsg } from '../plugins/sub-agent-compact/src/forward-carry.ts';
 import { renderForward } from '../plugins/sub-agent-compact/src/forward-text.ts';
 import { HANDOFF_OPENING } from '../plugins/sub-agent-compact/src/handoff.ts';
 
@@ -491,6 +491,12 @@ describe('git, ranges, transcript', () => {
     expect(heldForward([user('a')])).toBeUndefined();
   });
 
+  it('gives the prompts written since the held wake, and none when the context holds no wake', () => {
+    const wake = renderForward({ seq: 2, users: ['x'], skills: [], trail: [], loaded: [], tasks: [], running: [], paths: [], problems: [], args: { objective: 'o', done: [], remaining: [], next: 'n', blocked: [], findings: [], loadFiles: [], dropSkills: [], trimmed: [] } }).text;
+    expect(promptsSinceWake([user('before'), user(wake), asst(t('ok') as never), user('please compact')])).toEqual(['please compact']);
+    expect(promptsSinceWake([user('brief: plan the handoff'), asst(t('ok') as never), user('go')])).toBeUndefined();
+  });
+
   it("takes a later text that opens like a handoff as held only when a record holds it; a person's paste is not held", () => {
     const wake = renderForward({ seq: 1, users: ['x'], skills: [], trail: [], loaded: [], tasks: [], running: [], paths: [], problems: [], args: { objective: 'o', done: [], remaining: [], next: 'n', blocked: [], findings: [], loadFiles: [], dropSkills: [], trimmed: [] } }).text;
     const pasted = `${wake}\nwhy is this so long?`;
@@ -706,5 +712,30 @@ describe('transcript lines holding a raw line separator', () => {
     expect(userMessages(priorPrompts(prompt, 10))).toEqual(['first second']);
     const call = `4:${JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 't', name: 'Read', input: { file_path: '/r/a .md' } }] } })}`;
     expect(priorCalls(call, 10)).toHaveLength(1);
+  });
+});
+
+describe('chainSkills', () => {
+  const X = { name: 'x', baseDir: '/p/skills/x' };
+  const Y = { name: 'y' };
+  const Z = { name: 'z', baseDir: '/p/skills/z' };
+
+  it('carries what the earlier wake carried when no Skill call followed', () => {
+    expect(chainSkills([X, Y], [], [])).toEqual([X, Y]);
+  });
+
+  it('puts the carried ones first, then those invoked since in last-use order, once each, the invoked entry winning', () => {
+    const fresh = { name: 'x', baseDir: '/new/skills/x' };
+    expect(chainSkills([X, Y], [Z, fresh], [])).toEqual([Y, Z, fresh]);
+  });
+
+  it('drops the names drop_skills lists, carried or invoked, with or without a leading slash form already stripped', () => {
+    expect(chainSkills([X, Y], [Z], ['y'])).toEqual([X, Z]);
+    expect(chainSkills([X, Y], [Z], ['x', 'z'])).toEqual([Y]);
+  });
+
+  it('is the invoked ones alone when nothing was carried', () => {
+    expect(chainSkills(undefined, [Z], [])).toEqual([Z]);
+    expect(chainSkills(undefined, [], [])).toEqual([]);
   });
 });

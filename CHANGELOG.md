@@ -2,6 +2,22 @@
 
 Every release of sub-agent-compact. Versions follow [semantic versioning](https://semver.org); each release is the `main` commit tagged `sub-agent-compact--v<version>`, with a GitHub release carrying the section below.
 
+## [Unreleased]
+
+### Changed
+
+- The forward handoff's call shape (every field, its type, lists as arrays of strings, and its limit) is stated in the context nudge toward the tool, in the reply to a call missing a required field, which also names each field of the wrong type and what it got, and at the end of the wake's `Unresolved` block: the tool is deferred, so a model after a wake saw only its name.
+- The wake's `Git` block ends with a line saying it was read when the handoff was stored, right before the wake, so it need not be read again.
+- A party that woke from a forward handoff and is below its first nudge point gets its call through once a message the person wrote since the wake names compacting or a handoff with no negation before it (the word, not the intent); the refusal says so, and that `/compact` compacts at once.
+
+### Fixed
+
+- A chained forward handoff keeps the skills and commands the earlier wake carried: `record.json` lists them (`skills`), the next handoff carries them before those invoked since, minus `drop_skills`; an older record's are read from its `Skill` blocks by name. Before, a skill the wake had installed was lost at the next handoff unless invoked again.
+- The stored reply names each field cut to fit, with its characters (and items) before and after, the marks left out, where the uncut arguments are, how to keep what was cut, and that a call again in the turn replaces the stored one; before, a cut was marked only in the wake.
+- The stored reply names each skill or `load_files` entry the wake does not hold, and why (not found, too large, a directory, a refused read, the total cap); before, only the wake and the warning log did.
+- A list sent as a string is still read, and the reply says it was converted and into how many items; a JSON array text gives its items and a one-line `1) … 2) …` numbering splits into its items, instead of one item each.
+- A Haiku party's call, or one from a sub-agent whose `tools:` lacks the tool, is refused with that reason before its arguments are checked, instead of first being sent back to fix them.
+
 ## [0.8.0] — 2026-10-16
 
 ### Removed
