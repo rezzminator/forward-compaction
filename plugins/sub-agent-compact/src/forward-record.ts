@@ -2,6 +2,10 @@
 import { estimateTokens, fnv1a, type BlockRecord } from './forward-text.ts';
 import { isHarnessText, type HandoffMessage } from './handoff.ts';
 
+/** A skill or command a wake carried: its name, and the directory the harness printed for it. */
+export type SkillRef = { name: string; baseDir?: string };
+const isSkillRef = (x: unknown): x is SkillRef => x !== null && typeof x === 'object' && typeof (x as SkillRef).name === 'string' && ((x as SkillRef).baseDir === undefined || typeof (x as SkillRef).baseDir === 'string');
+
 type TrailEntry = { tag: 'R' | 'E' | 'C'; path: string };
 const isTrailEntry = (t: unknown): t is TrailEntry =>
   t !== null && typeof t === 'object' && ['R', 'E', 'C'].includes((t as TrailEntry).tag) && typeof (t as TrailEntry).path === 'string';
@@ -81,7 +85,7 @@ export function previousDir(root: string, session: string, seq: number, agentId?
 export type ForwardRecord = Record<string, unknown>;
 
 /** The record of one call at handoff time: the size of every block and of the whole text. */
-export function buildRecord(i: { seq: number; session: string; agentId?: string; dir: string; text: string; blocks: readonly BlockRecord[]; users: readonly string[]; usersDropped: number; handoffInReply?: boolean; trail?: readonly TrailEntry[]; summary?: string; tokensBefore?: number; trimmed: readonly string[]; at?: string }): ForwardRecord {
+export function buildRecord(i: { seq: number; session: string; agentId?: string; dir: string; text: string; blocks: readonly BlockRecord[]; users: readonly string[]; usersDropped: number; handoffInReply?: boolean; trail?: readonly TrailEntry[]; summary?: string; tokensBefore?: number; trimmed: readonly string[]; skills?: readonly SkillRef[]; at?: string }): ForwardRecord {
   return {
     seq: i.seq,
     session: i.session,
@@ -92,6 +96,7 @@ export function buildRecord(i: { seq: number; session: string; agentId?: string;
     usersDropped: i.usersDropped,
     ...(i.handoffInReply === true ? { handoffInReply: true } : {}),
     ...(i.summary !== undefined ? { summary: i.summary } : {}),
+    ...(i.skills !== undefined ? { skills: i.skills.map((x) => ({ name: x.name, ...(x.baseDir !== undefined ? { baseDir: x.baseDir } : {}) })) } : {}),
     ...(i.trail !== undefined ? { trail: i.trail.map((t) => ({ tag: t.tag, path: t.path })) } : {}),
     ...(i.at !== undefined ? { at: i.at } : {}),
     ...(i.tokensBefore !== undefined ? { tokensBefore: i.tokensBefore } : {}),
@@ -115,19 +120,32 @@ export function missingRecordProblem(i: { number?: string; looked: readonly stri
   return `earlier handoff${i.number !== undefined ? ` ${i.number}` : ''}: its record is missing from ${i.looked.join(', ')}${i.foreign ?? ''}${others}, so the prompts before it are not carried${i.unreadable.length > 0 ? ` (${i.unreadable.join('; ')})` : ''}`;
 }
 
-/** The wake's line for a drop_skills name no invocation in the session matches: nothing to drop, or unchecked when the transcript could not be read. */
+/** The wake's line for a drop_skills name neither the earlier wake carried nor an invocation since matches: nothing to drop, or unchecked when the transcript could not be read. */
 export function dropSkillProblem(name: string, read: boolean): string {
-  return read ? `drop_skills ${name}: not invoked since the last compaction (any earlier invocation was compacted away), so there is nothing to drop; leave it out of drop_skills` : `drop_skills ${name}: unchecked, the transcript is unreadable`;
+  return read ? `drop_skills ${name}: not among the skills the last wake carried or invoked since, so there is nothing to drop; leave it out of drop_skills` : `drop_skills ${name}: unchecked, the transcript is unreadable`;
 }
 
-/** The prompts, file trail and summary knowledge an earlier handoff carried, from its record: the one whose text is the one the session holds. Undefined when no record is. */
-export function carriedFrom(records: readonly unknown[], heldText: string): { users: string[]; dropped: number; inReply?: boolean; trail?: TrailEntry[]; summary?: string } | undefined {
+/**
+ * The skills a record says its wake carried: its `skills` list, else, for a record written before it kept one, the names
+ * of its `Skill {name}` blocks (no directory: each is found again by name). A malformed list carries none; a directory
+ * that is not absolute is left out, and the skill is found again by name.
+ */
+function recordSkills(rec: Record<string, unknown>): SkillRef[] | undefined {
+  // A directory is kept only when absolute, as one the harness printed is (invocations): a relative one would resolve anywhere.
+  if (Array.isArray(rec.skills)) return rec.skills.every(isSkillRef) ? (rec.skills as SkillRef[]).map((x) => ({ name: x.name, ...(x.baseDir !== undefined && x.baseDir.startsWith('/') ? { baseDir: x.baseDir } : {}) })) : undefined;
+  if (rec.skills !== undefined || !Array.isArray(rec.blocks)) return undefined;
+  const names = rec.blocks.flatMap((b) => (b !== null && typeof b === 'object' && typeof (b as { name?: unknown }).name === 'string' && (b as { name: string }).name.startsWith('Skill ') ? [(b as { name: string }).name.slice('Skill '.length)] : []));
+  return names.length > 0 ? names.map((name) => ({ name })) : undefined;
+}
+
+/** The prompts, file trail, summary knowledge and skills an earlier handoff carried, from its record: the one whose text is the one the session holds. Undefined when no record is. */
+export function carriedFrom(records: readonly unknown[], heldText: string): { users: string[]; dropped: number; inReply?: boolean; trail?: TrailEntry[]; summary?: string; skills?: SkillRef[] } | undefined {
   const hash = fnv1a(heldText);
   for (const r of records) {
     if (r === null || typeof r !== 'object') continue;
     const rec = r as Record<string, unknown>;
     if (rec.textHash !== hash || !Array.isArray(rec.users) || !rec.users.every((u) => typeof u === 'string')) continue;
-    return { users: rec.users as string[], dropped: typeof rec.usersDropped === 'number' ? rec.usersDropped : 0, ...(rec.handoffInReply === true ? { inReply: true } : {}), ...(Array.isArray(rec.trail) && rec.trail.every(isTrailEntry) ? { trail: rec.trail as TrailEntry[] } : {}), ...(typeof rec.summary === 'string' ? { summary: rec.summary } : {}) };
+    return { users: rec.users as string[], dropped: typeof rec.usersDropped === 'number' ? rec.usersDropped : 0, ...(rec.handoffInReply === true ? { inReply: true } : {}), ...(Array.isArray(rec.trail) && rec.trail.every(isTrailEntry) ? { trail: rec.trail as TrailEntry[] } : {}), ...(typeof rec.summary === 'string' ? { summary: rec.summary } : {}), ...((skills) => (skills !== undefined ? { skills } : {}))(recordSkills(rec)) };
   }
   return undefined;
 }
@@ -148,8 +166,9 @@ export function recoverForward(messages: readonly HandoffMessage[], toolName: st
       if (use.tool !== toolName) continue;
       const reply = replies.get(use.tool_use_id) ?? '';
       if (!reply.startsWith('Forward handoff stored')) continue;
-      // The plugin's own clause is the reply's last: a loaded file's name before it may carry the same words.
-      const saved = /^[\s\S]* Saved to (\/.+?)\. It installs/.exec(reply);
+      // The plugin's own clause is the reply's last, followed only by its closing sentence: a loaded file's name before it
+      // may carry the same words, and a reply saved nowhere ends in the reason, so a name forging the clause there matches nothing.
+      const saved = /^[\s\S]* Saved to (\/.+?)\. It installs when this turn ends[^.]*\.$/.exec(reply);
       const dir = saved?.[1];
       if (dir === undefined || dir.split('/').includes('..') || !roots.some((root) => dir.startsWith(`${root}/`))) return undefined;
       return { toolUseId: use.tool_use_id, dir };

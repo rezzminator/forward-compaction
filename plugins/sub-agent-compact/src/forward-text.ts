@@ -66,8 +66,8 @@ export type RenderInput = {
   handoffInReply?: boolean;
   /** What Claude Code's own summary knew, when the work began before it. */
   summary?: string;
-  /** The skills and commands to reload, oldest first: the body, or why there is none. */
-  skills: { name: string; body?: string; problem?: string }[];
+  /** The skills and commands to reload, oldest first: the body, or why there is none; the directory the harness printed for it, for the record. */
+  skills: { name: string; baseDir?: string; body?: string; problem?: string }[];
   trail: { tag: 'R' | 'E' | 'C'; path: string }[];
   /** What each made or edited file holds now, by path: one outline line each. */
   outlines?: Record<string, string>;
@@ -82,7 +82,12 @@ export type RenderInput = {
   /** Anything that was asked for and is not in the text, one line each. */
   problems: string[];
   args: ForwardArgs;
+  /** The tool's call shape (forwardCallShape), after the look_back hint: a woken model sees the deferred tool's name alone. */
+  callShape?: string;
 };
+
+/** The Git block's last line: what it shows was read as the handoff was stored, so it is the state the wake opens on. */
+export const GIT_CURRENT = 'Read when this handoff was stored, right before this wake: current unless work ran after that call, so do not re-run git status.';
 
 export function estimateTokens(chars: number): number {
   return Math.ceil(chars / CHARS_PER_TOKEN);
@@ -152,8 +157,11 @@ export function renderUsers(msgs: readonly string[], max = USERS_MAX_CHARS, base
 
 type Section = { name: string; body: string; items: number };
 
-/** The installed text and a record of each block in it. */
-export function renderForward(i: RenderInput): { text: string; blocks: BlockRecord[] } {
+/**
+ * The installed text and a record of each block in it; what the caller asked to load and the text does not hold (a
+ * skill or load_files entry, and why), for the tool's reply; and the skills whose block it holds, for the record.
+ */
+export function renderForward(i: RenderInput): { text: string; blocks: BlockRecord[]; unloaded: string[]; skills: string[] } {
   const sections: Section[] = [];
   const problems: string[] = [];
   const add = (name: string, text: string, items: number, raw = false): void => {
@@ -168,8 +176,10 @@ export function renderForward(i: RenderInput): { text: string; blocks: BlockReco
 
   const cutSkills: { name: string; body: string }[] = [];
   for (const skill of i.skills) {
-    if (skill.body === undefined) problems.push(`skill ${skill.name}: ${skill.problem ?? 'no content'}`);
-    else cutSkills.push({ name: skill.name, body: cut(collapseWhitespace(skill.body), SKILL_MAX_CHARS) });
+    // A body that is blank (a file of frontmatter alone) makes no block: it is named, never carried on as held.
+    const body = skill.body === undefined ? '' : collapseWhitespace(skill.body);
+    if (body.trim() === '') problems.push(`skill ${skill.name}: ${skill.problem ?? 'no content'}`);
+    else cutSkills.push({ name: skill.name, body: cut(body, SKILL_MAX_CHARS) });
   }
   let skillTotal = cutSkills.reduce((n, s) => n + s.body.length, 0);
   while (skillTotal > SKILLS_MAX_CHARS && cutSkills.length > 0) {
@@ -206,10 +216,11 @@ export function renderForward(i: RenderInput): { text: string; blocks: BlockReco
   if (i.plan !== undefined) add('Plan', cut(i.plan.trim(), PLAN_MAX_CHARS), 1);
   add('Tasks', i.tasks.slice(0, TASKS_MAX).map((x) => item('', x)).join('\n'), Math.min(i.tasks.length, TASKS_MAX));
   add('Running', i.running.join('\n'), i.running.length);
-  if (i.git !== undefined) add('Git', i.git, i.git.split('\n').length);
+  if (i.git !== undefined) add('Git', `${i.git}\n${GIT_CURRENT}`, i.git.split('\n').length);
   add('Paths', i.paths.join('\n'), i.paths.length);
   const all = [...problems, ...i.problems];
-  add('Unresolved', [...all, LOOK_BACK_HINT].join('\n'), all.length + 1);
+  const tail = [LOOK_BACK_HINT, ...(i.callShape !== undefined ? [i.callShape] : [])];
+  add('Unresolved', [...all, ...tail].join('\n'), all.length + tail.length);
 
   const a = i.args;
   add('Objective', a.objective, 1);
@@ -227,7 +238,7 @@ export function renderForward(i: RenderInput): { text: string; blocks: BlockReco
     blocks.push({ name: s.name, start: text.length + 1, chars: block.length, tokens: estimateTokens(block.length), items: s.items, hash: fnv1a(block) });
     text += `\n${block}`;
   }
-  return { text, blocks };
+  return { text, blocks, unloaded: problems, skills: cutSkills.map((s) => s.name) };
 }
 
 /** Whether each block of the stored text is in the installed one (by its text and hash), and the hash of what was installed. */
