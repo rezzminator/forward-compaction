@@ -1,6 +1,9 @@
 import { frontmatterList, parseFrontmatter } from './frontmatter.ts';
 import { frontmatterKey, readPolicy, type Policy } from './limits.ts';
 
+/** A resolver diagnostic, keyed by its path (or plugin identity before its directory is known). */
+export type AgentResolveLog = (line: string, path: string, screen?: boolean) => void;
+
 export type AgentFs = {
   exists: (path: string) => Promise<boolean>;
   read: (path: string) => Promise<string>;
@@ -63,7 +66,7 @@ export class AgentPolicies {
     private readonly dirs: readonly string[],
     private readonly fallback: Policy,
     private readonly fs: AgentFs,
-    private readonly log: (line: string) => void,
+    private readonly log: AgentResolveLog,
     options: { pluginDirs?: (plugin: string) => Promise<string[]>; now?: () => number } = {},
   ) {
     this.pluginDirs = options.pluginDirs ?? (async () => []);
@@ -91,7 +94,7 @@ export class AgentPolicies {
     try {
       dirs = await this.pluginDirs(plugin);
     } catch (error) {
-      this.log(`sub-agent-compact: finding the agents folder of plugin ${plugin} failed: ${String(error)}`);
+      this.log(`sub-agent-compact: finding the agents folder of plugin ${plugin} failed: ${String(error)}`, `plugin:${plugin}`);
       return { resolved: { policy: this.fallback, source: 'default' }, failed: true };
     }
     return this.lookupIn(dirs, type.slice(colon + 1), type, `plugin:${plugin}`);
@@ -106,7 +109,7 @@ export class AgentPolicies {
         found = await this.fs.exists(path);
       } catch (error) {
         failed = true;
-        this.log(`sub-agent-compact: checking ${path} failed: ${String(error)}`);
+        this.log(`sub-agent-compact: checking ${path} failed: ${String(error)}`, path);
       }
       if (found) {
         const definition = await this.definition(path);
@@ -140,7 +143,7 @@ export class AgentPolicies {
       (field) => fields[frontmatterKey(field)] ?? (field === 'autoCompact' ? fields.autoCompact : undefined),
       this.fallback,
       (field, error, fallbackText) =>
-        this.log(`sub-agent-compact: ${path} ${written(field)} for ${type} is invalid (${error}); using the default ${fallbackText}`),
+        this.log(`sub-agent-compact: ${path} ${written(field)} for ${type} is invalid (${error}); using the default ${fallbackText}`, path),
     );
     return set ? { policy, source: path } : { policy: this.fallback, source: 'default' };
   }
@@ -150,7 +153,7 @@ export class AgentPolicies {
       const text = await this.fs.read(path);
       return { fields: parseFrontmatter(text), text };
     } catch (error) {
-      this.log(`sub-agent-compact: reading ${path} failed: ${String(error)}`);
+      this.log(`sub-agent-compact: reading ${path} failed: ${String(error)}`, path);
       return undefined;
     }
   }
@@ -170,7 +173,7 @@ export class AgentPolicies {
           files = await this.fs.listMarkdown(dir);
         } catch (error) {
           failed = true;
-          this.log(`sub-agent-compact: listing ${dir} failed: ${String(error)}`);
+          this.log(`sub-agent-compact: listing ${dir} failed: ${String(error)}`, dir);
           continue;
         }
         for (const file of files) {

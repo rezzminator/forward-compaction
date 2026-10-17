@@ -283,7 +283,7 @@ describe('registering the tools is bounded', () => {
     expect((await cc.read()).context?.[0]).toContain(TOOL);
   });
 
-  it('says the registration goes on past the limit, and names the tools and the wait once it finishes', async () => {
+  it('shows the registration timeout but keeps its routine completion off screen with a plugin log', async () => {
     vi.useFakeTimers();
     const { gate, release } = deferred();
     const cc = engine(HANDOFF_ONLY, { registerGate: gate });
@@ -293,7 +293,8 @@ describe('registering the tools is bounded', () => {
     await vi.advanceTimersByTimeAsync(2_000);
     release();
     await vi.advanceTimersByTimeAsync(0);
-    expect(cc.logs.filter((line) => /finished after/.test(line))).toEqual([expect.stringMatching(/^registering the tools finished after 7s: mcp__sub-agent-compact__handoff, mcp__sub-agent-compact__look_back$/)]);
+    expect(cc.registered).toEqual(['handoff', 'look_back']);
+    expect(cc.logs.filter((line) => /finished after/.test(line))).toEqual([]);
   });
 
   it('spends the tries left on a later turn once a registration that outlived the limit has failed', async () => {
@@ -361,14 +362,14 @@ describe('the size of the cut in the nudge', () => {
 });
 
 describe('a handoff the plugin no longer holds', () => {
-  it('is found in the transcript, where the tool call and its stored reply stand, and installed; the model and the person are told', async () => {
+  it('is found in the transcript, where the tool call and its stored reply stand, and installed; the model is told while the plugin log keeps the routine notice', async () => {
     const cc = engine(HANDOFF_ONLY);
     await cc.start();
     await cc.step(250_000);
     const out = await cc.ask('auto');
     expect(cc.summarized()).toBe(0);
     expect(out.messages[0].text).toContain(NEXT_STEP);
-    expect(cc.logs.join('\n')).toMatch(/recovered the handoff of main from its transcript/);
+    expect(cc.logs.join('\n')).not.toMatch(/recovered the handoff of main from its transcript/);
     expect((await cc.read()).context?.join('\n')).toMatch(/recovered from your transcript/);
   });
 
@@ -410,13 +411,13 @@ describe('when the handoff installs', () => {
     expect(await cc.ask('auto')).toMatchObject({ messages: [{ text: expect.stringContaining(NEXT_STEP) }] });
   });
 
-  it('draws every install as a line the person reads', async () => {
+  it('keeps a successful install off screen while the plugin log is active', async () => {
     const cc = engine(HANDOFF_ONLY);
     await cc.start();
     await cc.step(250_000);
     await cc.handoff();
-    await cc.ask('auto');
-    expect(cc.logs.join('\n')).toMatch(/installed the handoff of main: 250k/);
+    expect(await cc.ask('auto')).toMatchObject({ messages: [{ text: expect.stringContaining(NEXT_STEP) }] });
+    expect(cc.logs.join('\n')).not.toMatch(/installed the handoff of main: 250k/);
   });
 });
 

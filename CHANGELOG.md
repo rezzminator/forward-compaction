@@ -2,6 +2,13 @@
 
 Every release of sub-agent-compact. Versions follow [semantic versioning](https://semver.org); each release is the `main` commit tagged `sub-agent-compact--v<version>`, with a GitHub release carrying the section below.
 
+## [0.8.1-alpha] — 2026-10-17
+
+### Fixed
+
+- Agent resolver skips and failures are logged once per path per plugin session; listed links to non-regular files (including dangling links) remain warning-log diagnostics without screen noise.
+- Routine info notices stay off screen when either the decision log or plugin log keeps them, unless decision logging is off after a session-id lookup failure; other warnings and errors still show.
+
 ## [0.8.0] — 2026-10-16
 
 ### Removed

@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { execFile } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -29,7 +29,12 @@ const api = (extra: unknown[] = []) => [
   { role: 'assistant', content: [{ type: 'tool_use', id: 'f1', name: 'mcp__sub-agent-compact__forward_handoff', input: FIELDS }] },
 ];
 
-type Env = { registerOptions?: Record<string, unknown>; settings?: Record<string, Record<string, unknown>>; settingsReadFails?: string[]; homeGate?: Promise<void>; timers?: (() => void)[]; cwdFails?: boolean; vars?: Record<string, string>; envReadFails?: string[]; window?: number; decisionSessionFailsOnce?: boolean; decisionWriteFails?: boolean; uiFailsOnce?: boolean; home?: string; pluginLogDir?: string; pluginRunFails?: boolean; readFails?: string[]; denied?: string[]; listFails?: boolean; noHome?: boolean; noTranscript?: boolean; cwd?: string; agentRows?: Record<string, unknown[]>; agents?: { id: string; type: string }[]; run?: (argv: string[], init?: { cwd?: string }) => { exitCode: number; stdout: string; stderr: string } | undefined; appendWaits?: Promise<void>; decisionWriteAbortsOnce?: boolean; retentionFails?: string; retentionWaits?: Promise<void>; messagesFail?: boolean; pluginWaits?: Promise<void>; timersFire?: boolean; noClock?: boolean; claimFails?: boolean };
+type Env = { registerOptions?: Record<string, unknown>; settings?: Record<string, Record<string, unknown>>; settingsReadFails?: string[]; homeGate?: Promise<void>; timers?: (() => void)[]; cwdFails?: boolean; vars?: Record<string, string>; envReadFails?: string[]; window?: number; decisionSessionFailsOnce?: boolean; decisionWriteFails?: boolean; uiFailsOnce?: boolean; home?: string; pluginLogDir?: string; pluginRunFails?: boolean; readFails?: string[]; denied?: string[]; listFails?: boolean; noHome?: boolean; noTranscript?: boolean; cwd?: string; agentRows?: Record<string, unknown[]>; agents?: { id: string; type: string }[]; run?: (argv: string[], init?: { cwd?: string }) => { exitCode: number; stdout: string; stderr: string } | undefined; appendWaits?: Promise<void>; decisionWriteAbortsOnce?: boolean; retentionFails?: string; retentionWaits?: Promise<void>; messagesFail?: boolean; pluginWaits?: Promise<void>; timersFire?: boolean; noClock?: boolean; claimFails?: boolean;
+  agentEntries?: Record<string, { name: string; kind: 'file' | 'dir' | 'other'; size: number; isLink: boolean }[]>;
+  agentStats?: Record<string, { kind: 'file' | 'dir' | 'other'; size: number }>;
+  statFails?: string[];
+  existsFails?: string[];
+};
 const pluginExec = promisify(execFile);
 
 function engine(options: Record<string, unknown> = { forwardHandoffTool: true }, files: Record<string, string> = {}, apiRows: unknown[] = api(), git = true, refused: string[] = [], env: Env = {}) {
@@ -82,7 +87,10 @@ function engine(options: Record<string, unknown> = { forwardHandoffTool: true },
       },
     },
     fs: {
-      exists: async (path: string) => path in known || path in written || Object.keys(written).some((p) => p.startsWith(`${path}/`)),
+      exists: async (path: string) => {
+        if (env.existsFails?.includes(path)) throw new Error('EACCES');
+        return path in known || path in written || Object.keys(written).some((p) => p.startsWith(`${path}/`));
+      },
       read: async (path: string) => {
         if (env.readFails?.includes(path)) throw new Error('EACCES');
         return known[path] ?? written[path] ?? '';
@@ -90,10 +98,14 @@ function engine(options: Record<string, unknown> = { forwardHandoffTool: true },
       write: async (path: string, content: string) => { fsWrites.push(path); written[path] = content; },
       list: async (dir: string) => {
         if (env.listFails) throw new Error(`EACCES: permission denied, scandir '${dir}'`);
+        if (env.agentEntries?.[dir]) return env.agentEntries[dir];
         const names = Object.keys(written).filter((p) => p.startsWith(`${dir}/`)).map((p) => p.slice(dir.length + 1).split('/')[0]!);
         return [...new Set(names)].map((name) => ({ name, kind: 'dir' }));
       },
-      stat: async (path: string) => ({ kind: 'file', size: (known[path] ?? '').length, mtimeMs: 0, isLink: false }),
+      stat: async (path: string) => {
+        if (env.statFails?.includes(path)) throw new Error('EACCES');
+        return { kind: 'file', size: (known[path] ?? '').length, mtimeMs: 0, isLink: false, ...env.agentStats?.[path] };
+      },
     },
     process: {
       run: async (argv: string[], init?: { cwd?: string; stdin?: string }) => {
@@ -383,8 +395,7 @@ describe('the forward handoff tool through the adapter', () => {
     const record = JSON.parse(cc.written[`${DIR}/record.json`]!);
     expect(record.tokensAfter).toBe(out.tokensAfter);
     expect(record.install).toMatchObject({ ok: true, missing: [], landed: record.blocks.length });
-    const after = out.tokensAfter < 1000 ? String(out.tokensAfter) : `${Math.round(out.tokensAfter / 1000)}k`;
-    expect(cc.logs.filter((line) => /handoff/.test(line))).toEqual([`forward handoff 1 of main: 250k -> ${after} tokens in messages (system prompt and tools not counted), all ${record.blocks.length} blocks landed, files in ${DIR}`]);
+    expect(cc.logs.filter((line) => /handoff/.test(line))).toEqual([]);
     expect(cc.logs.filter((line) => line.startsWith('sub-agent-compact:'))).toEqual([]);
   });
 
@@ -1097,11 +1108,30 @@ describe('the lines the plugin says, on the screen and in the decision log', () 
     expect(line).toMatch(/^listing .* failed: EACCES/);
     expect((await said(cc)).filter((r: any) => r.line === line)).toEqual([expect.objectContaining({ shown: true })]);
   });
-  it('shows a routine line on the screen when no decision log is configured', async () => {
-    const cc = engine({ handoffTool: false, forwardHandoffTool: false, compactTool: false }, {}, api(), true, [], lookEngineRun);
-    await cc.start();
-    await cc.call({ tool: LOOK_BACK, why: 'lost error', query: 'alpha beta' });
-    expect(lookLines(cc)).toEqual(['look back (main): lost error — 1 hits']);
+  it.each([
+    ['HOME plugin log only', {}, {}, false],
+    ['override plugin log only', {}, { noHome: true, pluginLogDir: '/logs' }, false],
+    ['decision log only', { logFile: '/logs/decisions.jsonl' }, { noHome: true }, false],
+    ['neither log', {}, { noHome: true }, true],
+    ['decision logging off with plugin log', { logFile: '/logs/decisions.jsonl' }, { decisionSessionFailsOnce: true }, true],
+  ] as [string, Record<string, unknown>, Env, boolean][])('shows routine notices only without a keeping log: %s', async (_, options, env, shown) => {
+    const temp = mkdtempSync(join(tmpdir(), 'compact-routine-'));
+    try {
+      const cc = engine({ handoffTool: false, forwardHandoffTool: false, compactTool: false, ...options }, {}, api(), true, [], {
+        ...lookEngineRun, home: temp, ...env, ...(env.pluginLogDir ? { pluginLogDir: join(temp, 'logs') } : {}), vars: { CLAUDE_CONFIG_DIR: '/h/u/.claude' },
+      });
+      await cc.start();
+      await cc.decisions();
+      await cc.call({ tool: LOOK_BACK, why: 'lost error', query: 'alpha beta' });
+      await cc.call({ tool: 'Read', file_path: TRANSCRIPT });
+      expect(lookLines(cc)).toEqual(shown ? ['look back (main): lost error — 1 hits', 'look back by hand (main): Read on the transcript'] : []);
+      await cc.end();
+      if (!env.noHome || env.pluginLogDir) {
+        const dir = env.pluginLogDir ? join(temp, 'logs/sub-agent-compact') : join(temp, '.local/state/sub-agent-compact/logs');
+        const info = readFileSync(join(dir, 'info.jsonl'), 'utf8').trim().split('\n').map((row) => JSON.parse(row));
+        expect(info.filter((row) => row.event === 'said' && row.msg.startsWith('look back'))).toHaveLength(2);
+      }
+    } finally { rmSync(temp, { recursive: true, force: true }); }
   });
 });
 
@@ -1185,6 +1215,64 @@ describe('the Git block describes the repositories the work touched', () => {
     const wake = await wakeOf([use('e1', 'Edit', { file_path: '/a/.worktrees/fix/src/x.ts' }), use('e2', 'Edit', { file_path: '/b/src/y.ts' })], run);
     expect(gitBlockOf(wake)).toBe('/a/.worktrees/fix: flight/fix@bbb2222, 1 dirty: /a/.worktrees/fix/src/x.ts\n');
     expect(wake).toMatch(/Unresolved\n(?:.*\n)*git \/b\/src: fatal: detected dubious ownership in repository at '\/b'\n/);
+  });
+});
+
+describe('agent resolver diagnostics through the adapter', () => {
+  const dir = '/nowhere/.claude/agents';
+  const link = (name: string) => ({ name, kind: 'other' as const, size: 0, isLink: true });
+  const warnings = (temp: string): any[] => readFileSync(join(temp, 'logs/sub-agent-compact/warnings.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line)).filter((row) => row.event === 'resolve-error');
+
+  it('keeps non-regular and dangling listed links in the warning log, never on screen', async () => {
+    const temp = mkdtempSync(join(tmpdir(), 'compact-resolver-quiet-'));
+    try {
+      const paths = ['dangling', 'directory', 'pipe'].map((name) => `${dir}/${name}.md`);
+      const cc = engine({}, { [dir]: '' }, api(), true, [], {
+        pluginLogDir: join(temp, 'logs'), agents: [{ id: 'a1', type: 'reader' }],
+        agentEntries: { [dir]: ['dangling', 'directory', 'pipe'].map((name) => link(`${name}.md`)) },
+        agentStats: Object.fromEntries(paths.map((path) => [path, { kind: path.includes('directory') ? 'dir' : 'other', size: 0 }])),
+      });
+      await cc.start();
+      expect(await cc.read('a1')).toEqual({ result: 'file text' });
+      await cc.end();
+      expect(warnings(temp).map((row) => [row.level, row.msg])).toEqual(paths.map((path) => ['warning', `sub-agent-compact: skipping ${path}: a link to something not a regular file`]));
+      expect(cc.logs.filter((line) => paths.some((path) => line.includes(path)))).toEqual([]);
+    } finally { rmSync(temp, { recursive: true, force: true }); }
+  });
+
+  it.each(['non-regular', 'stat', 'oversized', 'checking', 'reading', 'invalid', 'listing'])('emits resolver %s diagnostics once per path per plugin session, beyond cache expiry', async (failure) => {
+    const temp = mkdtempSync(join(tmpdir(), 'compact-resolver-once-'));
+    const now = vi.spyOn(Date, 'now');
+    try {
+      const paths = ['reader', 'other'].map((name) => `${dir}/${name}.md`);
+      const files: Record<string, string> = { [dir]: '', '/h/u/.claude/agents': '' };
+      const env: Env = {
+        pluginLogDir: join(temp, 'logs'), agents: [{ id: 'a1', type: 'reader' }, { id: 'a2', type: 'other' }],
+        agentEntries: { [dir]: ['reader.md', 'other.md'].map(link) },
+      };
+      if (failure === 'non-regular') env.agentStats = Object.fromEntries(paths.map((path) => [path, { kind: 'other', size: 0 }]));
+      if (failure === 'stat') env.statFails = paths;
+      if (failure === 'oversized') env.agentStats = Object.fromEntries(paths.map((path) => [path, { kind: 'file', size: 5 * 1024 * 1024 }]));
+      if (failure === 'checking') { env.existsFails = paths; env.agentEntries = {}; }
+      if (failure === 'reading' || failure === 'invalid') {
+        paths.forEach((path, i) => { files[path] = `---\nname: ${i === 0 ? 'reader' : 'other'}\nautoCompact:\n  forceAt: bad\n  nudgeFrom: also-bad\n---\n`; });
+        if (failure === 'reading') env.readFails = paths;
+      }
+      if (failure === 'listing') env.listFails = true;
+      for (let session = 0; session < 2; session++) {
+        const cc = engine({}, files, api(), true, [], env);
+        await cc.start();
+        for (let attempt = 0; attempt < 3; attempt++) {
+          now.mockReturnValue(attempt * 61_000);
+          expect(await cc.read('a1')).toEqual({ result: 'file text' });
+          expect(await cc.read('a2')).toEqual({ result: 'file text' });
+        }
+        await cc.end();
+        const subjects = failure === 'listing' ? [dir, '/h/u/.claude/agents'] : paths;
+        expect(warnings(temp)).toHaveLength(subjects.length * (session + 1));
+        for (const path of subjects) expect(cc.logs.filter((line) => line.includes(path))).toHaveLength(failure === 'non-regular' ? 0 : 1);
+      }
+    } finally { now.mockRestore(); rmSync(temp, { recursive: true, force: true }); }
   });
 });
 

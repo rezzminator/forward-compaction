@@ -8,7 +8,7 @@ import { buildRecord, carriedFrom, forwardClaimArgv, forwardDir, forwardRoots, f
 import { chainUsers, forwardInstalledLine, installCheck, renderForward, TRAIL_MAX, type BlockRecord, type RenderInput } from '../src/forward-text.ts';
 import { BRIEF_MAX_TOKENS, reseatBrief, seatedBrief } from '../src/brief.ts';
 import { engineAgentFs } from '../src/agent-fs.ts';
-import { AgentPolicies, AgentTypes, hasTool } from '../src/agents.ts';
+import { AgentPolicies, AgentTypes, hasTool, type AgentResolveLog } from '../src/agents.ts';
 import { compactionEnd, contextTokens, currentTokens, decide, estimateTranscript, knownTrigger, personPrompt, type Trigger } from '../src/decide.ts';
 import {
   CONTINUE_AFTER_HANDOFF,
@@ -33,7 +33,7 @@ import {
   type ForwardMeta,
 } from '../src/handoff.ts';
 import { SETTINGS_SOURCES, leftoverOptionKeys, resolveOptions, sizeTokens, type OptionEnvironment, type Policy, type ResolvedOptions } from '../src/limits.ts';
-import { sessionLogPath, decisionAppendArgv, retentionArgv, requeueRows, keptRowsText, endReport, SkipFold, pluginLogDir, levelRow, pluginLogEvent, PluginLogQueue, type PluginLogLevel, type PluginLogFields } from '../src/log.ts';
+import { sessionLogPath, noticeOnScreen, decisionAppendArgv, retentionArgv, requeueRows, keptRowsText, endReport, SkipFold, pluginLogDir, levelRow, pluginLogEvent, PluginLogQueue, type PluginLogLevel, type PluginLogFields } from '../src/log.ts';
 import { armedText, CONTINUE_AFTER_MARKER, disarmedText, earlyArm, markerRequest, nudgeText, stopRequest } from '../src/nudge.ts';
 import { FRESH_MAX_MESSAGES, isFirstRequest, Parties } from '../src/parties.ts';
 import { engineAskPoint, forcedPoint, isHaiku, modelWindow } from '../src/window.ts';
@@ -60,8 +60,8 @@ function screenLine(line: string): string {
  * Every line said lands in the decision log as a `said` row; a routine one reaches the screen too while there is no
  * log to hold it. A line said with its diagnostic row is one level-log entry: the row's, at the level said.
  */
-function say(st: State, $: EngineInterface, line: string, level: PluginLogLevel = 'error', row?: Row): void {
-  const shown = level !== 'info' || !st.config.logFile || st.logOff === true;
+function say(st: State, $: EngineInterface, line: string, level: PluginLogLevel = 'error', row?: Row, screen = true): void {
+  const shown = noticeOnScreen({ level, decisionLog: !!st.config.logFile, pluginLog: st.pluginLog !== undefined, logOff: st.logOff, screen });
   const diagnostic = row === undefined ? undefined : pluginLogEvent(row);
   plog(st, $, diagnostic !== undefined ? { ...diagnostic, level } : { level, event: 'said', msg: screenLine(line), where: 'hooks/sub-agent-compact.ts#say' });
   if (shown) show($, line);
@@ -445,8 +445,11 @@ function start(st: State, $: EngineInterface): Promise<void> {
       say(st, $, `sub-agent-compact: reading CLAUDE_CODE_AUTO_COMPACT_WINDOW failed: ${message(error)}`, 'warning');
     }
     const dirs = [`${cwd}/.claude/agents`, ...(home ? [`${home}/.claude/agents`] : []), ...st.config.agentDirs];
-    const resolveLog = (line: string) => {
-      say(st, $, line, 'warning', { event: 'resolve-error', line });
+    const resolveLog: AgentResolveLog = (line, path, screen = true) => {
+      const key = `resolve:${path}`;
+      if (st.warned.has(key)) return;
+      st.warned.add(key);
+      say(st, $, line, 'warning', { event: 'resolve-error', line }, screen);
     };
     st.policies = new AgentPolicies(
       dirs,

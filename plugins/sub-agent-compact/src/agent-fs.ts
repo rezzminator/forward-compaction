@@ -1,5 +1,5 @@
 import type { EngineInterface } from 'claude-code';
-import type { AgentFs } from './agents.ts';
+import type { AgentFs, AgentResolveLog } from './agents.ts';
 
 /** The engine's `$.fs.read` limit: a linked definition past it is skipped before the read. */
 export const AGENT_FILE_MAX_BYTES = 4 * 1024 * 1024;
@@ -11,7 +11,7 @@ export const AGENT_FILE_MAX_BYTES = 4 * 1024 * 1024;
  */
 export function engineAgentFs(
   fs: Pick<EngineInterface['fs'], 'exists' | 'list' | 'stat'> & { read: (path: string) => Promise<string> },
-  log: (line: string) => void,
+  log: AgentResolveLog,
 ): AgentFs {
   return {
     exists: (path) => fs.exists(path),
@@ -36,11 +36,11 @@ export function engineAgentFs(
         try {
           target = await fs.stat(path);
         } catch (error) {
-          log(`sub-agent-compact: skipping ${path}: could not stat it: ${String(error)}`);
+          log(`sub-agent-compact: skipping ${path}: could not stat it: ${String(error)}`, path);
           continue;
         }
-        if (target.kind !== 'file') log(`sub-agent-compact: skipping ${path}: a link to something not a regular file`);
-        else if (target.size > AGENT_FILE_MAX_BYTES) log(`sub-agent-compact: skipping ${path}: a link to ${target.size} bytes, over the ${AGENT_FILE_MAX_BYTES} byte limit`);
+        if (target.kind !== 'file') log(`sub-agent-compact: skipping ${path}: a link to something not a regular file`, path, false);
+        else if (target.size > AGENT_FILE_MAX_BYTES) log(`sub-agent-compact: skipping ${path}: a link to ${target.size} bytes, over the ${AGENT_FILE_MAX_BYTES} byte limit`, path);
         else names.push(entry.name);
       }
       return names;

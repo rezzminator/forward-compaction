@@ -241,6 +241,11 @@ function summary(streak: SkipStreak): DecisionRow {
 }
 
 export type PluginLogLevel = 'error' | 'warning' | 'info';
+
+/** Routine notices need a screen only when neither log keeps them, or decision logging is off. */
+export function noticeOnScreen({ level, decisionLog, pluginLog, logOff, screen }: { level: PluginLogLevel; decisionLog: boolean; pluginLog: boolean; logOff?: boolean; screen?: boolean }): boolean {
+  return screen !== false && (level !== 'info' || logOff === true || (!decisionLog && !pluginLog));
+}
 export type PluginLogFields = { plugin: string; level: PluginLogLevel; event: string; msg: string; where: string; session?: string; detail?: Record<string, unknown> };
 export const PLUGIN_LOG_CAP_BYTES = 20971520;
 export const ROW_MAX_BYTES = 4096;
