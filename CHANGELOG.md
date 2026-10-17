@@ -4,6 +4,8 @@ Every release of sub-agent-compact. Versions follow [semantic versioning](https:
 
 ## [Unreleased]
 
+## [0.8.1-dev.1] — 2026-10-17
+
 ### Changed
 
 - The forward handoff's call shape (every field, its type, lists as arrays of strings, and its limit) is stated in the context nudge toward the tool, in the reply to a call missing a required field, which also names each field of the wrong type and what it got, and at the end of the wake's `Unresolved` block: the tool is deferred, so a model after a wake saw only its name.
