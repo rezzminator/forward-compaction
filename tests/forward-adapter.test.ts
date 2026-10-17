@@ -34,6 +34,8 @@ type Env = { registerOptions?: Record<string, unknown>; settings?: Record<string
   agentStats?: Record<string, { kind: 'file' | 'dir' | 'other'; size: number }>;
   statFails?: string[];
   existsFails?: string[];
+  writeFails?: string[];
+  agentListFails?: boolean;
 };
 const pluginExec = promisify(execFile);
 
@@ -95,7 +97,7 @@ function engine(options: Record<string, unknown> = { forwardHandoffTool: true },
         if (env.readFails?.includes(path)) throw new Error('EACCES');
         return known[path] ?? written[path] ?? '';
       },
-      write: async (path: string, content: string) => { fsWrites.push(path); written[path] = content; },
+      write: async (path: string, content: string) => { if (env.writeFails?.includes(path)) throw new Error('write unavailable'); fsWrites.push(path); written[path] = content; },
       list: async (dir: string) => {
         if (env.listFails) throw new Error(`EACCES: permission denied, scandir '${dir}'`);
         if (env.agentEntries?.[dir]) return env.agentEntries[dir];
@@ -169,7 +171,7 @@ function engine(options: Record<string, unknown> = { forwardHandoffTool: true },
       if (env.uiFailsOnce) { env.uiFailsOnce = false; throw new Error('screen unavailable'); }
       logs.push(line);
     } },
-    agent: { list: async () => env.agents ?? [] },
+    agent: { list: async () => { if (env.agentListFails) throw new Error('agent list unavailable'); return env.agents ?? []; } },
     tool: {
       check: async (q: { tool: string; input: { file_path: string } }) =>
         env.denied?.includes(q.input.file_path) ? { decision: 'deny', reason: 'Permission to read this file has been denied.', rule: 'Read(.env)' } : { decision: 'allow' },
@@ -236,13 +238,14 @@ function engine(options: Record<string, unknown> = { forwardHandoffTool: true },
     },
     forward: (fields: Record<string, unknown> = FIELDS, agentId?: string) =>
       dispatch('tool.call', { tool: TOOL, ...fields, tool_use_id: 'f1', ...(agentId ? { agentId } : {}) }, async () => ({ result: 'unreached' })),
+    subagentStop: (e: Record<string, unknown>) => dispatch('classic.SubagentStop', e, async () => ({})),
     stop: (e: Record<string, unknown>) => dispatch('classic.Stop', e, async () => ({})),
     spawn: (e: Record<string, unknown>, agentId: string) => dispatch('agent.spawn', { tool_use_id: 't1', prompt: 'go', ...e }, async () => ({ model: 'claude-opus-4-5', agentId })),
     read: (agentId?: string) => dispatch('tool.call', { tool: 'Read', file_path: 'x', ...(agentId ? { agentId } : {}) }, async () => ({ result: 'file text' })),
     /** A compaction Claude Code itself left unfinished: its summary was skipped beneath the plugin. */
     askUnfinished: (trigger: string) => dispatch('session.compact', { trigger, messages: rows }, async () => ({ skip: 'prompt is too long' })),
-    ask: (trigger: string, messages: unknown[] = rows) =>
-      dispatch('session.compact', { trigger, messages }, async () => {
+    ask: (trigger: string, messages: unknown[] = rows, extra: Record<string, unknown> = {}) =>
+      dispatch('session.compact', { trigger, messages, ...extra }, async () => {
         summarized++;
         return { messages: [{ role: 'user', text: 'summary', toolUses: [] }], tokensAfter: 20_000 };
       }),
@@ -301,7 +304,7 @@ describe('the forward handoff tool through the adapter', () => {
       await cc.start();
       expect(cc.registered.sort()).toEqual(['compact', 'look_back']);
       expect(cc.logs.filter((line) => line.includes('SUB_AGENT_COMPACT_*'))).toEqual([expect.stringMatching(/^options forwardHandoffTool, mainAutoCompact are not read; set SUB_AGENT_COMPACT_\* environment variables instead.*not applied/)]);
-      expect(cc.logs.filter((line) => line.includes('policy settings'))).toEqual([expect.stringMatching(/reading the policy settings failed: the policy settings are unreadable; a leftover pluginConfigs entry there goes unnamed/)]);
+      expect(cc.logs.filter((line) => line.includes('policy settings'))).toEqual([]);
     });
     it('handed to register: applies none of them and says so once, naming the keys', async () => {
       const cc = engine({}, {}, api(), true, [], { registerOptions: left });
@@ -1045,18 +1048,18 @@ describe('look_back through the adapter (R1–R7, R9)', () => {
     const failed = await cc.call({ tool: LOOK_BACK, why: 'lost output', entry: 8 });
     expect(failed.result).toBe('Look back failed: tool name lookup: grep: transcript unavailable');
     expect(await saidLines(cc)).toHaveLength(3);
-    expect(lookLines(cc)).toHaveLength(2);
+    expect(lookLines(cc)).toHaveLength(1);
     expect((await saidLines(cc))[2]).toBe('look back (main): lost output — failed: tool name lookup: grep: transcript unavailable');
     expect(await lookRows(cc)).toHaveLength(3);
     expect((await lookRows(cc))[2]).toMatchObject({ entry: 8, boundary: 10, error: 'tool name lookup: grep: transcript unavailable' });
   });
-  it('counts an invalid call after a compaction with one failed notice and row, finding the boundary but never searching', async () => {
+  it('counts an invalid call after a compaction with a log-only warning and row, finding the boundary but never searching', async () => {
     const cc = lookEngine(); await cc.start();
     const out = await cc.call({ tool: LOOK_BACK, why: 'lost detail' });
     expect(out.result).toContain('query or entry');
     const transcriptRuns = cc.runCalls.filter((argv) => !['plugin-log', 'decision-log', 'decision-retention'].includes(argv[3]!));
     expect(transcriptRuns.map((argv) => argv[0] === 'sh' && argv[2]!.includes('compact_boundary') ? 'boundary' : argv[0])).toEqual(['find', 'boundary']);
-    expect(lookLines(cc)).toEqual(['look back (main): lost detail — failed: query or entry is required']);
+    expect(lookLines(cc)).toEqual([]);
     expect((await lookRows(cc))[0]).toMatchObject({ why: 'lost detail', boundary: 10, error: 'query or entry is required' });
   });
   it.each([
@@ -1085,6 +1088,144 @@ describe('look_back through the adapter (R1–R7, R9)', () => {
 });
 
 // Every line the plugin says lands in the decision log as a 'said' row; a routine success stays off the screen while a log takes it.
+describe('diagnostic screen policy', () => {
+  const disk = (dir: string, file: string): any[] => existsSync(join(dir, file)) ? readFileSync(join(dir, file), 'utf8').trim().split('\n').map((row) => JSON.parse(row)) : [];
+  it.each([
+    ['plugin log', {}, {}, false],
+    ['decision log', { logFile: '/logs/decisions.jsonl' }, { noHome: true }, false],
+    ['no log', {}, { noHome: true }, true],
+    ['plugin log failing', {}, { pluginRunFails: true }, true],
+    ['decision log failing', { logFile: '/logs/decisions.jsonl' }, { noHome: true, decisionWriteFails: true }, true],
+    ['decision log off', { logFile: '/logs/decisions.jsonl' }, { decisionSessionFailsOnce: true }, true],
+  ] as [string, Record<string, unknown>, Env, boolean][])('routes warnings by log availability: %s', async (_, options, env, shown) => {
+    const temp = mkdtempSync(join(tmpdir(), 'compact-screen-policy-'));
+    try {
+      const cc = engine(options, {}, api(), true, [], { home: temp, ...env });
+      await cc.start();
+      // Ensure a failing plugin writer has settled before the next diagnostic.
+      await cc.call({ tool: LOOK_BACK, why: 'bad input' });
+      await cc.end();
+      await cc.ask('recompute', []);
+      await cc.end();
+      expect(cc.logs.filter((line) => line.includes('unknown trigger "recompute"'))).toHaveLength(shown ? 1 : 0);
+      if (!env.noHome && !env.pluginRunFails) expect(disk(join(temp, '.local/state/sub-agent-compact/logs'), 'warnings.jsonl').filter((row) => row.msg.includes('unknown trigger "recompute"'))).toHaveLength(1);
+    } finally { rmSync(temp, { recursive: true, force: true }); }
+  });
+
+  it('falls back to the screen for skipped links when no log can keep the warning', async () => {
+    const dir = '/nowhere/.claude/agents';
+    const cc = engine({}, { [dir]: '' }, api(), true, [], {
+      noHome: true, agents: [{ id: 'a1', type: 'reader' }],
+      agentEntries: { [dir]: [{ name: 'dangling.md', kind: 'other', size: 0, isLink: true }] },
+      agentStats: { [`${dir}/dangling.md`]: { kind: 'other', size: 0 } },
+    });
+    await cc.start(); await cc.read('a1');
+    expect(cc.logs.filter((line) => line.includes('dangling.md'))).toEqual([`skipping ${dir}/dangling.md: a link to something not a regular file`]);
+  });
+
+  it('keeps startup fallback warnings off screen once the log destination is known', async () => {
+    const temp = mkdtempSync(join(tmpdir(), 'compact-startup-policy-'));
+    try {
+      const cc = engine({}, {}, api(), true, [], { home: temp, cwdFails: true, envReadFails: ['PLUGIN_LOG_DIR'] });
+      await cc.start(); await cc.end();
+      expect(cc.logs.filter((line) => /cwd failed|reading PLUGIN_LOG_DIR failed/.test(line))).toEqual([]);
+      expect(disk(join(temp, '.local/state/sub-agent-compact/logs'), 'warnings.jsonl').filter((row) => /cwd failed|reading PLUGIN_LOG_DIR failed/.test(row.msg))).toHaveLength(2);
+    } finally { rmSync(temp, { recursive: true, force: true }); }
+  });
+
+  it.each([
+    ['main tool unavailable', 'not registered, so it is not nudged'],
+    ['transcript shape', 'has an unexpected shape'],
+    ['handoff fallback', 'could not be installed verbatim'],
+    ['brief seating', 'seating the brief of sub-agent'],
+    ['wake load', 'could not load example'],
+    ['plugin discovery', 'load_on_wake finds no plugin skill'],
+    ['forward recovery', 'recovering the forward handoff'],
+    ['forward verification', 'its install is unchecked'],
+    ['forward record', 'writing the install check'],
+    ['missing block', 'blocks missing: Git'],
+    ['native window', 'lower the window to hold this limit'],
+    ['no reading', 'no token reading for main'],
+    ['HOME unavailable', 'reading HOME failed'],
+    ['subagent stop', "reading a1's stop failed"],
+  ])('shows and error-logs a failed feature: %s', async (failure, line) => {
+    const temp = mkdtempSync(join(tmpdir(), 'compact-error-policy-'));
+    try {
+      const root = '/h/u/.claude';
+      const skill = '/nowhere/.claude/skills/example/SKILL.md';
+      const files = { [skill]: 'Example instructions', ...(failure === 'plugin discovery' ? { [`${root}/plugins/installed_plugins.json`]: 'not json' } : {}) };
+      const env: Env = { home: '/h/u', vars: { CLAUDE_CONFIG_DIR: root }, readFails: [], writeFails: [], agents: [{ id: 'a1', type: 'worker' }] };
+      if (failure === 'HOME unavailable') env.envReadFails = ['HOME'];
+      // Keep a plugin log even when HOME itself cannot be read.
+      env.pluginLogDir = join(temp, 'logs');
+      if (failure === 'native window') env.vars!.CLAUDE_CODE_AUTO_COMPACT_WINDOW = '1000000';
+      const options = { handoffTool: true, forwardHandoffTool: true, compactTool: false, subagentKeepBrief: true };
+      const cc = engine(options, files, api(), true, failure === 'main tool unavailable' ? ['handoff', 'forward_handoff'] : [], env);
+      await cc.start(); await cc.step(250_000);
+      const handoff = async (loads?: string[]) => cc.call({ tool: 'mcp__sub-agent-compact__handoff', tool_use_id: 'h1', goal: 'Rename quantity in every report', next_step: 'Edit the next report, then test', done_verified: ['First report tested'], ...(loads ? { load_on_wake: loads } : {}) });
+      if (failure === 'main tool unavailable') await cc.read();
+      if (failure === 'subagent stop') { env.agentListFails = true; await cc.subagentStop({ agent_id: 'a1', agent_type: 'worker', last_assistant_message: '<handoff>Next: continue the task</handoff>' }); }
+      if (failure === 'transcript shape') await cc.ask('auto', [{ role: 'assistant', text: 'bad shape' }]);
+      if (failure === 'handoff fallback') { await handoff(); await cc.ask('auto', []); }
+      if (failure === 'brief seating') await cc.ask('manual', [{ role: 'user', text: 'brief without toolUses' }], { agentId: 'a1' });
+      if (failure === 'wake load') {
+        expect((await handoff(['example'])).result).toMatch(/^Handoff stored/);
+        env.readFails!.push(skill);
+        await cc.ask('auto', [
+          { role: 'user', text: 'task', toolUses: [], handle: 'm0' },
+          { role: 'assistant', text: '', toolUses: [{ tool: 'mcp__sub-agent-compact__handoff', tool_use_id: 'h1', input: {} }], handle: 'm1' },
+        ]);
+      }
+      if (failure === 'plugin discovery') await cc.forward();
+      if (failure === 'forward recovery') await cc.ask('auto', [
+        { role: 'assistant', text: '', toolUses: [{ tool: TOOL, tool_use_id: 'f1', input: FIELDS }], handle: 'm1' },
+        { role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: 'f1', text: `Forward handoff stored (1k tokens). Saved to ${DIR}. It installs when this turn ends.`, isError: false }], handle: 'm2' },
+      ]);
+      if (['forward verification', 'forward record', 'missing block'].includes(failure)) {
+        await cc.forward(); await cc.ask('auto');
+        const wake = cc.written[`${DIR}/wake.txt`]!;
+        cc.rows.splice(0, cc.rows.length, { role: 'user', content: [text(failure === 'missing block' ? wake.replace(/\nGit\n[^\n]*/, '') : wake)] });
+        if (failure === 'forward verification') env.messagesFail = true;
+        if (failure === 'forward record') env.writeFails!.push(`${DIR}/record.json`);
+        await cc.step(30_000);
+      }
+      if (failure === 'native window') await cc.ask('auto', [], { agentId: 'a1' });
+      if (failure === 'no reading') { await cc.step(NaN); await cc.ask('auto', []); }
+      await cc.end();
+      expect(cc.logs.some((msg) => msg.includes(line))).toBe(true);
+      expect(disk(join(temp, 'logs/sub-agent-compact'), 'errors.jsonl').some((row) => row.msg.includes(line))).toBe(true);
+    } finally { rmSync(temp, { recursive: true, force: true }); }
+  });
+
+  it.each(['compact', 'look_back', 'handoff', 'forward_handoff'])('shows and error-logs a failed %s registration', async (tool) => {
+    const temp = mkdtempSync(join(tmpdir(), 'compact-register-policy-'));
+    try {
+      const cc = engine({ compactTool: true, handoffTool: tool !== 'compact', forwardHandoffTool: tool !== 'compact' }, {}, api(), true, [tool], { home: temp });
+      await cc.start(); await cc.end();
+      const line = `registering the ${tool} tool failed`;
+      expect(cc.logs.filter((msg) => msg.includes(line))).toHaveLength(1);
+      expect(disk(join(temp, '.local/state/sub-agent-compact/logs'), 'errors.jsonl').filter((row) => row.msg.includes(line))).toHaveLength(1);
+      expect(disk(join(temp, '.local/state/sub-agent-compact/logs'), 'warnings.jsonl').filter((row) => row.msg.includes(line))).toEqual([]);
+    } finally { rmSync(temp, { recursive: true, force: true }); }
+  });
+
+  it.each([
+    ['plugin log session lookup', { mainAutoCompact: 'bad' }, { decisionSessionFailsOnce: true }, 'reading the plugin log session id failed'],
+    ['invalid setting', { forwardHandoffTool: 'broken' }, {}, 'SUB_AGENT_COMPACT_FORWARD_HANDOFF_TOOL is invalid'],
+    ['ignored setting', {}, { registerOptions: { forwardHandoffTool: true } }, 'options forwardHandoffTool are not read'],
+    ['clock unavailable', {}, { noClock: true }, '$.clock.after is unavailable'],
+    ['decision log disabled', { logFile: '/logs/decisions.jsonl' }, { decisionSessionFailsOnce: true }, 'reading the session id failed'],
+  ] as [string, Record<string, unknown>, Env, string][])('shows and error-logs a broken feature: %s', async (_, options, env, line) => {
+    const temp = mkdtempSync(join(tmpdir(), 'compact-feature-policy-'));
+    try {
+      const cc = engine(options, {}, api(), true, [], { home: temp, ...env });
+      await cc.start(); await cc.end();
+      expect(cc.logs.some((msg) => msg.includes(line))).toBe(true);
+      expect(disk(join(temp, '.local/state/sub-agent-compact/logs'), 'errors.jsonl').some((row) => row.msg.includes(line))).toBe(true);
+    } finally { rmSync(temp, { recursive: true, force: true }); }
+  });
+});
+
 describe('the lines the plugin says, on the screen and in the decision log', () => {
   const said = async (cc: ReturnType<typeof engine>) => (await cc.decisions()).filter((r: any) => r.event === 'said');
   it('logs a look back notice as a said row and keeps it off the screen', async () => {
@@ -1093,12 +1234,12 @@ describe('the lines the plugin says, on the screen and in the decision log', () 
     expect((await said(cc)).filter((r: any) => r.line.startsWith('look back'))).toEqual([expect.objectContaining({ event: 'said', line: 'look back (main): lost error — 1 hits', shown: false })]);
     expect(lookLines(cc)).toEqual([]);
   });
-  it('shows a failure line on the screen and logs it as a said row', async () => {
+  it('keeps a caller-input warning off screen and logs it as a said row', async () => {
     const cc = lookEngine(); await cc.start();
     await cc.call({ tool: LOOK_BACK, why: 'lost detail' });
     const line = 'look back (main): lost detail — failed: query or entry is required';
-    expect(lookLines(cc)).toEqual([line]);
-    expect((await said(cc)).filter((r: any) => r.line === line)).toEqual([expect.objectContaining({ shown: true })]);
+    expect(lookLines(cc)).toEqual([]);
+    expect((await said(cc)).filter((r: any) => r.line === line)).toEqual([expect.objectContaining({ shown: false })]);
   });
   it('shows a failure the old code left off the log, by its screen text', async () => {
     const cc = engine({ forwardHandoffTool: true, logFile: '/logs/decisions.jsonl' }, { [DIR.replace(/\/1$/, '')]: '' }, api(), true, [], { listFails: true });
@@ -1270,7 +1411,7 @@ describe('agent resolver diagnostics through the adapter', () => {
         await cc.end();
         const subjects = failure === 'listing' ? [dir, '/h/u/.claude/agents'] : paths;
         expect(warnings(temp)).toHaveLength(subjects.length * (session + 1));
-        for (const path of subjects) expect(cc.logs.filter((line) => line.includes(path))).toHaveLength(failure === 'non-regular' ? 0 : 1);
+        for (const path of subjects) expect(cc.logs.filter((line) => line.includes(path))).toHaveLength(0);
       }
     } finally { now.mockRestore(); rmSync(temp, { recursive: true, force: true }); }
   });
@@ -1288,12 +1429,12 @@ describe('plugin log through the forward adapter', () => {
       expect(await cc.end()).toEqual({ sessionId: 'session-1' });
       const errors = diskRows(dir, 'errors.jsonl'); const warnings = diskRows(dir, 'warnings.jsonl');
       expect(errors.filter((row) => row.event === 'tool-register-failed').map((row) => [row.level, row.where, row.session, row.detail.tool])).toEqual([['error', 'hooks/sub-agent-compact.ts#record', 'session-1', 'look_back'], ['error', 'hooks/sub-agent-compact.ts#record', 'session-1', 'look_back']]);
-      expect(warnings.filter((row) => row.event === 'option-error').map((row) => [row.level, row.where, row.session])).toEqual([['warning', 'hooks/sub-agent-compact.ts#record', 'session-1']]);
-      // Each warning is one level row: the said line and its diagnostic row are one entry, not two.
-      expect(warnings.filter((row) => JSON.stringify(row).includes('SUB_AGENT_COMPACT_MAIN_AUTO_COMPACT')).map((row) => row.event)).toEqual(['option-error']);
-      expect(warnings.filter((row) => JSON.stringify(row).includes('registering the look_back tool failed')).map((row) => row.event)).toEqual(['warning']);
+      expect(errors.filter((row) => row.event === 'option-error').map((row) => [row.level, row.where, row.session])).toEqual([['error', 'hooks/sub-agent-compact.ts#record', 'session-1']]);
+      // Each diagnostic is one level row: the said line and its diagnostic row are one entry, not two.
+      expect(errors.filter((row) => JSON.stringify(row).includes('SUB_AGENT_COMPACT_MAIN_AUTO_COMPACT')).map((row) => row.event)).toEqual(['option-error']);
+      expect(errors.filter((row) => JSON.stringify(row).includes('registering the look_back tool failed')).map((row) => row.event)).toEqual(['error']);
       // The first row on disk is a real diagnostic, never a startup row.
-      expect(errors[0]).toMatchObject({ level: 'error', event: 'tool-register-failed', session: 'session-1', detail: { tool: 'look_back' } });
+      expect(errors[0]).toMatchObject({ level: 'error', event: 'option-error', session: 'session-1' });
       expect(diskRows(dir, 'info.jsonl').filter((row) => row.event === 'logger-ready')).toEqual([]);
       const said = (await cc.decisions()).find((row: any) => row.event === 'said');
       expect(Object.keys(said)).toEqual(['ts', 'event', 'line', 'shown']);
@@ -1301,7 +1442,7 @@ describe('plugin log through the forward adapter', () => {
     } finally { rmSync(temp, { recursive: true, force: true }); }
   });
   it.each([
-    ['lookup', 'warning', 'warnings.jsonl', 'decision-log-session-error', 'session lookup unavailable'],
+    ['lookup', 'error', 'errors.jsonl', 'decision-log-session-error', 'session lookup unavailable'],
     ['write', 'error', 'errors.jsonl', 'decision-log-write-error', 'decision write unavailable'],
   ])('logs decision %s failure at %s level without changing the hook result', async (failure, level, file, event, error) => {
     const temp = mkdtempSync(join(tmpdir(), 'compact-decision-failure-'));
@@ -1326,8 +1467,8 @@ describe('plugin log through the forward adapter', () => {
       await expect(cc.start()).rejects.toThrow('screen unavailable');
       await cc.end();
       // The option error is said with its diagnostic row: one level row, the row's, at the level said.
-      expect(diskRows(join(temp, 'logs/sub-agent-compact'), 'warnings.jsonl').filter((row) => JSON.stringify(row).includes('SUB_AGENT_COMPACT_MAIN_AUTO_COMPACT'))).toEqual([expect.objectContaining({
-        level: 'warning', event: 'option-error', where: 'hooks/sub-agent-compact.ts#record', session: 'session-1', msg: expect.stringContaining('SUB_AGENT_COMPACT_MAIN_AUTO_COMPACT'),
+      expect(diskRows(join(temp, 'logs/sub-agent-compact'), 'errors.jsonl').filter((row) => JSON.stringify(row).includes('SUB_AGENT_COMPACT_MAIN_AUTO_COMPACT'))).toEqual([expect.objectContaining({
+        level: 'error', event: 'option-error', where: 'hooks/sub-agent-compact.ts#record', session: 'session-1', msg: expect.stringContaining('SUB_AGENT_COMPACT_MAIN_AUTO_COMPACT'),
       })]);
     } finally { rmSync(temp, { recursive: true, force: true }); }
   });
@@ -1523,14 +1664,14 @@ describe('a decision append that fails keeps its rows', () => {
     expect(line).toMatch(new RegExp(`; ${unwritten} decision rows? may be lost$`));
   });
 
-  it('writes a retention failure to the decision log as well as the screen', async () => {
+  it('writes a retention warning to the decision log without screen noise', async () => {
     const cc = engine(LOG, {}, api(), true, [], { retentionFails: 'sub-agent-compact: $.process.run(/bin/sh) aborted: still running after 15000ms' });
     await cc.start();
     await cc.step(10_000); await cc.ask('auto');
     await cc.end();
     const rows = await cc.decisions();
     expect(rows.filter((r: any) => r.event === 'decision-retention-failed')).toEqual([expect.objectContaining({ file: '/logs/decisions.jsonl', error: 'sub-agent-compact: $.process.run(/bin/sh) aborted: still running after 15000ms' })]);
-    expect(cc.logs.filter((line) => line.startsWith('cleaning up old decision logs'))).toHaveLength(1);
+    expect(cc.logs.filter((line) => line.startsWith('cleaning up old decision logs'))).toHaveLength(0);
   });
 
   it('runs retention after the session\'s first append, not before it', async () => {

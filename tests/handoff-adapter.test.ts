@@ -40,6 +40,7 @@ function engine(options: Record<string, unknown> = {}, harness: Harness = {}) {
   const registered: string[] = [];
   const compacts: unknown[] = [];
   const logs: string[] = [];
+  const levelRows: any[] = [];
   const summarizerInputs: any[] = [];
   const files = harness.files ?? {};
   let current = 0;
@@ -73,7 +74,12 @@ function engine(options: Record<string, unknown> = {}, harness: Harness = {}) {
         return { kind: harness.kinds?.[path] ?? 'file', size: harness.sizes?.[path] ?? (files[path] ?? '').length, mtimeMs: 0, isLink: false };
       },
     },
+    process: { run: async (argv: string[]) => {
+      if (argv[3] === 'plugin-log') for (let at = 7; at < argv.length; at += 2) levelRows.push(JSON.parse(argv[at]!));
+      return { exitCode: 0, stdout: '', stderr: '' };
+    } },
     clock: harness.noClock ? undefined : {
+      now: async () => 1791991231123,
       after: (ms: number, fn: () => void) => {
         afters++;
         const timer = setTimeout(fn, ms);
@@ -128,6 +134,8 @@ function engine(options: Record<string, unknown> = {}, harness: Harness = {}) {
     registered,
     compacts,
     logs,
+    levelRows,
+    end: () => dispatch('session.end', { reason: 'exit', sessionId: 'session-1' }, async () => ({})),
     summarizerInputs,
     summarized: () => summarized,
     /** How many timers the plugin asked `$.clock.after` for. */
@@ -242,11 +250,11 @@ describe('registering the tools is bounded', () => {
     expect(done).toBe(0);
     await vi.advanceTimersByTimeAsync(1);
     expect(done).toBe(1);
-    expect(cc.logs.filter((line) => /registering the tools did not finish within 5s/.test(line))).toHaveLength(1);
+    expect(cc.logs.filter((line) => /registering the tools did not finish within 5s/.test(line))).toHaveLength(0);
     void cc.step(2_000).then(() => done++);
     await vi.advanceTimersByTimeAsync(0);
     expect(done).toBe(2);
-    expect(cc.logs.filter((line) => /registering the tools did not finish/.test(line))).toHaveLength(1);
+    expect(cc.logs.filter((line) => /registering the tools did not finish/.test(line))).toHaveLength(0);
   });
 
   it('bounds session.start the same way', async () => {
@@ -257,10 +265,10 @@ describe('registering the tools is bounded', () => {
     void cc.start().then(() => (started = true));
     await vi.advanceTimersByTimeAsync(5_000);
     expect(started).toBe(true);
-    expect(cc.logs.join('\n')).toMatch(/registering the tools did not finish within 5s/);
+    expect(cc.logs.join('\n')).not.toMatch(/registering the tools did not finish within 5s/);
   });
 
-  it('goes on, unbounded, with one warning when the engine has no clock to bound it with', async () => {
+  it('goes on, unbounded, with one error when the engine has no clock to bound it with', async () => {
     const cc = engine(HANDOFF_ONLY, { noClock: true });
     await cc.start();
     await cc.step(1_000);
@@ -283,13 +291,15 @@ describe('registering the tools is bounded', () => {
     expect((await cc.read()).context?.[0]).toContain(TOOL);
   });
 
-  it('shows the registration timeout but keeps its routine completion off screen with a plugin log', async () => {
+  it('logs the registration timeout and routine completion without screen noise', async () => {
     vi.useFakeTimers();
     const { gate, release } = deferred();
     const cc = engine(HANDOFF_ONLY, { registerGate: gate });
     void cc.step(1_000);
     await vi.advanceTimersByTimeAsync(5_000);
-    expect(cc.logs.filter((line) => /did not finish within 5s/.test(line))).toEqual(['registering the tools did not finish within 5s; it goes on, turns do not wait for it, and the tools come into use once it finishes']);
+    expect(cc.logs.filter((line) => /did not finish within 5s/.test(line))).toEqual([]);
+    await cc.end();
+    expect(cc.levelRows.filter((row) => row.level === 'warning' && row.msg.includes('did not finish within 5s'))).toHaveLength(1);
     await vi.advanceTimersByTimeAsync(2_000);
     release();
     await vi.advanceTimersByTimeAsync(0);
@@ -357,7 +367,7 @@ describe('the size of the cut in the nudge', () => {
     await cc.step(41_000, { index: 0, messageCount: 1 });
     await cc.step(250_000, { index: 3, messageCount: 30 });
     expect((await cc.read()).context?.[0]).not.toMatch(/cutting each later request/);
-    expect(cc.logs.filter((line) => /could not read how many prompts/.test(line))).toHaveLength(1);
+    expect(cc.logs.filter((line) => /could not read how many prompts/.test(line))).toHaveLength(0);
   });
 });
 
@@ -400,13 +410,13 @@ describe('when the handoff installs', () => {
     expect((await cc.handoff()).result).toMatch(/this turn ends/);
   });
 
-  it('tells the model and the person when the compaction between turns was skipped, the handoff staying stored', async () => {
+  it('tells the model and logs when the compaction between turns was skipped, without screen noise', async () => {
     const cc = engine(HANDOFF_ONLY, { compactResult: { skip: 'a tool is running' } });
     await cc.start();
     await cc.step(250_000);
     await cc.handoff();
     await cc.turnComplete();
-    expect(cc.logs.join('\n')).toMatch(/skipped.*a tool is running/);
+    expect(cc.logs.join('\n')).not.toMatch(/skipped.*a tool is running/);
     expect((await cc.read()).context?.join('\n')).toMatch(/a tool is running[\s\S]*still stored|still stored[\s\S]*a tool is running/);
     expect(await cc.ask('auto')).toMatchObject({ messages: [{ text: expect.stringContaining(NEXT_STEP) }] });
   });
@@ -466,7 +476,7 @@ describe('a handoff the install cannot place', () => {
     const out = await cc.ask('recompute');
     expect(cc.summarized()).toBe(0);
     expect(out.messages[0].text).toContain(NEXT_STEP);
-    expect(cc.logs.filter((l) => /unknown trigger "recompute"/.test(l))).toHaveLength(1);
+    expect(cc.logs.filter((l) => /unknown trigger "recompute"/.test(l))).toHaveLength(0);
   });
 });
 
@@ -477,7 +487,7 @@ describe('a person\'s /compact over a stored handoff', () => {
     await cc.step(250_000);
     await cc.handoff();
     expect(await cc.ask('manual')).toEqual({ skip: 'busy' });
-    expect(cc.logs.join('\n')).toMatch(/\/compact.*skipped \(busy\).*stays stored/);
+    expect(cc.logs.join('\n')).not.toMatch(/\/compact.*skipped \(busy\).*stays stored/);
     expect((await cc.read()).context?.join('\n')).toMatch(/busy/);
     const out = await cc.ask('auto');
     expect(cc.summarized()).toBe(1);
@@ -490,7 +500,7 @@ describe('a person\'s /compact over a stored handoff', () => {
     await cc.step(250_000);
     await cc.handoff();
     await cc.ask('manual');
-    expect(cc.logs.join('\n')).toMatch(/\/compact.*dropped|dropped.*\/compact/);
+    expect(cc.logs.join('\n')).not.toMatch(/\/compact.*dropped|dropped.*\/compact/);
     expect((await cc.read()).context?.join('\n')).toMatch(/\/compact/);
   });
 });
@@ -570,7 +580,9 @@ describe('a tool that is not registered', () => {
     const cc = engine({ handoffTool: false, compactTool: false });
     await cc.start();
     await cc.step(1_000);
-    expect(cc.logs.join('\n')).toMatch(/no self-compaction tool is on \(SUB_AGENT_COMPACT_HANDOFF_TOOL, SUB_AGENT_COMPACT_COMPACT_TOOL and SUB_AGENT_COMPACT_FORWARD_HANDOFF_TOOL are all off\)/);
+    await cc.end();
+    expect(cc.logs.join('\n')).not.toMatch(/no self-compaction tool is on/);
+    expect(cc.levelRows.filter((row) => row.level === 'warning' && row.msg.includes('no self-compaction tool is on'))).toHaveLength(1);
   });
 });
 

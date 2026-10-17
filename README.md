@@ -7,7 +7,7 @@
 [![Claude Code plugin](https://img.shields.io/badge/Claude%20Code-plugin-D97757)](https://docs.claude.com/en/docs/claude-code/plugins)
 [![Version](https://img.shields.io/badge/version-0.8.1--alpha-blue)](./CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
-[![Tests](https://img.shields.io/badge/tests-837%20passing-brightgreen)](#development)
+[![Tests](https://img.shields.io/badge/tests-868%20passing-brightgreen)](#development)
 [![Built with Professor](https://img.shields.io/badge/built%20with-Professor-8A2BE2)](https://github.com/rezzminator/professor)
 
 **34% cheaper** than a sub-agent that never compacts · **52% less context** re-sent on every request
@@ -52,11 +52,11 @@ the model decide *when* to compact.
   Every compaction ask passes, and Claude Code's own protocol runs.
 - 📜 **Every decision logged** to a JSONL file per session, when you want to
   see why a compaction ran or was held. Every line the plugin says lands there
-  too, as a `said` row: errors and warnings still show on screen except
-  skipped links to non-regular files (including dangling links), which go only
-  to the warning log. Routine successes (look back notices, an installed
-  handoff) show only when neither the decision log nor the plugin log is
-  active, or decision logging is off after a session-id lookup failure. A
+  too, as a `said` row: errors always reach the screen and the log. Warnings
+  and info go only to the logs while logging works; they fall back to the
+  screen when neither log is available, or logging is off or failing.
+  Tool replies and installed handoff text are product output, not diagnostics,
+  and are unchanged. A
   main-chat compaction Claude Code ran without asking the plugin (its reading fell to half or less, with no
   `session.compact` in between) is logged as `compact-unseen` with the
   readings `before` and `after`; its stored handoff is dropped
@@ -295,7 +295,7 @@ Every call is saved under `$HOME/.local/state/sub-agent-compact/forward-handoff/
 
 `look_back` is always available to the main chat and every sub-agent. It searches only the caller's own transcript before its latest compaction, including a forward handoff. Supply `why` (what the compaction lost) and `query` (all words must appear in one entry, case-insensitive; double quotes keep a phrase whole). Results are numbered, newest first, with readable snippets. Fetch an exact entry with `entry: N` instead of a query; entries already in context are refused.
 
-Every call is a counted compaction miss: the decision log records `look-back` and the one line explaining what was missed when `logFile` is configured; the line reaches the screen when the call failed, neither the decision log nor the plugin log is active, or decision logging is off after a session-id lookup failure. Manual `Read`, `Grep` or `Bash` calls naming the caller's transcript are also logged as `look-back-manual`, the same way, without changing the call. No compaction yet, no matching entry, and lookup failures have distinct replies; with no compaction yet the reply says so before any argument is checked. Task notifications (a child's result), other attachments, `system` and `summary` entries are searchable; an attachment with no text field is shown raw, and a queued prompt is read as one. Claude Code's own bookkeeping entries (queue operations, request copies, titles, modes, links, file history, cost, a `system` entry without text) are skipped without a note; an entry of any other type it cannot read makes the call an error naming it, the hits still shown. `entry: null` or `query: null` is read as absent. The caller's own `forward_handoff` calls and their replies rank below every other hit.
+Every call is a counted compaction miss: the decision log records `look-back` and the one line explaining what was missed when `logFile` is configured; plugin errors always reach the screen, while caller-input warnings and routine notices reach it only when neither log is available, or logging is off or failing. The tool reply is always returned to the caller. Manual `Read`, `Grep` or `Bash` calls naming the caller's transcript are also logged as `look-back-manual`, the same way, without changing the call. No compaction yet, no matching entry, and lookup failures have distinct replies; with no compaction yet the reply says so before any argument is checked. Task notifications (a child's result), other attachments, `system` and `summary` entries are searchable; an attachment with no text field is shown raw, and a queued prompt is read as one. Claude Code's own bookkeeping entries (queue operations, request copies, titles, modes, links, file history, cost, a `system` entry without text) are skipped without a note; an entry of any other type it cannot read makes the call an error naming it, the hits still shown. `entry: null` or `query: null` is read as absent. The caller's own `forward_handoff` calls and their replies rank below every other hit.
 
 Search keeps the newest 200 raw candidates, re-checks the words against readable text, and returns up to 20 hits / 12k characters; an entry fetch keeps up to 24k characters with a cut marker. Tool results name their tool when its call can be found; unavailable names and unsupported transcript shapes are explicit. Missing details beyond these bounds need a narrower query or an entry fetch.
 
@@ -313,14 +313,14 @@ variable is absent and the default applies.
 A **size** is a percentage of the model's own window (`"10%"`), an integer,
 or a number with a k/m suffix (`"150k"`, `"0.6m"`). A flag variable is `1`,
 `0`, `true` or `false` in any case; a directory list is comma- or
-newline-separated; the log file is an absolute path. A bad value is named by
-its variable on the screen and the default is used, never ignored silently.
+newline-separated; the log file is an absolute path. A bad value is an error named by
+its variable on the screen and in the log; the default is used, never ignored silently.
 A variable that could not be read is named the same way and its default is used.
 
 **Migrating from 0.7.** Values under
 `pluginConfigs["sub-agent-compact@sub-agent-compact"].options` are no longer
-read. If that object is not empty, the plugin says so once on the screen,
-naming its keys, and applies none of them. Move each value to its variable
+read. If that object is not empty, the plugin reports an error once on the
+screen and in the log, naming its keys, and applies none of them. Move each value to its variable
 (`"mainAutoCompact": "600k"` becomes `SUB_AGENT_COMPACT_MAIN_AUTO_COMPACT=600k`;
 `"forwardHandoffTool": true` becomes `SUB_AGENT_COMPACT_FORWARD_HANDOFF_TOOL=1`),
 then delete the `pluginConfigs` entry.
@@ -349,9 +349,11 @@ then delete the `pluginConfigs` entry.
 
 Errors, warnings and info append JSONL rows to `$PLUGIN_LOG_DIR/sub-agent-compact/{errors,warnings,info}.jsonl`. With the variable unset, they use `$HOME/.local/state/sub-agent-compact/logs/`. Each plugin process's decision log gets one `start` row; after a `/clear` or a resume the new session id's file carries none. Rows name the event, component and session; diagnostic details never include handoff or transcript bodies. Rows are bounded to 4096 bytes, new directories and files are private, and a level file over 20 MiB moves to `.1` with a `log-capped` warning. A failed log write reports its directory and error once per failing streak without changing compaction or tool results.
 
-Each warning is one level row: a line said with its diagnostic row (an option error, a resolve error, a warning) is written once, at the level said. A failing plugin log is named once per failing streak on screen and as a `plugin-log-failed` decision row; a failed decision-log session lookup as a `decision-log-session-error` warning row, a failing decision-log write as a `decision-log-write-error` error row (its rows kept for the next write), and a failed cleanup of old decision logs as a `decision-retention-failed` warning row in both logs. Registering the tools holds a turn at most 5s; past it a `tools-timeout` warning says registration goes on, and its late finish is a `tools-late` row (`ms`, `tools`). An install's after-size counts the messages only, as its line says (`250k -> 6k tokens in messages (system prompt and tools not counted)`) and its row and the forward handoff's `record.json` (`tokensAfterScope: "messages"`); the next request reads the whole. The level files rotate under a lock shared by every session. Option keys the plugin does not know are named in one line; a nudge start at or past the forced point in the same unit is named and kept.
+Each diagnostic is one level row: a line said with its diagnostic row is written once, at the level said. A failing plugin log is named once per failing streak on screen and as a `plugin-log-failed` decision row; a failed decision-log session lookup as a `decision-log-session-error` error row, a failing decision-log write as a `decision-log-write-error` error row (its rows kept for the next write), and a failed cleanup of old decision logs as a `decision-retention-failed` warning row in both logs. Registering the tools holds a turn at most 5s; past it a `tools-timeout` warning says registration goes on, and its late finish is a `tools-late` row (`ms`, `tools`). An install's after-size counts the messages only, as its line says (`250k -> 6k tokens in messages (system prompt and tools not counted)`) and its row and the forward handoff's `record.json` (`tokensAfterScope: "messages"`); the next request reads the whole. The level files rotate under a lock shared by every session. Option keys the plugin does not know are named in one line; a nudge start at or past the forced point in the same unit is named and kept.
 
-Resolver skips and failures are logged once per distinct path per plugin session (plugin-folder discovery failures use the plugin identity until its path is known), even after the policy cache expires. A listed `.md` link to anything other than a regular file, including a dangling link, is skipped and written at warning level, never shown on screen. Other resolver warnings keep their screen visibility. Info-level notices go only to the logs while either the decision log or plugin log is active; with neither active, or decision logging off after a session-id lookup failure, they reach the screen. Errors still reach the screen.
+Resolver skips and failures are logged once per distinct path per plugin session (plugin-folder discovery failures use the plugin identity until its path is known), even after the policy cache expires. A listed `.md` link to anything other than a regular file, including a dangling link, is skipped and written at warning level. All warning- and info-level diagnostics stay off screen while a log keeps them; with neither log available, or logging off or failing, they fall back to the screen. A failing plugin log's own notice always stays visible. Errors always reach the screen and the log.
+
+Broken settings (including ignored legacy options), failed tool registration, unavailable handoff nudging or timers, missing HOME access, failed plugin-skill discovery, unreadable or incomplete handoff installs and checks, failed brief seating or sub-agent stop handling, an incompatible native window and missing token readings are errors, not warnings. Safe fallbacks, deliberate tools-off settings, registration still in progress, retention failures and bounded or deferred work remain warnings. Tool replies, installed handoffs and model-facing context are unchanged.
 
 Screen notices and the per-session decision log stay separate. An explicit `logFile` always wins; only the blank default follows `PLUGIN_LOG_DIR`. With neither `PLUGIN_LOG_DIR` nor `HOME`, the screen reports that plugin logging is off.
 

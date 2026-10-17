@@ -39,7 +39,7 @@ export function engineAgentFs(
           log(`sub-agent-compact: skipping ${path}: could not stat it: ${String(error)}`, path);
           continue;
         }
-        if (target.kind !== 'file') log(`sub-agent-compact: skipping ${path}: a link to something not a regular file`, path, false);
+        if (target.kind !== 'file') log(`sub-agent-compact: skipping ${path}: a link to something not a regular file`, path);
         else if (target.size > AGENT_FILE_MAX_BYTES) log(`sub-agent-compact: skipping ${path}: a link to ${target.size} bytes, over the ${AGENT_FILE_MAX_BYTES} byte limit`, path);
         else names.push(entry.name);
       }

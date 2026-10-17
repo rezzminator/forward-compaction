@@ -60,9 +60,9 @@ function screenLine(line: string): string {
  * Every line said lands in the decision log as a `said` row; a routine one reaches the screen too while there is no
  * log to hold it. A line said with its diagnostic row is one level-log entry: the row's, at the level said.
  */
-function say(st: State, $: EngineInterface, line: string, level: PluginLogLevel = 'error', row?: Row, screen = true): void {
-  const shown = noticeOnScreen({ level, decisionLog: !!st.config.logFile, pluginLog: st.pluginLog !== undefined, logOff: st.logOff, screen });
-  const diagnostic = row === undefined ? undefined : pluginLogEvent(row);
+function say(st: State, $: EngineInterface, line: string, level: PluginLogLevel = 'error', row?: Row): void {
+  const shown = noticeOnScreen({ level, decisionLog: !!st.config.logFile, pluginLog: st.pluginLog !== undefined, logOff: st.logOff || st.writeError !== undefined || st.pluginFailing });
+  const diagnostic = row === undefined ? undefined : pluginLogEvent({ line: screenLine(line), ...row });
   plog(st, $, diagnostic !== undefined ? { ...diagnostic, level } : { level, event: 'said', msg: screenLine(line), where: 'hooks/sub-agent-compact.ts#say' });
   if (shown) show($, line);
   record(st, $, { event: 'said', line: screenLine(line), shown });
@@ -176,20 +176,28 @@ type State = {
 function plog(st: State, $: EngineInterface, fields: Omit<PluginLogFields, 'plugin' | 'session'>): void {
   const queue = st.pluginLog;
   if (queue === undefined) { if (!st.pluginInitialized) st.pluginRows.push(fields); return; }
-  st.levelRowsWriting += 1;
+  let rows = 1;
+  st.levelRowsWriting += rows;
   st.pluginWriting = st.pluginWriting.then(async () => {
     let session: string | undefined;
+    let sessionError: string | undefined;
     try { session = await $.session.id(); }
-    catch (error) { show($, `sub-agent-compact: reading the plugin log session id failed: ${message(error)}; row has no session`); }
+    catch (error) { sessionError = `sub-agent-compact: reading the plugin log session id failed: ${message(error)}; row has no session`; }
     const now = await $.clock.now();
+    if (sessionError !== undefined) {
+      rows++;
+      st.levelRowsWriting++;
+      queue.add(levelRow({ plugin: 'sub-agent-compact', level: 'error', event: 'plugin-log-session-error', msg: screenLine(sessionError), where: 'hooks/sub-agent-compact.ts#plog' }, now));
+      show($, sessionError);
+    }
     queue.add(levelRow({ plugin: 'sub-agent-compact', ...fields, ...(session ? { session } : {}) }, now));
     const out = await queue.flush((argv) => $.process.run(argv, { timeoutMs: 15_000 }));
     if (out.error !== undefined && !st.pluginFailing) pluginLogFailed(st, $, out.error, out.dropped);
     st.pluginFailing = out.dropped !== 0;
   }).catch((error) => {
-    if (!st.pluginFailing) pluginLogFailed(st, $, message(error), 1);
+    if (!st.pluginFailing) pluginLogFailed(st, $, message(error), rows);
     st.pluginFailing = true;
-  }).finally(() => { st.levelRowsWriting -= 1; });
+  }).finally(() => { st.levelRowsWriting -= rows; });
 }
 
 /** Rows held back while the environment layer is still being read; later ones are dropped. */
@@ -240,7 +248,7 @@ function flushDecisions(st: State, $: EngineInterface, last = false): void {
       // The level log is independent of the decision log that is off.
       st.logOff = true;
       const line = `sub-agent-compact: reading the session id failed: ${message(error)}; the decision log is off for this session`;
-      plog(st, $, { level: 'warning', event: 'decision-log-session-error', msg: screenLine(line), where: 'hooks/sub-agent-compact.ts#record', detail: { error: message(error) } });
+      plog(st, $, { level: 'error', event: 'decision-log-session-error', msg: screenLine(line), where: 'hooks/sub-agent-compact.ts#record', detail: { error: message(error) } });
       show($, line);
       return undefined;
     },
@@ -334,10 +342,10 @@ function startOver(st: State): void {
   st.rowsDropped = undefined;
 }
 
-function warnOnce(st: State, $: EngineInterface, key: string, line: string): void {
+function warnOnce(st: State, $: EngineInterface, key: string, line: string, level: PluginLogLevel = 'warning'): void {
   if (st.warned.has(key)) return;
   st.warned.add(key);
-  say(st, $, line, 'warning', { event: 'warning', key, line });
+  say(st, $, line, level, { event: level === 'error' ? 'error' : 'warning', key, line });
 }
 
 /**
@@ -389,25 +397,26 @@ async function readSettingsSources(st: State, $: EngineInterface): Promise<Reado
 // First hook call: report option errors, learn the native window, build the resolver.
 function start(st: State, $: EngineInterface): Promise<void> {
   st.started ??= (async () => {
+    const early: { line: string; level: PluginLogLevel }[] = [];
     let cwd = '.';
     let home: string | undefined;
     try {
       cwd = await $.session.cwd();
     } catch (error) {
-      say(st, $, `sub-agent-compact: reading the session cwd failed: ${message(error)}; using relative paths`, 'warning');
+      early.push({ line: `sub-agent-compact: reading the session cwd failed: ${message(error)}; using relative paths`, level: 'warning' });
     }
     st.cwd = cwd;
     try {
       home = await $.env.get('HOME');
       st.home = home;
     } catch (error) {
-      say(st, $, `sub-agent-compact: reading HOME failed: ${message(error)}; skipping ~/.claude/agents`, 'warning');
+      early.push({ line: `sub-agent-compact: reading HOME failed: ${message(error)}; skipping ~/.claude/agents`, level: 'error' });
     }
     let override: string | undefined;
     try {
       override = await $.env.get('PLUGIN_LOG_DIR');
     } catch (error) {
-      say(st, $, `sub-agent-compact: reading PLUGIN_LOG_DIR failed: ${message(error)}; using HOME fallback`, 'warning');
+      early.push({ line: `sub-agent-compact: reading PLUGIN_LOG_DIR failed: ${message(error)}; using HOME fallback`, level: 'warning' });
     }
     st.pluginInitialized = true;
     st.pluginLogDir = pluginLogDir(override, home, 'sub-agent-compact');
@@ -417,14 +426,15 @@ function start(st: State, $: EngineInterface): Promise<void> {
     if (st.pluginLog !== undefined) for (const fields of earlyRows) plog(st, $, fields);
     st.config = servedOptions(resolveOptions({ pluginLogDir: override, ...(await readOptionEnv($)) }));
     settleConfig(st, $);
+    for (const { line, level } of early) say(st, $, line, level);
     for (const line of st.config.errors) {
-      say(st, $, line, 'warning', { event: 'option-error', line });
+      say(st, $, line, 'error', { event: 'option-error', line });
     }
     const leftover = new Set(st.ignoredOptions);
     for (const key of leftoverOptionKeys(await readSettingsSources(st, $))) leftover.add(key);
     if (leftover.size > 0) {
       const line = `sub-agent-compact: options ${[...leftover].join(', ')} are not read; set SUB_AGENT_COMPACT_* environment variables instead (README, Central options); their values are not applied`;
-      warnOnce(st, $, 'options-ignored', line);
+      warnOnce(st, $, 'options-ignored', line, 'error');
     }
     try {
       st.configDir = (await $.env.get('CLAUDE_CONFIG_DIR')) || (home ? `${home}/.claude` : undefined);
@@ -445,11 +455,11 @@ function start(st: State, $: EngineInterface): Promise<void> {
       say(st, $, `sub-agent-compact: reading CLAUDE_CODE_AUTO_COMPACT_WINDOW failed: ${message(error)}`, 'warning');
     }
     const dirs = [`${cwd}/.claude/agents`, ...(home ? [`${home}/.claude/agents`] : []), ...st.config.agentDirs];
-    const resolveLog: AgentResolveLog = (line, path, screen = true) => {
+    const resolveLog: AgentResolveLog = (line, path) => {
       const key = `resolve:${path}`;
       if (st.warned.has(key)) return;
       st.warned.add(key);
-      say(st, $, line, 'warning', { event: 'resolve-error', line }, screen);
+      say(st, $, line, 'warning', { event: 'resolve-error', line });
     };
     st.policies = new AgentPolicies(
       dirs,
@@ -595,7 +605,7 @@ async function nudgeFor(st: State, $: EngineInterface, agentId: string | undefin
   if (!forward && !st.config.handoffTool && !st.config.compactTool) return undefined;
   if (!forward && st.config.handoffTool && party.main && st.handoffToolName === undefined) {
     // The main chat has no marker to fall back on: nudging it to a tool that is not there only wastes its turn.
-    warnOnce(st, $, 'main-no-handoff', 'sub-agent-compact: the main chat cannot hand off: the handoff tool is not registered, so it is not nudged');
+    warnOnce(st, $, 'main-no-handoff', 'sub-agent-compact: the main chat cannot hand off: the handoff tool is not registered, so it is not nudged', 'error');
     return undefined;
   }
   // A party whose definition leaves it no compact tool is never pointed at it.
@@ -631,7 +641,7 @@ async function registerCompactTool(st: State, $: EngineInterface): Promise<void>
     st.toolName = tool;
     record(st, $, { event: 'tool-registered', tool });
   } catch (error) {
-    warnOnce(st, $, 'register-failed:compact', `sub-agent-compact: registering the ${COMPACT_TOOL} tool failed: ${message(error)}; models can still ask with <compact-now>`);
+    warnOnce(st, $, 'register-failed:compact', `sub-agent-compact: registering the ${COMPACT_TOOL} tool failed: ${message(error)}; models can still ask with <compact-now>`, 'error');
     record(st, $, { event: 'tool-register-failed', tool: COMPACT_TOOL, error: message(error) });
   }
 }
@@ -642,7 +652,7 @@ async function registerLookBackTool(st: State, $: EngineInterface): Promise<void
     st.lookBackToolName = tool;
     record(st, $, { event: 'tool-registered', tool });
   } catch (error) {
-    warnOnce(st, $, 'register-failed:look_back', `sub-agent-compact: registering the ${LOOK_BACK_TOOL} tool failed: ${message(error)}; transcript recovery is unavailable`);
+    warnOnce(st, $, 'register-failed:look_back', `sub-agent-compact: registering the ${LOOK_BACK_TOOL} tool failed: ${message(error)}; transcript recovery is unavailable`, 'error');
     record(st, $, { event: 'tool-register-failed', tool: LOOK_BACK_TOOL, error: message(error), tries: st.toolTries.look_back });
   }
 }
@@ -713,7 +723,7 @@ async function registerForwardTool(st: State, $: EngineInterface): Promise<void>
     st.forwardToolName = tool;
     record(st, $, { event: 'tool-registered', tool });
   } catch (error) {
-    warnOnce(st, $, 'register-failed:forward', `sub-agent-compact: registering the ${FORWARD_TOOL} tool failed: ${message(error)}; no party can forward-hand-off`);
+    warnOnce(st, $, 'register-failed:forward', `sub-agent-compact: registering the ${FORWARD_TOOL} tool failed: ${message(error)}; no party can forward-hand-off`, 'error');
     record(st, $, { event: 'tool-register-failed', tool: FORWARD_TOOL, error: message(error), tries: st.toolTries.forward });
   }
 }
@@ -728,7 +738,7 @@ async function registerHandoffTool(st: State, $: EngineInterface): Promise<void>
     st.handoffToolName = tool;
     record(st, $, { event: 'tool-registered', tool });
   } catch (error) {
-    warnOnce(st, $, 'register-failed:handoff', `sub-agent-compact: registering the ${HANDOFF_TOOL} tool failed: ${message(error)}; the main chat cannot hand off (sub-agents can still use <handoff>)`);
+    warnOnce(st, $, 'register-failed:handoff', `sub-agent-compact: registering the ${HANDOFF_TOOL} tool failed: ${message(error)}; the main chat cannot hand off (sub-agents can still use <handoff>)`, 'error');
     record(st, $, { event: 'tool-register-failed', tool: HANDOFF_TOOL, error: message(error), tries: st.toolTries.handoff });
   }
 }
@@ -741,7 +751,7 @@ function afterOrNever(st: State, $: EngineInterface, ms: number, fn: () => void,
   try {
     return $.clock.after(ms, fn);
   } catch (error) {
-    warnOnce(st, $, `no-clock:${what}`, `sub-agent-compact: $.clock.after is unavailable (${message(error)}); ${what} is not time-bounded`);
+    warnOnce(st, $, `no-clock:${what}`, `sub-agent-compact: $.clock.after is unavailable (${message(error)}); ${what} is not time-bounded`, 'error');
     return { cancel: () => {} };
   }
 }
@@ -826,11 +836,11 @@ async function wakeRoots(st: State, $: EngineInterface): Promise<WakeRoots> {
   try {
     if (await $.fs.exists(file)) {
       const parsed = pluginPaths(await $.fs.read(file));
-      if ('problem' in parsed) warnOnce(st, $, 'installed-plugins', `sub-agent-compact: ${parsed.problem}; load_on_wake finds no plugin skill`);
+      if ('problem' in parsed) warnOnce(st, $, 'installed-plugins', `sub-agent-compact: ${parsed.problem}; load_on_wake finds no plugin skill`, 'error');
       else plugins = parsed.paths;
     }
   } catch (error) {
-    warnOnce(st, $, 'installed-plugins', `sub-agent-compact: reading ${file} failed: ${message(error)}; load_on_wake finds no plugin skill`);
+    warnOnce(st, $, 'installed-plugins', `sub-agent-compact: reading ${file} failed: ${message(error)}; load_on_wake finds no plugin skill`, 'error');
   }
   return { projectRoot, userRoot, plugins };
 }
@@ -1283,7 +1293,7 @@ async function finishForward(st: State, $: EngineInterface, { meta, text, tokens
     if (!Array.isArray(got)) throw new Error(`messages: ${JSON.stringify(got).slice(0, 120)}`);
     held = heldForward(got as ApiMsg[])?.text ?? '';
   } catch (error) {
-    say(st, $, `sub-agent-compact: reading ${key} to check forward handoff ${meta.seq} failed: ${message(error)}; its install is unchecked`, 'warning', { event: 'forward-unchecked', seq: meta.seq, error: message(error) });
+    say(st, $, `sub-agent-compact: reading ${key} to check forward handoff ${meta.seq} failed: ${message(error)}; its install is unchecked`, 'error', { event: 'forward-unchecked', seq: meta.seq, error: message(error) });
     return;
   }
   const check = installCheck(meta.blocks, held, text);
@@ -1291,11 +1301,11 @@ async function finishForward(st: State, $: EngineInterface, { meta, text, tokens
     try {
       await $.fs.write(`${meta.dir}/record.json`, JSON.stringify(withInstall(meta.record, { tokensAfter, check }), null, 2));
     } catch (error) {
-      say(st, $, `sub-agent-compact: writing the install check of forward handoff ${meta.seq} to ${meta.dir} failed: ${message(error)}`, 'warning');
+      say(st, $, `sub-agent-compact: writing the install check of forward handoff ${meta.seq} to ${meta.dir} failed: ${message(error)}`, 'error');
     }
   }
   record(st, $, { event: 'forward-installed', party: key, seq: meta.seq, tokensAfter, tokensAfterScope: 'messages', landed: check.landed, missing: check.missing, hash: check.hash });
-  say(st, $, forwardInstalledLine({ seq: meta.seq, label, before, after: tokensAfter, landed: check.landed, missing: check.missing, ...(meta.dir !== undefined ? { dir: meta.dir } : {}) }), check.ok ? 'info' : 'warning');
+  say(st, $, forwardInstalledLine({ seq: meta.seq, label, before, after: tokensAfter, landed: check.landed, missing: check.missing, ...(meta.dir !== undefined ? { dir: meta.dir } : {}) }), check.ok ? 'info' : 'error');
   if (check.ok) return;
   st.parties.notify(key, `sub-agent-compact: forward handoff blocks did not land: ${check.missing.join(', ')}; ${meta.dir !== undefined ? `the full text is in ${meta.dir}/wake.txt` : 'the text was not saved to disk'}.`);
 }
@@ -1516,7 +1526,7 @@ export const register: Register = (on: On, options: PluginOptions) => {
         }
       }
     } catch (error) {
-      say(st, $, `sub-agent-compact: reading ${e.agent_id}'s stop failed: ${message(error)}; letting it stop`, 'warning');
+      say(st, $, `sub-agent-compact: reading ${e.agent_id}'s stop failed: ${message(error)}; letting it stop`, 'error');
     }
     return next(e);
   });
@@ -1550,7 +1560,7 @@ export const register: Register = (on: On, options: PluginOptions) => {
     const tracked = !party.haiku && !party.unlisted;
     const shape = transcriptShapeProblem(e.messages);
     if (shape !== undefined && tracked) {
-      warnOnce(st, $, `shape:${key}`, `sub-agent-compact: the transcript of ${party.label} has an unexpected shape (${shape}); handoffs cannot be installed verbatim`);
+      warnOnce(st, $, `shape:${key}`, `sub-agent-compact: the transcript of ${party.label} has an unexpected shape (${shape}); handoffs cannot be installed verbatim`, 'error');
     }
     let handoff: ArmedHandoff | undefined = tracked ? st.parties.handoff(key) : undefined;
     let recovered = false;
@@ -1575,7 +1585,7 @@ export const register: Register = (on: On, options: PluginOptions) => {
           handoff = { text, anchor: { toolUseId: found.toolUseId }, forward: { seq, dir: found.dir, blocks, record } };
           recovered = true;
         } catch (error) {
-          say(st, $, `sub-agent-compact: recovering the forward handoff of ${party.label} from ${found.dir} failed: ${message(error)}; this compaction runs as it would without it`, 'warning');
+          say(st, $, `sub-agent-compact: recovering the forward handoff of ${party.label} from ${found.dir} failed: ${message(error)}; this compaction runs as it would without it`, 'error');
         }
       }
     }
@@ -1620,7 +1630,7 @@ export const register: Register = (on: On, options: PluginOptions) => {
               }
               for (const name of wake.failed) {
                 const entry = entries.find((x) => x.name === name);
-                say(st, $, `sub-agent-compact: could not load ${name}: ${entry?.problem ?? 'the total size was reached'}`, 'warning');
+                say(st, $, `sub-agent-compact: could not load ${name}: ${entry?.problem ?? 'the total size was reached'}`, 'error');
               }
               for (const name of wake.cut) say(st, $, `sub-agent-compact: load_on_wake entry ${name} was cut at the per-entry cap`, 'warning');
               if (wake.failed.length > 0) {
@@ -1639,14 +1649,14 @@ export const register: Register = (on: On, options: PluginOptions) => {
             reason = { kind: 'fallback', detail: `installing failed: ${message(error)}` };
           }
         }
-        say(st, $, `sub-agent-compact: the handoff of ${party.label} could not be installed verbatim (${reason.detail}); a summary that keeps it runs instead`, 'warning', { event: 'handoff-fallback', party: key, type: party.label, why: reason.kind, detail: reason.detail });
+        say(st, $, `sub-agent-compact: the handoff of ${party.label} could not be installed verbatim (${reason.detail}); a summary that keeps it runs instead`, 'error', { event: 'handoff-fallback', party: key, type: party.label, why: reason.kind, detail: reason.detail });
         st.parties.notify(key, handoffNotice(reason.kind, reason.detail));
         // Never hold a compaction: the summarizer runs with the handoff as what it keeps. Nothing is dropped: if the summary is skipped, the handoff stays stored.
         fallback = handoff.text;
       }
     }
     if (!party.main && !party.haiku && !party.unlisted && askPoint !== undefined && limit < askPoint) {
-      warnOnce(st, $, `below-window:${party.label}`, `sub-agent-compact: ${party.label} limit ${limit} is below Claude Code's ask point ${askPoint} (CLAUDE_CODE_AUTO_COMPACT_WINDOW ${st.compactWindow}); it compacts at ${askPoint} — lower the window to hold this limit`);
+      warnOnce(st, $, `below-window:${party.label}`, `sub-agent-compact: ${party.label} limit ${limit} is below Claude Code's ask point ${askPoint} (CLAUDE_CODE_AUTO_COMPACT_WINDOW ${st.compactWindow}); it compacts at ${askPoint} — lower the window to hold this limit`, 'error');
     }
     const heldArm = tracked ? st.parties.armed(key) : undefined;
     const armed = fallback ?? heldArm;
@@ -1660,7 +1670,7 @@ export const register: Register = (on: On, options: PluginOptions) => {
       }
       return { skip: decision.reason };
     }
-    if (decision.why === 'no-reading') say(st, $, `sub-agent-compact: no token reading for ${party.label} and no transcript estimate to trust; letting the ${kind} compaction through`, 'warning');
+    if (decision.why === 'no-reading') say(st, $, `sub-agent-compact: no token reading for ${party.label} and no transcript estimate to trust; letting the ${kind} compaction through`, 'error');
     const firstAsk = !st.asked.has(key);
     if (kind === 'auto') st.asked.add(key);
     // With the window known, a first ask past the limit is one step's growth, not a window set too high.
@@ -1728,7 +1738,7 @@ export const register: Register = (on: On, options: PluginOptions) => {
           return { ...outcome, messages: reseated };
         }
       } catch (error) {
-        say(st, $, `sub-agent-compact: seating the brief of sub-agent ${agentId} failed: ${message(error)}; leaving the compaction as Claude Code made it`, 'warning', { event: 'brief-error', party: key, error: message(error) });
+        say(st, $, `sub-agent-compact: seating the brief of sub-agent ${agentId} failed: ${message(error)}; leaving the compaction as Claude Code made it`, 'error', { event: 'brief-error', party: key, error: message(error) });
       }
     }
     return outcome;

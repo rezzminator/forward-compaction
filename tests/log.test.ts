@@ -228,9 +228,9 @@ exec /bin/chmod "$@"
     expect(await queue?.flush(async () => { throw new Error('empty queue executed'); })).toEqual({ dropped: 0 });
   });
   it.each([
-    ...['tool-register-failed', 'look-back-manual-error', 'hook-threw'].map((event) => [event, 'error', event, {}] as [string, string, string, Record<string, unknown>]),
-    ['brief-error', 'warning', 'brief-error', {}],
-    ...['warning', 'option-error', 'resolve-error', 'handoff-invalid', 'forward-invalid', 'forward-unchecked', 'handoff-fallback', 'compact-unseen'].map((event) => [event, 'warning', event, {}] as [string, string, string, Record<string, unknown>]),
+    ...['tool-register-failed', 'look-back-manual-error', 'hook-threw', 'option-error', 'forward-unchecked', 'handoff-fallback'].map((event) => [event, 'error', event, {}] as [string, string, string, Record<string, unknown>]),
+    ['brief-error', 'error', 'brief-error', {}],
+    ...['warning', 'resolve-error', 'handoff-invalid', 'forward-invalid', 'compact-unseen'].map((event) => [event, 'warning', event, {}] as [string, string, string, Record<string, unknown>]),
     ...['handoff-refused', 'arm-refused', 'forward-refused', 'stop-refused'].map((event) => [event, 'info', event, {}] as [string, string, string, Record<string, unknown>]),
     ['session.compact', 'error', 'compact-error', { why: 'error', error: 'bad reading' }],
     ['session.compact', 'warning', 'handoff-waits-skipped', { why: 'handoff-waits' }],
@@ -245,7 +245,7 @@ exec /bin/chmod "$@"
   });
   it('selects actionable diagnostics among routine hook traffic', () => {
     const traffic = [{ event: 'nudge', focus: 'private' }, { event: 'brief-error', error: 'seating failed' }];
-    expect(traffic.flatMap((row) => future.pluginLogEvent?.(row) ?? []).map((row: any) => [row.level, row.event, row.msg])).toEqual([['warning', 'brief-error', 'seating failed']]);
+    expect(traffic.flatMap((row) => future.pluginLogEvent?.(row) ?? []).map((row: any) => [row.level, row.event, row.msg])).toEqual([['error', 'brief-error', 'seating failed']]);
   });
 });
 

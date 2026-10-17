@@ -242,9 +242,9 @@ function summary(streak: SkipStreak): DecisionRow {
 
 export type PluginLogLevel = 'error' | 'warning' | 'info';
 
-/** Routine notices need a screen only when neither log keeps them, or decision logging is off. */
-export function noticeOnScreen({ level, decisionLog, pluginLog, logOff, screen }: { level: PluginLogLevel; decisionLog: boolean; pluginLog: boolean; logOff?: boolean; screen?: boolean }): boolean {
-  return screen !== false && (level !== 'info' || logOff === true || (!decisionLog && !pluginLog));
+/** Errors always show; warnings and info show only when logging is unavailable or failing. */
+export function noticeOnScreen({ level, decisionLog, pluginLog, logOff }: { level: PluginLogLevel; decisionLog: boolean; pluginLog: boolean; logOff?: boolean }): boolean {
+  return level === 'error' || logOff === true || (!decisionLog && !pluginLog);
 }
 export type PluginLogFields = { plugin: string; level: PluginLogLevel; event: string; msg: string; where: string; session?: string; detail?: Record<string, unknown> };
 export const PLUGIN_LOG_CAP_BYTES = 20971520;
@@ -412,8 +412,8 @@ export function pluginLogEvent(row: Record<string, unknown>): Omit<PluginLogFiel
   let event = String(row.event);
   if (event === 'session.compact') event = row.why === 'error' ? 'compact-error' : row.why === 'handoff-waits' ? 'handoff-waits-skipped' : event;
   if (event === 'turn.complete' && row.error !== undefined) event = 'turn-complete-error';
-  const errors = ['tool-register-failed', 'look-back-manual-error', 'compact-error', 'turn-complete-error', 'hook-threw'];
-  const warnings = ['warning', 'decision-retention-failed', 'brief-error', 'option-error', 'resolve-error', 'handoff-invalid', 'forward-invalid', 'forward-unchecked', 'handoff-fallback', 'compact-unseen', 'handoff-waits-skipped'];
+  const errors = ['error', 'brief-error', 'option-error', 'forward-unchecked', 'handoff-fallback', 'tool-register-failed', 'look-back-manual-error', 'compact-error', 'turn-complete-error', 'hook-threw'];
+  const warnings = ['warning', 'decision-retention-failed', 'resolve-error', 'handoff-invalid', 'forward-invalid', 'compact-unseen', 'handoff-waits-skipped'];
   const infos = ['handoff-refused', 'arm-refused', 'forward-refused', 'stop-refused'];
   const level = errors.includes(event) ? 'error' : warnings.includes(event) ? 'warning' : infos.includes(event) ? 'info' : undefined;
   if (level === undefined) return undefined;

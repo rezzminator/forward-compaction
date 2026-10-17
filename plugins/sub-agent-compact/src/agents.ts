@@ -2,7 +2,7 @@ import { frontmatterList, parseFrontmatter } from './frontmatter.ts';
 import { frontmatterKey, readPolicy, type Policy } from './limits.ts';
 
 /** A resolver diagnostic, keyed by its path (or plugin identity before its directory is known). */
-export type AgentResolveLog = (line: string, path: string, screen?: boolean) => void;
+export type AgentResolveLog = (line: string, path: string) => void;
 
 export type AgentFs = {
   exists: (path: string) => Promise<boolean>;

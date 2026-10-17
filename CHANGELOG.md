@@ -6,8 +6,9 @@ Every release of sub-agent-compact. Versions follow [semantic versioning](https:
 
 ### Fixed
 
-- Agent resolver skips and failures are logged once per path per plugin session; listed links to non-regular files (including dangling links) remain warning-log diagnostics without screen noise.
-- Routine info notices stay off screen when either the decision log or plugin log keeps them, unless decision logging is off after a session-id lookup failure; other warnings and errors still show.
+- Agent resolver skips and failures are logged once per path per plugin session; listed links to non-regular files (including dangling links) remain warning-log diagnostics, with screen fallback only when logging is unavailable or failing.
+- Warning- and info-level diagnostics stay off screen while a decision log or plugin log keeps them, including resolver skips, registration still in progress and cleanup notices. They fall back to the screen when neither log is available, or logging is off or failing; a failing plugin log's own notice stays visible. Startup fallback warnings wait until the log destinations are known.
+- Errors always reach the screen and the log. Broken or ignored settings, failed tool registration, unavailable nudging or timers, missing HOME access, failed plugin-skill discovery, broken handoff recovery, installation or verification, failed brief seating or sub-agent stop handling, incompatible native windows and missing token readings are now errors rather than warnings. Diagnostic log rows retain the line's full context. Tool replies and installed handoff text are unchanged.
 
 ## [0.8.0] — 2026-10-16
 
