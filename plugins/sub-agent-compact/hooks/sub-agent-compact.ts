@@ -694,7 +694,7 @@ async function answerLookBackTool(st: State, $: EngineInterface, e: Record<strin
     const reason = message(error);
     result = { text: `Look back failed: ${reason}`, error: reason };
   }
-  record(st, $, { event: 'look-back', party, why: args.why, ...(args.query !== undefined ? { query: args.query } : {}), ...(args.entry !== undefined ? { entry: args.entry } : {}), ...(result.hits !== undefined ? { hits: result.hits } : {}), boundary, ...(result.error !== undefined ? { error: result.error } : {}) });
+  record(st, $, { event: 'look-back', party, ...(args.query !== undefined ? { query: args.query } : {}), ...(args.entry !== undefined ? { entry: args.entry } : {}), ...(result.hits !== undefined ? { hits: result.hits } : {}), boundary, ...(result.error !== undefined ? { error: result.error } : {}) });
   // A failure the caller's input caused is a warning; only the plugin's own fault is an error.
   say(st, $, lookBackNotice(label, args, result), result.error === undefined ? 'info' : result.input ? 'warning' : 'error');
   return result.text;

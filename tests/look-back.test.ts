@@ -21,10 +21,10 @@ const text = (s: string) => ({ type: 'text', text: s });
 const entries = (s: string) => api('parseEntries')(s);
 
 describe('look_back arguments and tool contract (R1–R2)', () => {
-  it('publishes the tool, closed schema, required why and either query or entry, and a self-contained description', () => {
+  it('publishes the tool, closed schema, either query or entry, and a self-contained description', () => {
     expect(api('LOOK_BACK_TOOL')).toBe('look_back');
     const schema = api('LOOK_BACK_INPUT_SCHEMA');
-    expect(schema).toMatchObject({ type: 'object', additionalProperties: false, required: ['why'], properties: { why: { type: 'string' }, query: { type: 'string' }, entry: { type: 'integer', minimum: 1 } } });
+    expect(schema).toMatchObject({ type: 'object', additionalProperties: false, properties: { query: { type: 'string' }, entry: { type: 'integer', minimum: 1 } } });
     // No anyOf: the parser checks query-or-entry itself, and a client that sends `entry: null` is not refused by the schema.
     expect(schema.anyOf).toBeUndefined();
     const description = api('LOOK_BACK_DESCRIPTION');
@@ -32,27 +32,25 @@ describe('look_back arguments and tool contract (R1–R2)', () => {
     for (const phrase of ['latest compaction', 'error', 'code', 'value', 'user', 'person']) expect(description).toContain(phrase);
   });
   it.each([
-    [{ why: '  lost\n detail  ', query: 'ERROR "two words" port' }, { why: 'lost detail', query: 'ERROR "two words" port', terms: ['ERROR', 'two words', 'port'] }],
-    [{ why: 'detail', entry: 4, query: ' ignored ' }, { why: 'detail', entry: 4, query: 'ignored', terms: [] }],
-    [{ why: 'x'.repeat(130), query: 'x' }, { why: 'x'.repeat(115) + '[cut]', terms: ['x'] }],
+    [{ query: ' ERROR "two words" port ' }, { query: 'ERROR "two words" port', terms: ['ERROR', 'two words', 'port'] }],
+    [{ entry: 4, query: ' ignored ' }, { entry: 4, query: 'ignored', terms: [] }],
     // A null beside the other argument is absent, as clients send unset optional fields.
-    [{ why: 'detail', query: 'alpha beta', entry: null }, { why: 'detail', query: 'alpha beta', terms: ['alpha', 'beta'] }],
-    [{ why: 'detail', entry: 4, query: null }, { why: 'detail', entry: 4, terms: [] }],
+    [{ query: 'alpha beta', entry: null }, { query: 'alpha beta', terms: ['alpha', 'beta'] }],
+    [{ entry: 4, query: null }, { entry: 4, terms: [] }],
     // A backslash-escaped quote is a literal quote character, inside a phrase or a word (the live devbox query).
-    [{ why: 'x', query: '"Agent \\"rr" total_tokens' }, { why: 'x', query: '"Agent \\"rr" total_tokens', terms: ['Agent "rr', 'total_tokens'] }],
-    [{ why: 'x', query: 'say \\"hi C:\\dir' }, { why: 'x', terms: ['say', '"hi', 'C:\\dir'] }],
+    [{ query: '"Agent \\"rr" total_tokens' }, { query: '"Agent \\"rr" total_tokens', terms: ['Agent "rr', 'total_tokens'] }],
+    [{ query: 'say \\"hi C:\\dir' }, { terms: ['say', '"hi', 'C:\\dir'] }],
   ])('normalizes arguments %j', (input, expected) => {
     const got = api('parseLookBack')(input);
     expect(got).toMatchObject(expected);
-    expect(got.why.length).toBeLessThanOrEqual(120);
     expect(got.error).toBeUndefined();
   });
   it.each([
-    [{ query: 'x' }, 'why'], [{ why: ' ' , query: 'x' }, 'why'], [{ why: 'x' }, 'query or entry'],
-    [{ why: 'x', query: ' "" ' }, 'query'], [{ why: 'x', entry: 0 }, 'entry'], [{ why: 'x', entry: 1.2 }, 'entry'],
-    [{ why: 'x', query: '"unclosed' }, 'quote'], [{ why: 'x', query: '"open \\"' }, 'quote'], [{ why: 'x', query: 'x\u0000y' }, 'query'],
-    [{ why: 'x', query: '"two\nwords"' }, 'query'], [{ why: 'x', query: 7 }, 'query'],
-    [{ why: 'x', query: 'x', other: true }, 'other'],
+    [{}, 'query or entry'],
+    [{ query: ' "" ' }, 'query'], [{ entry: 0 }, 'entry'], [{ entry: 1.2 }, 'entry'],
+    [{ query: '"unclosed' }, 'quote'], [{ query: '"open \\"' }, 'quote'], [{ query: 'x\u0000y' }, 'query'],
+    [{ query: '"two\nwords"' }, 'query'], [{ query: 7 }, 'query'],
+    [{ query: 'x', other: true }, 'other'],
   ])('reports invalid arguments %j', (input, problem) => expect(api('parseLookBack')(input).error).toContain(problem));
 });
 
@@ -233,7 +231,7 @@ describe('look_back shell protocol (R3–R4)', () => {
     try {
       const file = join(directory, 'party.jsonl');
       writeFileSync(file, [JSON.stringify({ type: 'user', message: { content: 'ran Agent "rr" for total_tokens in C:\\dir' } }), JSON.stringify({ subtype: 'compact_boundary' })].join('\n'));
-      const terms = api('parseLookBack')({ why: 'x', query: '"Agent \\"rr" C:\\dir' }).terms;
+      const terms = api('parseLookBack')({ query: '"Agent \\"rr" C:\\dir' }).terms;
       expect(terms).toEqual(['Agent "rr', 'C:\\dir']);
       const argv = api('searchArgv')(file, 2, terms);
       const found = entries(api('processOutput')({ exitCode: 0, stdout: execFileSync(argv[0], argv.slice(1), { encoding: 'utf8' }), stderr: '' }, 'search', true));
@@ -242,7 +240,7 @@ describe('look_back shell protocol (R3–R4)', () => {
       const call = join(directory, 'call.jsonl');
       writeFileSync(call, [JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'git commit -m "fix" in C:\\dir', subagent_type: 'rr' } }] } }), JSON.stringify({ subtype: 'compact_boundary' })].join('\n'));
       for (const query of ['"-m \\"fix"', 'C:\\dir', '"\\"subagent_type\\":\\"rr\\""']) {
-        const t = api('parseLookBack')({ why: 'x', query }).terms;
+        const t = api('parseLookBack')({ query }).terms;
         const a = api('searchArgv')(call, 2, t);
         const hit = entries(api('processOutput')({ exitCode: 0, stdout: execFileSync(a[0], a.slice(1), { encoding: 'utf8' }), stderr: '' }, 'search', true));
         expect(api('searchResults')(hit, t, 2), query).toMatchObject({ hits: 1 });
@@ -328,9 +326,14 @@ describe('look_back miss notices and manual detection (R6–R7)', () => {
   ])('detects only the caller file in %s %j', (tool, input, agentId, expected) => expect(api('manualTranscriptCall')(tool, input, 'session-1', agentId)).toBe(expected));
   it('renders one notice for a search, entry or failed attempt', () => {
     const notice = api('lookBackNotice');
-    expect(notice('main', { why: 'lost text' }, { hits: 2 })).toBe('look back (main): lost text — 2 hits');
-    expect(notice('reviewer', { why: 'lost text', entry: 4 }, {})).toBe('look back (reviewer): lost text — entry 4');
-    expect(notice('main', { why: 'lost text' }, { error: 'denied\nretry' })).toBe('look back (main): lost text — failed: denied retry');
+    expect(notice('main', { query: 'lost text' }, { hits: 2 })).toBe('look back (main): query lost text — 2 hits');
+    expect(notice('reviewer', { entry: 4 }, {})).toBe('look back (reviewer): entry 4');
+    expect(notice('main', { query: 'lost\ntext' }, { error: 'denied\nretry' })).toBe('look back (main): query lost text — failed: denied retry');
+    expect(notice('main', { entry: 4 }, { error: 'gone' })).toBe('look back (main): entry 4 — failed: gone');
+    expect(notice('main', {}, { error: 'query or entry is required' })).toBe('look back (main): no query or entry — failed: query or entry is required');
+  });
+  it('cuts a long query in the notice at 120 characters, marked [cut]', () => {
+    expect(api('lookBackNotice')('main', { query: 'x'.repeat(130) }, { hits: 0 })).toBe(`look back (main): query ${'x'.repeat(115)}[cut] — 0 hits`);
   });
 });
 

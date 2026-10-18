@@ -1,32 +1,28 @@
 // Recovery is bounded to one party's pre-compaction prefix. Only the adapter does I/O.
 export const LOOK_BACK_TOOL = 'look_back';
-export const LOOK_BACK_DESCRIPTION = 'Recover an exact detail — when you need an error text, code snippet, value, or what the user said from before your latest compaction. Searches only your own transcript’s part you no longer hold. Each call tells the person what was missed. Returns numbered snippets or a whole entry; failures say why, no matches suggests other words. Example: {why:"lost error",query:"connection refused"}.';
+export const LOOK_BACK_DESCRIPTION = 'Recover an exact detail — when you need an error text, code snippet, value, or what the user said from before your latest compaction. Searches only your own transcript’s part you no longer hold. Each call tells the person what you looked up. Returns numbered snippets or a whole entry; failures say why, no matches suggests other words. Example: {query:"connection refused"}.';
 export const LOOK_BACK_HINT = 'Need an exact detail from before this handoff? look_back finds it.';
 export const LOOK_BACK_INPUT_SCHEMA = {
   type: 'object',
   properties: {
-    why: { type: 'string', description: 'What compaction lost that you need; trimmed to 120 characters, longer marked [cut].' },
     query: { type: 'string', description: 'All words must appear, case-insensitive, in one entry. Double quotes keep a phrase whole; \\" is a literal quote.' },
     entry: { type: 'integer', minimum: 1, description: 'Line number from a look_back result to fetch whole, before the latest compaction.' },
   },
   // Query-or-entry is parseLookBack's check, not the schema's: a client sending `entry: null` beside a query is not refused.
-  required: ['why'], additionalProperties: false,
+  additionalProperties: false,
 };
-export type LookBackArgs = { why: string; query?: string; entry?: number; terms: string[]; error?: string };
+export type LookBackArgs = { query?: string; entry?: number; terms: string[]; error?: string };
 /** `input`: the error is the caller's input (a bad argument, an entry it cannot fetch), not a plugin fault. */
 export type LookBackResult = { text: string; hits?: number; error?: string; input?: true };
 const oneLine = (s: string): string => s.replace(/\s+/g, ' ').trim();
 export function parseLookBack(raw: Record<string, unknown>): LookBackArgs {
   // A null query or entry is absent: clients send unset optional fields as null.
   const input = Object.fromEntries(Object.entries(raw).filter(([key, value]) => !(value === null && (key === 'query' || key === 'entry'))));
-  let why = typeof input.why === 'string' ? oneLine(input.why) : '';
-  if (why.length > 120) why = why.slice(0, 115) + '[cut]';
-  const args: LookBackArgs = { why: why || '[missing why]', terms: [] };
+  const args: LookBackArgs = { terms: [] };
   if (typeof input.query === 'string') args.query = input.query.trim();
   if (typeof input.entry === 'number') args.entry = input.entry;
-  const bad = Object.keys(input).find((key) => !['why', 'query', 'entry'].includes(key));
+  const bad = Object.keys(input).find((key) => !['query', 'entry'].includes(key));
   if (bad) args.error = `unknown argument ${bad}`;
-  else if (!why) args.error = 'why is required and must be a nonempty string';
   else if (input.entry !== undefined && (!Number.isSafeInteger(input.entry) || Number(input.entry) < 1)) args.error = 'entry must be a positive integer';
   else if (input.query !== undefined && typeof input.query !== 'string') args.error = 'query must be a string';
   else if (args.entry === undefined) {
@@ -279,7 +275,9 @@ export function manualTranscriptCall(tool: string, input: Record<string, unknown
   const literal = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   return new RegExp(`(^|[^A-Za-z0-9_.-])${literal}($|[^A-Za-z0-9_.-])`).test(JSON.stringify(input));
 }
-export function lookBackNotice(label: string, args: Pick<LookBackArgs, 'why' | 'entry'>, result: { hits?: number; error?: string }): string {
-  const outcome = result.error ? `failed: ${oneLine(result.error)}` : args.entry !== undefined ? `entry ${args.entry}` : `${result.hits ?? 0} hits`;
-  return `look back (${oneLine(label)}): ${args.why} — ${outcome}`;
+export function lookBackNotice(label: string, args: Pick<LookBackArgs, 'query' | 'entry'>, result: { hits?: number; error?: string }): string {
+  const query = oneLine(args.query ?? '');
+  const asked = args.entry !== undefined ? `entry ${args.entry}` : args.query !== undefined ? `query ${query.length > 120 ? query.slice(0, 115) + '[cut]' : query}` : 'no query or entry';
+  const outcome = result.error ? `failed: ${oneLine(result.error)}` : args.entry !== undefined ? '' : `${result.hits ?? 0} hits`;
+  return `look back (${oneLine(label)}): ${asked}${outcome ? ` — ${outcome}` : ''}`;
 }

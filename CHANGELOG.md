@@ -4,6 +4,12 @@ Every release of sub-agent-compact. Versions follow [semantic versioning](https:
 
 ## [Unreleased]
 
+## [0.8.1-dev.4] — 2026-10-18
+
+### Removed
+
+- `look_back` no longer takes `why`: a call is `query` or `entry` alone, and the schema requires nothing. The notice line and the decision log's `look-back` row name the query or the entry that was looked up (a long query cut at 120 characters in the notice) in place of the caller's stated reason. A caller still sending `why` (a chat started before this version holds the old schema) is told `unknown argument why` and calls again without it.
+
 ## [0.8.1-dev.3] — 2026-10-18
 
 ### Fixed
