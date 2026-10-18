@@ -22,6 +22,8 @@ type Harness = {
   /** Registering a tool waits for this, so a test holds it open and releases it. */
   registerGate?: Promise<void>;
   skipSummary?: boolean;
+  /** The compaction beneath the plugin fails with this message, as Claude Code's own reactive compaction can. */
+  compactFails?: string;
   compactResult?: unknown;
   files?: Record<string, string>;
   /** What `$.fs.stat` says of a path (default: a file the size of its content). */
@@ -127,6 +129,7 @@ function engine(options: Record<string, unknown> = {}, harness: Harness = {}) {
   const summarizer = async (input: any) => {
     summarized++;
     summarizerInputs.push(input);
+    if (harness.compactFails !== undefined) throw new Error(harness.compactFails);
     if (harness.skipSummary) return { skip: 'busy' };
     return { messages: [{ role: 'user', text: 'summary', toolUses: [] }], tokensAfter: 20_000 };
   };
@@ -730,5 +733,17 @@ describe('load_on_wake', () => {
     expect(out.messages[0].text).toContain('NOT LOADED: pfm-testing-manual');
     expect(out.messages[0].text).toContain('is not a regular file (kind: dir)');
     expect(out.messages[0].text).not.toContain('BODY');
+  });
+});
+
+describe('a compaction that fails beneath the plugin', () => {
+  it('is logged as a warning of the compaction, never as an error of this hook, and passes on unchanged', async () => {
+    const cc = engine({}, { compactFails: 'reactive compaction did not settle ok' });
+    await cc.start();
+    await cc.step(650_000);
+    await expect(cc.ask('auto', cc.plain())).rejects.toThrow('reactive compaction did not settle ok');
+    await cc.end();
+    const rows = cc.levelRows.filter((row) => /reactive compaction did not settle ok/.test(row.msg ?? ''));
+    expect(rows.map((row) => [row.level, row.event])).toEqual([['warning', 'compaction-failed']]);
   });
 });

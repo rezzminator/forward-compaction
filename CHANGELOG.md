@@ -8,7 +8,8 @@ Every release of sub-agent-compact. Versions follow [semantic versioning](https:
 
 ### Fixed
 
-- A hook's abort now ends its wait for tool registration at once: the dispatch's timer may never fire, and a hook waiting past its abort starved the hooks worker. An aborted wait is not reported as a slow registration.
+- A hook's abort now ends its wait for tool registration at once: the dispatch's timer may never fire, and a hook waiting past its abort starved the hooks worker. An aborted wait is not reported as a slow registration. The same holds for the per-call work of `tool.call` (the nudge check, the manual look-back observation) and the readings after each `turn.step`: none holds its hook past the dispatch's abort, so another plugin's `tool.call` no longer fails open with "ignored its signal ... a runaway plugin in the hooks worker".
+- A compaction that fails beneath the plugin (Claude Code's reactive compaction ending unsettled) is logged as the warning `compaction-failed`, not as an error `hook-threw`: the failure is the compaction's, and it passes on unchanged.
 
 ## [0.8.1-dev.2] — 2026-10-17
 
