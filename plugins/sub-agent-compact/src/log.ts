@@ -412,8 +412,8 @@ export function pluginLogEvent(row: Record<string, unknown>): Omit<PluginLogFiel
   let event = String(row.event);
   if (event === 'session.compact') event = row.why === 'error' ? 'compact-error' : row.why === 'handoff-waits' ? 'handoff-waits-skipped' : event;
   if (event === 'turn.complete' && row.error !== undefined) event = 'turn-complete-error';
-  const errors = ['error', 'brief-error', 'option-error', 'forward-unchecked', 'handoff-fallback', 'tool-register-failed', 'look-back-manual-error', 'compact-error', 'turn-complete-error', 'hook-threw'];
-  const warnings = ['warning', 'decision-retention-failed', 'resolve-error', 'handoff-invalid', 'forward-invalid', 'compact-unseen', 'handoff-waits-skipped'];
+  const errors = ['error', 'brief-error', 'option-error', 'forward-unchecked', 'handoff-fallback', 'tool-register-failed', 'look-back-manual-error', 'compact-error', 'turn-complete-error'];
+  const warnings = ['warning', 'decision-retention-failed', 'resolve-error', 'handoff-invalid', 'forward-invalid', 'compact-unseen', 'handoff-waits-skipped', 'compaction-failed'];
   const infos = ['handoff-refused', 'arm-refused', 'forward-refused', 'stop-refused'];
   const level = errors.includes(event) ? 'error' : warnings.includes(event) ? 'warning' : infos.includes(event) ? 'info' : undefined;
   if (level === undefined) return undefined;

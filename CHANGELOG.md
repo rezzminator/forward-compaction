@@ -4,6 +4,12 @@ Every release of sub-agent-compact. Versions follow [semantic versioning](https:
 
 ## [Unreleased]
 
+## [0.8.1-dev.3] — 2026-10-18
+
+### Fixed
+
+- A hook's abort now ends its wait for tool registration at once: the dispatch's timer may never fire, and a hook waiting past its abort starved the hooks worker. An aborted wait is not reported as a slow registration.
+
 ## [0.8.1-dev.2] — 2026-10-17
 
 ### Fixed

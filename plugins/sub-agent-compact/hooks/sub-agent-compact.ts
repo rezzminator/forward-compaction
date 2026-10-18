@@ -1,5 +1,5 @@
 import type { EngineInterface, On, PluginOptions, Register } from 'claude-code';
-import { bounded } from '../src/bounded.ts';
+import { bounded, unlessAborted } from '../src/bounded.ts';
 import { LOOK_BACK_TOOL, LOOK_BACK_DESCRIPTION, LOOK_BACK_INPUT_SCHEMA, parseLookBack, boundaryArgv, boundaryLine, searchArgv, entryArgv, namesArgv, processOutput, parseEntries, toolNames, resultIds, searchResults, entryResult, manualTranscriptCall, lookBackNotice, type LookBackResult } from '../src/look-back.ts';
 import { servedOptions, toolsToRegister } from '../src/register.ts';
 import { askedToCompact, FORWARD_INPUT_SCHEMA, FORWARD_TOOL, FORWARD_TOOL_DESCRIPTION, forwardCallShape, forwardNudgeText, forwardRefusal, forwardStoredText, parseForwardArgs, rereadNudge, type ForwardArgs } from '../src/forward-args.ts';
@@ -761,7 +761,7 @@ function afterOrNever(st: State, $: EngineInterface, ms: number, fn: () => void,
  * hook calls each: `session.start` may not fire (a plugin loaded mid-session)
  * or may run before the session can take a tool. Hooks that need a tool wait on it.
  */
-async function ensureTools(st: State, $: EngineInterface): Promise<void> {
+async function ensureTools(st: State, $: EngineInterface, signal?: AbortSignal): Promise<void> {
   if (st.toolsAbandoned || st.toolsSettled) return;
   const left = () =>
     toolsToRegister(
@@ -800,7 +800,8 @@ async function ensureTools(st: State, $: EngineInterface): Promise<void> {
     if (left().length === 0) st.toolsSettled = true;
   })();
   // A hang here would hold every turn of every chat: past the limit the turn goes on, and the person is told.
-  const outcome = await bounded(registered, ENSURE_TOOLS_TIMEOUT_MS, (ms, fn) => afterOrNever(st, $, ms, fn, 'registering the tools'));
+  // The dispatch's abort ends the wait too: its timer may never fire, and a hook that waits on past its abort starves the hooks worker.
+  const outcome = await bounded(registered, ENSURE_TOOLS_TIMEOUT_MS, (ms, fn) => afterOrNever(st, $, ms, fn, 'registering the tools'), signal);
   if (!outcome.timedOut) return;
   st.toolsAbandoned = true;
   // Once the slow registration settles, a later hook spends the tries left, and the late finish is told with the tools it named.
@@ -812,6 +813,8 @@ async function ensureTools(st: State, $: EngineInterface): Promise<void> {
     const tools = names().filter((name) => !had.has(name));
     say(st, $, `sub-agent-compact: registering the tools finished after ${Math.round(ms / 1000)}s: ${tools.length > 0 ? tools.join(', ') : 'it registered none'}`, 'info', { event: 'tools-late', ms, tools });
   }, resume);
+  // An interrupted wait is no slow registration: nothing to tell.
+  if (outcome.aborted) return;
   warnOnce(st, $, 'tools-timeout', `sub-agent-compact: registering the tools did not finish within ${ENSURE_TOOLS_TIMEOUT_MS / 1000}s; it goes on, turns do not wait for it, and the tools come into use once it finishes`);
 }
 
@@ -1379,7 +1382,7 @@ export const register: Register = (on: On, options: PluginOptions) => {
 
   on('session.start', async ($, e, next) => {
     const result = await next(e);
-    await ensureTools(st, $);
+    await ensureTools(st, $, next.signal);
     return result;
   });
 
@@ -1402,60 +1405,64 @@ export const register: Register = (on: On, options: PluginOptions) => {
 
   // Track each loop's context and model from its responses, and read a sub-agent's <compact-now> request in its text.
   on('turn.step', async function* ($, e, next) {
-    await ensureTools(st, $);
+    await ensureTools(st, $, next.signal);
     const result = yield* next(e);
     const key = e.agentId ?? 'main';
-    try {
-      const previous = st.models.get(key);
-      st.models.set(key, e.model);
-      const tokens = contextTokens(result.usage);
-      const main = e.agentId === undefined;
-      // /model moves the main chat to another window: its forced point and nudges follow the new one.
-      if (main && previous !== undefined && previous !== e.model) await rereadWindow(st, $, e.model);
-      // Only a reading of the session's first request is the base a handoff cuts back to; a plugin reloaded mid-session reads its first at a late one.
-      // The main chat's prompt count is asked only when this could be that request.
-      const mayBeFirst = e.index === 0 && typeof e.messageCount === 'number' && e.messageCount <= FRESH_MAX_MESSAGES && st.parties.firstReading(key) === undefined;
-      const turns = main && tokens !== undefined && mayBeFirst ? await promptCount(st, $) : undefined;
-      // A sharp fall with no session.compact handled since is a compaction Claude Code never dispatched to the plugin.
-      if (main && tokens !== undefined) {
-        const before = st.parties.reading('main');
-        // What that compaction summarized away is gone: a stored handoff would install stale, and the nudges start over.
-        if (unseenCompaction(before, tokens, st.mainCompactSeen)) {
-          const handoffDropped = st.parties.handoff('main') !== undefined;
-          st.parties.compacted('main', tokens);
-          st.forwardWoke.delete('main');
-          record(st, $, { event: 'compact-unseen', party: 'main', before: before ?? null, after: tokens, handoffDropped });
+    const track = (async (): Promise<void> => {
+      try {
+        const previous = st.models.get(key);
+        st.models.set(key, e.model);
+        const tokens = contextTokens(result.usage);
+        const main = e.agentId === undefined;
+        // /model moves the main chat to another window: its forced point and nudges follow the new one.
+        if (main && previous !== undefined && previous !== e.model) await rereadWindow(st, $, e.model);
+        // Only a reading of the session's first request is the base a handoff cuts back to; a plugin reloaded mid-session reads its first at a late one.
+        // The main chat's prompt count is asked only when this could be that request.
+        const mayBeFirst = e.index === 0 && typeof e.messageCount === 'number' && e.messageCount <= FRESH_MAX_MESSAGES && st.parties.firstReading(key) === undefined;
+        const turns = main && tokens !== undefined && mayBeFirst ? await promptCount(st, $) : undefined;
+        // A sharp fall with no session.compact handled since is a compaction Claude Code never dispatched to the plugin.
+        if (main && tokens !== undefined) {
+          const before = st.parties.reading('main');
+          // What that compaction summarized away is gone: a stored handoff would install stale, and the nudges start over.
+          if (unseenCompaction(before, tokens, st.mainCompactSeen)) {
+            const handoffDropped = st.parties.handoff('main') !== undefined;
+            st.parties.compacted('main', tokens);
+            st.forwardWoke.delete('main');
+            record(st, $, { event: 'compact-unseen', party: 'main', before: before ?? null, after: tokens, handoffDropped });
+          }
+          st.mainCompactSeen = false;
         }
-        st.mainCompactSeen = false;
+        if (tokens !== undefined) st.parties.read(key, tokens, isFirstRequest({ index: e.index, messageCount: e.messageCount, main, turns }));
+        // A step asking for tools got a response, from the API or a hook; a failed request (a prompt too long) asks for none, so its recovery ask stays unanswered.
+        else if (result.toolUses.length > 0) st.parties.answered(key);
+        const installed = st.forwardInstalled.get(key);
+        if (installed !== undefined) {
+          st.forwardInstalled.delete(key);
+          await finishForward(st, $, installed, e.agentId);
+        }
+        // A marker is read only with the final config: while start is still reading the environment, `config` holds the options alone and could disagree with it.
+        // A Haiku party's markers are not read: it is left to Claude Code, so a marker it writes is neither stored nor refused.
+        const haiku = isHaiku(e.model);
+        const handoff = st.configured && st.config.handoffTool && !haiku ? handoffMarkerRequest({ answer: result.answer, toolCalls: result.toolUses.length, main }) : undefined;
+        const focus = st.configured && st.config.compactTool && !haiku && handoff === undefined ? markerRequest({ answer: result.answer, toolCalls: result.toolUses.length, main }) : undefined;
+        if (handoff !== undefined) {
+          const stored = storeHandoff(st, $, await partyOf(st, $, e.agentId), { text: handoff, anchor: { marker: true } }, 'marker');
+          // The marker has no tool result to answer it: the agent reads the outcome on its next tool result.
+          st.parties.notify(key, stored === undefined ? handoffNotice('marker-stored', `${handoff.length} characters`) : handoffNotice('marker-refused', stored.text));
+        } else if (focus !== undefined) arm(st, $, await partyOf(st, $, e.agentId), focus, 'marker');
+      } catch (error) {
+        say(st, $, `sub-agent-compact: reading turn.step for ${key} failed: ${message(error)}`);
       }
-      if (tokens !== undefined) st.parties.read(key, tokens, isFirstRequest({ index: e.index, messageCount: e.messageCount, main, turns }));
-      // A step asking for tools got a response, from the API or a hook; a failed request (a prompt too long) asks for none, so its recovery ask stays unanswered.
-      else if (result.toolUses.length > 0) st.parties.answered(key);
-      const installed = st.forwardInstalled.get(key);
-      if (installed !== undefined) {
-        st.forwardInstalled.delete(key);
-        await finishForward(st, $, installed, e.agentId);
-      }
-      // A marker is read only with the final config: while start is still reading the environment, `config` holds the options alone and could disagree with it.
-      // A Haiku party's markers are not read: it is left to Claude Code, so a marker it writes is neither stored nor refused.
-      const haiku = isHaiku(e.model);
-      const handoff = st.configured && st.config.handoffTool && !haiku ? handoffMarkerRequest({ answer: result.answer, toolCalls: result.toolUses.length, main }) : undefined;
-      const focus = st.configured && st.config.compactTool && !haiku && handoff === undefined ? markerRequest({ answer: result.answer, toolCalls: result.toolUses.length, main }) : undefined;
-      if (handoff !== undefined) {
-        const stored = storeHandoff(st, $, await partyOf(st, $, e.agentId), { text: handoff, anchor: { marker: true } }, 'marker');
-        // The marker has no tool result to answer it: the agent reads the outcome on its next tool result.
-        st.parties.notify(key, stored === undefined ? handoffNotice('marker-stored', `${handoff.length} characters`) : handoffNotice('marker-refused', stored.text));
-      } else if (focus !== undefined) arm(st, $, await partyOf(st, $, e.agentId), focus, 'marker');
-    } catch (error) {
-      say(st, $, `sub-agent-compact: reading turn.step for ${key} failed: ${message(error)}`);
-    }
+    })();
+    // The readings are books, not the response: past the step's abort they go on unawaited, so a stalled call under them never holds the hook.
+    await unlessAborted(track, next.signal);
     return result;
   });
 
   // Serve the handoff and compact tools; after any other tool, carry a nudge the party is owed.
   on('tool.call', async ($, e, next) => {
     if (st.lookBackToolName !== undefined && e.tool === st.lookBackToolName) return { result: await answerLookBackTool(st, $, e as Record<string, unknown>) };
-    await observeManualLookBack(st, $, e as Record<string, unknown>);
+    await unlessAborted(observeManualLookBack(st, $, e as Record<string, unknown>), next.signal);
     // What the engine's in-flight list (taken at the last turn's end) cannot yet know of.
     if (e.agentId === undefined && st.live !== undefined && typeof e.tool_use_id === 'string') st.live.started.add(e.tool_use_id);
     if (st.handoffToolName !== undefined && e.tool === st.handoffToolName) {
@@ -1488,7 +1495,7 @@ export const register: Register = (on: On, options: PluginOptions) => {
     const notices = st.parties.takeNotices(e.agentId ?? 'main');
     let line: string | undefined;
     try {
-      line = await nudgeFor(st, $, e.agentId);
+      line = (await unlessAborted(nudgeFor(st, $, e.agentId), next.signal))?.value;
     } catch (error) {
       say(st, $, `sub-agent-compact: nudging ${e.agentId ?? 'main'} failed: ${message(error)}`);
     }
@@ -1732,7 +1739,8 @@ export const register: Register = (on: On, options: PluginOptions) => {
     } catch (error) {
       if (compactionEnd({ trigger: kind, skipped: false, aborted: true }) === 'unfinished') dropArm('error');
       if (manualOver !== undefined) manualUnfinished(`the compaction failed: ${message(error)}`);
-      record(st, $, { event: 'hook-threw', error: message(error), party: key });
+      // The failure is the compaction's, not this hook's: Claude Code's own reactive compaction can end unsettled, and it passes on unchanged.
+      record(st, $, { event: 'compaction-failed', error: message(error), party: key });
       throw error;
     } finally {
       next.signal.removeEventListener('abort', onAbort);
@@ -1836,7 +1844,7 @@ export const register: Register = (on: On, options: PluginOptions) => {
       }
     };
     const left = next.budget?.remainingMs ?? Infinity;
-    const outcome = Number.isFinite(left) ? await bounded(settled(), Math.max(0, left - END_CORE_RESERVE_MS), (ms, fn) => afterOrNever(st, $, ms, fn, 'the session-end log flush')) : (await settled(), { timedOut: false as const });
+    const outcome = Number.isFinite(left) ? await bounded(settled(), Math.max(0, left - END_CORE_RESERVE_MS), (ms, fn) => afterOrNever(st, $, ms, fn, 'the session-end log flush'), next.signal) : (await settled(), { timedOut: false as const });
     const report = endReport({
       timedOut: outcome.timedOut, boundMs: next.budget?.ms ?? left, decisionRows: st.pending.length + st.rowsWriting, levelRows: st.levelRowsWriting,
       held: st.config.logFile && st.writeError !== undefined ? st.pending.length : 0, dropped: st.config.logFile ? st.rowsDropped?.rows ?? 0 : 0,
@@ -1851,7 +1859,7 @@ export const register: Register = (on: On, options: PluginOptions) => {
       show($, line);
       // The level row is the record of the loss: the end waits for it, within what the bound leaves.
       const rest = next.budget?.remainingMs ?? Infinity;
-      if (Number.isFinite(rest)) await bounded(st.pluginWriting, Math.max(0, rest - END_CORE_RESERVE_MS), (ms, fn) => afterOrNever(st, $, ms, fn, 'the session-end log flush'));
+      if (Number.isFinite(rest)) await bounded(st.pluginWriting, Math.max(0, rest - END_CORE_RESERVE_MS), (ms, fn) => afterOrNever(st, $, ms, fn, 'the session-end log flush'), next.signal);
       else await st.pluginWriting;
     }
     if (goesOn) startOver(st);
