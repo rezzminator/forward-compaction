@@ -4,6 +4,12 @@ Every release of sub-agent-compact. Versions follow [semantic versioning](https:
 
 ## [Unreleased]
 
+## [0.8.1-dev.6] — 2026-10-19
+
+### Fixed
+
+- A background task that finishes while a handoff is being written is no longer lost by the reset. Claude Code attaches its notification to the turn after the handoff call's result, and the rows a compaction hands the plugin hold no attachment, so the installed context never showed it: the woken model waited for a task that had already finished. The install now reads the Messages API form of the transcript and carries every `<task-notification>` delivered after the handoff call, verbatim, in the message before the wake text (inside the framed handoff for `compact`), unless a kept message already holds it. When that transcript cannot be read, the handoff installs without them and says why; the decision log's `handoff` row counts them as `notices`.
+
 ## [0.8.1-dev.5] — 2026-10-19
 
 ### Fixed

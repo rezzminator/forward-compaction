@@ -26,9 +26,11 @@ import {
   handoffStoredText,
   installHandoff,
   installLine,
+  noticesAfter,
   parseHandoff,
   recoverHandoff,
   transcriptShapeProblem,
+  type ApiTranscriptMessage,
   type ArmedHandoff,
   type ForwardMeta,
 } from '../src/handoff.ts';
@@ -1693,7 +1695,18 @@ export const register: Register = (on: On, options: PluginOptions) => {
             for (const name of handoff.loads ?? []) entries.push(invoked.has(name) || roots === undefined ? { name, invoked: invoked.has(name) } : await resolveWakeEntry(st, $, roots, name));
             const wake = renderWake(entries);
             const text = wake.text === '' ? handoff.text : `${handoff.text}\n\n**Loaded on wake**\n${wake.text}`;
-            const installed = installHandoff(e.messages, { text, anchor: handoff.anchor, ...(brief !== undefined ? { brief } : {}), ...(handoff.forward ? { frame: (verbatim: string) => verbatim } : {}) });
+            // A task that finished while the handoff was written was attached to the call's result: the rows hold no attachment, the API form does.
+            let notices: string[] = [];
+            if ('toolUseId' in handoff.anchor) {
+              try {
+                const got = await $.session.messages({ as: 'api', ...(agentId !== undefined ? { agentId } : {}) });
+                if (!Array.isArray(got)) throw new Error(`not a list (${JSON.stringify(got).slice(0, 120)})`);
+                notices = noticesAfter(got as ApiTranscriptMessage[], handoff.anchor.toolUseId);
+              } catch (error) {
+                say(st, $, `sub-agent-compact: reading the notifications delivered after the handoff of ${party.label} failed: ${message(error)}; it installs without them`, 'error');
+              }
+            }
+            const installed = installHandoff(e.messages, { text, anchor: handoff.anchor, notices, ...(brief !== undefined ? { brief } : {}), ...(handoff.forward ? { frame: (verbatim: string) => verbatim } : {}) });
             if (installed !== undefined) {
               const tokensAfter = estimateTranscript(installed.messages);
               if (kind === 'auto') st.asked.add(key);
@@ -1715,7 +1728,7 @@ export const register: Register = (on: On, options: PluginOptions) => {
               if (wake.failed.length > 0) {
                 st.parties.notify(key, `sub-agent-compact: load_on_wake entries not loaded: ${wake.failed.join(', ')} — the installed handoff names them as NOT LOADED; load them yourself.`);
               }
-              record(st, $, { ...base, type: party.label, ...limitRow, tokens: tokens ?? null, messages: messages.length, decision: 'handoff', tail: installed.tail, siblings: installed.siblings, brief: brief !== undefined, chars: text.length, tokensAfter, tokensAfterScope: 'messages', recovered, ...handoffLoads(entries.length, wake.failed.length, handoff.forward?.record), warn: line.warn });
+              record(st, $, { ...base, type: party.label, ...limitRow, tokens: tokens ?? null, messages: messages.length, decision: 'handoff', tail: installed.tail, siblings: installed.siblings, notices: installed.notices, brief: brief !== undefined, chars: text.length, tokensAfter, tokensAfterScope: 'messages', recovered, ...handoffLoads(entries.length, wake.failed.length, handoff.forward?.record), warn: line.warn });
               // What the session holds is readable only once the compaction is done: the next main request checks it.
               if (handoff.forward) {
                 st.forwardInstalled.set(key, { meta: handoff.forward, text, tokensAfter, before: tokens, label: party.label });

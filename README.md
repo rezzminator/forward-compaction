@@ -5,9 +5,9 @@
 **Smart auto-compact for Claude Code: a separate compaction point for every sub-agent, and self-compaction at a milestone the model chooses.**
 
 [![Claude Code plugin](https://img.shields.io/badge/Claude%20Code-plugin-D97757)](https://docs.claude.com/en/docs/claude-code/plugins)
-[![Version](https://img.shields.io/badge/version-0.8.1--dev.5-blue)](./CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.8.1--dev.6-blue)](./CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
-[![Tests](https://img.shields.io/badge/tests-968%20passing-brightgreen)](#development)
+[![Tests](https://img.shields.io/badge/tests-976%20passing-brightgreen)](#development)
 [![Built with Professor](https://img.shields.io/badge/built%20with-Professor-8A2BE2)](https://github.com/rezzminator/professor)
 
 **34% cheaper** than a sub-agent that never compacts · **52% less context** re-sent on every request
@@ -189,7 +189,10 @@ summarizer request runs:
 3. **Installing.** The plugin stores the handoff. The next time Claude Code
    asks to compact the party, the plugin answers the ask itself: the
    sub-agent's brief (verbatim, see below), then the handoff, then the
-   results of any tool calls made beside it, then every message after the
+   results of any tool calls made beside it and every background task's
+   notification delivered after the call (read from the transcript's
+   Messages API form, since a notification Claude Code attaches mid-turn
+   is not among the rows it compacts), then every message after the
    call, kept as they were. No summarizer request runs, so the handoff is
    the party's whole past, word for word. The main chat below Claude
    Code's own compaction point installs it before its next request, at the

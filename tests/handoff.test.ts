@@ -24,6 +24,8 @@ import {
   handoffStopRequest,
   handoffStoredText,
   installHandoff,
+  noticesAfter,
+  type ApiTranscriptMessage,
 } from '../plugins/sub-agent-compact/src/handoff.ts';
 import { resolveOptions } from '../plugins/sub-agent-compact/src/limits.ts';
 import { Parties } from '../plugins/sub-agent-compact/src/parties.ts';
@@ -280,6 +282,33 @@ describe('installHandoff', () => {
     expect(out.messages[0]!.text).not.toContain('Handoff stored.');
   });
 
+  // A background task that finishes while the handoff is being written is attached to the turn after the call's
+  // result; the rows a compaction hands over hold no attachment, so only a carried notice reaches the woken model.
+  const finished = (id: string) => `<task-notification>\n<task-id>${id}</task-id>\n<status>completed</status>\n<result>Committed as 0a1b2c3</result>\n</task-notification>`;
+
+  it('carries a notification delivered after the handoff call into the framed handoff', () => {
+    const out = installHandoff(history(), { text: HANDOFF, anchor: { toolUseId: 'h1' }, notices: [finished('task-7')] })!;
+    expect(out.messages).toHaveLength(1);
+    expect(out.notices).toBe(1);
+    expect(out.messages[0]!.text).toContain(finished('task-7'));
+    expect(out.messages[0]!.text).toMatch(/after you wrote the handoff/);
+  });
+
+  it('carries a notification delivered after a self-framed handoff in the message before its text, the text untouched', () => {
+    const out = installHandoff(history(), { text: 'WAKE TEXT', anchor: { toolUseId: 'h1' }, frame: (text) => text, notices: [finished('task-7')] })!;
+    expect(out.messages).toHaveLength(2);
+    expect(out.messages[0]!.text.startsWith(HANDOFF_OPENING)).toBe(true);
+    expect(out.messages[0]!.text).toContain(finished('task-7'));
+    expect(out.messages[1]!.text).toBe('WAKE TEXT');
+  });
+
+  it('does not repeat a notification a kept message already holds', () => {
+    const input = [...history(), user(finished('task-7'), 'm5')];
+    const out = installHandoff(input, { text: 'WAKE TEXT', anchor: { toolUseId: 'h1' }, frame: (text) => text, notices: [finished('task-7')] })!;
+    expect(out.notices).toBe(0);
+    expect(out.messages.map((m) => m.text)).toEqual(['WAKE TEXT', finished('task-7')]);
+  });
+
   it('treats a response split over several messages, one per content block, as one response with its results', () => {
     const input = [
       user('task', 'm0'),
@@ -493,6 +522,35 @@ describe('handoffInputOf', () => {
     const input = handoffInputOf({ tool: 't', tool_use_id: 'h1', agentId: 'a1', goal: GOAL, next_step: NEXT, dead_end: ['x'] });
     expect(input).toEqual({ goal: GOAL, next_step: NEXT, dead_end: ['x'] });
     expect(mustFail(input)).toMatch(/`dead_end` is not a field/);
+  });
+});
+
+describe('noticesAfter', () => {
+  const note = (id: string) => `<task-notification>\n<task-id>${id}</task-id>\n<status>completed</status>\n</task-notification>`;
+  const api = (after: ApiTranscriptMessage[]): ApiTranscriptMessage[] => [
+    { role: 'user', content: [{ type: 'text', text: `go\n${note('before')}` }] },
+    { role: 'assistant', content: [{ type: 'tool_use', id: 'h1', name: 'mcp__sub-agent-compact__forward_handoff', input: {} }] },
+    ...after,
+  ];
+
+  it('reads each notification delivered after the call, from a text block, a string or a tool result, once', () => {
+    const got = noticesAfter(
+      api([
+        { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'h1', content: [{ type: 'text', text: `Forward handoff stored\n<system-reminder>\n${note('in-result')}\n</system-reminder>` }] }, { type: 'text', text: `<system-reminder>\n${note('beside')}\n</system-reminder>` }] },
+        { role: 'user', content: note('as-string') },
+        { role: 'user', content: [{ type: 'text', text: note('beside') }] },
+      ]),
+      'h1',
+    );
+    expect(got).toEqual([note('in-result'), note('beside'), note('as-string')]);
+  });
+
+  it('leaves out what came before the call and what an assistant message says', () => {
+    expect(noticesAfter(api([{ role: 'assistant', content: [{ type: 'text', text: note('quoted') }] }]), 'h1')).toEqual([]);
+  });
+
+  it('finds nothing when the call is not in the transcript', () => {
+    expect(noticesAfter(api([{ role: 'user', content: note('late') }]), 'h9')).toEqual([]);
   });
 });
 

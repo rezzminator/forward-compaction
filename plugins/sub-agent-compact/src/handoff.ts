@@ -397,8 +397,8 @@ function cut(text: string): string {
   return `${text.slice(0, SIBLING_MAX_CHARS)}\n[sub-agent-compact: cut at ${SIBLING_MAX_CHARS} of ${text.length} characters]`;
 }
 
-/** The results of the calls made beside the handoff and the text delivered with them, one part each; none when there were none. */
-function besideParts(siblings: readonly Sibling[], extras: readonly string[]): string[] {
+/** The results of the calls made beside the handoff, the text delivered with them and the notifications delivered after it, one part each; none when there were none. */
+function besideParts(siblings: readonly Sibling[], extras: readonly string[], notices: readonly string[] = []): string[] {
   const parts: string[] = [];
   if (siblings.length > 0) {
     parts.push(
@@ -409,16 +409,17 @@ function besideParts(siblings: readonly Sibling[], extras: readonly string[]): s
     );
   }
   if (extras.length > 0) parts.push(`Delivered with those results:\n${extras.join('\n')}`);
+  if (notices.length > 0) parts.push(`Delivered after you wrote the handoff, so it cannot know them: they are newer than anything it says is still running or awaited:\n${notices.join('\n')}`);
   return parts;
 }
 
 /** The installed message: what it is, the handoff verbatim, the results the handoff could not include, and whether its aftermath follows. */
-function framedHandoff(text: string, siblings: readonly Sibling[], extras: readonly string[], tail: number): string {
+function framedHandoff(text: string, siblings: readonly Sibling[], extras: readonly string[], notices: readonly string[], tail: number): string {
   const parts = [
     `${HANDOFF_OPENING} Your context was reset. Below is the handoff you wrote with the handoff tool right before the reset: it is now your whole memory of the work up to that point. The earlier messages, file contents and tool results are gone, and nothing else was kept or summarized. Treat what it records as known and do not re-read it; open a file again only for something it does not hold.`,
     `=== handoff ===\n${text}\n=== end of handoff ===`,
   ];
-  parts.push(...besideParts(siblings, extras));
+  parts.push(...besideParts(siblings, extras, notices));
   parts.push(tail > 0 ? 'What you did after writing it follows as it happened: continue from where it leaves off.' : 'Continue from its next step.');
   return parts.join('\n\n');
 }
@@ -432,12 +433,15 @@ function framedHandoff(text: string, siblings: readonly Sibling[], extras: reado
  * its tool calls are its results. Results of calls made beside the handoff
  * are carried as text inside the framed message, or in a message of their
  * own before a text the caller frames itself, since their own call leaves
- * with the response. Undefined when the anchor is not in the transcript.
+ * with the response. So are `notices`, the notifications delivered after the
+ * response (noticesAfter), less any a kept message already holds: the rows
+ * hold no attachment, so the reset would drop them unseen. Undefined when the
+ * anchor is not in the transcript.
  */
 export function installHandoff<M extends HandoffMessage>(
   input: readonly M[],
-  { text, anchor, brief, frame }: { text: string; anchor: HandoffAnchor; brief?: string; frame?: (text: string) => string },
-): { messages: M[]; tail: number; siblings: number } | undefined {
+  { text, anchor, brief, frame, notices: delivered = [] }: { text: string; anchor: HandoffAnchor; brief?: string; frame?: (text: string) => string; notices?: readonly string[] },
+): { messages: M[]; tail: number; siblings: number; notices: number } | undefined {
   const isAnchor = (m: M): boolean =>
     m.role === 'assistant' && ('toolUseId' in anchor ? m.toolUses.some((u) => u.tool_use_id === anchor.toolUseId) : handoffMarker(m.text) !== undefined);
   let at = -1;
@@ -470,12 +474,46 @@ export function installHandoff<M extends HandoffMessage>(
     .filter((u) => u.tool_use_id !== own)
     .map((u) => ({ tool: u.tool ?? 'tool', input: u.input, text: results.get(u.tool_use_id) ?? u.text ?? '(no result recorded)' }));
   const tail = input.slice(next);
-  const framed = { role: 'user', text: frame ? frame(text) : framedHandoff(text, siblings, extras, tail.length), toolUses: [] } as HandoffMessage as M;
+  const kept = [...extras, ...tail.flatMap((m) => [m.text, ...m.toolUses.map((u) => u.text ?? ''), ...(m.toolResults ?? []).map((r) => r.text ?? '')])];
+  const notices = delivered.filter((n) => !kept.some((k) => k.includes(n)));
+  const framed = { role: 'user', text: frame ? frame(text) : framedHandoff(text, siblings, extras, notices, tail.length), toolUses: [] } as HandoffMessage as M;
   const seated = brief === undefined ? [] : [{ role: 'user', text: brief, toolUses: [] } as HandoffMessage as M];
   // A self-framed text is installed untouched, so what was made beside it goes in a message of its own, before it: the text stays the freshest read.
-  const beside = frame ? besideParts(siblings, extras) : [];
+  const beside = frame ? besideParts(siblings, extras, notices) : [];
   const carried = beside.length === 0 ? [] : [{ role: 'user', text: [HANDOFF_OPENING, ...beside].join('\n\n'), toolUses: [] } as HandoffMessage as M];
-  return { messages: [...seated, ...carried, framed, ...tail], tail: tail.length, siblings: siblings.length };
+  return { messages: [...seated, ...carried, framed, ...tail], tail: tail.length, siblings: siblings.length, notices: notices.length };
+}
+
+/** A message in the Messages API form, as `$.session.messages({ as: 'api' })` gives it: the form that holds what the engine attached. */
+export type ApiTranscriptMessage = { role: string; content: unknown };
+
+const TASK_NOTIFICATION = /<task-notification>[\s\S]*?<\/task-notification>/g;
+
+/**
+ * The task notifications delivered after the response holding the call
+ * `anchorToolUseId`, verbatim and once each, in the order they came: a
+ * background task that finished while the handoff was being written, which
+ * the engine attached to the call's result. The rows a compaction hands over
+ * hold no attachment, so this is read from the Messages API form, from user
+ * messages only: their text blocks, a string content, and tool results, where
+ * the engine may fold a reminder. None when the call is not in it.
+ */
+export function noticesAfter(api: readonly ApiTranscriptMessage[], anchorToolUseId: string): string[] {
+  const blocks = (m: ApiTranscriptMessage): unknown[] => (typeof m.content === 'string' ? [{ type: 'text', text: m.content }] : Array.isArray(m.content) ? m.content : []);
+  const field = (b: unknown, key: string): unknown => (b !== null && typeof b === 'object' ? (b as Record<string, unknown>)[key] : undefined);
+  const at = api.findLastIndex((m) => m.role === 'assistant' && blocks(m).some((b) => field(b, 'type') === 'tool_use' && field(b, 'id') === anchorToolUseId));
+  if (at < 0) return [];
+  const texts = (b: unknown): string[] => {
+    const content = field(b, 'type') === 'tool_result' ? field(b, 'content') : field(b, 'text');
+    if (typeof content === 'string') return [content];
+    return Array.isArray(content) ? content.flatMap((x) => (typeof field(x, 'text') === 'string' ? [field(x, 'text') as string] : [])) : [];
+  };
+  const found: string[] = [];
+  for (const m of api.slice(at + 1)) {
+    if (m.role !== 'user') continue;
+    for (const text of blocks(m).flatMap(texts)) for (const n of text.match(TASK_NOTIFICATION) ?? []) if (!found.includes(n)) found.push(n);
+  }
+  return found;
 }
 
 /** The blocks the harness itself puts in a user message: a finished background task, a reminder, a local command's output. */

@@ -404,6 +404,38 @@ describe('the forward handoff tool through the adapter', () => {
     expect(cc.logs.filter((line) => line.startsWith('sub-agent-compact:'))).toEqual([]);
   });
 
+  // A background task finishing while the handoff is written: the engine attaches its notification to the call's
+  // result, the rows a compaction hands over hold no attachment, and the woken model waited for a finished task.
+  const finishedTask = '<task-notification>\n<task-id>agent-g1</task-id>\n<status>completed</status>\n<result>Committed as 0a1b2c3</result>\n</task-notification>';
+
+  it('carries a task notification delivered after the handoff call, which the compacted rows never hold, before the wake text', async () => {
+    const cc = engine();
+    await cc.start();
+    await cc.step(250_000);
+    await cc.forward();
+    const wake = cc.written[`${DIR}/wake.txt`]!;
+    cc.rows.push({ role: 'user', content: [{ type: 'tool_result', tool_use_id: 'f1', content: 'Forward handoff stored' }, text(`<system-reminder>\n${finishedTask}\n</system-reminder>`)] });
+    const out = await cc.ask('auto');
+    expect(cc.summarized()).toBe(0);
+    expect(out.messages).toHaveLength(2);
+    expect(out.messages[0].text).toContain(finishedTask);
+    expect(out.messages[1].text).toBe(wake);
+  });
+
+  it('installs the handoff without carried notifications when the transcript cannot be read, and says why', async () => {
+    const env: Env = {};
+    const cc = engine({ forwardHandoffTool: true }, {}, api(), true, [], env);
+    await cc.start();
+    await cc.step(250_000);
+    await cc.forward();
+    const wake = cc.written[`${DIR}/wake.txt`]!;
+    env.messagesFail = true;
+    const out = await cc.ask('auto');
+    expect(out.messages).toHaveLength(1);
+    expect(out.messages[0].text).toBe(wake);
+    expect(cc.logs.filter((line) => /notifications delivered after/.test(line))).toEqual([expect.stringMatching(/transcript gone/)]);
+  });
+
   it('says in the installed row and its said line that the after-size counts the messages only', async () => {
     const cc = engine({ forwardHandoffTool: true, compactTool: false, logFile: '/logs/decisions.jsonl' });
     await cc.start();
