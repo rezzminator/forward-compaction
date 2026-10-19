@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { FORWARD_INPUT_SCHEMA, FORWARD_LIMITS, FORWARD_TOOL, FORWARD_TOOL_DESCRIPTION, askedToCompact, forwardCallShape, forwardNudgeText, forwardRefusal, forwardStoredText, parseForwardArgs, rereadNudge, TRIMMED } from '../plugins/sub-agent-compact/src/forward-args.ts';
+import { FORWARD_INPUT_SCHEMA, FORWARD_LIMITS, FORWARD_TOOL, FORWARD_TOOL_DESCRIPTION, askedToCompact, forwardCallShape, forwardNudgeText, forwardRefusal, forwardStoredText, worksPastWake, parseForwardArgs, rereadTarget, TRIMMED } from '../plugins/sub-agent-compact/src/forward-args.ts';
 
 const ok = { objective: 'Ship the thing', done: ['a: tests green'], remaining: ['b', 'c'], next: 'run the tests' };
 const parse = (input: Record<string, unknown>) => {
@@ -51,7 +51,7 @@ describe('parseForwardArgs', () => {
     expect(a.trimmed).toEqual([]);
   });
 
-  it('cuts a list once, where it crosses its budget (items x chars) or its item count, and marks it', () => {
+  it('cuts a list past its item count, then to its budget (items x chars), each kept item shortened to a fair share and marked', () => {
     const a = parse({
       ...ok,
       done: Array.from({ length: 20 }, (_, i) => `item ${i} ${'x'.repeat(300)}`),
@@ -61,12 +61,12 @@ describe('parseForwardArgs', () => {
     const budget = FORWARD_LIMITS.doneItems * FORWARD_LIMITS.doneChars;
     expect(a.done.join('').length).toBeLessThanOrEqual(budget);
     expect(a.done.join('').length).toBeGreaterThan(budget - 400);
-    expect(a.done.at(-1)!.endsWith(TRIMMED)).toBe(true);
-    expect(a.done.slice(0, -1).every((d) => !d.endsWith(TRIMMED))).toBe(true);
+    expect(a.done).toHaveLength(15);
+    a.done.forEach((d, i) => expect(d).toMatch(new RegExp(`^item ${i} x+ \\[trimmed\\]$`)));
     expect(a.findings).toHaveLength(15);
-    expect(a.findings[14]).toBe(`f14 ${TRIMMED}`);
+    expect(a.findings[14]).toBe('f14');
     expect(a.blocked).toHaveLength(10);
-    expect(a.blocked[9]).toBe(`b9 ${TRIMMED}`);
+    expect(a.blocked[9]).toBe('b9');
     expect(a.trimmed).toEqual(['done', 'blocked', 'findings']);
   });
 
@@ -143,26 +143,19 @@ describe('forwardRefusal', () => {
     expect(forwardRefusal({ woke: false, tokens: 1_000, nudgeStart: 40_000 })).toBeUndefined();
     expect(forwardRefusal({ woke: true, tokens: undefined, nudgeStart: 40_000 })).toBeUndefined();
   });
+
+  it('says the refused party has done no work since its wake', () => {
+    expect(forwardRefusal({ woke: true, tokens: 30_000, nudgeStart: 40_000 })).toMatch(/^Not stored: you woke from a forward handoff and have done no work since, and your context is 30k/);
+  });
 });
 
-describe('rereadNudge', () => {
-  const loads = [{ path: '/f/tracer-loom/plan.md', why: 'design' }, { path: '/r/src/levels.ts', lines: '1-20', why: 'x' }];
-  it('sends back a next that opens by reading a file the wake already loads, naming it', () => {
-    expect(rereadNudge('Read plan.md, run git status, then write the tests', loads)).toBe(
-      'Not stored: `next` opens by reading /f/tracer-loom/plan.md, which load_files already puts in the wake. Make `next` the first action after that read, and call forward_handoff again with the same fields.',
-    );
-    expect(rereadNudge('Re-read /r/src/levels.ts and gate.ts; then fix clamp', loads)).toContain('/r/src/levels.ts, which load_files');
-  });
-  it('sends back a next that opens by checking git, which the wake carries in its Git block', () => {
-    expect(rereadNudge('Run `git -C /w status`, then grep the doors', [])).toBe(
-      'Not stored: `next` opens by checking git status, which the wake already carries in its Git block. Make `next` the first action after that check, and call forward_handoff again with the same fields.',
-    );
-    expect(rereadNudge('Check the git state and write run.md', [])).toContain('checking git status');
-  });
-  it('lets through a next whose first action is the work, or a read of a file not loaded', () => {
-    expect(rereadNudge('Grep the doors, then read plan.md', loads)).toBeUndefined();
-    expect(rereadNudge('Read design.md and tests/adapter.test.ts, then write the adapter', loads)).toBeUndefined();
-    expect(rereadNudge('Write GOAL/DECIDE to run.md; commit after git status is clean', loads)).toBeUndefined();
+describe('worksPastWake', () => {
+  const own = ['mcp__p__forward_handoff', 'mcp__p__look_back', 'mcp__p__compact'];
+  it('counts any tool call as work past a wake except reaching or recalling the handoff itself', () => {
+    for (const tool of ['Bash', 'Read', 'Edit', 'Agent', 'mcp__other__thing']) expect(worksPastWake(tool, own)).toBe(true);
+    for (const tool of ['ToolSearch', ...own]) expect(worksPastWake(tool, own)).toBe(false);
+    expect(worksPastWake(undefined, own)).toBe(false);
+    expect(worksPastWake('', own)).toBe(false);
   });
 });
 
@@ -180,10 +173,10 @@ describe('what a trim reports', () => {
     const a = parse({ ...ok, findings: Array.from({ length: 18 }, (_, i) => `f${i}`), done: items });
     const total = items.join('').length;
     expect(a.cuts?.map((c) => c.field)).toEqual(['done', 'findings']);
-    expect(a.cuts![0]).toEqual({ field: 'done', unit: 'characters', before: total, after: a.done.join('').length, itemsBefore: 20, itemsAfter: a.done.length });
-    // Characters after are what the field kept, never the marks: 15 full items fill the 3000 limit the reply asks to stay within.
+    expect(a.cuts![0]).toEqual({ field: 'done', unit: 'characters', before: total, after: a.done.join('').length, itemsBefore: 20, itemsAfter: a.done.length, shortened: 15 });
+    // 15 full items fill the 3000 limit: only the items past the count are dropped, none shortened.
     const full = parse({ ...ok, done: Array.from({ length: 20 }, () => 'x'.repeat(200)) });
-    expect(full.cuts![0]).toEqual({ field: 'done', unit: 'characters', before: 4000, after: 3000, itemsBefore: 20, itemsAfter: 15 });
+    expect(full.cuts![0]).toEqual({ field: 'done', unit: 'characters', before: 4000, after: 3000, itemsBefore: 20, itemsAfter: 15, shortened: 0 });
     expect(a.cuts![1]).toMatchObject({ field: 'findings', itemsBefore: 18, itemsAfter: 15 });
     expect(a.trimmed).toEqual(['done', 'findings']);
   });
@@ -257,11 +250,10 @@ describe('the stored reply', () => {
   ];
   const blocks = [{ name: 'User', tokens: 4000 }];
 
-  it('names every trimmed field with its size before and after, where the uncut text is, how to keep it, and that a call again replaces this one', () => {
+  it('names every trimmed field with its size before and after, that the wake names each cut, where the uncut text is, and that a call again before the install replaces this one', () => {
     expect(forwardStoredText({ tokens: 9000, dir: '/c/x/1', blocks, cuts, toolName: TOOL })).toBe(
-      'Forward handoff stored (9k tokens: User 4k). Cut to fit: objective 804 -> 600 characters; done 20 -> 15 items, 5000 -> 2900 characters; remaining 3300 -> 2990 characters; load_files 10 -> 8 items. ' +
-        `The wake holds what fit, each cut text ending in ${TRIMMED}; the uncut arguments are in /c/x/1/args.json. To keep what was cut, send those fields again within their limits, longer detail in a file named in load_files. ` +
-        `Calling ${TOOL} again in this turn replaces this call. Saved to /c/x/1. It installs when this turn ends: end your turn now with one line to the person; do not call any other tool.`,
+      'Forward handoff stored (9k tokens: User 4k). Cut to fit: objective 804 -> 600 characters; done 20 -> 15 items, 5000 -> 2900 characters; remaining 3300 -> 2990 characters; load_files 10 -> 8 items; the wake names each cut and where its uncut field is: /c/x/1/args.json. ' +
+        `Calling ${TOOL} again before it installs replaces this call. Saved to /c/x/1. It installs before your next request, else when this turn ends: end your turn now with one line to the person; do not call any other tool.`,
     );
     expect(forwardStoredText({ tokens: 9000, blocks, cuts })).not.toContain('args.json');
   });
@@ -269,11 +261,11 @@ describe('the stored reply', () => {
   it('says what was converted and into how many items, and each entry that was not loaded and why', () => {
     const t = forwardStoredText({ tokens: 9000, dir: '/c/x/1', blocks, converted: [{ field: 'done', items: 3 }, { field: 'remaining', items: 1 }], unloaded: ['load /w/nope.ts: not found', 'skill gone: no file'], toolName: TOOL });
     expect(t).toContain(' done was a string, read as 3 items; remaining was a string, read as 1 item: send lists as arrays of strings. ');
-    expect(t).toContain(` Not in the wake: load /w/nope.ts: not found; skill gone: no file. Calling ${TOOL} again in this turn replaces this call. Saved to /c/x/1. It installs`);
+    expect(t).toContain(` Not in the wake: load /w/nope.ts: not found; skill gone: no file. Calling ${TOOL} again before it installs replaces this call. Saved to /c/x/1. It installs`);
   });
 
   it('is the plain reply when nothing was cut, converted or left out', () => {
-    expect(forwardStoredText({ tokens: 9000, dir: '/c/x/1', blocks })).toBe('Forward handoff stored (9k tokens: User 4k). Saved to /c/x/1. It installs when this turn ends: end your turn now with one line to the person; do not call more tools.');
+    expect(forwardStoredText({ tokens: 9000, dir: '/c/x/1', blocks })).toBe('Forward handoff stored (9k tokens: User 4k). Saved to /c/x/1. It installs before your next request, else when this turn ends: end your turn now with one line to the person; do not call more tools.');
     expect(forwardStoredText({ tokens: 9000, dir: '/c/x/1', blocks, converted: [{ field: 'done', items: 2 }] })).toMatch(/do not call more tools\.$/);
   });
 });
@@ -301,5 +293,62 @@ describe('the early refusal and the person who asks', () => {
     [[], false],
   ])('reads %j as an ask: %s', (prompts, asked) => {
     expect(askedToCompact(prompts)).toBe(asked);
+  });
+});
+
+describe('a list over its budget keeps every item it may hold', () => {
+  // The reference handoff's remaining: eight items, 4,966 characters, the 3,000 budget crossed inside item 5.
+  const lengths = [319, 734, 589, 1055, 925, 203, 572, 569];
+  const items = lengths.map((n, i) => `step ${i + 1} head. ${'x'.repeat(n - `step ${i + 1} head. `.length)}`);
+
+  it('keeps all eight items, each with its head, the short ones whole, within the budget', () => {
+    const a = parse({ ...ok, remaining: items });
+    expect(a.remaining).toHaveLength(8);
+    a.remaining.forEach((r, i) => expect(r.startsWith(`step ${i + 1} head.`)).toBe(true));
+    expect(a.remaining[0]).toBe(items[0]);
+    expect(a.remaining[5]).toBe(items[5]);
+    expect(a.remaining.join('').length).toBeLessThanOrEqual(FORWARD_LIMITS.remainingItems * FORWARD_LIMITS.remainingChars);
+    expect(a.cuts).toEqual([{ field: 'remaining', unit: 'characters', before: 4966, after: a.remaining.join('').length, itemsBefore: 8, itemsAfter: 8, shortened: 6 }]);
+  });
+
+  it('drops only the items past the count limit, marking none of the kept as cut', () => {
+    const a = parse({ ...ok, findings: Array.from({ length: 18 }, (_, i) => `f${i}`) });
+    expect(a.findings).toEqual(Array.from({ length: 15 }, (_, i) => `f${i}`));
+    expect(a.cuts).toEqual([{ field: 'findings', unit: 'characters', before: 18 * 2 + 8 * 1, after: 15 * 2 + 5, itemsBefore: 18, itemsAfter: 15, shortened: 0 }]);
+  });
+});
+
+describe('the stored reply by party', () => {
+  const cuts = [{ field: 'remaining', unit: 'characters' as const, before: 4966, after: 2990, itemsBefore: 8, itemsAfter: 8, shortened: 6 }];
+  const blocks = [{ name: 'User', tokens: 4000 }];
+
+  it('tells a sub-agent only what holds for it: no resend, no end of turn, installs before its next request', () => {
+    const t = forwardStoredText({ tokens: 9000, dir: '/c/x/1', blocks, cuts, toolName: TOOL, party: 'sub' });
+    expect(t).not.toMatch(/send those fields again|end your turn|replaces this call/);
+    expect(t).toContain('the wake names each cut and where its uncut field is: /c/x/1/args.json');
+    expect(t).toMatch(/ Saved to \/c\/x\/1\. It installs before your next request\.$/);
+  });
+
+  it('tells the main chat it installs before its next request, else when the turn ends', () => {
+    const t = forwardStoredText({ tokens: 9000, dir: '/c/x/1', blocks, cuts, toolName: TOOL, party: 'main' });
+    expect(t).not.toContain('send those fields again');
+    expect(t).toMatch(/ Saved to \/c\/x\/1\. It installs before your next request, else when this turn ends: end your turn now with one line to the person; do not call any other tool\.$/);
+  });
+});
+
+describe('rereadTarget', () => {
+  const loads = [{ path: '/f/tracer-loom/plan.md', why: 'design' }, { path: '/r/src/levels.ts', lines: '1-20', why: 'x' }];
+  it('names the loaded file a next opens by reading, by its place in load_files', () => {
+    expect(rereadTarget('Read plan.md, run git status, then write the tests', loads)).toEqual({ load: 0 });
+    expect(rereadTarget('Re-read /r/src/levels.ts and gate.ts; then fix clamp', loads)).toEqual({ load: 1 });
+  });
+  it('names git for a next that opens by checking it', () => {
+    expect(rereadTarget('Run `git -C /w status`, then grep the doors', [])).toEqual({ git: true });
+    expect(rereadTarget('Check the git state and write run.md', [])).toEqual({ git: true });
+  });
+  it('is undefined for a next whose first action is the work, or a read of a file not loaded', () => {
+    expect(rereadTarget('Grep the doors, then read plan.md', loads)).toBeUndefined();
+    expect(rereadTarget('Read design.md and tests/adapter.test.ts, then write the adapter', loads)).toBeUndefined();
+    expect(rereadTarget('Write GOAL/DECIDE to run.md; commit after git status is clean', loads)).toBeUndefined();
   });
 });

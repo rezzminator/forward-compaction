@@ -4,6 +4,23 @@ Every release of sub-agent-compact. Versions follow [semantic versioning](https:
 
 ## [Unreleased]
 
+## [0.8.1-dev.5] — 2026-10-19
+
+### Fixed
+
+- A `forward_handoff` list cut to fit no longer drops its tail silently: past its characters, every item keeps its head (a short item whole, each longer one cut to an equal share), only items past the item limit are dropped, and the cut field's last line in the wake says how many characters it was and is, how many items were shortened or dropped, and that the uncut field is in `<dir>/args.json`. A `load_files` list past its limit is named in `Unresolved` the same way.
+- The reply to a stored forward handoff states only what holds for the caller: a sub-agent's handoff installs before its next request, so its reply no longer asks it to send cut fields again or to call again in the turn, and every fact about a cut is in the wake. The main chat's reply says it installs before its next request, else when the turn ends.
+- A message the person, the coordinator or a sub-agent's parent agent sends while the party works (a `queued_command` in the transcript) is carried in the wake's `User` block as an instruction, like the brief; a message from any other agent is left out.
+- A `next` that opens by reading a file `load_files` holds, or by checking the git state, is stored, no longer refused: the wake's `Next` ends with a line saying it is already loaded above, not to read it again. The decision log's `forward-reread` row now records `outcome` (`stored-with-note`, or `stored-not-held` when the file did not load) and the `note`.
+- A party that woke from a forward handoff and has run a tool since (any but `ToolSearch` and the plugin's own) can hand off again below its first nudge point: the woken-party refusal no longer lasts for the rest of a sub-agent's run, and its text says it applies to a party that has done no work since.
+- `load_files` takes several ranges (`1-60,160-185`), the lines between two named by one `[lines a-b not loaded]` line; a range past the file's end, or clipped by it, an empty file and a range of only blank lines are named in `Unresolved` instead of loading nothing; ranges load in file order, an overlap once.
+- The install row of a forward handoff (`session.compact`, decision `handoff`) counts its `load_files` in `loads` and `loadsFailed`, which read 0 for every forward handoff; `record.json` keeps the counts as `loads`, and a record saved before counts its `Load` blocks with `loadsFailed` null.
+- A trail file gone from disk is told once, in that handoff's wake, and left out of the trail its `record.json` carries, so later handoffs no longer re-outline and re-warn it; a directory a `cp` or `mv` wrote into no longer gets a file tag; a gone or non-file path and a file past the outline cap are logged as `forward-trail` info rows, no longer as `forward-invalid` warnings, which an outline read that failed alone still is.
+- `look_back` strips the punctuation prose wraps a bare word in (`(KEY`, `review.md)`), counts a repeated word once, and ranks entries by how many terms they hold instead of requiring every term: a partial hit is marked `(k of n terms)` and the reply says when no entry holds every term; a query no entry holds any term of still answers `No entry before the compaction at line N matches: …`.
+- A forward handoff is numbered past the handoff its context holds, so one armed unsaved (its number claim failed) and forgotten by a plugin restart is never numbered again, and the wake no longer names the call being stored as its own missing earlier handoff.
+- The decision-log append and cleanup, the level-log append, the claim of a handoff number, `look_back`'s transcript reads and the forward handoff's transcript and `git -C` reads run from `/` when their paths are absolute, so a session standing in a removed worktree no longer fails every spawn with `posix_spawn ENOENT`; a failed decision-log write names the session's own file, never the configured `decisions/.jsonl` template.
+- A skipped agent-definition link names its cause: `a link that leads nowhere or does not resolve`, `a link to a directory`, `a link to something not a regular file`, or `changed since it was listed` for a path replaced between listing and stat; a dangling link no longer reads as one to a non-file.
+
 ## [0.8.1-dev.4] — 2026-10-18
 
 ### Removed

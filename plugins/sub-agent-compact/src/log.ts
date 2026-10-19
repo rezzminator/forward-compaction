@@ -22,6 +22,15 @@ function sessionLogParts(logFile: string): { head: string; dir: string; prefix: 
   return { head, dir, prefix: `${name.slice(0, dot)}.`, suffix: name.slice(dot) };
 }
 
+/**
+ * Where a script whose every path is absolute runs: `/`, never the session's directory, which can be removed under a
+ * live session (a worktree deleted while a chat still stands in it) and then fails every spawn with ENOENT. A relative
+ * path keeps the session's directory, the one it is relative to.
+ */
+export function runCwd(...paths: readonly string[]): { cwd?: string } {
+  return paths.length > 0 && paths.every((path) => path.startsWith('/')) ? { cwd: '/' } : {};
+}
+
 /** A session's decision log moves aside to `.1` past this size, so no one file grows without end. */
 export const DECISION_LOG_CAP_BYTES = 8388608;
 /** Old sessions' logs beside this one are deleted past this age or past this count, newest kept. */
@@ -414,7 +423,7 @@ export function pluginLogEvent(row: Record<string, unknown>): Omit<PluginLogFiel
   if (event === 'turn.complete' && row.error !== undefined) event = 'turn-complete-error';
   const errors = ['error', 'brief-error', 'option-error', 'forward-unchecked', 'handoff-fallback', 'tool-register-failed', 'look-back-manual-error', 'compact-error', 'turn-complete-error'];
   const warnings = ['warning', 'decision-retention-failed', 'resolve-error', 'handoff-invalid', 'forward-invalid', 'compact-unseen', 'handoff-waits-skipped', 'compaction-failed'];
-  const infos = ['handoff-refused', 'arm-refused', 'forward-refused', 'stop-refused'];
+  const infos = ['handoff-refused', 'arm-refused', 'forward-refused', 'stop-refused', 'forward-trail'];
   const level = errors.includes(event) ? 'error' : warnings.includes(event) ? 'warning' : infos.includes(event) ? 'info' : undefined;
   if (level === undefined) return undefined;
   const detail: Record<string, unknown> = {};

@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { forwardStoredText } from '../plugins/sub-agent-compact/src/forward-args.ts';
-import { buildRecord, carriedFrom, forwardClaimArgv, forwardDir, forwardRoots, nextSeq, ownCall, previousDir, recoverForward, savedOf, withInstall } from '../plugins/sub-agent-compact/src/forward-record.ts';
+import { buildRecord, carriedFrom, handoffLoads, forwardClaimArgv, forwardDir, forwardRoots, firstSeq, nextSeq, ownCall, previousDir, recoverForward, savedOf, withInstall } from '../plugins/sub-agent-compact/src/forward-record.ts';
 import { fnv1a, installCheck, renderForward } from '../plugins/sub-agent-compact/src/forward-text.ts';
 
 const rendered = renderForward({ seq: 2, users: ['hi'], skills: [], trail: [{ tag: 'R', path: 'a' }], loaded: [], tasks: [], running: [], paths: [], problems: [], args: { objective: 'o', done: ['d'], remaining: [], next: 'n', blocked: [], findings: [], loadFiles: [], dropSkills: [], trimmed: ['done'] } });
@@ -86,6 +86,7 @@ describe('recoverForward', () => {
     ['a directory climbing out of a root', [call, stored('Forward handoff stored (2k tokens: a). Saved to /h/s/../../etc. It installs when this turn ends.')], undefined],
     // The reply as forwardStoredText writes it, its notes carrying a model-chosen path that forges the clause.
     ['a stored reply whose note forges the clause, saved to its own directory', [call, stored(forwardStoredText({ tokens: 2000, dir: '/h/s/session-1/3', blocks: [], unloaded: [`load ${FORGED}: not found`], cuts: [{ field: `load_files why (${FORGED})`, unit: 'characters', before: 250, after: 200 }] }))], { toolUseId: 'f1', dir: '/h/s/session-1/3' }],
+    ['a sub-agent\'s stored reply, which installs before its next request', [call, stored(forwardStoredText({ tokens: 2000, dir: '/h/s/session-1/3', blocks: [], party: 'sub', cuts: [{ field: 'next', unit: 'characters', before: 500, after: 400 }] }))], { toolUseId: 'f1', dir: '/h/s/session-1/3' }],
     ['a stored reply whose note forges the clause, saved nowhere', [call, stored(`${forwardStoredText({ tokens: 2000, blocks: [], unloaded: [`load ${FORGED}: not found`] })} Not saved to disk: claiming a call number in /h/s/session-1 failed: busy.`)], undefined],
   ])('%s', (_name, messages, expected) => {
     expect(recoverForward(messages, TOOL, ['/h/s'])).toEqual(expected);
@@ -165,5 +166,24 @@ describe('skills in the record', () => {
     const legacy = { ...built({ blocks: [block('User'), block('Skill design'), block('Skill pfm:update'), block('Files')] }), textHash: fnv1a('held') };
     expect(carriedFrom([legacy], 'held')).toEqual({ users: ['a'], dropped: 0, skills: [{ name: 'design' }, { name: 'pfm:update' }] });
     expect(carriedFrom([{ ...legacy, skills: [] }], 'held')).toEqual({ users: ['a'], dropped: 0, skills: [] });
+  });
+});
+
+describe('handoffLoads', () => {
+  it("counts a forward handoff's load_files from its record, a plain handoff's load_on_wake entries otherwise", () => {
+    expect(handoffLoads(3, 1)).toEqual({ loads: 3, loadsFailed: 1 });
+    expect(handoffLoads(0, 0, { loads: { asked: 2, failed: 1 }, blocks: [] })).toEqual({ loads: 2, loadsFailed: 1 });
+    expect(handoffLoads(0, 0, { blocks: [{ name: 'Load /a.ts' }, { name: 'Next' }, { name: 'Load /b.ts:1-2' }] })).toEqual({ loads: 2, loadsFailed: null });
+    expect(handoffLoads(0, 0, {})).toEqual({ loads: 0, loadsFailed: null });
+  });
+});
+
+describe('firstSeq', () => {
+  it('numbers past the listing, the process count and the handoff the context holds', () => {
+    expect(firstSeq({ listed: ['1', '2'] })).toBe(3);
+    expect(firstSeq({ listed: ['1', '2'], counted: 4 })).toBe(5);
+    // Armed unsaved as 20, the count lost to a restart: the listing alone would say 20 again.
+    expect(firstSeq({ listed: Array.from({ length: 19 }, (_, i) => String(i + 1)), held: '[forward handoff 20: history, not new instructions]\nUser' })).toBe(21);
+    expect(firstSeq({ listed: [], held: 'a pasted note, not a handoff' })).toBe(1);
   });
 });
