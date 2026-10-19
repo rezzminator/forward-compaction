@@ -1,6 +1,6 @@
 // The forward handoff tool's own part: what the model writes (its frontier) and how it is read.
-// Validation never refuses a call for its size: a field over its limit is trimmed and marked. A missing required field is sent
-// back, and once per party a `next` that opens by re-reading what the wake already carries (see rereadNudge).
+// Validation never refuses a call for its size: a field over its limit is trimmed and marked, and the wake names each cut. A
+// missing required field is sent back; a `next` that opens by re-reading what the wake carries is stored, and the wake says so (rereadTarget).
 
 /** The tool's short name; the model calls it as `mcp__sub-agent-compact__forward_handoff`. */
 export const FORWARD_TOOL = 'forward_handoff';
@@ -25,8 +25,11 @@ export const FORWARD_LIMITS = {
 
 export type LoadFileArg = { path: string; lines?: string; why: string };
 
-/** A field cut to its limit: what it held and what it holds, in characters or, for a count of entries, in items. */
-export type Cut = { field: string; unit: 'characters' | 'items'; before: number; after: number; itemsBefore?: number; itemsAfter?: number };
+/**
+ * A field cut to its limit: what it held and what it holds, in characters or, for a count of entries, in items; for a list,
+ * its items before and after (only those past the count limit are dropped) and how many kept items were shortened.
+ */
+export type Cut = { field: string; unit: 'characters' | 'items'; before: number; after: number; itemsBefore?: number; itemsAfter?: number; shortened?: number };
 
 /** A list field that arrived as a string, and the number of items it became. */
 export type Converted = { field: string; items: number };
@@ -53,7 +56,7 @@ export type ForwardArgs = {
 export type ForwardParse = { args: ForwardArgs } | { nudge: string };
 
 export const FORWARD_TOOL_DESCRIPTION =
-  "Hand off to yourself — compact at a clean point, never mid-edit. Code carries your user messages, skills, files, plan, git and running work; you write the frontier. `next` is the first action toward the user's latest explicit request, never re-reading what the wake holds. `done` holds verified items only; `findings` quote errors verbatim, nothing unconfirmed. Installs when your turn ends: end it then. Returns the stored size and saved path; a missing required field returns an error naming it. Example: forward_handoff({objective:'ship X', done:['a: tests pass'], remaining:['b'], next:'run c'})";
+  "Hand off to yourself — compact at a clean point, never mid-edit. Code carries your user messages, skills, files, plan, git and running work; you write the frontier. `next` is the first action toward the user's latest explicit request, never re-reading what the wake holds. `done` holds verified items only; `findings` quote errors verbatim, nothing unconfirmed. Installs before your next request. Returns the stored size and saved path; a missing required field returns an error naming it. Example: forward_handoff({objective:'ship X', done:['a: tests pass'], remaining:['b'], next:'run c'})";
 
 type Property = { type: string; description: string; items?: unknown };
 
@@ -70,7 +73,7 @@ export const FORWARD_INPUT_SCHEMA: { type: 'object'; properties: Record<string, 
     findings: list(`Decisions with why, dead ends, discovered facts; errors verbatim; nothing unconfirmed. At most ${FORWARD_LIMITS.findingsItems} items, ${FORWARD_LIMITS.findingsItems * FORWARD_LIMITS.findingsChars} characters in all.`),
     load_files: {
       type: 'array',
-      description: `Files code reads from disk at handoff time into the wake text, at most ${FORWARD_LIMITS.loadFiles}: {path, lines?: "10-40", why}.`,
+      description: `Files code reads from disk at handoff time into the wake text, at most ${FORWARD_LIMITS.loadFiles}: {path, lines?: "10-40" or "1-60,160-185", why}.`,
       items: { type: 'object', properties: { path: { type: 'string' }, lines: { type: 'string' }, why: { type: 'string' } }, required: ['path', 'why'] },
     },
     drop_skills: list('Skills or commands not to reload after the wake.'),
@@ -124,7 +127,9 @@ function splitText(value: string): string[] {
 /**
  * A list field: undefined when it is missing; blank items are dropped. The cap is the field's total budget
  * (items x chars) and its item count, never an item alone: a model that writes one long line keeps it whole
- * while the field fits. The list is cut once, where it crosses either, and marked.
+ * while the field fits. Past the count, the last items are dropped. Past the budget, every item keeps its head:
+ * the items under a fair share stay whole, and the rest are cut to that share, each ending in the mark. Within the
+ * count limit the share is never below one item's chars, so no item is dropped for its size.
  */
 function listField(value: unknown, items: number, chars: number, name: string, trimmed: string[], cuts: Cut[], converted: Converted[]): string[] | undefined {
   if (value === undefined || value === null) return undefined;
@@ -135,36 +140,32 @@ function listField(value: unknown, items: number, chars: number, name: string, t
   const all = raw.map((item) => (typeof item === 'string' ? item : item === undefined || item === null ? '' : String(item)).trim()).filter((item) => item !== '');
   if (typeof value === 'string' && all.length > 0) converted.push({ field: name, items: all.length });
   const budget = items * chars;
-  const out: string[] = [];
-  let used = 0;
-  let cut = false;
-  // The mark appended to a kept item is not what the field kept: the reported size leaves it out.
-  let marks = 0;
-  for (const item of all) {
-    if (out.length === items) {
-      out[items - 1] = `${out[items - 1]!} ${TRIMMED}`;
-      marks += TRIMMED.length + 1;
-      cut = true;
-      break;
-    }
-    if (used + item.length > budget) {
-      const room = budget - used;
-      if (room > TRIMMED.length + 20) out.push(trimText(item, room));
-      else if (out.length > 0) {
-        out[out.length - 1] = `${out[out.length - 1]!} ${TRIMMED}`;
-        marks += TRIMMED.length + 1;
-      }
-      cut = true;
-      break;
-    }
-    out.push(item);
-    used += item.length;
+  const counted = all.slice(0, items);
+  const total = counted.reduce((n, item) => n + item.length, 0);
+  let out = counted;
+  let shortened = 0;
+  if (total > budget) {
+    const share = fairShare(counted.map((item) => item.length), budget);
+    out = counted.map((item) => (item.length > share ? trimText(item, share) : item));
+    shortened = counted.filter((item) => item.length > share).length;
   }
-  if (cut) {
+  if (out.length < all.length || shortened > 0) {
     trimmed.push(name);
-    cuts.push({ field: name, unit: 'characters', before: all.reduce((n, item) => n + item.length, 0), after: out.reduce((n, item) => n + item.length, 0) - marks, itemsBefore: all.length, itemsAfter: out.length });
+    cuts.push({ field: name, unit: 'characters', before: all.reduce((n, item) => n + item.length, 0), after: out.reduce((n, item) => n + item.length, 0), itemsBefore: all.length, itemsAfter: out.length, shortened });
   }
   return out;
+}
+
+/** The largest whole share such that every length capped at it sums to at most `budget` (water-filling). */
+function fairShare(lengths: readonly number[], budget: number): number {
+  const sorted = [...lengths].sort((a, b) => a - b);
+  let left = budget;
+  for (const [at, length] of sorted.entries()) {
+    const even = Math.floor(left / (sorted.length - at));
+    if (length > even) return even;
+    left -= length;
+  }
+  return Infinity;
 }
 
 /** The text of every field the tool does not define, as `name: text`: what a model wrote is never dropped silently. */
@@ -289,32 +290,41 @@ const cutText = (c: Cut): string =>
 
 /**
  * The tool's reply once the forward handoff is stored: its size by block; each field cut to fit, with its size before
- * and after, and how to keep what was cut; each list read from a string and into how many items; each entry the wake
- * does not hold, and why; where it is saved; and to end the turn. A call again in the turn replaces this one.
+ * and after; each list read from a string and into how many items; each entry the wake does not hold, and why; where it
+ * is saved; and when it installs. The install comes before the party's next request, so a sub-agent never reads this:
+ * every fact it needs about a cut is in the wake. A main chat whose install waits for its turn's end is told to end it.
  */
-export function forwardStoredText({ tokens, dir, blocks, cuts = [], converted = [], unloaded = [], toolName = FORWARD_TOOL }: { tokens: number; dir?: string; blocks: { name: string; tokens: number }[]; cuts?: readonly Cut[]; converted?: readonly Converted[]; unloaded?: readonly string[]; toolName?: string }): string {
+export function forwardStoredText({ tokens, dir, blocks, cuts = [], converted = [], unloaded = [], toolName = FORWARD_TOOL, party = 'main' }: { tokens: number; dir?: string; blocks: { name: string; tokens: number }[]; cuts?: readonly Cut[]; converted?: readonly Converted[]; unloaded?: readonly string[]; toolName?: string; party?: 'main' | 'sub' }): string {
   const sizes = blocks.map((b) => `${b.name} ${k(b.tokens)}`).join(', ');
   const notes: string[] = [];
-  if (cuts.length > 0) {
-    notes.push(`Cut to fit: ${cuts.map(cutText).join('; ')}.`);
-    notes.push(`The wake holds what fit, each cut text ending in ${TRIMMED}${dir !== undefined ? `; the uncut arguments are in ${dir}/args.json` : ''}. To keep what was cut, send those fields again within their limits, longer detail in a file named in load_files.`);
-  }
+  if (cuts.length > 0) notes.push(`Cut to fit: ${cuts.map(cutText).join('; ')}; the wake names each cut and where its uncut field is${dir !== undefined ? `: ${dir}/args.json` : ''}.`);
   if (converted.length > 0) notes.push(`${converted.map((c) => `${c.field} was a string, read as ${c.items} ${c.items === 1 ? 'item' : 'items'}`).join('; ')}: send lists as arrays of strings.`);
   if (unloaded.length > 0) notes.push(`Not in the wake: ${unloaded.join('; ')}.`);
   const again = cuts.length > 0 || unloaded.length > 0;
-  if (again) notes.push(`Calling ${toolName} again in this turn replaces this call.`);
+  if (again && party === 'main') notes.push(`Calling ${toolName} again before it installs replaces this call.`);
+  const installs = party === 'sub' ? 'It installs before your next request.' : `It installs before your next request, else when this turn ends: end your turn now with one line to the person; ${again ? 'do not call any other tool' : 'do not call more tools'}.`;
   // The saved directory stays right before the last sentence: a recovery reads it from there, the last such clause.
-  return [`Forward handoff stored (${k(tokens)} tokens: ${sizes}).`, ...notes, ...(dir !== undefined ? [`Saved to ${dir}.`] : []), `It installs when this turn ends: end your turn now with one line to the person; ${again ? 'do not call any other tool' : 'do not call more tools'}.`].join(' ');
+  return [`Forward handoff stored (${k(tokens)} tokens: ${sizes}).`, ...notes, ...(dir !== undefined ? [`Saved to ${dir}.`] : []), installs].join(' ');
 }
 
 /**
- * The reply to a forward handoff from a party that woke from one and is still below its first nudge point: a second
- * handoff there saves nothing, and a woken model that reads its handoff order as open would loop. Undefined otherwise.
- * The person's own ask after the wake lets the call through (askedToCompact), so the reply says how to get one.
+ * Whether a tool call is work past a wake, which ends the woken party's guard against a second handoff: any tool but
+ * reaching the handoff (ToolSearch) or the plugin's own tools (`own`: the handoff, look_back and compact tools). A
+ * woken model that loops calls those alone; one that ran any other tool has taken up the work again.
+ */
+export function worksPastWake(tool: unknown, own: readonly string[]): boolean {
+  return typeof tool === 'string' && tool !== '' && tool !== 'ToolSearch' && !own.includes(tool);
+}
+
+/**
+ * The reply to a forward handoff from a party that woke from one, has done no work since (worksPastWake), and is still
+ * below its first nudge point: a second handoff there saves nothing, and a woken model that reads its handoff order as
+ * open would loop. Undefined otherwise. The person's own ask after the wake lets the call through (askedToCompact), so
+ * the reply says how to get one.
  */
 export function forwardRefusal({ woke, tokens, nudgeStart }: { woke: boolean; tokens: number | undefined; nudgeStart: number }): string | undefined {
   if (!woke || tokens === undefined || tokens >= nudgeStart) return undefined;
-  return `Not stored: you woke from a forward handoff, and your context is ${Math.floor(tokens / 1000)}k, below ${k(nudgeStart)}, where a handoff first pays. It is installed: continue its work from its Next block. A handoff the person asks for is stored: a message of theirs after this wake that asks to compact or hand off lets the call through, and their /compact compacts at once.`;
+  return `Not stored: you woke from a forward handoff and have done no work since, and your context is ${Math.floor(tokens / 1000)}k, below ${k(nudgeStart)}, where a handoff first pays. It is installed: continue its work from its Next block. A handoff the person asks for is stored: a message of theirs after this wake that asks to compact or hand off lets the call through, and their /compact compacts at once.`;
 }
 
 const ASK = /(?<![\w-])(?:compact\w*|hand[ -]?offs?|forward[_ ]handoff)\b/gi;
@@ -333,22 +343,23 @@ const READ_VERB = /^\s*(?:re-?read|read|reload|open|cat|view|skim|review|look at
 const GIT_CHECK = /\bgit\b.*\bstatus\b|\bcheck(?:ing)?\s+(?:the\s+)?git\b/i;
 const escapeRe = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
+/** What a `next` opens by re-reading that the wake already holds: a load_files entry, by its place in the list, or git. */
+export type Reread = { load: number } | { git: true };
+
 /**
- * Why a `next` must be written again, or undefined: its first action re-reads a file load_files puts in the wake, or
- * checks git, which the wake carries in its Git block. Only the first clause counts (up to `;`, `,`, `. ` or `then`):
- * re-reading as a later step is the model's call.
+ * What the first action of a `next` re-reads that the wake carries, or undefined: a file load_files puts in the wake, or
+ * git, which the wake carries in its Git block. Only the first clause counts (up to `;`, `,`, `. ` or `then`): re-reading
+ * as a later step is the model's call. The call is stored either way; the wake tells the woken model it holds it.
  */
-export function rereadNudge(next: string, loads: readonly LoadFileArg[]): string | undefined {
+export function rereadTarget(next: string, loads: readonly LoadFileArg[]): Reread | undefined {
   const first = next.split(/;|,|\.\s|\bthen\b/i)[0] ?? '';
-  const again = (what: string, where: string, step: string): string =>
-    `Not stored: \`next\` opens by ${what}, which ${where}. Make \`next\` the first action after that ${step}, and call ${FORWARD_TOOL} again with the same fields.`;
   if (READ_VERB.test(first)) {
-    const loaded = loads.find(({ path }) => {
+    const at = loads.findIndex(({ path }) => {
       const base = path.split('/').pop() ?? '';
       return first.includes(path) || (base.length >= 4 && new RegExp(`(?:^|[\\s/\`'"])${escapeRe(base)}(?=$|[\\s\`'":])`).test(first));
     });
-    if (loaded !== undefined) return again(`reading ${loaded.path}`, 'load_files already puts in the wake', 'read');
+    if (at >= 0) return { load: at };
   }
-  if (GIT_CHECK.test(first)) return again('checking git status', 'the wake already carries in its Git block', 'check');
+  if (GIT_CHECK.test(first)) return { git: true };
   return undefined;
 }

@@ -77,6 +77,16 @@ export function ownCall(dir: string, roots: readonly string[], session: string, 
   return undefined;
 }
 
+/**
+ * The number this call is stored under: past every call the listing shows, the ones this process counted, and the
+ * handoff the context holds now, so a handoff that was armed but never saved (its claim failed) and then lost from the
+ * process's count by a restart is never numbered again, and never read back as this call's own earlier handoff.
+ */
+export function firstSeq(i: { listed: readonly string[]; counted?: number; held?: string }): number {
+  const held = i.held !== undefined ? /^\[forward handoff (\d+)/.exec(i.held)?.[1] : undefined;
+  return Math.max(nextSeq(i.listed), (i.counted ?? 0) + 1, held !== undefined ? Number(held) + 1 : 1);
+}
+
 /** The directory of the call before this one, undefined for the first. */
 export function previousDir(root: string, session: string, seq: number, agentId?: string): string | undefined {
   return seq > 1 ? forwardDir(root, session, seq - 1, agentId) : undefined;
@@ -85,7 +95,7 @@ export function previousDir(root: string, session: string, seq: number, agentId?
 export type ForwardRecord = Record<string, unknown>;
 
 /** The record of one call at handoff time: the size of every block and of the whole text. */
-export function buildRecord(i: { seq: number; session: string; agentId?: string; dir: string; text: string; blocks: readonly BlockRecord[]; users: readonly string[]; usersDropped: number; handoffInReply?: boolean; trail?: readonly TrailEntry[]; summary?: string; tokensBefore?: number; trimmed: readonly string[]; skills?: readonly SkillRef[]; at?: string }): ForwardRecord {
+export function buildRecord(i: { seq: number; session: string; agentId?: string; dir: string; text: string; blocks: readonly BlockRecord[]; users: readonly string[]; usersDropped: number; handoffInReply?: boolean; trail?: readonly TrailEntry[]; summary?: string; tokensBefore?: number; trimmed: readonly string[]; skills?: readonly SkillRef[]; at?: string; loads?: { asked: number; failed: number } }): ForwardRecord {
   return {
     seq: i.seq,
     session: i.session,
@@ -101,9 +111,23 @@ export function buildRecord(i: { seq: number; session: string; agentId?: string;
     ...(i.at !== undefined ? { at: i.at } : {}),
     ...(i.tokensBefore !== undefined ? { tokensBefore: i.tokensBefore } : {}),
     trimmed: [...i.trimmed],
+    ...(i.loads !== undefined ? { loads: { asked: i.loads.asked, failed: i.loads.failed } } : {}),
     total: { chars: i.text.length, tokens: estimateTokens(i.text.length) },
     blocks: i.blocks.map((b) => ({ name: b.name, chars: b.chars, tokens: b.tokens, items: b.items, hash: b.hash })),
   };
+}
+
+/**
+ * The install row's load counts: a forward handoff's load_files from its record (asked, and those that did not load),
+ * else the load_on_wake entries of a plain handoff. A record saved before it counted its loads counts its Load blocks,
+ * the ones that landed, and leaves the failures unknown (null).
+ */
+export function handoffLoads(entries: number, failed: number, record?: ForwardRecord): { loads: number; loadsFailed: number | null } {
+  if (record === undefined) return { loads: entries, loadsFailed: failed };
+  const counted = record.loads as { asked?: unknown; failed?: unknown } | undefined;
+  if (typeof counted?.asked === 'number' && typeof counted.failed === 'number') return { loads: counted.asked, loadsFailed: counted.failed };
+  const blocks = Array.isArray(record.blocks) ? (record.blocks as { name?: unknown }[]) : [];
+  return { loads: blocks.filter((b) => typeof b.name === 'string' && b.name.startsWith('Load ')).length, loadsFailed: null };
 }
 
 /** The record once installed: the size after (the messages only), and what the install check found. */
@@ -168,7 +192,7 @@ export function recoverForward(messages: readonly HandoffMessage[], toolName: st
       if (!reply.startsWith('Forward handoff stored')) continue;
       // The plugin's own clause is the reply's last, followed only by its closing sentence: a loaded file's name before it
       // may carry the same words, and a reply saved nowhere ends in the reason, so a name forging the clause there matches nothing.
-      const saved = /^[\s\S]* Saved to (\/.+?)\. It installs when this turn ends[^.]*\.$/.exec(reply);
+      const saved = /^[\s\S]* Saved to (\/.+?)\. It installs (?:before your next request|when this turn ends)[^.]*\.$/.exec(reply);
       const dir = saved?.[1];
       if (dir === undefined || dir.split('/').includes('..') || !roots.some((root) => dir.startsWith(`${root}/`))) return undefined;
       return { toolUseId: use.tool_use_id, dir };

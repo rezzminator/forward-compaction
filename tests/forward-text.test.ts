@@ -116,6 +116,15 @@ describe('renderForward layout', () => {
     expect(lines(text)).not.toContain('Skill gone');
     expect(lines(text)).not.toContain('Load q.ts');
   });
+
+  it('counts the load_files asked for and those that did not load: unreadable, over the total cap, or past the file limit', () => {
+    expect(renderForward(input({ loaded: [{ label: 'a.ts', body: 'x' }, { label: 'q.ts', problem: 'not found' }] })).loads).toEqual({ asked: 2, failed: 1 });
+    expect(renderForward(input()).loads).toEqual({ asked: 0, failed: 0 });
+    const big = 'y'.repeat(LOAD_MAX_CHARS);
+    const many = Array.from({ length: 8 }, (_, n) => ({ label: `f${n}`, body: big }));
+    const cut = { ...args, cuts: [{ field: 'load_files', unit: 'items' as const, before: 10, after: 8 }] };
+    expect(renderForward(input({ loaded: many, args: cut })).loads).toEqual({ asked: 10, failed: 6 });
+  });
 });
 
 describe('renderUsers', () => {
@@ -360,5 +369,50 @@ describe('what the wake tells the model', () => {
     const items = (over: Partial<RenderInput>) => renderForward(input(over)).blocks.find((b) => b.name === 'Unresolved')?.items;
     expect(items({ callShape: SHAPE })).toBe(2);
     expect(items({})).toBe(1);
+  });
+});
+
+describe('the wake names every cut where it was made', () => {
+  const cutArgs: ForwardArgs = {
+    ...args,
+    remaining: ['b head [trimmed]', 'c'],
+    next: 'n [trimmed]',
+    trimmed: ['remaining', 'next', 'load_files'],
+    cuts: [
+      { field: 'remaining', unit: 'characters', before: 4966, after: 2990, itemsBefore: 18, itemsAfter: 15, shortened: 6 },
+      { field: 'next', unit: 'characters', before: 512, after: 400 },
+      { field: 'load_files', unit: 'items', before: 10, after: 8 },
+    ],
+  };
+
+  it('ends a cut list block with how many items were shortened and dropped, and the args.json that holds the uncut field', () => {
+    const { text } = renderForward(input({ args: cutArgs, argsFile: '/s/f/1/args.json' }));
+    const remaining = text.split('\nRemaining\n')[1]!.split('\n');
+    expect(remaining.slice(0, 2)).toEqual(['1. b head [trimmed]', '2. c']);
+    expect(remaining[2]).toBe('[remaining cut to fit, 4966 -> 2990 characters: 6 of 18 items shortened, each ending in [trimmed]; 3 items past the 15-item limit dropped. The uncut field is "remaining" in /s/f/1/args.json.]');
+    expect(text.split('\nNext\n')[1]).toBe('n [trimmed]\n[next cut to fit, 512 -> 400 characters, ending in [trimmed]. The uncut field is "next" in /s/f/1/args.json.]');
+    expect(text.split('\nUnresolved\n')[1]).toMatch(/^load_files cut to fit, 10 -> 8 files: the last 2 are not loaded\. The uncut field is "load_files" in \/s\/f\/1\/args\.json\.\n/);
+  });
+
+  it('says the uncut field was not saved when no args.json was written', () => {
+    const { text } = renderForward(input({ args: cutArgs }));
+    expect(text).toContain('[next cut to fit, 512 -> 400 characters, ending in [trimmed]. The uncut field was not saved to disk.]');
+  });
+});
+
+describe('a next that re-reads what the wake holds', () => {
+  const loaded = [{ label: '/w/plan.md', body: 'the plan' }];
+  it('tells the waking agent the file is loaded above and not to read it again', () => {
+    const { text, noted } = renderForward(input({ loaded, reread: { load: 0 } }));
+    expect(text.split('\nNext\n')[1]).toBe('run npm test\n[/w/plan.md is already loaded above, in its Load block: start on the work, do not read it again.]');
+    expect(noted).toBe('/w/plan.md is already loaded above, in its Load block: start on the work, do not read it again.');
+  });
+  it('tells it the Git block holds the git state', () => {
+    const { text } = renderForward(input({ git: 'develop@abc, clean', reread: { git: true } }));
+    expect(text.split('\nNext\n')[1]).toBe('run npm test\n[The Git block above holds the git state as this handoff was stored: do not re-run git status.]');
+  });
+  it('adds no note when the file did not load or no Git block was made', () => {
+    expect(renderForward(input({ loaded: [{ label: '/w/plan.md', problem: 'not found' }], reread: { load: 0 } })).text).toMatch(/\nNext\nrun npm test$/);
+    expect(renderForward(input({ reread: { git: true } })).noted).toBeUndefined();
   });
 });

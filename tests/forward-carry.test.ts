@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { chainSkills, promptsSinceWake, bashWrites, handoffInReply, collapseWhitespace, fileTrail, gitBlock, gitLine, GIT_REPOS, outsideRepository, trailDirs, invocationPaths, invocations, parseLineRange, parsePorcelain, planAndTasks, runningWork, sliceLines, stripNoise, userMessages, absPath, findTranscriptArgv, firstFound, heldForward, opensWithSummary, priorPrompts, priorCalls, mergeTrail, openingSummary, summaryKnowledge, outline, parsePorcelain as porcelain, type ApiMsg } from '../plugins/sub-agent-compact/src/forward-carry.ts';
+import { chainSkills, promptsSinceWake, bashWrites, handoffInReply, collapseWhitespace, fileTrail, gitBlock, gitLine, GIT_REPOS, outsideRepository, trailDirs, invocationPaths, invocations, parseLineRanges, parsePorcelain, planAndTasks, runningWork, sliceFile, stripNoise, userMessages, absPath, findTranscriptArgv, firstFound, heldForward, opensWithSummary, priorPrompts, priorCalls, mergeTrail, settleTrail, openingSummary, summaryKnowledge, outline, parsePorcelain as porcelain, type ApiMsg } from '../plugins/sub-agent-compact/src/forward-carry.ts';
 import { renderForward } from '../plugins/sub-agent-compact/src/forward-text.ts';
 import { HANDOFF_OPENING } from '../plugins/sub-agent-compact/src/handoff.ts';
 
@@ -463,13 +463,40 @@ describe('git, ranges, transcript', () => {
   });
 
   it('honours a line range exactly', () => {
-    expect(parseLineRange('10-20')).toEqual({ from: 10, to: 20 });
-    expect(parseLineRange('10:20')).toEqual({ from: 10, to: 20 });
-    expect(parseLineRange('7')).toEqual({ from: 7, to: 7 });
-    expect(parseLineRange('20-10')).toBeUndefined();
-    expect(parseLineRange('abc')).toBeUndefined();
-    expect(sliceLines('a\nb\nc\nd\ne', { from: 2, to: 4 })).toBe('b\nc\nd');
-    expect(sliceLines('a\nb', { from: 2, to: 9 })).toBe('b');
+    expect(parseLineRanges('10-20')).toEqual([{ from: 10, to: 20 }]);
+    expect(parseLineRanges('10:20')).toEqual([{ from: 10, to: 20 }]);
+    expect(parseLineRanges('7')).toEqual([{ from: 7, to: 7 }]);
+    expect(parseLineRanges('20-10')).toBeUndefined();
+    expect(parseLineRanges('abc')).toBeUndefined();
+    expect(sliceFile('a\nb\nc\nd\ne', [{ from: 2, to: 4 }])).toEqual({ body: 'b\nc\nd', shown: '2-4' });
+  });
+
+  it('takes several ranges, each loaded in order with the lines between them named as not loaded', () => {
+    expect(parseLineRanges('1-60,160-185')).toEqual([{ from: 1, to: 60 }, { from: 160, to: 185 }]);
+    expect(parseLineRanges(' 3 , 5-6 ')).toEqual([{ from: 3, to: 3 }, { from: 5, to: 6 }]);
+    expect(parseLineRanges('1-3,,5')).toBeUndefined();
+    expect(parseLineRanges('1-3,x')).toBeUndefined();
+    expect(sliceFile('a\nb\nc\nd\ne\nf', [{ from: 1, to: 2 }, { from: 5, to: 6 }])).toEqual({ body: 'a\nb\n[lines 3-4 not loaded]\ne\nf', shown: '1-2,5-6' });
+  });
+
+  it('names a range past the end of the file, never loading it as nothing', () => {
+    const file = Array.from({ length: 149 }, (_, n) => `line ${n + 1}`).join('\n') + '\n';
+    expect(sliceFile(file, [{ from: 150, to: 200 }])).toEqual({ problem: 'lines 150-200: past the end of the file, which has 149 lines' });
+    expect(sliceFile(file, [{ from: 148, to: 200 }])).toEqual({ body: 'line 148\nline 149', shown: '148-149', problem: 'lines 148-200: the file ends at line 149' });
+    expect(sliceFile(file, [{ from: 1, to: 1 }, { from: 160, to: 170 }])).toEqual({ body: 'line 1', shown: '1', problem: 'lines 160-170: past the end of the file, which has 149 lines' });
+    expect(sliceFile('', undefined)).toEqual({ problem: 'the file is empty' });
+    expect(sliceFile('x\n', undefined)).toEqual({ body: 'x\n', shown: '' });
+  });
+
+  it('names a range of only blank lines, never loading it as a block that says nothing', () => {
+    expect(sliceFile('a\n\n\nd\n', [{ from: 2, to: 3 }])).toEqual({ problem: 'lines 2-3: only blank lines' });
+    expect(sliceFile('a\n\n', [{ from: 2, to: 5 }])).toEqual({ problem: 'lines 2-5: the file ends at line 2; lines 2: only blank lines' });
+  });
+
+  it('loads ranges in file order, an overlap once, so a reversed or overlapping list never reads as one stretch', () => {
+    const file = 'a\nb\nc\nd\ne\nf\ng\n';
+    expect(sliceFile(file, [{ from: 6, to: 7 }, { from: 1, to: 2 }])).toEqual({ body: 'a\nb\n[lines 3-5 not loaded]\nf\ng', shown: '1-2,6-7' });
+    expect(sliceFile(file, [{ from: 1, to: 3 }, { from: 2, to: 4 }, { from: 5, to: 5 }])).toEqual({ body: 'a\nb\nc\nd\ne', shown: '1-5' });
   });
 
   it('finds the transcript by its session id, never by a rebuilt directory name, and reports only a find that printed nothing', () => {
@@ -737,5 +764,78 @@ describe('chainSkills', () => {
   it('is the invoked ones alone when nothing was carried', () => {
     expect(chainSkills(undefined, [Z], [])).toEqual([Z]);
     expect(chainSkills(undefined, [], [])).toEqual([]);
+  });
+});
+
+describe('messages the parent or the person send while the party works', () => {
+  const coordinator = '<system-reminder>\nThe coordinator sent a message while you were working:\nThe docs too, in this same pass.\nReport the lines.\n\nAddress this before completing your current task.\n</system-reminder>';
+  const person = '<system-reminder>\nThe user sent a new message while you were working:\nDid the tests pass?\n\nThis is how Claude Code surfaces messages the user sends mid-turn — within the running turn, often alongside the next tool result, rather than as a separate conversation turn. Address the message above as you continue this turn.\n</system-reminder>';
+  const peer = (from: string, id = '') => `<system-reminder${id}>\nAnother Claude session sent a message while you were working:\n<agent-message from="${from}">\nRun the gate too.\n</agent-message>\n\nThat "other Claude session" is an agent working inside this same session. After completing your current task, decide whether/how to respond (reply via SendMessage to the \`from=\` address).\n</system-reminder${id}>`;
+  const brief = user('Build the thing.');
+  const work = (id: string) => asst(use('Bash', { command: 'make' }, id));
+
+  it("carries the coordinator's message, delivered beside a tool result, as an instruction after the brief", () => {
+    expect(userMessages([brief, work('b1'), user(res('b1', 'ok'), coordinator), asst(t('on it'))])).toEqual([
+      'Build the thing.',
+      'The coordinator sent a message while you were working:\nThe docs too, in this same pass.\nReport the lines.',
+    ]);
+  });
+
+  it("carries the person's mid-turn message as their words alone", () => {
+    expect(userMessages([brief, work('b1'), user(res('b1', 'ok'), person)])).toEqual(['Build the thing.', 'Did the tests pass?']);
+  });
+
+  it("carries a peer's message only when it comes from the party's parent agent, in either reminder form", () => {
+    const msgs = [brief, work('b1'), user(res('b1', 'ok'), peer('a0123456789abcdef'))];
+    expect(userMessages(msgs, { parent: ['a0123456789abcdef'] })).toEqual(['Build the thing.', 'The parent agent a0123456789abcdef sent a message while you were working:\nRun the gate too.']);
+    expect(userMessages(msgs)).toEqual(['Build the thing.']);
+    expect(userMessages([brief, work('b1'), user(res('b1', 'ok'), peer('a0123456789abcdef', ' id="41"'))], { parent: ['a0123456789abcdef'] })).toHaveLength(2);
+    expect(userMessages([brief, work('b1'), user(res('b1', 'ok'), peer('affffffffffffffff', ' id="41"'))], { parent: ['a0123456789abcdef'] })).toEqual(['Build the thing.']);
+  });
+
+  it('keeps it out of a skill expansion: a message delivered beside a Skill result is carried', () => {
+    expect(userMessages([brief, asst(use('Skill', { skill: 'x' }, 's1')), user(res('s1', 'Launching skill: x'), coordinator)])).toHaveLength(2);
+  });
+
+  it('does not read a handoff called after a parent message as the reply to it, unless the message asks for one', () => {
+    const fh = 'mcp__sub-agent-compact__forward_handoff';
+    expect(handoffInReply([brief, work('b1'), user(res('b1', 'ok')), asst(use(fh, {}, 'f0')), user(res('f0', 'Not stored'), coordinator), asst(use(fh, {}, 'f1'))])).toBe(false);
+    const ask = coordinator.replace('The docs too, in this same pass.', 'Hand off now.');
+    expect(handoffInReply([brief, work('b1'), user(res('b1', 'ok'), ask), asst(use(fh, {}, 'f1'))])).toBe(true);
+  });
+
+  it('reads a queued message from the transcript before the last compaction, in its attachment and its plain form', () => {
+    const line = (n: number, o: Record<string, unknown>) => `${n}:${JSON.stringify(o)}`;
+    const out = [
+      line(3, { type: 'user', message: { role: 'user', content: 'Build the thing.' } }),
+      line(7, { type: 'attachment', attachment: { type: 'queued_command', prompt: 'The docs too, in this same pass.\nReport the lines.', origin: { kind: 'coordinator' }, isMeta: true }, rendered: [{ content: coordinator }] }),
+      line(9, { type: 'user', isMeta: true, message: { role: 'user', content: [{ type: 'text', text: 'The coordinator sent a message while you were working:\nAnd the README.' }] } }),
+      line(30, { type: 'attachment', attachment: { type: 'queued_command', prompt: 'later' }, rendered: [{ content: person.replace('Did the tests pass?', 'later') }] }),
+    ].join('\n');
+    expect(userMessages(priorPrompts(out, 19))).toEqual([
+      'Build the thing.',
+      'The coordinator sent a message while you were working:\nThe docs too, in this same pass.\nReport the lines.',
+      'The coordinator sent a message while you were working:\nAnd the README.',
+    ]);
+  });
+});
+
+describe('settleTrail', () => {
+  const trail = [{ tag: 'E' as const, path: '/a/gone.ts' }, { tag: 'C' as const, path: '/tmp/dir' }, { tag: 'C' as const, path: '/a/big.log' }, { tag: 'E' as const, path: '/a/locked.ts' }, { tag: 'R' as const, path: '/a/read.ts' }];
+  it('drops a directory at once, a gone file from the carried trail, keeps a big file, and leaves only a failed read a problem', () => {
+    const out = settleTrail(trail, [
+      { path: '/a/gone.ts', why: 'missing', problem: 'not found' },
+      { path: '/tmp/dir', why: 'not-file', problem: 'not a regular file (dir)' },
+      { path: '/a/big.log', why: 'too-large', problem: '2097152 bytes, over the 1048576 byte limit' },
+      { path: '/a/locked.ts', why: 'unreadable', problem: 'unreadable: EACCES' },
+    ], '/a');
+    expect(out.shown.map((t) => t.path)).toEqual(['/a/gone.ts', '/a/big.log', '/a/locked.ts', '/a/read.ts']);
+    expect(out.carried.map((t) => t.path)).toEqual(['/a/big.log', '/a/locked.ts', '/a/read.ts']);
+    expect(out.problems).toEqual(['outline /a/locked.ts: unreadable: EACCES']);
+    expect(out.notes).toEqual([
+      'outline /a/gone.ts: not found; check the prior file-tool path (absolute or relative to session cwd /a); the file may have moved or been deleted, so later handoffs leave it out',
+      'outline /tmp/dir: not a regular file (dir), so it leaves the file trail',
+      'outline /a/big.log: 2097152 bytes, over the 1048576 byte limit, so it stays in the trail without an outline',
+    ]);
   });
 });

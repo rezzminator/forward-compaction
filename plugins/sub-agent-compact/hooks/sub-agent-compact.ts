@@ -2,9 +2,9 @@ import type { EngineInterface, On, PluginOptions, Register } from 'claude-code';
 import { bounded, unlessAborted } from '../src/bounded.ts';
 import { LOOK_BACK_TOOL, LOOK_BACK_DESCRIPTION, LOOK_BACK_INPUT_SCHEMA, parseLookBack, boundaryArgv, boundaryLine, searchArgv, entryArgv, namesArgv, processOutput, parseEntries, toolNames, resultIds, searchResults, entryResult, manualTranscriptCall, lookBackNotice, type LookBackResult } from '../src/look-back.ts';
 import { servedOptions, toolsToRegister } from '../src/register.ts';
-import { askedToCompact, FORWARD_INPUT_SCHEMA, FORWARD_TOOL, FORWARD_TOOL_DESCRIPTION, forwardCallShape, forwardNudgeText, forwardRefusal, forwardStoredText, parseForwardArgs, rereadNudge, type ForwardArgs } from '../src/forward-args.ts';
-import { absPath, fileTrail, handoffInReply, findTranscriptArgv, firstFound, gitBlock, gitLine, GIT_REPOS, heldForward, outsideRepository, opensWithSummary, openingSummary, summaryKnowledge, outline, OUTLINE_FILE_MAX_BYTES, priorCalls, priorPrompts, mergeTrail, chainSkills, promptsSinceWake, invocationPaths, invocations, parseLineRange, parsePorcelain, planAndTasks, runningWork, sliceLines, trailDirs, userMessages, type ApiMsg, type LiveWork, type TrailEntry } from '../src/forward-carry.ts';
-import { buildRecord, carriedFrom, forwardClaimArgv, forwardDir, forwardRoots, forwardSessionDir, dropSkillProblem, missingRecordProblem, nextSeq, ownCall, previousDir, recoverForward, savedOf, withInstall } from '../src/forward-record.ts';
+import { askedToCompact, FORWARD_INPUT_SCHEMA, FORWARD_TOOL, FORWARD_TOOL_DESCRIPTION, forwardCallShape, forwardNudgeText, forwardRefusal, forwardStoredText, parseForwardArgs, rereadTarget, worksPastWake, type ForwardArgs } from '../src/forward-args.ts';
+import { absPath, fileTrail, handoffInReply, findTranscriptArgv, firstFound, gitBlock, gitLine, GIT_REPOS, heldForward, outsideRepository, opensWithSummary, openingSummary, summaryKnowledge, outline, OUTLINE_FILE_MAX_BYTES, settleTrail, priorCalls, priorPrompts, mergeTrail, chainSkills, promptsSinceWake, invocationPaths, invocations, parseLineRanges, parsePorcelain, planAndTasks, runningWork, sliceFile, trailDirs, userMessages, type ApiMsg, type LiveWork, type TrailEntry, type TrailMiss } from '../src/forward-carry.ts';
+import { buildRecord, carriedFrom, firstSeq, forwardClaimArgv, forwardDir, forwardRoots, forwardSessionDir, dropSkillProblem, missingRecordProblem, ownCall, previousDir, recoverForward, savedOf, withInstall, handoffLoads } from '../src/forward-record.ts';
 import { chainUsers, forwardInstalledLine, installCheck, renderForward, TRAIL_MAX, type BlockRecord, type RenderInput } from '../src/forward-text.ts';
 import { BRIEF_MAX_TOKENS, reseatBrief, seatedBrief } from '../src/brief.ts';
 import { engineAgentFs } from '../src/agent-fs.ts';
@@ -33,7 +33,7 @@ import {
   type ForwardMeta,
 } from '../src/handoff.ts';
 import { SETTINGS_SOURCES, leftoverOptionKeys, resolveOptions, sizeTokens, type OptionEnvironment, type Policy, type ResolvedOptions } from '../src/limits.ts';
-import { sessionLogPath, noticeOnScreen, decisionAppendArgv, retentionArgv, requeueRows, keptRowsText, endReport, SkipFold, pluginLogDir, levelRow, pluginLogEvent, PluginLogQueue, type PluginLogLevel, type PluginLogFields } from '../src/log.ts';
+import { sessionLogPath, runCwd, noticeOnScreen, decisionAppendArgv, retentionArgv, requeueRows, keptRowsText, endReport, SkipFold, pluginLogDir, levelRow, pluginLogEvent, PluginLogQueue, type PluginLogLevel, type PluginLogFields } from '../src/log.ts';
 import { armedText, CONTINUE_AFTER_MARKER, disarmedText, earlyArm, markerRequest, nudgeText, stopRequest } from '../src/nudge.ts';
 import { FRESH_MAX_MESSAGES, isFirstRequest, Parties } from '../src/parties.ts';
 import { engineAskPoint, forcedPoint, isHaiku, modelWindow } from '../src/window.ts';
@@ -117,8 +117,6 @@ type State = {
   forwardInstalled: Map<string, { meta: ForwardMeta; text: string; tokensAfter: number; before: number | undefined; label: string }>;
   /** The parties a forward handoff was installed in: a second one is refused below their first nudge point. */
   forwardWoke: Set<string>;
-  /** Parties already sent back once for a `next` that re-reads what the wake carries. */
-  rereadNudged: Set<string>;
   /** The home directory, for `~/` in a path. */
   home?: string;
   /** The main chat's in-flight work as the last turn's end reported it, and the calls made since. */
@@ -191,7 +189,7 @@ function plog(st: State, $: EngineInterface, fields: Omit<PluginLogFields, 'plug
       show($, sessionError);
     }
     queue.add(levelRow({ plugin: 'sub-agent-compact', ...fields, ...(session ? { session } : {}) }, now));
-    const out = await queue.flush((argv) => $.process.run(argv, { timeoutMs: 15_000 }));
+    const out = await queue.flush((argv) => $.process.run(argv, { ...runCwd(st.pluginLogDir ?? ''), timeoutMs: 15_000 }));
     if (out.error !== undefined && !st.pluginFailing) pluginLogFailed(st, $, out.error, out.dropped);
     st.pluginFailing = out.dropped !== 0;
   }).catch((error) => {
@@ -256,14 +254,17 @@ function flushDecisions(st: State, $: EngineInterface, last = false): void {
   // Taken now: rows queued before a /clear go to the ending session's file even when they are written after startOver.
   const logPath = st.logPath;
   const pending = st.pending;
+  // The failure line names the session's own file: the configured logFile is only its template (`decisions/.jsonl`).
+  let named: string = file;
   st.writing = st.writing
     .then(async () => {
       const path = await logPath;
+      if (path) named = path;
       const rows = pending.splice(0);
       if (!path || rows.length === 0) return;
       st.rowsWriting = rows.length;
       try {
-        const out = await $.process.run(decisionAppendArgv(path), { stdin: rows.map((line) => `${line}\n`).join(''), timeoutMs: 15_000 });
+        const out = await $.process.run(decisionAppendArgv(path), { ...runCwd(path), stdin: rows.map((line) => `${line}\n`).join(''), timeoutMs: 15_000 });
         if (out.exitCode !== 0) throw new Error(out.stderr.split('\n')[0]?.trim() || `the append script exited ${out.exitCode}`);
         st.writeError = undefined;
       } catch (error) {
@@ -289,7 +290,7 @@ function flushDecisions(st: State, $: EngineInterface, last = false): void {
     // numbers, so one failure whose text carries a varying size or offset is still shown once.
     .catch((error) => {
       const kept = error instanceof DecisionWriteError ? keptRowsText(error.rows, error.dropped, last) : '';
-      const failed = `sub-agent-compact: writing the decision log for ${file} failed: ${message(error)}`;
+      const failed = `sub-agent-compact: writing the decision log for ${named} failed: ${message(error)}`;
       const line = `${failed}${kept}`;
       // The first drop past the hold is told even when its failure already was; the session-end line counts them all.
       const key = `${failed}${error instanceof DecisionWriteError && error.dropped > 0 ? ' (hold)' : ''}`.replace(/\d+/g, '#');
@@ -310,10 +311,10 @@ class DecisionWriteError extends Error {
 /** Once per session, after its first append: old sessions' logs beside this one go; a failure is told once, in both logs, and the log goes on. */
 async function retainLogs(st: State, $: EngineInterface, file: string, path: string): Promise<void> {
   try {
-    const out = await $.process.run(retentionArgv(file, path), { timeoutMs: 15_000 });
+    const out = await $.process.run(retentionArgv(file, path), { ...runCwd(file, path), timeoutMs: 15_000 });
     if (out.exitCode !== 0) throw new Error(out.stderr.split('\n')[0]?.trim() || `the retention script exited ${out.exitCode}`);
   } catch (error) {
-    const line = `sub-agent-compact: cleaning up old decision logs beside ${file} failed: ${message(error)}; they stay`;
+    const line = `sub-agent-compact: cleaning up old decision logs beside ${path} failed: ${message(error)}; they stay`;
     say(st, $, line, 'warning', { event: 'decision-retention-failed', file, error: message(error), line: screenLine(line) });
   }
 }
@@ -329,7 +330,6 @@ function startOver(st: State): void {
   st.parties.forget('main');
   st.forwardWoke.delete('main');
   st.forwardInstalled.delete('main');
-  st.rereadNudged.delete('main');
   st.asked.delete('main');
   st.mainCompactSeen = false;
   st.mainCompactedThisTurn = false;
@@ -669,10 +669,10 @@ async function answerLookBackTool(st: State, $: EngineInterface, e: Record<strin
     if (agentId !== undefined) label = (await agentType(st, $, agentId)) ?? 'unlisted';
     if (st.configDir === undefined) throw new Error('no Claude config directory');
     const session = await (st.sessionId ??= $.session.id());
-    const found = processOutput(await $.process.run(findTranscriptArgv({ configDir: st.configDir, session, ...(agentId !== undefined ? { agentId } : {}) }), { timeoutMs: 15_000 }), 'transcript lookup');
+    const found = processOutput(await $.process.run(findTranscriptArgv({ configDir: st.configDir, session, ...(agentId !== undefined ? { agentId } : {}) }), { ...runCwd(st.configDir), timeoutMs: 15_000 }), 'transcript lookup');
     const file = firstFound(found);
     if (file === undefined) throw new Error(`no transcript file for ${agentId === undefined ? `session ${session}` : `agent ${agentId}`}`);
-    const bounds = processOutput(await $.process.run(boundaryArgv(file), { timeoutMs: 15_000 }), 'compaction boundary', true);
+    const bounds = processOutput(await $.process.run(boundaryArgv(file), { ...runCwd(file), timeoutMs: 15_000 }), 'compaction boundary', true);
     boundary = boundaryLine(bounds) ?? null;
     // Before any argument check: with nothing compacted there is no earlier transcript, whatever was asked.
     if (boundary === null) result = { text: 'Nothing has been compacted yet, so everything is still in context.', hits: 0 };
@@ -680,12 +680,12 @@ async function answerLookBackTool(st: State, $: EngineInterface, e: Record<strin
     else if (args.entry !== undefined && args.entry >= boundary) result = entryResult([], args.entry, boundary);
     else {
       const argv = args.entry !== undefined ? entryArgv(file, args.entry) : searchArgv(file, boundary, args.terms);
-      const raw = boundary === 1 ? '' : processOutput(await $.process.run(argv, { timeoutMs: 30_000 }), args.entry !== undefined ? 'entry fetch' : 'transcript search', true);
+      const raw = boundary === 1 ? '' : processOutput(await $.process.run(argv, { ...runCwd(file), timeoutMs: 30_000 }), args.entry !== undefined ? 'entry fetch' : 'transcript search', true);
       const entries = parseEntries(raw).filter((entry) => entry.line < boundary!);
       let names = toolNames(entries);
       const ids = resultIds(entries).filter((id) => !Object.hasOwn(names, id));
       if (ids.length > 0) {
-        const uses = processOutput(await $.process.run(namesArgv(file, boundary, ids), { timeoutMs: 30_000 }), 'tool name lookup', true);
+        const uses = processOutput(await $.process.run(namesArgv(file, boundary, ids), { ...runCwd(file), timeoutMs: 30_000 }), 'tool name lookup', true);
         names = { ...names, ...toolNames(parseEntries(uses).filter((entry) => entry.line < boundary!)) };
       }
       result = args.entry !== undefined ? entryResult(entries, args.entry, boundary, names) : searchResults(entries, args.terms, boundary, names, st.forwardToolName);
@@ -902,18 +902,18 @@ async function answerHandoffTool(st: State, $: EngineInterface, e: Record<string
   return handoffStoredText({ chars: parsed.text.length, main: party.main, askPoint: askPointOf(st) });
 }
 
-type Read = { content: string } | { problem: string };
+type Read = { content: string } | { problem: string; why: TrailMiss['why'] };
 
 /** One file read whole, or why not: missing, not a regular file, over the byte cap, unreadable. */
 async function readOne(st: State, $: EngineInterface, path: string, maxBytes: number): Promise<Read> {
   try {
-    if (!(await $.fs.exists(path))) return { problem: 'not found' };
+    if (!(await $.fs.exists(path))) return { problem: 'not found', why: 'missing' };
     const stat = await $.fs.stat(path);
-    if (stat.kind !== 'file') return { problem: `not a regular file (${stat.kind})` };
-    if (stat.size > maxBytes) return { problem: `${stat.size} bytes, over the ${maxBytes} byte limit` };
+    if (stat.kind !== 'file') return { problem: `not a regular file (${stat.kind})`, why: 'not-file' };
+    if (stat.size > maxBytes) return { problem: `${stat.size} bytes, over the ${maxBytes} byte limit`, why: 'too-large' };
     return { content: await $.fs.read(path) };
   } catch (error) {
-    return { problem: `unreadable: ${message(error)}` };
+    return { problem: `unreadable: ${message(error)}`, why: 'unreadable' };
   }
 }
 
@@ -950,26 +950,30 @@ async function earlierRecords(st: State, $: EngineInterface, at: { session: stri
  * What code carries into a forward handoff, read at handoff time from the transcript, the disk, git and the
  * live environment. A read that fails is a line in `problems`, never an absence. Every path is absolute.
  */
-async function gatherForward(st: State, $: EngineInterface, args: ForwardArgs, at: { seq: number; dir?: string; session: string; agentId?: string }): Promise<RenderInput> {
+/** The party's context as the API sees it, read once per call: the numbering and the gathering both read it. */
+async function readContext($: EngineInterface, agentId?: string): Promise<{ api: ApiMsg[]; read: boolean; problem?: string }> {
+  try {
+    const got = await $.session.messages({ as: 'api', ...(agentId !== undefined ? { agentId } : {}) });
+    if (Array.isArray(got)) return { api: got as ApiMsg[], read: true };
+    return { api: [], read: false, problem: `transcript: unreadable (${JSON.stringify(got).slice(0, 120)})` };
+  } catch (error) {
+    return { api: [], read: false, problem: `transcript: unreadable (${message(error)})` };
+  }
+}
+
+async function gatherForward(st: State, $: EngineInterface, args: ForwardArgs, at: { seq: number; dir?: string; session: string; agentId?: string; context: { api: ApiMsg[]; read: boolean; problem?: string } }): Promise<RenderInput & { notes: string[]; carried: TrailEntry[] }> {
   const cwd = (at.agentId !== undefined ? st.agentCwd.get(at.agentId) : undefined) ?? st.cwd ?? '.';
   const abs = (path: string): string => absPath(path, cwd, st.home ?? '');
   const problems: string[] = [...(args.problems ?? [])];
-  let api: ApiMsg[] = [];
-  let read = false;
-  try {
-    const got = await $.session.messages({ as: 'api', ...(at.agentId !== undefined ? { agentId: at.agentId } : {}) });
-    if (Array.isArray(got)) { api = got as ApiMsg[]; read = true; }
-    else problems.push(`transcript: unreadable (${JSON.stringify(got).slice(0, 120)})`);
-  } catch (error) {
-    problems.push(`transcript: unreadable (${message(error)})`);
-  }
+  const { api, read } = at.context;
+  if (at.context.problem !== undefined) problems.push(at.context.problem);
 
   const loaded: RenderInput['loaded'] = [];
   for (const file of args.loadFiles) {
     const target = abs(file.path);
-    const range = file.lines !== undefined ? parseLineRange(file.lines) : undefined;
-    const label = `${target}${range ? `:${range.from}-${range.to}` : ''}`;
-    if (file.lines !== undefined && range === undefined) {
+    const ranges = file.lines !== undefined ? parseLineRanges(file.lines) : undefined;
+    const label = `${target}${ranges !== undefined ? `:${file.lines!.replace(/\s+/g, '')}` : ''}`;
+    if (file.lines !== undefined && ranges === undefined) {
       loaded.push({ label: target, problem: `invalid lines ${JSON.stringify(file.lines)}` });
       continue;
     }
@@ -985,7 +989,18 @@ async function gatherForward(st: State, $: EngineInterface, args: ForwardArgs, a
       continue;
     }
     const read = await readOne(st, $, target, 4 * 1024 * 1024);
-    loaded.push('content' in read ? { label, body: range ? sliceLines(read.content, range) : read.content } : { label, problem: read.problem });
+    if (!('content' in read)) {
+      loaded.push({ label, problem: read.problem });
+      continue;
+    }
+    // A range past the file's end, or an empty file, is named in Unresolved: a slice of nothing never reads as loaded.
+    const slice = sliceFile(read.content, ranges);
+    if (!('body' in slice)) {
+      loaded.push({ label, problem: slice.problem });
+      continue;
+    }
+    loaded.push({ label: `${target}${slice.shown !== '' ? `:${slice.shown}` : ''}`, body: slice.body });
+    if (slice.problem !== undefined) problems.push(`load ${label}: ${slice.problem}`);
   }
 
   const paths: string[] = [];
@@ -995,15 +1010,15 @@ async function gatherForward(st: State, $: EngineInterface, args: ForwardArgs, a
   else {
     try {
       // Found by its session id: Claude Code names a long project directory by hashing it, so the name is never rebuilt here.
-      const search = await $.process.run(findTranscriptArgv({ configDir: st.configDir, session: at.session, ...(at.agentId !== undefined ? { agentId: at.agentId } : {}) }), { timeoutMs: 15_000 });
+      const search = await $.process.run(findTranscriptArgv({ configDir: st.configDir, session: at.session, ...(at.agentId !== undefined ? { agentId: at.agentId } : {}) }), { ...runCwd(st.configDir), timeoutMs: 15_000 });
       const file = firstFound(search.stdout);
       transcript = file;
       if (file === undefined) problems.push(search.exitCode === 0 ? `transcript: no file for session ${at.session}` : `transcript: lookup failed (${failure(search)})`);
       else {
-        const count = await $.process.run(['grep', '-c', '', file], { timeoutMs: 15_000 });
+        const count = await $.process.run(['grep', '-c', '', file], { ...runCwd(file), timeoutMs: 15_000 });
         if (count.exitCode === 0) paths.push(`transcript ${file}:${count.stdout.trim()}`);
         else problems.push(`transcript: counting lines failed (${failure(count)})`);
-        const memory = await $.process.run(['grep', '-a', '-o', '"type":"nested_memory","path":"[^"]*"', file], { timeoutMs: 15_000 });
+        const memory = await $.process.run(['grep', '-a', '-o', '"type":"nested_memory","path":"[^"]*"', file], { ...runCwd(file), timeoutMs: 15_000 });
         if (memory.exitCode === 0) {
           for (const line of memory.stdout.split('\n')) {
             const path = /"path":"([^"]*)"/.exec(line)?.[1];
@@ -1067,21 +1082,34 @@ async function gatherForward(st: State, $: EngineInterface, args: ForwardArgs, a
     const foreign = saved !== undefined && ownCall(saved, callRoots, at.session, at.agentId) === undefined ? ` (its saved ${saved} is not this ${at.agentId !== undefined ? 'agent' : 'chat'}'s)` : '';
     problems.push(missingRecordProblem({ number, looked, foreign, others, unreadable }));
   }
+  // A sub-agent's parent agent, by id and name: its mid-turn messages are instructions, any other agent's are not.
+  const carry: { parent: string[] } = { parent: [] };
+  if (at.agentId !== undefined) {
+    try {
+      const agents = await $.agent.list();
+      const self = agents.find((a) => a.id === at.agentId);
+      const parent = self?.parentId !== undefined ? agents.find((a) => a.id === self.parentId) : undefined;
+      if (self === undefined) problems.push(`parent agent: agent ${at.agentId} is not in the agent list, so a message from its parent while it worked is not carried`);
+      else if (self.parentId !== undefined) carry.parent.push(self.parentId, ...(parent?.name !== undefined ? [parent.name] : []));
+    } catch (error) {
+      problems.push(`parent agent: listing agents failed (${message(error)}), so a message from it while this agent worked is not carried`);
+    }
+  }
   // After Claude Code's own compaction the context opens with its summary: the prompts before it come from the transcript file.
   let prior: { users: string[]; dropped: number } | undefined;
   let priorTrail: TrailEntry[] | undefined;
   if (held === undefined && transcript !== undefined && opensWithSummary(api)) {
     try {
-      const bounds = await $.process.run(['grep', '-a', '-n', '"subtype":"compact_boundary"', transcript], { timeoutMs: 15_000 });
+      const bounds = await $.process.run(['grep', '-a', '-n', '"subtype":"compact_boundary"', transcript], { ...runCwd(transcript), timeoutMs: 15_000 });
       const last = Number(bounds.stdout.trim().split('\n').pop()?.split(':')[0]);
       if (bounds.exitCode !== 0 || !Number.isFinite(last) || last <= 0) problems.push(`prompts before the summary: no compaction found in the transcript (${failure(bounds)})`);
       else {
         // Tool results are user entries too: only the entries without one hold prompts.
-        const users = await $.process.run(['sh', '-c', 'grep -a -n \'"type":"user"\' "$1" | grep -v \'"tool_use_id"\'', 'sh', transcript], { timeoutMs: 30_000 });
+        const users = await $.process.run(['sh', '-c', 'grep -a -n -e \'"type":"user"\' -e \'"type":"queued_command"\' "$1" | grep -v \'"tool_use_id"\'', 'sh', transcript], { ...runCwd(transcript), timeoutMs: 30_000 });
         if (users.exitCode !== 0 && users.exitCode !== 1) problems.push(`prompts before the summary: reading the transcript failed (${failure(users)})`);
-        else prior = { users: userMessages(priorPrompts(users.stdout, last)), dropped: 0 };
+        else prior = { users: userMessages(priorPrompts(users.stdout, last), carry), dropped: 0 };
         // The files touched before it: the calls' lines up to the boundary, the newest kept.
-        const calls = await $.process.run(['sh', '-c', CALLS_BEFORE, 'sh', transcript, String(last)], { timeoutMs: 30_000 });
+        const calls = await $.process.run(['sh', '-c', CALLS_BEFORE, 'sh', transcript, String(last)], { ...runCwd(transcript), timeoutMs: 30_000 });
         if (calls.exitCode !== 0 || calls.stderr.trim() !== '') problems.push(`files before the summary: reading the transcript failed (${failure(calls)})`);
         else priorTrail = fileTrail(priorCalls(calls.stdout, last), { cwd, home: st.home ?? '', max: TRAIL_MAX });
       }
@@ -1110,7 +1138,7 @@ async function gatherForward(st: State, $: EngineInterface, args: ForwardArgs, a
     skills.push(found);
   }
   const since = held !== undefined ? api.slice(held.index + 1) : api;
-  const chain = chainUsers(before ?? prior, userMessages(since), handoffInReply(since));
+  const chain = chainUsers(before ?? prior, userMessages(since, carry), handoffInReply(since, carry));
   // What Claude Code's own summary knew: from the one the context opens with, else from the earlier handoff's record.
   let summary = before?.summary;
   const opening = held === undefined ? openingSummary(api) : undefined;
@@ -1122,18 +1150,20 @@ async function gatherForward(st: State, $: EngineInterface, args: ForwardArgs, a
   const older = before !== undefined ? before.trail : priorTrail;
   const fresh = fileTrail(since, { cwd, home: st.home ?? '', max: TRAIL_MAX });
   const kept = nested.filter((p) => !mergeTrail(older, fresh, TRAIL_MAX).some((t) => t.path === p)).slice(-5);
-  const trail = [...mergeTrail(older, fresh, TRAIL_MAX - kept.length), ...kept.map((path) => ({ tag: 'R' as const, path }))];
+  const merged = [...mergeTrail(older, fresh, TRAIL_MAX - kept.length), ...kept.map((path) => ({ tag: 'R' as const, path }))];
   // What each made or edited file holds now: read at handoff time, so a file changed since its edit shows as it stands.
   const outlines: Record<string, string> = {};
-  for (const entry of trail.slice(0, TRAIL_MAX)) {
+  const misses: TrailMiss[] = [];
+  for (const entry of merged.slice(0, TRAIL_MAX)) {
     if (entry.tag === 'R') continue;
     const read = await readOne(st, $, entry.path, OUTLINE_FILE_MAX_BYTES);
     if ('content' in read) outlines[entry.path] = outline(entry.path, read.content);
-    else {
-      const hint = read.problem === 'not found' ? `; check the prior file-tool path (absolute or relative to session cwd ${cwd}); the file may have moved or been deleted` : '';
-      problems.push(`outline ${entry.path}: ${read.problem}${hint}`);
-    }
+    else misses.push({ path: entry.path, why: read.why, problem: read.problem });
   }
+  // A file gone or no file leaves the trail later handoffs carry, told in this wake and logged at info; only a failed read is a problem.
+  const settled = settleTrail(merged, misses, cwd);
+  const trail = settled.shown;
+  problems.push(...settled.problems);
   // The repositories the work touched: those of the files made or edited, else of the files read, newest first,
   // a linked worktree or submodule as its own. The session directory's only when the files name none.
   let here = cwd;
@@ -1145,7 +1175,7 @@ async function gatherForward(st: State, $: EngineInterface, args: ForwardArgs, a
   }
   const topOf = async (dir: string): Promise<{ top: string } | { none: string } | { problem: string }> => {
     try {
-      const out = await $.process.run(['git', '-C', dir, 'rev-parse', '--show-toplevel'], { timeoutMs: 15_000 });
+      const out = await $.process.run(['git', '-C', dir, 'rev-parse', '--show-toplevel'], { ...runCwd(dir), timeoutMs: 15_000 });
       if (out.exitCode === 0) return { top: out.stdout.trim() };
       return outsideRepository(out) ? { none: failure(out) } : { problem: failure(out) };
     } catch (error) {
@@ -1153,7 +1183,8 @@ async function gatherForward(st: State, $: EngineInterface, args: ForwardArgs, a
     }
   };
   const tops: string[] = [];
-  const touched = trailDirs(trail);
+  // A file deleted since its edit still names the repository the work touched.
+  const touched = trailDirs(merged);
   for (const tier of [touched.made, touched.read]) {
     for (const dir of tier) {
       const found = await topOf(dir);
@@ -1187,7 +1218,7 @@ async function gatherForward(st: State, $: EngineInterface, args: ForwardArgs, a
   const git = gitBlock(repos, { ...('top' in own ? { own: own.top } : {}), more: tops.slice(GIT_REPOS) });
   const live = at.agentId === undefined && st.live !== undefined ? { tasks: st.live.tasks, crons: st.live.crons, started: st.live.started, now: Date.now() } : undefined;
 
-  return { seq: at.seq, users: chain.users, usersDropped: chain.dropped, ...(chain.inReply ? { handoffInReply: true } : {}), ...(summary !== undefined ? { summary } : {}), skills, trail, outlines, loaded, ...(plan !== undefined ? { plan } : {}), tasks: work.tasks, running: runningWork(api, live), ...(git !== undefined ? { git } : {}), paths: paths.length > 0 ? [paths.join(' · ')] : [], problems, args, callShape: forwardCallShape(st.forwardToolName ?? FORWARD_TOOL) };
+  return { notes: settled.notes, carried: settled.carried, seq: at.seq, users: chain.users, usersDropped: chain.dropped, ...(chain.inReply ? { handoffInReply: true } : {}), ...(summary !== undefined ? { summary } : {}), skills, trail, outlines, loaded, ...(plan !== undefined ? { plan } : {}), tasks: work.tasks, running: runningWork(api, live), ...(git !== undefined ? { git } : {}), paths: paths.length > 0 ? [paths.join(' · ')] : [], problems, args, callShape: forwardCallShape(st.forwardToolName ?? FORWARD_TOOL) };
 }
 
 /**
@@ -1210,6 +1241,11 @@ async function askedSinceWake(st: State, $: EngineInterface, key: string, agentI
     record(st, $, { event: 'forward-woke-unchecked', party: key, problem: `transcript: unreadable (${message(error)})` });
     return false;
   }
+}
+
+/** The tools this plugin registered under their engine names: the handoff, compact and look_back tools. */
+function ownTools(st: State): string[] {
+  return [st.toolName, st.handoffToolName, st.forwardToolName, st.lookBackToolName].filter((name): name is string => name !== undefined);
 }
 
 /** Stores a forward handoff: the text code carried and the model's frontier, and the call's files on disk. Main chat and sub-agent alike. */
@@ -1241,13 +1277,8 @@ async function answerForwardTool(st: State, $: EngineInterface, e: Record<string
     record(st, $, { event: 'forward-refused', party: key, why: 'woke-early', tokens: now ?? null });
     return early;
   }
-  // Once per party: a second identical call is stored, so a model that insists never loops.
-  const reread = st.rereadNudged.has(key) ? undefined : rereadNudge(parsed.args.next, parsed.args.loadFiles);
-  if (reread !== undefined) {
-    st.rereadNudged.add(key);
-    record(st, $, { event: 'forward-reread', party: key, next: parsed.args.next.slice(0, 300) });
-    return reread;
-  }
+  // A next that opens by re-reading what the wake holds is stored, never sent back: the wake tells the woken model it holds it.
+  const reread = rereadTarget(parsed.args.next, parsed.args.loadFiles);
   const toolUseId = typeof e.tool_use_id === 'string' ? e.tool_use_id : '';
   if (toolUseId === '') say(st, $, `sub-agent-compact: the ${FORWARD_TOOL} call carries no tool_use_id; its install falls back to a summary that keeps the handoff`, 'warning');
   const session = await $.session.id();
@@ -1267,17 +1298,18 @@ async function answerForwardTool(st: State, $: EngineInterface, e: Record<string
       break;
     }
   }
-  // Numbered from the listing and this process's own count, then claimed by one process that sees the real directory:
-  // a listing can miss a call it holds, and a write over it loses that call's files.
+  // Numbered past the listing, this process's own count and the wake the context opens with, then claimed by one
+  // process that sees the real directory: a listing can miss a call it holds, and a write over it loses that call's files.
   const seqKey = `${session}:${key}`;
-  let seq = Math.max(nextSeq(existing), (st.forwardSeq.get(seqKey) ?? 0) + 1);
+  const context = await readContext($, agentId);
+  let seq = firstSeq({ listed: existing, counted: st.forwardSeq.get(seqKey), held: heldForward(context.api)?.text });
   st.forwardSeq.set(seqKey, seq);
   if (roots[0] !== undefined && saved === '') {
     const sessionDir = forwardSessionDir(roots[0], session, agentId);
     const other = roots[1] !== undefined ? forwardSessionDir(roots[1], session, agentId) : undefined;
     let failure = '';
     try {
-      const out = await $.process.run(forwardClaimArgv(sessionDir, seq, other), { timeoutMs: 15_000 });
+      const out = await $.process.run(forwardClaimArgv(sessionDir, seq, other), { ...runCwd(sessionDir, ...(other !== undefined ? [other] : [])), timeoutMs: 15_000 });
       if (out.exitCode === 0 && /^\d+$/.test(out.stdout.trim())) seq = Number(out.stdout.trim());
       else failure = `exit ${out.exitCode}${out.stderr.trim() !== '' ? `: ${out.stderr.trim()}` : ''}`;
     } catch (error) {
@@ -1290,13 +1322,21 @@ async function answerForwardTool(st: State, $: EngineInterface, e: Record<string
     st.forwardSeq.set(seqKey, Math.max(st.forwardSeq.get(seqKey) ?? 0, seq));
   }
   let dir = roots[0] !== undefined && saved === '' ? forwardDir(roots[0], session, seq, agentId) : undefined;
-  const input = await gatherForward(st, $, parsed.args, { seq, ...(dir !== undefined ? { dir } : {}), session, ...(agentId !== undefined ? { agentId } : {}) });
-  for (const problem of input.problems ?? []) record(st, $, { event: 'forward-invalid', party: key, seq, problem });
-  const { text, blocks, unloaded, skills: rendered } = renderForward(input);
+  const { notes, carried, ...gathered } = await gatherForward(st, $, parsed.args, { seq, ...(dir !== undefined ? { dir } : {}), session, ...(agentId !== undefined ? { agentId } : {}), context });
+  for (const problem of gathered.problems ?? []) record(st, $, { event: 'forward-invalid', party: key, seq, problem });
+  for (const note of notes) record(st, $, { event: 'forward-trail', party: key, seq, problem: note });
+  // The wake names where each cut field's uncut text is: the args.json this call saves, or nowhere once saving failed.
+  // The trail notes are told in this wake, beside its problems, and logged at info.
+  const input: RenderInput = { ...gathered, problems: [...(gathered.problems ?? []), ...notes], ...(dir !== undefined ? { argsFile: `${dir}/args.json` } : {}), ...(reread !== undefined ? { reread } : {}) };
   const reading = st.parties.reading(key);
-  // The skills the wake holds, for the next handoff to carry: one that failed to load is named in this one's reply and wake, never carried on.
-  const skills = input.skills.filter((s) => rendered.includes(s.name)).map((s) => ({ name: s.name, ...(s.baseDir !== undefined ? { baseDir: s.baseDir } : {}) }));
-  const base = buildRecord({ seq, session, ...(agentId !== undefined ? { agentId } : {}), dir: dir ?? '', text, blocks, users: input.users, usersDropped: input.usersDropped ?? 0, ...(input.handoffInReply === true ? { handoffInReply: true } : {}), trail: input.trail, ...(input.summary !== undefined ? { summary: input.summary } : {}), ...(reading !== undefined ? { tokensBefore: reading } : {}), trimmed: parsed.args.trimmed, skills, at: new Date().toISOString() });
+  const draft = (from: RenderInput) => {
+    const out = renderForward(from);
+    // The skills the wake holds, for the next handoff to carry: one that failed to load is named in this one's reply and wake, never carried on.
+    const skills = from.skills.filter((s) => out.skills.includes(s.name)).map((s) => ({ name: s.name, ...(s.baseDir !== undefined ? { baseDir: s.baseDir } : {}) }));
+    const base = buildRecord({ seq, session, ...(agentId !== undefined ? { agentId } : {}), dir: dir ?? '', text: out.text, blocks: out.blocks, users: from.users, usersDropped: from.usersDropped ?? 0, ...(from.handoffInReply === true ? { handoffInReply: true } : {}), trail: from.trail.filter((t) => carried.some((c) => c.path === t.path)), ...(from.summary !== undefined ? { summary: from.summary } : {}), ...(reading !== undefined ? { tokensBefore: reading } : {}), trimmed: parsed.args.trimmed, skills, at: new Date().toISOString(), loads: out.loads });
+    return { ...out, base };
+  };
+  let { text, blocks, unloaded, noted, base } = draft(input);
   if (dir !== undefined) {
     try {
       await $.fs.write(`${dir}/args.json`, JSON.stringify(raw, null, 2));
@@ -1306,12 +1346,16 @@ async function answerForwardTool(st: State, $: EngineInterface, e: Record<string
       saved = ` Not saved to disk: ${message(error)}.`;
       say(st, $, `sub-agent-compact: saving forward handoff ${seq} to ${dir} failed: ${message(error)}`);
       dir = undefined;
+      // The wake must not point at a file that was not written.
+      const { argsFile: _unsaved, ...unsaved } = input;
+      ({ text, blocks, unloaded, noted, base } = draft(unsaved));
     }
   }
+  if (reread !== undefined) record(st, $, { event: 'forward-reread', party: key, seq, outcome: noted !== undefined ? 'stored-with-note' : 'stored-not-held', next: parsed.args.next.slice(0, 300), ...(noted !== undefined ? { note: noted } : {}) });
   st.parties.armHandoff(key, { text, anchor: { toolUseId }, forward: { seq, ...(dir !== undefined ? { dir } : {}), blocks, record: base } });
   const tokens = Math.ceil(text.length / 4);
   record(st, $, { event: 'forward-stored', party: key, seq, dir, chars: text.length, tokens, blocks: blocks.map((b) => ({ name: b.name, chars: b.chars, items: b.items })) });
-  return forwardStoredText({ tokens, ...(dir !== undefined ? { dir } : {}), blocks, cuts: parsed.args.cuts ?? [], converted: parsed.args.converted ?? [], unloaded: [...unloaded, ...(parsed.args.problems ?? [])], toolName: st.forwardToolName ?? FORWARD_TOOL }) + saved;
+  return forwardStoredText({ tokens, ...(dir !== undefined ? { dir } : {}), blocks, cuts: parsed.args.cuts ?? [], converted: parsed.args.converted ?? [], unloaded: [...unloaded, ...(parsed.args.problems ?? [])], toolName: st.forwardToolName ?? FORWARD_TOOL, party: agentId !== undefined ? 'sub' : 'main' }) + saved;
 }
 
 /** At the first request of a party after its forward handoff installed: confirm each block is in what it holds, write the record with the check, and tell it of any that is not. */
@@ -1376,7 +1420,6 @@ export const register: Register = (on: On, options: PluginOptions) => {
     forwardSeq: new Map(),
     forwardInstalled: new Map(),
     forwardWoke: new Set(),
-    rereadNudged: new Set(),
     settled: new Set(),
   };
 
@@ -1461,6 +1504,8 @@ export const register: Register = (on: On, options: PluginOptions) => {
 
   // Serve the handoff and compact tools; after any other tool, carry a nudge the party is owed.
   on('tool.call', async ($, e, next) => {
+    // Work past a wake ends the woken party's guard: a later handoff is a new one, never a loop on the carried order.
+    if (worksPastWake(e.tool, ownTools(st))) st.forwardWoke.delete(typeof e.agentId === 'string' ? e.agentId : 'main');
     if (st.lookBackToolName !== undefined && e.tool === st.lookBackToolName) return { result: await answerLookBackTool(st, $, e as Record<string, unknown>) };
     await unlessAborted(observeManualLookBack(st, $, e as Record<string, unknown>), next.signal);
     // What the engine's in-flight list (taken at the last turn's end) cannot yet know of.
@@ -1670,7 +1715,7 @@ export const register: Register = (on: On, options: PluginOptions) => {
               if (wake.failed.length > 0) {
                 st.parties.notify(key, `sub-agent-compact: load_on_wake entries not loaded: ${wake.failed.join(', ')} — the installed handoff names them as NOT LOADED; load them yourself.`);
               }
-              record(st, $, { ...base, type: party.label, ...limitRow, tokens: tokens ?? null, messages: messages.length, decision: 'handoff', tail: installed.tail, siblings: installed.siblings, brief: brief !== undefined, chars: text.length, tokensAfter, tokensAfterScope: 'messages', recovered, loads: entries.length, loadsFailed: wake.failed.length, warn: line.warn });
+              record(st, $, { ...base, type: party.label, ...limitRow, tokens: tokens ?? null, messages: messages.length, decision: 'handoff', tail: installed.tail, siblings: installed.siblings, brief: brief !== undefined, chars: text.length, tokensAfter, tokensAfterScope: 'messages', recovered, ...handoffLoads(entries.length, wake.failed.length, handoff.forward?.record), warn: line.warn });
               // What the session holds is readable only once the compaction is done: the next main request checks it.
               if (handoff.forward) {
                 st.forwardInstalled.set(key, { meta: handoff.forward, text, tokensAfter, before: tokens, label: party.label });

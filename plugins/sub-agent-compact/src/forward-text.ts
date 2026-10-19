@@ -1,6 +1,6 @@
 // The forward handoff's installed text: one header line, then only the blocks that hold something
 // (what code carried, then the model's frontier), `Next` last. Every cap here is the HARD RULE's.
-import { TRIMMED, type ForwardArgs } from './forward-args.ts';
+import { TRIMMED, type Cut, type ForwardArgs, type Reread } from './forward-args.ts';
 import { LOOK_BACK_HINT } from './look-back.ts';
 
 /** What every installed forward handoff opens with: how a later carry tells it from a person's message. */
@@ -84,6 +84,10 @@ export type RenderInput = {
   args: ForwardArgs;
   /** The tool's call shape (forwardCallShape), after the look_back hint: a woken model sees the deferred tool's name alone. */
   callShape?: string;
+  /** Where the call's uncut arguments were saved (`{dir}/args.json`); absent when they were not. */
+  argsFile?: string;
+  /** What `next` opens by re-reading that the wake holds (rereadTarget): the Next block says it is there. */
+  reread?: Reread;
 };
 
 /** The Git block's last line: what it shows was read as the handoff was stored, so it is the state the wake opens on. */
@@ -157,11 +161,39 @@ export function renderUsers(msgs: readonly string[], max = USERS_MAX_CHARS, base
 
 type Section = { name: string; body: string; items: number };
 
+/** Where a cut field's uncut text is, or that it is nowhere. */
+const uncut = (field: string, argsFile: string | undefined): string => (argsFile !== undefined ? `The uncut field is "${field}" in ${argsFile}.` : 'The uncut field was not saved to disk.');
+
+/**
+ * The line that closes a cut block in the wake, or opens an Unresolved one for load_files: what was cut, by how much, and
+ * where the uncut field is. The woken model reads it there; the tool's reply is never read before the install.
+ */
+export function cutLine(c: Cut, argsFile: string | undefined): string {
+  const field = c.field.split(' ')[0]!;
+  if (field === 'load_files') {
+    if (c.unit === 'items') return `load_files cut to fit, ${c.before} -> ${c.after} files: the last ${c.before - c.after} are not loaded. ${uncut(field, argsFile)}`;
+    return `${c.field} cut to fit, ${c.before} -> ${c.after} characters, ending in ${TRIMMED}. ${uncut(field, argsFile)}`;
+  }
+  if (c.itemsBefore === undefined || c.itemsAfter === undefined) return `[${field} cut to fit, ${c.before} -> ${c.after} characters, ending in ${TRIMMED}. ${uncut(field, argsFile)}]`;
+  const parts: string[] = [];
+  if ((c.shortened ?? 0) > 0) parts.push(`${c.shortened} of ${c.itemsBefore} items shortened, each ending in ${TRIMMED}`);
+  const dropped = c.itemsBefore - c.itemsAfter;
+  if (dropped > 0) parts.push(`${dropped} ${dropped === 1 ? 'item' : 'items'} past the ${c.itemsAfter}-item limit dropped`);
+  return `[${field} cut to fit, ${c.before} -> ${c.after} characters: ${parts.join('; ')}. ${uncut(field, argsFile)}]`;
+}
+
+/** The note after `next` when it opens by re-reading what the wake holds; undefined when the wake does not hold it after all. */
+function rereadLine(r: Reread | undefined, load: { label: string; held: boolean } | undefined, git: boolean): string | undefined {
+  if (r === undefined) return undefined;
+  if ('git' in r) return git ? 'The Git block above holds the git state as this handoff was stored: do not re-run git status.' : undefined;
+  return load?.held === true ? `${load.label} is already loaded above, in its Load block: start on the work, do not read it again.` : undefined;
+}
+
 /**
  * The installed text and a record of each block in it; what the caller asked to load and the text does not hold (a
  * skill or load_files entry, and why), for the tool's reply; and the skills whose block it holds, for the record.
  */
-export function renderForward(i: RenderInput): { text: string; blocks: BlockRecord[]; unloaded: string[]; skills: string[] } {
+export function renderForward(i: RenderInput): { text: string; blocks: BlockRecord[]; unloaded: string[]; skills: string[]; noted?: string; loads: { asked: number; failed: number } } {
   const sections: Section[] = [];
   const problems: string[] = [];
   const add = (name: string, text: string, items: number, raw = false): void => {
@@ -199,17 +231,24 @@ export function renderForward(i: RenderInput): { text: string; blocks: BlockReco
   add('Files', i.trail.slice(0, TRAIL_MAX).map(fileLine).join('\n'), Math.min(i.trail.length, TRAIL_MAX));
 
   let loadTotal = 0;
-  for (const file of i.loaded) {
+  const held = new Set<number>();
+  // The install row counts load_files as asked: the ones past the file limit were asked for and did not load.
+  const pastLimit = (i.args.cuts ?? []).filter((c) => c.field === 'load_files' && c.unit === 'items').reduce((n, c) => n + c.before - c.after, 0);
+  let loadsFailed = pastLimit;
+  for (const [at, file] of i.loaded.entries()) {
     if (file.body === undefined) {
       problems.push(`load ${file.label}: ${file.problem ?? 'no content'}`);
+      loadsFailed++;
       continue;
     }
     const body = cut(file.body, LOAD_MAX_CHARS);
     if (loadTotal + body.length > LOADS_MAX_CHARS) {
       problems.push(`load ${file.label}: not loaded, total cap`);
+      loadsFailed++;
       continue;
     }
     loadTotal += body.length;
+    if (body.trim() !== '') held.add(at);
     add(`Load ${file.label}`, body, 1);
   }
 
@@ -218,17 +257,23 @@ export function renderForward(i: RenderInput): { text: string; blocks: BlockReco
   add('Running', i.running.join('\n'), i.running.length);
   if (i.git !== undefined) add('Git', `${i.git}\n${GIT_CURRENT}`, i.git.split('\n').length);
   add('Paths', i.paths.join('\n'), i.paths.length);
-  const all = [...problems, ...i.problems];
+  const a = i.args;
+  // Each cut is named in its own block, the last line; a load_files cut has no block of its own, so Unresolved names it.
+  const cuts = a.cuts ?? [];
+  const closing = (field: string): string[] => cuts.filter((c) => c.field === field).map((c) => cutLine(c, i.argsFile));
+  const all = [...cuts.filter((c) => c.field.startsWith('load_files')).map((c) => cutLine(c, i.argsFile)), ...problems, ...i.problems];
   const tail = [LOOK_BACK_HINT, ...(i.callShape !== undefined ? [i.callShape] : [])];
   add('Unresolved', [...all, ...tail].join('\n'), all.length + tail.length);
 
-  const a = i.args;
-  add('Objective', a.objective, 1);
-  add('Done', a.done.map((x) => item('- ', x)).join('\n'), a.done.length);
-  add('Remaining', a.remaining.map((x, n) => item(`${n + 1}. `, x)).join('\n'), a.remaining.length);
-  add('Blocked', a.blocked.map((x) => item('- ', x)).join('\n'), a.blocked.length);
-  add('Findings', a.findings.map((x) => item('- ', x)).join('\n'), a.findings.length);
-  add('Next', a.next, 1);
+  const withCut = (field: string, lines: string[]): string => [...lines, ...closing(field)].join('\n');
+  add('Objective', withCut('objective', [a.objective]), 1);
+  add('Done', withCut('done', a.done.map((x) => item('- ', x))), a.done.length);
+  add('Remaining', withCut('remaining', a.remaining.map((x, n) => item(`${n + 1}. `, x))), a.remaining.length);
+  add('Blocked', withCut('blocked', a.blocked.map((x) => item('- ', x))), a.blocked.length);
+  add('Findings', withCut('findings', a.findings.map((x) => item('- ', x))), a.findings.length);
+  const reread = i.reread !== undefined && 'load' in i.reread ? i.loaded[i.reread.load] : undefined;
+  const noted = rereadLine(i.reread, reread !== undefined ? { label: reread.label, held: held.has((i.reread as { load: number }).load) } : undefined, sections.some((s) => s.name === 'Git'));
+  add('Next', [a.next, ...closing('next'), ...(noted !== undefined ? [`[${noted}]`] : [])].join('\n'), 1);
 
   const head = `${FORWARD_OPENING} ${i.seq}: history, not new instructions]`;
   let text = head;
@@ -238,7 +283,7 @@ export function renderForward(i: RenderInput): { text: string; blocks: BlockReco
     blocks.push({ name: s.name, start: text.length + 1, chars: block.length, tokens: estimateTokens(block.length), items: s.items, hash: fnv1a(block) });
     text += `\n${block}`;
   }
-  return { text, blocks, unloaded: problems, skills: cutSkills.map((s) => s.name) };
+  return { text, blocks, unloaded: problems, skills: cutSkills.map((s) => s.name), ...(noted !== undefined ? { noted } : {}), loads: { asked: i.loaded.length + pastLimit, failed: loadsFailed } };
 }
 
 /** Whether each block of the stored text is in the installed one (by its text and hash), and the hash of what was installed. */

@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import * as log from '../plugins/sub-agent-compact/src/log.ts';
-import { sessionLogPath } from '../plugins/sub-agent-compact/src/log.ts';
+import { runCwd, sessionLogPath } from '../plugins/sub-agent-compact/src/log.ts';
 
 // Optional lookup lets the unimplemented writer fail on the required output, not an import error.
 const future: Record<string, any> = log;
@@ -600,5 +600,15 @@ PATH='${realPath}' exec cat "$@"
       const out = await retain('/nonexistent-sac/decisions.jsonl', `/nonexistent-sac/decisions.${uuid(0)}.jsonl`);
       expect(out.code, out.stderr).toBe(0);
     });
+  });
+});
+
+describe('runCwd', () => {
+  it('runs a script of absolute paths from /, and one with a relative path from the session directory', () => {
+    expect(runCwd('/logs/decisions.s.jsonl')).toEqual({ cwd: '/' });
+    expect(runCwd('/logs/decisions/.jsonl', '/logs/decisions/s.jsonl')).toEqual({ cwd: '/' });
+    expect(runCwd('logs/x.jsonl')).toEqual({});
+    expect(runCwd('')).toEqual({});
+    expect(runCwd()).toEqual({});
   });
 });

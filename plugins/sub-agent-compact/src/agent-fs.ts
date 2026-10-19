@@ -5,6 +5,17 @@ import type { AgentFs, AgentResolveLog } from './agents.ts';
 export const AGENT_FILE_MAX_BYTES = 4 * 1024 * 1024;
 
 /**
+ * Why a listed link is no agent file, told apart: a path the listing named a link that is no longer one has changed
+ * since it was listed; a link whose target does not resolve (it leads nowhere, or a hook withheld where it lands) is
+ * named so; any other leads to a directory or to something not a file.
+ */
+export function notFileLink(target: { kind: 'file' | 'dir' | 'other'; isLink: boolean; realPath?: string }): string {
+  if (!target.isLink) return `changed since it was listed: no longer a link, now ${target.kind === 'dir' ? 'a directory' : 'not a regular file'}`;
+  if (target.kind === 'other' && target.realPath === undefined) return 'a link that leads nowhere or does not resolve';
+  return target.kind === 'dir' ? 'a link to a directory' : 'a link to something not a regular file';
+}
+
+/**
  * The agent resolver's file access over the engine's `$.fs`: the engine lists a symbolic link as `other` with `isLink`, and a
  * linked definition is an agent like any other once `$.fs.stat` (which follows the link) shows a regular file within the limit.
  * `$.fs.read` takes a pipe or a device as it takes a file, so any other link is skipped and named through `log`, never read.
@@ -34,12 +45,12 @@ export function engineAgentFs(
         const path = `${dir}/${entry.name}`;
         let target;
         try {
-          target = await fs.stat(path);
+          target = await fs.stat(path, { resolve: true });
         } catch (error) {
           log(`sub-agent-compact: skipping ${path}: could not stat it: ${String(error)}`, path);
           continue;
         }
-        if (target.kind !== 'file') log(`sub-agent-compact: skipping ${path}: a link to something not a regular file`, path);
+        if (target.kind !== 'file') log(`sub-agent-compact: skipping ${path}: ${notFileLink(target)}`, path);
         else if (target.size > AGENT_FILE_MAX_BYTES) log(`sub-agent-compact: skipping ${path}: a link to ${target.size} bytes, over the ${AGENT_FILE_MAX_BYTES} byte limit`, path);
         else names.push(entry.name);
       }

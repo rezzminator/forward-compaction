@@ -72,8 +72,10 @@ describe('look_back readable transcript entries (R4)', () => {
   it('re-checks all terms in decoded readable text, excludes JSON-key and thinking hits, and keeps newest first', () => {
     const raw = [row(1, 'ALPHA beta old'), row(2, [text('Alpha beta new')], 'assistant'), row(3, 'alpha', 'user', { beta: 'metadata' }), row(4, [{ type: 'thinking', thinking: 'alpha beta' }], 'assistant'), '5:raw Alpha beta', row(6, 'alpha beta already held')].join('\n');
     const out = api('searchResults')(entries(raw), ['alpha', 'beta'], 6);
-    expect(out.hits).toBe(3);
-    expect(out.text.match(/^#\d+/gm)).toEqual(['#5', '#2', '#1']);
+    // Every term first, newest first; an entry whose beta sits only in a JSON key holds one of two, ranked after.
+    expect(out.hits).toBe(4);
+    expect(out.text.match(/^#\d+/gm)).toEqual(['#5', '#2', '#1', '#3']);
+    expect(out.text).toMatch(/^#3 .*\(1 of 2 terms\)$/m);
     expect(out.text).toContain('raw Alpha beta');
   });
   it('drops a hit in JSON escaping and requires a quoted phrase as a whole', () => {
@@ -95,13 +97,13 @@ describe('look_back readable transcript entries (R4)', () => {
     expect(out.hits).toBeLessThan(count);
     expect(out.hits).toBeLessThanOrEqual(20);
     expect(out.text.length).toBeLessThanOrEqual(12_000);
-    expect(out.text.endsWith(`${count - out.hits} more matches: narrow the query, or fetch one with entry`)).toBe(true);
+    expect(out.text.endsWith(`${count - out.hits} more matches: quote a phrase or use rarer words to narrow it, or fetch one with entry`)).toBe(true);
   });
   it('distinguishes zero matches and reports unrecognized transcript shapes', () => {
     const out = api('searchResults')(entries('1:{"type":"future_entry","payload":"needle"}'), ['needle'], 2);
     expect(out.hits).toBe(0);
     expect(out.text).toContain('No entry before the compaction at line 2 matches: needle');
-    expect(out.text).toContain('fewer or other words');
+    expect(out.text).toContain('Try other words.');
     expect(out.text).toContain('unsupported entry type future_entry');
     expect(out.error).toBe('1 entry could not be read: #1: unsupported entry type future_entry');
   });
@@ -199,7 +201,7 @@ describe('look_back public documentation and oversized queries', () => {
     expect(out.text.length).toBeLessThanOrEqual(12_000);
     expect(out.text).toContain('No entry before the compaction at line 10 matches:');
     expect(out.text).toContain('[query cut]');
-    expect(out.text).toContain('fewer or other words');
+    expect(out.text).toContain('Try other words.');
   });
   it('documents look_back and counted misses in tools prose and the changelog (R10)', () => {
     const readme = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'README.md'), 'utf8');
@@ -223,6 +225,37 @@ describe('look_back entry fetch (R5)', () => {
     expect(out.text).not.toContain('held');
   });
   it('reports a missing entry rather than treating it as a blank entry, as the caller\'s input', () => expect(api('entryResult')([], 4, 10)).toMatchObject({ error: expect.stringContaining('entry 4'), input: true }));
+});
+
+describe('look_back of a many-word prose query', () => {
+  // 33823038 L1890: the query kept "(KEY" and "review.md)" as terms and required all thirteen, so it found nothing.
+  const QUERY = 'herdr answer key path used for grading herdr v3 runs (KEY review-r1 review.md)';
+  it('strips the punctuation prose wraps a word in, keeps a word\'s own, and names each term once', () => {
+    expect(api('parseLookBack')({ query: QUERY }).terms).toEqual(['herdr', 'answer', 'key', 'path', 'used', 'for', 'grading', 'v3', 'runs', 'review-r1', 'review.md']);
+    expect(api('parseLookBack')({ query: '"(KEY" `x`, done.' }).terms).toEqual(['(KEY', 'x', 'done']);
+  });
+  it('finds the entry holding most of its terms, through the real search, ranked and marked as partial', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'look-back-rank-'));
+    try {
+      const file = join(directory, 'main.jsonl');
+      writeFileSync(file, [
+        JSON.stringify({ type: 'user', message: { content: 'the answer key for herdr runs is /tmp/herdr/KEY/review-r1/review.md' } }),
+        JSON.stringify({ type: 'user', message: { content: 'used for nothing' } }),
+        JSON.stringify({ type: 'user', message: { content: 'an unrelated line' } }),
+        JSON.stringify({ subtype: 'compact_boundary' }),
+      ].join('\n'));
+      const terms = api('parseLookBack')({ query: QUERY }).terms;
+      const argv = api('searchArgv')(file, 4, terms);
+      const found = entries(api('processOutput')({ exitCode: 0, stdout: execFileSync(argv[0], argv.slice(1), { encoding: 'utf8' }), stderr: '' }, 'search', true));
+      expect(found.map((e: any) => e.line)).toEqual([1, 2]);
+      const out = api('searchResults')(found, terms, 4);
+      expect(out.hits).toBe(2);
+      expect(out.text.startsWith('No entry holds every term (herdr, answer, key, path, used, for, grading, v3, runs, review-r1, review.md); these hold the most:')).toBe(true);
+      expect(out.text.match(/^#\d+/gm)).toEqual(['#1', '#2']);
+      expect(out.text).toContain('(7 of 11 terms)');
+      expect(out.text).toContain('/tmp/herdr/KEY/review-r1/review.md');
+    } finally { rmSync(directory, { recursive: true, force: true }); }
+  });
 });
 
 describe('look_back shell protocol (R3–R4)', () => {
@@ -256,7 +289,7 @@ describe('look_back shell protocol (R3–R4)', () => {
       writeFileSync(file, [JSON.stringify({ type: 'user', message: { content: 'alpha ' + special } }), JSON.stringify({ type: 'user', message: { content: 'alpha current' } }), JSON.stringify({ subtype: 'compact_boundary' })].join('\n'));
       const argv = search(file, 2, ['alpha', special]);
       expect(argv.slice(4)).toEqual([file, '2', 'alpha', special]);
-      expect(argv[2]).toContain('tail -n 200');
+      expect(argv[2]).toContain("sed -n '1,200p'");
       expect(argv[2]).not.toContain(special);
       const output = api('processOutput')({ exitCode: 0, stdout: execFileSync(argv[0], argv.slice(1), { encoding: 'utf8' }), stderr: '' }, 'search', true);
       expect(output).toContain('1:');
@@ -277,7 +310,7 @@ describe('look_back shell protocol (R3–R4)', () => {
       expect(kept.map((e: any) => e.line)).toEqual(Array.from({ length: 200 }, (_, n) => n + 51));
       const rendered = api('searchResults')(kept, terms, 251);
       expect(rendered.text.match(/^#\d+/gm)).toEqual(Array.from({ length: 20 }, (_, n) => `#${250 - n}`));
-      expect(rendered.text).toContain('180 more matches: narrow the query, or fetch one with entry');
+      expect(rendered.text).toContain('180 more matches: quote a phrase or use rarer words to narrow it, or fetch one with entry');
 
       // tail/printf succeed even if the upstream sed fails: stderr is authoritative.
       const missing = search(join(directory, 'missing.jsonl'), 2, ['needle']);

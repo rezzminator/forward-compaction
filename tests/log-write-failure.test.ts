@@ -67,7 +67,7 @@ describe('a decision log that cannot be written, through the adapter', () => {
     const cc = engine(() => new Error('EACCES: permission denied'));
     await cc.start();
     for (let i = 0; i < 4; i++) await cc.ask();
-    expect(failures(cc.shown)).toEqual(['writing the decision log for /logs/decisions.jsonl failed: EACCES: permission denied; its 1 row is kept and written with the next']);
+    expect(failures(cc.shown)).toEqual(['writing the decision log for /logs/decisions.session-1.jsonl failed: EACCES: permission denied; its 1 row is kept and written with the next']);
   });
 
   it('tells the person once when the same failure carries a varying number', async () => {
@@ -75,7 +75,7 @@ describe('a decision log that cannot be written, through the adapter', () => {
     const cc = engine(() => new Error(`EFBIG: ${size++} bytes, over the 4 MiB limit`));
     await cc.start();
     for (let i = 0; i < 4; i++) await cc.ask();
-    expect(failures(cc.shown)).toEqual(['writing the decision log for /logs/decisions.jsonl failed: EFBIG: 4194304 bytes, over the 4 MiB limit; its 1 row is kept and written with the next']);
+    expect(failures(cc.shown)).toEqual(['writing the decision log for /logs/decisions.session-1.jsonl failed: EFBIG: 4194304 bytes, over the 4 MiB limit; its 1 row is kept and written with the next']);
   });
 
   it('tells the person again when the failure is a different one, and promises no next write at session end', async () => {
@@ -88,9 +88,9 @@ describe('a decision log that cannot be written, through the adapter', () => {
     ending = true;
     await cc.end();
     expect(failures(cc.shown)).toEqual([
-      'writing the decision log for /logs/decisions.jsonl failed: EACCES: permission denied; its 1 row is kept and written with the next',
-      'writing the decision log for /logs/decisions.jsonl failed: ENOSPC: no space left; its 3 rows are kept and written with the next',
-      'writing the decision log for /logs/decisions.jsonl failed: EIO: i/o error',
+      'writing the decision log for /logs/decisions.session-1.jsonl failed: EACCES: permission denied; its 1 row is kept and written with the next',
+      'writing the decision log for /logs/decisions.session-1.jsonl failed: ENOSPC: no space left; its 3 rows are kept and written with the next',
+      'writing the decision log for /logs/decisions.session-1.jsonl failed: EIO: i/o error',
     ]);
   });
 
@@ -101,7 +101,7 @@ describe('a decision log that cannot be written, through the adapter', () => {
     await cc.end();
     const shown = failures(cc.shown);
     expect(shown).toHaveLength(2);
-    expect(shown[1]).toMatch(/^writing the decision log for \/logs\/decisions\.jsonl failed: EACCES: permission denied; its \d+ rows are kept and written with the next, and the 1 oldest held row was dropped past the 2000-row hold$/);
+    expect(shown[1]).toMatch(/^writing the decision log for \/logs\/decisions\.session-1\.jsonl failed: EACCES: permission denied; its \d+ rows are kept and written with the next, and the 1 oldest held row was dropped past the 2000-row hold$/);
     const lost = cc.shown.filter((line) => /not written to/.test(line));
     expect(lost).toHaveLength(1);
     const [, total, dropped] = /^(\d+) decision rows were not written to \/logs\/decisions\.session-1\.jsonl \((\d+) of them dropped past the 2000-row hold\): EACCES: permission denied$/.exec(lost[0]!) ?? [];

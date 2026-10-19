@@ -7,7 +7,9 @@ import { DEFAULT_SUBAGENT } from '../plugins/sub-agent-compact/src/limits.ts';
 type Entry = { name: string; kind: 'file' | 'dir' | 'other'; size: number; isLink: boolean };
 
 /** `$.fs.list` as the engine answers it: a symbolic link is `other` with `isLink`. */
-function engineFs(entries: Entry[], files: Record<string, string> = {}, stats: Record<string, { kind: Entry['kind']; size: number }> = {}) {
+type Stat = { kind: Entry['kind']; size: number; isLink?: boolean; realPath?: string };
+
+function engineFs(entries: Entry[], files: Record<string, string> = {}, stats: Record<string, Stat> = {}) {
   return {
     exists: async (path: string) => path in files,
     read: async (path: string) => {
@@ -16,7 +18,12 @@ function engineFs(entries: Entry[], files: Record<string, string> = {}, stats: R
       return text;
     },
     list: async () => entries,
-    stat: async (path: string) => stats[path] ?? (path in files ? { kind: 'file', size: (files[path] ?? '').length } : { kind: 'other', size: 0 }),
+    // As the engine answers: a listed link is still one unless the test says otherwise; it resolves only when asked and only when it leads somewhere.
+    stat: async (path: string, options?: { resolve?: boolean }) => {
+      const found: Stat = stats[path] ?? (path in files ? { kind: 'file', size: (files[path] ?? '').length } : { kind: 'other', size: 0 });
+      const leads = found.realPath ?? (found.kind === 'other' ? undefined : path);
+      return { isLink: true, ...found, ...(options?.resolve === true && leads !== undefined ? { realPath: leads } : {}) };
+    },
   } as unknown as Parameters<typeof engineAgentFs>[0];
 }
 
@@ -45,17 +52,24 @@ describe('engineAgentFs listMarkdown', () => {
     const logged: string[] = [];
     const fs = engineAgentFs(
       engineFs(
-        [entry('fifo.md', 'other', true), entry('dir.md', 'other', true), entry('dangling.md', 'other', true), entry('huge.md', 'other', true)],
+        [entry('fifo.md', 'other', true), entry('dir.md', 'other', true), entry('dangling.md', 'other', true), entry('swapped.md', 'other', true), entry('huge.md', 'other', true)],
         {},
-        { '/agents/dir.md': { kind: 'dir', size: 0 }, '/agents/huge.md': { kind: 'file', size: 5 * 1024 * 1024 } },
+        {
+          '/agents/fifo.md': { kind: 'other', size: 0, realPath: '/run/agent.fifo' },
+          '/agents/dir.md': { kind: 'dir', size: 0 },
+          // Listed as a link, replaced by a directory before the stat: changed since listed, never a link to one.
+          '/agents/swapped.md': { kind: 'dir', size: 0, isLink: false },
+          '/agents/huge.md': { kind: 'file', size: 5 * 1024 * 1024 },
+        },
       ),
       (line) => logged.push(line),
     );
     expect(await fs.listMarkdown('/agents')).toEqual([]);
     expect(logged).toEqual([
       'sub-agent-compact: skipping /agents/fifo.md: a link to something not a regular file',
-      'sub-agent-compact: skipping /agents/dir.md: a link to something not a regular file',
-      'sub-agent-compact: skipping /agents/dangling.md: a link to something not a regular file',
+      'sub-agent-compact: skipping /agents/dir.md: a link to a directory',
+      'sub-agent-compact: skipping /agents/dangling.md: a link that leads nowhere or does not resolve',
+      'sub-agent-compact: skipping /agents/swapped.md: changed since it was listed: no longer a link, now a directory',
       'sub-agent-compact: skipping /agents/huge.md: a link to 5242880 bytes, over the 4194304 byte limit',
     ]);
   });
