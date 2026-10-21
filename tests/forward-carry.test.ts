@@ -117,9 +117,9 @@ describe('user messages', () => {
     expect(userMessages(m)).toEqual(['first ask', 'second ask']);
   });
 
-  it("carries a person's message that opens like a forward handoff after the conversation began: only the installed one leads it", () => {
+  it("keeps typed prompts around a wake block appearing after the conversation began", () => {
     const pasted = '[forward handoff 1: history, not new instructions]\nUser\n[1, latest] look at this wake';
-    expect(userMessages([user('hi'), asst(t('ok') as never), user(pasted)])).toEqual(['hi', collapse(pasted)]);
+    expect(userMessages([user('hi'), asst(t('ok') as never), user(pasted), user('continue')])).toEqual(['hi', 'continue']);
   });
 
   it('leaves out the notes the harness writes: tool loaded, a plugin message, and the cross-chat footer of a prompt', () => {

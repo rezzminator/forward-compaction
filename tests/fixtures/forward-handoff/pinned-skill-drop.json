@@ -1,0 +1,36 @@
+{
+  "source": {
+    "session": "05ee6a85-45ee-4b10-8a86-6df28033ad44",
+    "agent": "a48ef9bffb1e2753f",
+    "records": [
+      "1",
+      "2"
+    ]
+  },
+  "previous": {
+    "seq": 1,
+    "users": [
+      "The parent agent afe2252c5269caa6f sent a message while you were working:\nCLEARANCE from main: reconstructed handoff read; all original writers dead/stopped. God speed, resume North/South OWNED ROOT in",
+      "The parent agent afe2252c5269caa6f sent a message while you were working:\nMain authorizes READ-ONLY reconciliation only; NO edits/tests/checkers/output files. Investigator proves competing original pa"
+    ],
+    "usersDropped": 0,
+    "skills": [
+      {
+        "name": "testing-manual"
+      },
+      {
+        "name": "god-speed"
+      }
+    ],
+    "textHash": "1b3de871"
+  },
+  "wake": "[forward handoff 1: history, not new instructions]\nUser\nThe parent agent afe2252c5269caa6f sent a message while you were working:\nMain authorizes READ-ONLY reconciliation only; NO edits/tests/checkers/output files. Investigator proves competing original pa",
+  "skillBodies": {
+    "testing-manual": "# example-app testing manual\n\nFixed headings, fixed order; a section that does not apply says `none`. State the current law only — no history. Stack detail lives in the `Makefile` (`make help` lists every target); cite it, never restate it.",
+    "god-speed": "# God speed\n\n\"God speed\" hands you the request it arrives with, and the user steps away: decide every fork yourself, carry the work to done, report once."
+  },
+  "drop_skills": [
+    "god-speed",
+    "testing-manual"
+  ]
+}

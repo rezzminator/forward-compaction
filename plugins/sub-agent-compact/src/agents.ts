@@ -1,5 +1,5 @@
-import { frontmatterList, parseFrontmatter } from './frontmatter.ts';
-import { frontmatterKey, readPolicy, type Policy } from './limits.ts';
+import { frontmatterList, nestedFrontmatterValue, parseFrontmatter } from './frontmatter.ts';
+import { DEFAULT_SKILL_POLICY, frontmatterKey, readPolicy, readSkillPolicy, type Policy, type SkillPolicy } from './limits.ts';
 
 /** A resolver diagnostic, keyed by its path (or plugin identity before its directory is known). */
 export type AgentResolveLog = (line: string, path: string) => void;
@@ -12,6 +12,9 @@ export type AgentFs = {
 };
 
 export type AgentPolicy = {
+  skills?: SkillPolicy;
+  skillSource?: string;
+  skillProblems?: string[];
   policy: Policy;
   /** The definition file that set at least one compaction key, or `default`. */
   source: string;
@@ -67,7 +70,7 @@ export class AgentPolicies {
     private readonly fallback: Policy,
     private readonly fs: AgentFs,
     private readonly log: AgentResolveLog,
-    options: { pluginDirs?: (plugin: string) => Promise<string[]>; now?: () => number } = {},
+    private readonly options: { pluginDirs?: (plugin: string) => Promise<string[]>; now?: () => number; skills?: SkillPolicy } = {},
   ) {
     this.pluginDirs = options.pluginDirs ?? (async () => []);
     this.now = options.now ?? (() => Date.now());
@@ -131,7 +134,15 @@ export class AgentPolicies {
   private fromDefinition(type: string, path: string, { fields, text }: Definition): AgentPolicy {
     const tools = frontmatterList(text, 'tools');
     const disallowedTools = frontmatterList(text, 'disallowedTools');
-    return { ...this.fromFields(type, path, fields), ...(tools ? { tools } : {}), ...(disallowedTools ? { disallowedTools } : {}) };
+    const pinSkills = nestedFrontmatterValue(text, 'autoCompact.pinSkills');
+    const dropSkills = nestedFrontmatterValue(text, 'autoCompact.dropSkills');
+    const skillProblems: string[] = [];
+    const skills = readSkillPolicy({ pinSkills, dropSkills }, this.options.skills ?? DEFAULT_SKILL_POLICY, (field, error) => {
+      const line = `sub-agent-compact: ${path} ${field} for ${type} is invalid (${error}); using the central default`;
+      skillProblems.push(line);
+    });
+    if (skillProblems.length > 0) this.log(skillProblems.join('; '), path);
+    return { ...this.fromFields(type, path, fields), ...(pinSkills !== undefined || dropSkills !== undefined ? { skills, skillSource: `${path} over the central policy`, ...(skillProblems.length > 0 ? { skillProblems } : {}) } : {}), ...(tools ? { tools } : {}), ...(disallowedTools ? { disallowedTools } : {}) };
   }
 
   private fromFields(type: string, path: string, fields: Record<string, string>): AgentPolicy {

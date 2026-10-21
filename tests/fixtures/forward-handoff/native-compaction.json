@@ -1,0 +1,55 @@
+{
+  "source": {
+    "session": "17483962-a39f-4ad2-a243-df614a83dde4",
+    "lines": [
+      9610,
+      9614
+    ],
+    "records": [
+      "36-44",
+      "45"
+    ]
+  },
+  "previous": {
+    "seq": 44,
+    "users": [
+      "Wait.. I'll give you a reload after push",
+      "Continue, god speed"
+    ],
+    "usersDropped": 25,
+    "skills": [
+      {
+        "name": "dude"
+      },
+      {
+        "name": "pfm:release"
+      },
+      {
+        "name": "god-speed"
+      }
+    ],
+    "textHash": "f1c29023"
+  },
+  "wake": "[forward handoff 44: history, not new instructions]\nUser\nContinue, god speed",
+  "skillBodies": {
+    "dude": "# Dude\n\nThe user typed this instead of swearing at you. Read it as a stone to the head: you have just cost them time. Across a thousand angry messages in one real fleet, the anger tracked lost time (hours idle, a night burned, a day of merges), almost never the bug. Each reply after `/dude` is judged by how many minutes it saves them.",
+    "pfm:release": "# PFM Release\n\nYou hold the release's loop: one `releaser` phase at a time, every fix a phase returns, the ledger. The phases' protocols live in the `releaser` agent; the note grammar in `docs/RELEASE.md` § Release notes; the design in `docs/design/release/`.",
+    "god-speed": "# God speed\n\n\"God speed\" hands you the request it arrives with, and the user steps away: decide every fork yourself, carry the work to done, report once."
+  },
+  "summary": "This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.",
+  "boundary": {
+    "type": "system",
+    "subtype": "compact_boundary"
+  },
+  "oldWakes": [
+    "[forward handoff 36: history, not new instructions]\nUser\nAnd another thing, in the same worktree.\n\nAudit the WHOLE statusline, make sure it's dual usage, it's made for Claude, make it also work perfectly for GPT, like here:\n❯ ● 0/17│▱▱▱▱▱▱▱▱ 7% 70.3K/1.0M Σ",
+    "[forward handoff 37: history, not new instructions]\nUser\nAnd another thing, in the same worktree.\n\nAudit the WHOLE statusline, make sure it's dual usage, it's made for Claude, make it also work perfectly for GPT, like here:\n❯ ● 0/17│▱▱▱▱▱▱▱▱ 7% 70.3K/1.0M Σ",
+    "[forward handoff 38: history, not new instructions]\nUser\nAnd another thing, in the same worktree.\n\nAudit the WHOLE statusline, make sure it's dual usage, it's made for Claude, make it also work perfectly for GPT, like here:\n❯ ● 0/17│▱▱▱▱▱▱▱▱ 7% 70.3K/1.0M Σ",
+    "[forward handoff 39: history, not new instructions]\nUser\nAnd another thing, in the same worktree.\n\nAudit the WHOLE statusline, make sure it's dual usage, it's made for Claude, make it also work perfectly for GPT, like here:\n❯ ● 0/17│▱▱▱▱▱▱▱▱ 7% 70.3K/1.0M Σ",
+    "[forward handoff 40: history, not new instructions]\nUser\nAnd another thing, in the same worktree.\n\nAudit the WHOLE statusline, make sure it's dual usage, it's made for Claude, make it also work perfectly for GPT, like here:\n❯ ● 0/17│▱▱▱▱▱▱▱▱ 7% 70.3K/1.0M Σ",
+    "[forward handoff 41: history, not new instructions]\nUser\nAnd another thing, in the same worktree.\n\nAudit the WHOLE statusline, make sure it's dual usage, it's made for Claude, make it also work perfectly for GPT, like here:\n❯ ● 0/17│▱▱▱▱▱▱▱▱ 7% 70.3K/1.0M Σ",
+    "[forward handoff 42: history, not new instructions]\nUser\n/dude commit it and push forward to release god damn it",
+    "[forward handoff 43: history, not new instructions]\nUser\n/dude commit it and push forward to release god damn it",
+    "[forward handoff 44: history, not new instructions]\nUser\nContinue, god speed"
+  ]
+}

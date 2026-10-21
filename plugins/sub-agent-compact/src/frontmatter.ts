@@ -38,6 +38,8 @@ function scalar(raw: string): string {
  * empty value or no frontmatter → undefined.
  */
 export function frontmatterList(text: string, key: string): string[] | undefined {
+  const nested = nestedFrontmatterValue(text, key);
+  if (key.includes('.')) return Array.isArray(nested) && nested.every((v) => typeof v === 'string') ? nested : undefined;
   const lines = text.replace(/^﻿/, '').split(/\r?\n/);
   if (lines[0]?.trim() !== '---') return undefined;
   const end = lines.findIndex((line, i) => i > 0 && line.trim() === '---');
@@ -59,6 +61,41 @@ export function frontmatterList(text: string, key: string): string[] | undefined
     }
     const list = items.map((item) => scalar(item)).filter((item) => item !== '');
     return list.length > 0 ? list : undefined;
+  }
+  return undefined;
+}
+
+/** A nested list's raw value, so policy validation can distinguish absent, empty and malformed. */
+export function nestedFrontmatterValue(text: string, key: string): unknown {
+  const [parent, child] = key.split('.');
+  if (child === undefined) return undefined;
+  const lines = text.replace(/^\uFEFF/, '').split(/\r?\n/);
+  if (lines[0]?.trim() !== '---') return undefined;
+  const end = lines.findIndex((line, i) => i > 0 && line.trim() === '---');
+  if (end < 0) return undefined;
+  let under = false;
+  const valueOf = (raw: string): unknown => {
+    const s = scalar(raw);
+    if (/^\d+(?:\.\d+)?$/.test(raw.trim())) return Number(raw.trim());
+    return /^(?:true|false|null)$/.test(raw.trim()) ? JSON.parse(raw.trim()) : s;
+  };
+  for (let i = 1; i < end; i++) {
+    const line = lines[i]!;
+    if (line.trim() === '' || line.trimStart().startsWith('#')) continue;
+    if (/^\S/.test(line)) under = line.replace(/\s+#.*$/, '').trim() === `${parent}:`;
+    const match = /^\s+([\w-]+):\s*(.*)$/.exec(line);
+    if (!under || match?.[1] !== child) continue;
+    const raw = match[2]!.replace(/\s+#.*$/, '').trim();
+    if (raw.startsWith('[') && raw.endsWith(']')) return raw.slice(1, -1).trim() === '' ? [] : raw.slice(1, -1).split(',').map(valueOf);
+    if (raw !== '') return valueOf(raw);
+    const items: unknown[] = [];
+    for (let j = i + 1; j < end; j++) {
+      if (lines[j]!.trim() === '' || lines[j]!.trimStart().startsWith('#')) continue;
+      const item = /^\s+-\s+(.*)$/.exec(lines[j]!);
+      if (!item) break;
+      items.push(valueOf(item[1]!));
+    }
+    return items.length > 0 ? items : '';
   }
   return undefined;
 }

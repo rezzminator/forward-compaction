@@ -59,7 +59,7 @@ describe('resolveOptions', () => {
   });
 
   it('defaults when nothing is set', () => {
-    expect(resolveOptions()).toEqual({ main: DEFAULT_MAIN, subagent: DEFAULT_SUBAGENT, keepBrief: true, compactTool: true, handoffTool: false, forwardHandoffTool: false, agentDirs: [], errors: [] });
+    expect(resolveOptions()).toEqual({ main: DEFAULT_MAIN, subagent: DEFAULT_SUBAGENT, skills: { pinSkills: [], dropSkills: [] }, keepBrief: true, compactTool: true, handoffTool: false, forwardHandoffTool: false, agentDirs: [], errors: [] });
     expect(resolveOptions({ vars: {} })).toEqual(resolveOptions());
     expect(DEFAULT_KEEP_BRIEF).toBe(true);
     expect(DEFAULT_MAIN).toEqual({ enabled: true, autoCompact: { percent: 60 }, nudgeStart: { percent: 20 }, nudgeEvery: { percent: 10 } });
@@ -85,6 +85,7 @@ describe('resolveOptions', () => {
     expect(options).toEqual({
       main: { enabled: false, autoCompact: { tokens: 600000 }, nudgeStart: { percent: 25 }, nudgeEvery: { tokens: 50000 } },
       subagent: { enabled: true, autoCompact: { tokens: 90000 }, nudgeStart: { tokens: 40000 }, nudgeEvery: { percent: 5 } },
+      skills: { pinSkills: [], dropSkills: [] },
       keepBrief: false,
       compactTool: false,
       handoffTool: true,
@@ -177,6 +178,8 @@ describe('resolveOptions: one variable per option', () => {
     { option: 'compactTool', name: 'SUB_AGENT_COMPACT_COMPACT_TOOL', envValue: 'false', bad: 'off', pick: (r) => r.compactTool, fromEnv: false, fromDefault: true },
     { option: 'agentDirs', name: 'SUB_AGENT_COMPACT_AGENT_DIRS', envValue: '/a, /b/c ,', pick: (r) => r.agentDirs, fromEnv: ['/a', '/b/c'], fromDefault: [] },
     { option: 'logFile', name: 'SUB_AGENT_COMPACT_LOG_FILE', envValue: ' /from/env.jsonl ', bad: 'relative.jsonl', pick: (r) => r.logFile, fromEnv: '/from/env.jsonl', fromDefault: undefined },
+    { option: 'pinSkills', name: 'SUB_AGENT_COMPACT_PIN_SKILLS', envValue: 'god-speed, review', bad: '../private', pick: (r) => r.skills.pinSkills, fromEnv: ['god-speed', 'review'], fromDefault: [] },
+    { option: 'dropSkills', name: 'SUB_AGENT_COMPACT_DROP_SKILLS', envValue: 'review', bad: '../private', pick: (r) => r.skills.dropSkills, fromEnv: ['review'], fromDefault: [] },
   ];
 
   it('has a row for every variable the plugin reads', () => {

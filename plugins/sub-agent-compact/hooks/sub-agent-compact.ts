@@ -3,8 +3,8 @@ import { bounded, unlessAborted } from '../src/bounded.ts';
 import { LOOK_BACK_TOOL, LOOK_BACK_DESCRIPTION, LOOK_BACK_INPUT_SCHEMA, parseLookBack, boundaryArgv, boundaryLine, searchArgv, entryArgv, namesArgv, processOutput, parseEntries, toolNames, resultIds, searchResults, entryResult, manualTranscriptCall, lookBackNotice, type LookBackResult } from '../src/look-back.ts';
 import { servedOptions, toolsToRegister } from '../src/register.ts';
 import { askedToCompact, FORWARD_INPUT_SCHEMA, FORWARD_TOOL, FORWARD_TOOL_DESCRIPTION, forwardCallShape, forwardNudgeText, forwardRefusal, forwardStoredText, parseForwardArgs, rereadTarget, worksPastWake, type ForwardArgs } from '../src/forward-args.ts';
-import { absPath, fileTrail, handoffInReply, findTranscriptArgv, firstFound, gitBlock, gitLine, GIT_REPOS, heldForward, outsideRepository, opensWithSummary, openingSummary, summaryKnowledge, outline, OUTLINE_FILE_MAX_BYTES, settleTrail, priorCalls, priorPrompts, mergeTrail, chainSkills, promptsSinceWake, invocationPaths, invocations, parseLineRanges, parsePorcelain, planAndTasks, runningWork, sliceFile, trailDirs, userMessages, type ApiMsg, type LiveWork, type TrailEntry, type TrailMiss } from '../src/forward-carry.ts';
-import { buildRecord, carriedFrom, firstSeq, forwardClaimArgv, forwardDir, forwardRoots, forwardSessionDir, dropSkillProblem, missingRecordProblem, ownCall, previousDir, recoverForward, savedOf, withInstall, handoffLoads } from '../src/forward-record.ts';
+import { absPath, fileTrail, handoffInReply, findTranscriptArgv, firstFound, gitBlock, gitLine, GIT_REPOS, heldForward, outsideRepository, opensWithSummary, openingSummary, summaryKnowledge, outline, OUTLINE_FILE_MAX_BYTES, settleTrail, priorCalls, priorPrompts, queuedPrompts, mergeQueuedUsers, skillPolicyProblems, mergeTrail, chainSkills, promptsSinceWake, invocationPaths, invocations, parseLineRanges, parsePorcelain, planAndTasks, runningWork, sliceFile, trailDirs, userMessages, type ApiMsg, type LiveWork, type TrailEntry, type TrailMiss } from '../src/forward-carry.ts';
+import { buildRecord, carriedFrom, latestCarried, firstSeq, forwardClaimArgv, forwardDir, forwardRoots, forwardSessionDir, dropSkillProblem, missingRecordProblem, ownCall, previousDir, recoverForward, savedOf, withInstall, handoffLoads } from '../src/forward-record.ts';
 import { chainUsers, forwardInstalledLine, installCheck, renderForward, TRAIL_MAX, type BlockRecord, type RenderInput } from '../src/forward-text.ts';
 import { BRIEF_MAX_TOKENS, reseatBrief, seatedBrief } from '../src/brief.ts';
 import { engineAgentFs } from '../src/agent-fs.ts';
@@ -380,6 +380,8 @@ async function readOptionEnv($: EngineInterface): Promise<Pick<OptionEnvironment
     readOptionVar('SUB_AGENT_COMPACT_COMPACT_TOOL', () => $.env.get('SUB_AGENT_COMPACT_COMPACT_TOOL')),
     readOptionVar('SUB_AGENT_COMPACT_AGENT_DIRS', () => $.env.get('SUB_AGENT_COMPACT_AGENT_DIRS')),
     readOptionVar('SUB_AGENT_COMPACT_LOG_FILE', () => $.env.get('SUB_AGENT_COMPACT_LOG_FILE')),
+    readOptionVar('SUB_AGENT_COMPACT_PIN_SKILLS', () => $.env.get('SUB_AGENT_COMPACT_PIN_SKILLS')),
+    readOptionVar('SUB_AGENT_COMPACT_DROP_SKILLS', () => $.env.get('SUB_AGENT_COMPACT_DROP_SKILLS')),
   ]);
   return { vars, readErrors };
 }
@@ -426,7 +428,10 @@ function start(st: State, $: EngineInterface): Promise<void> {
     else show($, 'plugin log off: no PLUGIN_LOG_DIR and no HOME');
     const earlyRows = st.pluginRows.splice(0);
     if (st.pluginLog !== undefined) for (const fields of earlyRows) plog(st, $, fields);
-    st.config = servedOptions(resolveOptions({ pluginLogDir: override, ...(await readOptionEnv($)) }));
+    let skillPolicy: unknown;
+    try { skillPolicy = (await $.settings.read()).autoCompact; }
+    catch (error) { early.push({ line: `sub-agent-compact: reading settings.json autoCompact failed: ${message(error)}; using empty skill lists`, level: 'error' }); }
+    st.config = servedOptions(resolveOptions({ pluginLogDir: override, skillPolicy, ...(await readOptionEnv($)) }));
     settleConfig(st, $);
     for (const { line, level } of early) say(st, $, line, level);
     for (const line of st.config.errors) {
@@ -469,7 +474,7 @@ function start(st: State, $: EngineInterface): Promise<void> {
       engineAgentFs({ exists: (path) => $.fs.exists(path), read: (path) => $.fs.read(path), list: (dir) => $.fs.list(dir), stat: (path) => $.fs.stat(path) }, resolveLog),
       resolveLog,
       // A plugin's agent type (`plugin:agent`) is defined in that plugin's install, as installed_plugins.json names it.
-      { pluginDirs: async (plugin) => { const path = (await wakeRoots(st, $)).plugins[plugin]; return path ? [`${path}/agents`] : []; } },
+      { skills: st.config.skills, pluginDirs: async (plugin) => { const path = (await wakeRoots(st, $)).plugins[plugin]; return path ? [`${path}/agents`] : []; } },
     );
     if (!st.config.handoffTool && !st.config.compactTool && !st.config.forwardHandoffTool) {
       warnOnce(st, $, 'no-tools', 'sub-agent-compact: no self-compaction tool is on (SUB_AGENT_COMPACT_HANDOFF_TOOL, SUB_AGENT_COMPACT_COMPACT_TOOL and SUB_AGENT_COMPACT_FORWARD_HANDOFF_TOOL are all off); parties are nudged by nobody and only compacted at their limits');
@@ -1055,11 +1060,11 @@ async function gatherForward(st: State, $: EngineInterface, args: ForwardArgs, a
   }
 
   // The prompts: those an earlier handoff carried (from its record, never its text), then those written since it.
-  // The held handoff is the newest text a record of this party holds, else the one an install put at the start; a paste elsewhere is a person's words.
+  // Hash-match a held wake; native compaction can leave only the record on disk.
   const unreadable: string[] = [];
   const callRoots = forwardRoots({ home: st.home, configDir: st.configDir });
   const newest = heldForward(api, () => true);
-  const records = newest !== undefined ? await earlierRecords(st, $, at, unreadable) : [];
+  const records = await earlierRecords(st, $, at, unreadable);
   // A listing can miss a call it holds: the record a held text names as saved is read there, when that call is this party's own.
   const looked = callRoots.map((root) => forwardSessionDir(root, at.session, at.agentId));
   const others: string[] = [];
@@ -1077,7 +1082,11 @@ async function gatherForward(st: State, $: EngineInterface, args: ForwardArgs, a
     }
   }
   const held = heldForward(api, (t) => carriedFrom(records, t) !== undefined);
-  const before = held?.recorded ? carriedFrom(records, held.text) : undefined;
+  const recovered = held === undefined && opensWithSummary(api) ? latestCarried(records) : undefined;
+  const before = held?.recorded ? carriedFrom(records, held.text) : recovered?.carry;
+  if (recovered !== undefined) problems.push(`earlier handoff ${recovered.seq}: no wake held; recovered skills and history from its latest record`);
+  if (held === undefined && recovered === undefined && opensWithSummary(api)) problems.push('skills before native compaction: no readable earlier handoff record; only skills invoked since can be carried');
+  if (held === undefined && recovered === undefined && unreadable.length > 0) problems.push(`earlier handoff: carry recovery failed (${unreadable.join('; ')})`);
   if (held !== undefined && !held.recorded) {
     const number = /^\[forward handoff (\d+)/.exec(held.text)?.[1];
     const saved = savedOf(held.text);
@@ -1109,7 +1118,7 @@ async function gatherForward(st: State, $: EngineInterface, args: ForwardArgs, a
         // Tool results are user entries too: only the entries without one hold prompts.
         const users = await $.process.run(['sh', '-c', 'grep -a -n -e \'"type":"user"\' -e \'"type":"queued_command"\' "$1" | grep -v \'"tool_use_id"\'', 'sh', transcript], { ...runCwd(transcript), timeoutMs: 30_000 });
         if (users.exitCode !== 0 && users.exitCode !== 1) problems.push(`prompts before the summary: reading the transcript failed (${failure(users)})`);
-        else prior = { users: userMessages(priorPrompts(users.stdout, last), carry), dropped: 0 };
+        else prior = { users: userMessages(priorPrompts(users.stdout, last, recovered?.seq), carry), dropped: 0 };
         // The files touched before it: the calls' lines up to the boundary, the newest kept.
         const calls = await $.process.run(['sh', '-c', CALLS_BEFORE, 'sh', transcript, String(last)], { ...runCwd(transcript), timeoutMs: 30_000 });
         if (calls.exitCode !== 0 || calls.stderr.trim() !== '') problems.push(`files before the summary: reading the transcript failed (${failure(calls)})`);
@@ -1121,11 +1130,16 @@ async function gatherForward(st: State, $: EngineInterface, args: ForwardArgs, a
   }
   // The skills: those the earlier wake carried (its record says which), then those invoked since, minus drop_skills.
   // A skill a wake installed is no invocation afterwards: from the invocations alone, a chained handoff loses it.
+  const party = await partyOf(st, $, at.agentId);
+  const resolved = at.agentId !== undefined ? await st.policies!.resolve(party.label) : undefined;
+  const skillPolicy = resolved?.skills ?? st.config.skills;
+  const skillSource = resolved?.skillSource ?? st.config.skillSource ?? 'settings.json';
+  problems.push(...(resolved?.skillProblems ?? []), ...skillPolicyProblems(skillPolicy, args.dropSkills, skillSource));
   const invoked = invocations(api);
   for (const name of args.dropSkills) if (!invoked.some((x) => x.name === name) && !(before?.skills ?? []).some((x) => x.name === name)) problems.push(dropSkillProblem(name, read));
   const roots = await wakeRoots(st, $);
   const skills: RenderInput['skills'] = [];
-  for (const inv of chainSkills(before?.skills, invoked, args.dropSkills)) {
+  for (const inv of chainSkills(before?.skills, invoked, args.dropSkills, skillPolicy)) {
     const paths = invocationPaths(inv, roots);
     const dir = inv.baseDir !== undefined ? { baseDir: inv.baseDir } : {};
     let found: RenderInput['skills'][number] = { name: inv.name, ...dir, problem: paths.length === 0 ? 'not a skill or command name' : `no file (tried ${paths.length} paths)` };
@@ -1137,10 +1151,22 @@ async function gatherForward(st: State, $: EngineInterface, args: ForwardArgs, a
       }
       if (read.problem !== 'not found') found = { name: inv.name, ...dir, problem: `${path} ${read.problem}` };
     }
-    skills.push(found);
+    skills.push({ ...found, pinned: skillPolicy.pinSkills.includes(inv.name) });
   }
   const since = held !== undefined ? api.slice(held.index + 1) : api;
-  const chain = chainUsers(before ?? prior, userMessages(since, carry), handoffInReply(since, carry));
+  let queue: ReturnType<typeof queuedPrompts> = { users: [], through: before?.queueCursor ?? 0, afterWake: false };
+  if (transcript !== undefined) {
+    try {
+      const out = await $.process.run(['grep', '-a', '-n', '-e', '"type":"queued_command"', '-e', '"type":"queue-operation"', '-e', '"type":"user"', transcript], { ...runCwd(transcript), timeoutMs: 30_000 });
+      if ((out.exitCode !== 0 && out.exitCode !== 1) || out.stderr.trim() !== '') problems.push(`queued prompts: reading the transcript failed (${failure(out)})`);
+      else queue = queuedPrompts(out.stdout, { parent: carry.parent, afterLine: before?.queueCursor, wake: held?.text ?? (recovered !== undefined ? `[forward handoff ${recovered.seq}:` : undefined) });
+    } catch (error) { problems.push(`queued prompts: reading the transcript failed (${message(error)})`); }
+  }
+  // A latest saved record need not have installed; reconcile its snapshot with
+  // recovered transcript history before adding truly new API/queue deliveries.
+  const recoveredUsers = before !== undefined ? mergeQueuedUsers(before.users, [], prior?.users ?? []) : [];
+  const freshUsers = mergeQueuedUsers((before ?? prior)?.users ?? [], [...recoveredUsers, ...userMessages(since, { ...carry, delivered: queue.delivered })], queue.users, before?.queueCursor !== undefined || queue.afterWake, queue.order);
+  const chain = chainUsers(before ?? prior, freshUsers, queue.users.length === 0 && handoffInReply(since, carry));
   // What Claude Code's own summary knew: from the one the context opens with, else from the earlier handoff's record.
   let summary = before?.summary;
   const opening = held === undefined ? openingSummary(api) : undefined;
@@ -1149,7 +1175,7 @@ async function gatherForward(st: State, $: EngineInterface, args: ForwardArgs, a
     if (summary === undefined) problems.push("earlier summary: none of its sections found (concepts, files, errors, problem solving), so it is not carried");
   }
   // The files: those touched since, then those the earlier handoff or the transcript before the summary carried.
-  const older = before !== undefined ? before.trail : priorTrail;
+  const older = before !== undefined ? mergeTrail(before.trail, priorTrail ?? [], TRAIL_MAX) : priorTrail;
   const fresh = fileTrail(since, { cwd, home: st.home ?? '', max: TRAIL_MAX });
   const kept = nested.filter((p) => !mergeTrail(older, fresh, TRAIL_MAX).some((t) => t.path === p)).slice(-5);
   const merged = [...mergeTrail(older, fresh, TRAIL_MAX - kept.length), ...kept.map((path) => ({ tag: 'R' as const, path }))];
@@ -1220,7 +1246,7 @@ async function gatherForward(st: State, $: EngineInterface, args: ForwardArgs, a
   const git = gitBlock(repos, { ...('top' in own ? { own: own.top } : {}), more: tops.slice(GIT_REPOS) });
   const live = at.agentId === undefined && st.live !== undefined ? { tasks: st.live.tasks, crons: st.live.crons, started: st.live.started, now: Date.now() } : undefined;
 
-  return { notes: settled.notes, carried: settled.carried, seq: at.seq, users: chain.users, usersDropped: chain.dropped, ...(chain.inReply ? { handoffInReply: true } : {}), ...(summary !== undefined ? { summary } : {}), skills, trail, outlines, loaded, ...(plan !== undefined ? { plan } : {}), tasks: work.tasks, running: runningWork(api, live), ...(git !== undefined ? { git } : {}), paths: paths.length > 0 ? [paths.join(' · ')] : [], problems, args, callShape: forwardCallShape(st.forwardToolName ?? FORWARD_TOOL) };
+  return { notes: settled.notes, carried: settled.carried, seq: at.seq, ...(queue.through > 0 ? { queueCursor: queue.through } : {}), users: chain.users, usersDropped: chain.dropped, ...(chain.inReply ? { handoffInReply: true } : {}), ...(summary !== undefined ? { summary } : {}), skills, trail, outlines, loaded, ...(plan !== undefined ? { plan } : {}), tasks: work.tasks, running: runningWork(api, live), ...(git !== undefined ? { git } : {}), paths: paths.length > 0 ? [paths.join(' · ')] : [], problems, args, callShape: forwardCallShape(st.forwardToolName ?? FORWARD_TOOL) };
 }
 
 /**
@@ -1335,7 +1361,7 @@ async function answerForwardTool(st: State, $: EngineInterface, e: Record<string
     const out = renderForward(from);
     // The skills the wake holds, for the next handoff to carry: one that failed to load is named in this one's reply and wake, never carried on.
     const skills = from.skills.filter((s) => out.skills.includes(s.name)).map((s) => ({ name: s.name, ...(s.baseDir !== undefined ? { baseDir: s.baseDir } : {}) }));
-    const base = buildRecord({ seq, session, ...(agentId !== undefined ? { agentId } : {}), dir: dir ?? '', text: out.text, blocks: out.blocks, users: from.users, usersDropped: from.usersDropped ?? 0, ...(from.handoffInReply === true ? { handoffInReply: true } : {}), trail: from.trail.filter((t) => carried.some((c) => c.path === t.path)), ...(from.summary !== undefined ? { summary: from.summary } : {}), ...(reading !== undefined ? { tokensBefore: reading } : {}), trimmed: parsed.args.trimmed, skills, at: new Date().toISOString(), loads: out.loads });
+    const base = buildRecord({ seq, session, ...(agentId !== undefined ? { agentId } : {}), dir: dir ?? '', text: out.text, blocks: out.blocks, ...(from.queueCursor !== undefined ? { queueCursor: from.queueCursor } : {}), users: from.users, usersDropped: from.usersDropped ?? 0, ...(from.handoffInReply === true ? { handoffInReply: true } : {}), trail: from.trail.filter((t) => carried.some((c) => c.path === t.path)), ...(from.summary !== undefined ? { summary: from.summary } : {}), ...(reading !== undefined ? { tokensBefore: reading } : {}), trimmed: parsed.args.trimmed, skills, at: new Date().toISOString(), loads: out.loads });
     return { ...out, base };
   };
   let { text, blocks, unloaded, noted, base } = draft(input);
@@ -1357,7 +1383,7 @@ async function answerForwardTool(st: State, $: EngineInterface, e: Record<string
   st.parties.armHandoff(key, { text, anchor: { toolUseId }, forward: { seq, ...(dir !== undefined ? { dir } : {}), blocks, record: base } });
   const tokens = Math.ceil(text.length / 4);
   record(st, $, { event: 'forward-stored', party: key, seq, dir, chars: text.length, tokens, blocks: blocks.map((b) => ({ name: b.name, chars: b.chars, items: b.items })) });
-  return forwardStoredText({ tokens, ...(dir !== undefined ? { dir } : {}), blocks, cuts: parsed.args.cuts ?? [], converted: parsed.args.converted ?? [], unloaded: [...unloaded, ...(parsed.args.problems ?? [])], toolName: st.forwardToolName ?? FORWARD_TOOL, party: agentId !== undefined ? 'sub' : 'main' }) + saved;
+  return forwardStoredText({ tokens, ...(dir !== undefined ? { dir } : {}), blocks, cuts: parsed.args.cuts ?? [], converted: parsed.args.converted ?? [], unloaded: [...unloaded, ...(gathered.problems ?? [])], toolName: st.forwardToolName ?? FORWARD_TOOL, party: agentId !== undefined ? 'sub' : 'main' }) + saved;
 }
 
 /** At the first request of a party after its forward handoff installed: confirm each block is in what it holds, write the record with the check, and tell it of any that is not. */

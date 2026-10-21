@@ -4,6 +4,19 @@ Every release of sub-agent-compact. Versions follow [semantic versioning](https:
 
 ## [Unreleased]
 
+## [0.8.1-dev.7] — 2026-10-22
+
+### Added
+
+- `autoCompact.pinSkills` and `autoCompact.dropSkills` lists in agent frontmatter and central settings, with optional environment overrides. Both default to empty; pins beat either drop list and are evicted after unpinned skills under the total cap. Policy conflicts, malformed lists and refused model drops name their source.
+- Donor replays run the shipped hook in a separate process through storage, wake installation, install verification and a second carry, using the existing adapter harness and trimmed real transcript excerpts.
+
+### Fixed
+
+- Forward handoffs recover queued prompts on every call, including enqueues removed as `absorbed_mid_turn`. A carried transcript cursor preserves repeated instructions without replaying old deliveries.
+- Native compaction falls back to the latest readable handoff record and reports recovery or loss. Wake blocks appearing later in the transcript are excluded from user history, and typed prompts outrank reports and notices at the 25-entry cap.
+- Skills, Objective, Remaining and Next install as live instructions. Historical sections retain their explicit framing, while both old and new wakes remain recognizable.
+
 ## [0.8.1-dev.6] — 2026-10-19
 
 ### Fixed

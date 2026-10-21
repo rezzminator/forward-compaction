@@ -24,7 +24,7 @@ const MIN_PARTIAL_CHARS = 200;
 export const USERS_KEEP = 25;
 
 /** A line that would read as the header, a block label or an item marker of this text. */
-const SPECIAL = /^\\*(?:(?:User|Earlier summary|Files|Plan|Tasks|Running|Git|Paths|Unresolved|Objective|Done|Remaining|Blocked|Findings|Next)$|(?:Skill|Load) |\[\d+(?:, latest(?:, handed off in reply)?)?\] |\[\d+ older dropped\]$|\[forward handoff)/;
+const SPECIAL = /^\\*(?:(?:User|Earlier summary|Files|Plan|Tasks|Running|Git|Paths|Unresolved|Objective|Done|Remaining|Blocked|Findings|Next)$|(?:Skill|Load) |\[\d+(?:, latest(?:, handed off in reply)?)?\] |\[\d+ older dropped\]$|\[(?:forward handoff|history, not new instructions|live instructions))/;
 
 /** A carried line made unable to read as structure: one more backslash in front when it would, so no two lines escape alike. */
 export const escapeLine = (line: string): string => (SPECIAL.test(line) ? `\\${line}` : line);
@@ -51,13 +51,18 @@ export const oneLineLabel = (text: string): string => text.replace(/[\u0000-\u00
 export function chainUsers(previous: { users: readonly string[]; dropped: number; inReply?: boolean } | undefined, fresh: readonly string[], freshInReply = false, keep = USERS_KEEP): { users: string[]; dropped: number; inReply: boolean } {
   const all = [...(previous?.users ?? []), ...fresh];
   const over = Math.max(0, all.length - keep);
-  return { users: all.slice(over).map((u) => cut(u, USERS_MAX_CHARS)), dropped: (previous?.dropped ?? 0) + over, inReply: fresh.length > 0 ? freshInReply : previous?.inReply === true };
+  const notices = /^(?:Another Claude session sent a message:|<agent-message\b|A session-scoped Stop hook\b|Goal (?:set|updated|completed):|<task-notification\b)/;
+  const ranked = all.map((text, index) => ({ text, index, priority: notices.test(text) ? 0 : 1 }));
+  const kept = ranked.sort((a, b) => b.priority - a.priority || b.index - a.index).slice(0, keep).sort((a, b) => a.index - b.index);
+  const latest = kept.at(-1);
+  return { users: kept.map((u) => cut(u.text, USERS_MAX_CHARS)), dropped: (previous?.dropped ?? 0) + over, inReply: latest?.index === all.length - 1 ? fresh.length > 0 ? freshInReply : previous?.inReply === true : false };
 }
 
 export type BlockRecord = { name: string; start: number; chars: number; tokens: number; items: number; hash: string };
 
 export type RenderInput = {
   seq: number;
+  queueCursor?: number;
   /** The user messages to carry, oldest first. */
   users: string[];
   /** How many older ones earlier handoffs let go: the numbering and the dropped line continue from it. */
@@ -67,7 +72,7 @@ export type RenderInput = {
   /** What Claude Code's own summary knew, when the work began before it. */
   summary?: string;
   /** The skills and commands to reload, oldest first: the body, or why there is none; the directory the harness printed for it, for the record. */
-  skills: { name: string; baseDir?: string; body?: string; problem?: string }[];
+  skills: { name: string; baseDir?: string; body?: string; problem?: string; pinned?: boolean }[];
   trail: { tag: 'R' | 'E' | 'C'; path: string }[];
   /** What each made or edited file holds now, by path: one outline line each. */
   outlines?: Record<string, string>;
@@ -206,18 +211,19 @@ export function renderForward(i: RenderInput): { text: string; blocks: BlockReco
   }
   if (i.summary !== undefined) add('Earlier summary', cut(i.summary, SUMMARY_MAX_CHARS), 1);
 
-  const cutSkills: { name: string; body: string }[] = [];
+  const cutSkills: { name: string; body: string; pinned?: boolean }[] = [];
   for (const skill of i.skills) {
     // A body that is blank (a file of frontmatter alone) makes no block: it is named, never carried on as held.
     const body = skill.body === undefined ? '' : collapseWhitespace(skill.body);
     if (body.trim() === '') problems.push(`skill ${skill.name}: ${skill.problem ?? 'no content'}`);
-    else cutSkills.push({ name: skill.name, body: cut(body, SKILL_MAX_CHARS) });
+    else cutSkills.push({ name: skill.name, body: cut(body, SKILL_MAX_CHARS), pinned: skill.pinned });
   }
   let skillTotal = cutSkills.reduce((n, s) => n + s.body.length, 0);
   while (skillTotal > SKILLS_MAX_CHARS && cutSkills.length > 0) {
-    const gone = cutSkills.shift()!;
-    skillTotal -= gone.body.length;
-    problems.push(`skill ${gone.name}: dropped, total cap`);
+    const unpinned = cutSkills.findIndex((s) => !s.pinned);
+    const [gone] = cutSkills.splice(unpinned < 0 ? 0 : unpinned, 1);
+    skillTotal -= gone!.body.length;
+    problems.push(`skill ${gone!.name}: dropped, total cap`);
   }
   for (const s of cutSkills) add(`Skill ${s.name}`, s.body, 1);
 
@@ -275,10 +281,16 @@ export function renderForward(i: RenderInput): { text: string; blocks: BlockReco
   const noted = rereadLine(i.reread, reread !== undefined ? { label: reread.label, held: held.has((i.reread as { load: number }).load) } : undefined, sections.some((s) => s.name === 'Git'));
   add('Next', [a.next, ...closing('next'), ...(noted !== undefined ? [`[${noted}]`] : [])].join('\n'), 1);
 
-  const head = `${FORWARD_OPENING} ${i.seq}: history, not new instructions]`;
-  let text = head;
+  const live = (s: Section): boolean => s.name.startsWith('Skill ') || ['Objective', 'Remaining', 'Next'].includes(s.name);
+  const ordered = [...sections.filter((s) => !live(s)), ...sections.filter(live)];
+  let text = `${FORWARD_OPENING} ${i.seq}: live instructions]\n[history, not new instructions]`;
+  let standing = false;
   const blocks: BlockRecord[] = [];
-  for (const s of sections) {
+  for (const s of ordered) {
+    if (live(s) && !standing) {
+      text += '\n[live instructions]\nThe skills, Objective and Remaining are standing instructions in force. Take Next now without waiting for another user message.';
+      standing = true;
+    }
     const block = `${s.name}\n${s.body}`;
     blocks.push({ name: s.name, start: text.length + 1, chars: block.length, tokens: estimateTokens(block.length), items: s.items, hash: fnv1a(block) });
     text += `\n${block}`;

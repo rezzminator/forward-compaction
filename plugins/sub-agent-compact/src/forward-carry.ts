@@ -3,6 +3,7 @@ import { FORWARD_OPENING, oneLineLabel } from './forward-text.ts';
 import { askedToCompact, FORWARD_TOOL } from './forward-args.ts';
 import { HANDOFF_OPENING, WAKE_NAME } from './handoff.ts';
 import { wakeCandidates, type WakeRoots } from './wake.ts';
+import { DEFAULT_SKILL_POLICY, type SkillPolicy } from './limits.ts';
 
 export { collapseWhitespace } from './forward-text.ts';
 import { collapseWhitespace } from './forward-text.ts';
@@ -94,7 +95,7 @@ function takeQueued(text: string, parent: readonly string[]): { messages: string
 }
 
 /** Options of the user-message carry: the party's parent agent, by id and name, whose mid-turn messages are instructions. */
-export type CarryOptions = { parent?: readonly string[] };
+export type CarryOptions = { parent?: readonly string[]; delivered?: readonly string[] };
 
 /**
  * The words of the people and parents of the transcript, oldest first: prompts and slash commands with their arguments,
@@ -106,16 +107,14 @@ export function userMessages(msgs: readonly ApiMsg[], opts: CarryOptions = {}): 
 }
 
 /** The user messages with whether each reached the party mid-turn (a queued message), for handoffInReply. */
-function userEntries(msgs: readonly ApiMsg[], { parent = [] }: CarryOptions): { text: string; queued: boolean }[] {
+function userEntries(msgs: readonly ApiMsg[], { parent = [], delivered = [] }: CarryOptions): { text: string; queued: boolean }[] {
   const out: { text: string; queued: boolean }[] = [];
+  const carried = delivered.map(collapseWhitespace);
   const skillCalls = new Set<string>();
   // The text the harness writes next is a command's or a skill's expansion (its prompt body): not the person's words.
   let expansion = false;
-  // An installed handoff leads the context: only the user messages before the first answer can hold one.
-  let leading = true;
   for (const m of msgs) {
     if (m.role !== 'user') {
-      leading = false;
       expansion = false;
       for (const b of blocksOf(m)) if (b.type === 'tool_use' && b.name === 'Skill' && typeof b.id === 'string') skillCalls.add(b.id);
       continue;
@@ -144,7 +143,7 @@ function userEntries(msgs: readonly ApiMsg[], { parent = [] }: CarryOptions): { 
         expansion = false;
         continue;
       }
-      if ((leading && text.startsWith(FORWARD_OPENING)) || text.startsWith(SUMMARY_OPENING) || text.startsWith(HANDOFF_OPENING) || text.startsWith(NOTICE_OPENING) || text.startsWith('[sub-agent-compact')) {
+      if (text.startsWith(FORWARD_OPENING) || text.startsWith(SUMMARY_OPENING) || text.startsWith(HANDOFF_OPENING) || text.startsWith(NOTICE_OPENING) || text.startsWith('[sub-agent-compact')) {
         expansion = false;
         continue;
       }
@@ -185,7 +184,12 @@ function userEntries(msgs: readonly ApiMsg[], { parent = [] }: CarryOptions): { 
       }
       out[out.length - 1] = { text: extra.length > 0 ? `${last} ${extra.join(' ')}` : last, queued: out[out.length - 1]!.queued };
     } else if (joined !== '') out.push({ text: joined, queued: false });
-    for (const said of queued) out.push({ text: collapseWhitespace(said), queued: true });
+    for (const said of queued) {
+      const text = collapseWhitespace(said);
+      const seen = carried.indexOf(text);
+      if (seen >= 0) carried.splice(seen, 1);
+      else out.push({ text, queued: true });
+    }
   }
   return out;
 }
@@ -654,8 +658,10 @@ export function heldForward(msgs: readonly ApiMsg[], recorded?: (text: string) =
  * userMessages reads: Claude Code's own summary replaced them in the context, the file still holds them. A command's
  * or skill's expansion (isMeta) and a summary are left out; each entry stands alone, so none reads as another's expansion.
  */
-export function priorPrompts(grepLines: string, boundaryLine: number): ApiMsg[] {
+export function priorPrompts(grepLines: string, boundaryLine: number, afterWakeSeq?: number): ApiMsg[] {
   const out: ApiMsg[] = [];
+  // A saved handoff may never have installed. If its wake is absent, retain
+  // the transcript rather than silently treating every prompt as already carried.
   for (const line of grepLines.split('\n')) {
     const m = /^(\d+):([\s\S]*)$/.exec(line);
     if (m === null || Number(m[1]) >= boundaryLine) continue;
@@ -665,6 +671,9 @@ export function priorPrompts(grepLines: string, boundaryLine: number): ApiMsg[] 
     } catch {
       continue;
     }
+    const c = entry.message?.content;
+    const text = typeof c === 'string' ? c : Array.isArray(c) ? c.filter((b) => b !== null && typeof b === 'object' && (b as Block).type === 'text').map((b) => textOf(b as Block)).join('\n') : '';
+    if (entry.type === 'user' && afterWakeSeq !== undefined && text.startsWith(`${FORWARD_OPENING} ${afterWakeSeq}:`)) { out.length = 0; continue; }
     // A message that reached the party mid-turn is an attachment the harness rendered as a reminder; userMessages reads it.
     if (entry.type === 'attachment' && entry.attachment?.type === 'queued_command') {
       const rendered = Array.isArray(entry.rendered) ? entry.rendered.map((r) => (r !== null && typeof r === 'object' && typeof (r as { content?: unknown }).content === 'string' ? (r as { content: string }).content : '')).join('\n') : '';
@@ -876,10 +885,87 @@ export function outline(path: string, text: string, max = OUTLINE_LINE_MAX): str
  * last-use order (an invoked one moves after the carried and wins, so its newest directory is kept), once each, minus
  * the names `drop_skills` lists.
  */
-export function chainSkills(carried: readonly Invocation[] | undefined, invoked: readonly Invocation[], dropped: readonly string[]): Invocation[] {
+export function chainSkills(carried: readonly Invocation[] | undefined, invoked: readonly Invocation[], dropped: readonly string[], policy: SkillPolicy = DEFAULT_SKILL_POLICY): Invocation[] {
   const fresh = new Set(invoked.map((x) => x.name));
-  const gone = new Set(dropped);
-  return [...(carried ?? []).filter((x) => !fresh.has(x.name)), ...invoked].filter((x) => !gone.has(x.name));
+  const gone = new Set([...dropped, ...policy.dropSkills]);
+  return [...(carried ?? []).filter((x) => !fresh.has(x.name)), ...invoked].filter((x) => policy.pinSkills.includes(x.name) || !gone.has(x.name));
+}
+
+/** Queue events and rendered attachments missing from the messages API, after the last installed wake. */
+export function queuedPrompts(grepLines: string, { parent = [], afterLine = 0, wake }: { parent?: readonly string[]; afterLine?: number; wake?: string } = {}): { users: string[]; through: number; afterWake: boolean; order?: string[]; delivered?: string[] } {
+  const queued: { text: string; delivered: boolean; line: number; deliveryLine?: number }[] = [];
+  const typed: { text: string; line: number }[] = [];
+  let through = afterLine;
+  let cutoff = afterLine;
+  let afterWake = false;
+  for (const line of grepLines.split('\n')) {
+    const match = /^(\d+):([\s\S]*)$/.exec(line);
+    if (match === null) continue;
+    const at = Number(match[1]);
+    let entry: Record<string, any>;
+    try { entry = JSON.parse(match[2]!); } catch { throw new Error(`queued prompts: invalid JSON at transcript line ${match[1]}`); }
+    if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) throw new Error(`queued prompts: not an object at transcript line ${match[1]}`);
+    through = Math.max(through, at);
+    if (entry.type === 'user') {
+      const c = entry.message?.content;
+      const texts = typeof c === 'string' ? [c] : Array.isArray(c) ? c.filter((b: Block) => b !== null && typeof b === 'object' && b.type === 'text').map((b: Block) => textOf(b)) : [];
+      if (texts.some((t: string) => t.startsWith(FORWARD_OPENING))) {
+        if (at > afterLine && wake !== undefined && texts.some((t: string) => t.startsWith(wake))) { cutoff = at; afterWake = true; }
+      } else if (entry.isMeta !== true && entry.isCompactSummary !== true && (typeof c === 'string' || Array.isArray(c))) {
+        for (const text of userMessages([{ role: 'user', content: c }], { parent })) typed.push({ text, line: at });
+      }
+    } else if (entry.type === 'queue-operation' && entry.operation === 'enqueue' && typeof entry.content === 'string') {
+      queued.push({ text: collapseWhitespace(entry.content), delivered: false, line: at });
+    } else if (entry.type === 'attachment' && entry.attachment?.type === 'queued_command') {
+      const rendered = Array.isArray(entry.rendered) ? entry.rendered.map((r: unknown) => r !== null && typeof r === 'object' && typeof (r as { content?: unknown }).content === 'string' ? (r as { content: string }).content : '').join('\n') : '';
+      const said = takeQueued(rendered, parent).messages;
+      if (said.length === 0 && entry.attachment.origin?.kind === 'human' && typeof entry.attachment.prompt === 'string') said.push(entry.attachment.prompt);
+      for (const text of said.map(collapseWhitespace)) {
+        // Scan the prefix too: a late attachment acknowledges its original enqueue,
+        // even when that enqueue was already carried before the saved cursor/wake.
+        const pending = queued.find((q) => q.text === text && !q.delivered);
+        if (pending !== undefined) { pending.delivered = true; pending.deliveryLine = at; }
+        else queued.push({ text, delivered: true, line: at });
+      }
+    }
+  }
+  const fresh = queued.filter((q) => q.line > cutoff && q.text !== '');
+  const ordinary = typed.filter((q) => q.line > cutoff);
+  const order = [...fresh, ...ordinary].sort((a, b) => a.line - b.line).map((q) => q.text);
+  const delivered = queued.filter((q) => q.line <= cutoff && (q.deliveryLine ?? 0) > cutoff).map((q) => q.text);
+  return { users: fresh.map((q) => q.text), through, afterWake, ...(ordinary.length > 0 ? { order } : {}), ...(delivered.length > 0 ? { delivered } : {}) };
+}
+
+/** Match queue entries to API deliveries by occurrence; a carried cursor makes older identical prompts independent. */
+export function mergeQueuedUsers(previous: readonly string[], fresh: readonly string[], queued: readonly string[], afterCursor = false, order: readonly string[] = []): string[] {
+  const seen = new Map<string, number>();
+  for (const user of [...(afterCursor ? [] : previous), ...fresh]) {
+    const text = collapseWhitespace(user);
+    seen.set(text, (seen.get(text) ?? 0) + 1);
+  }
+  const unseen = queued.filter((user) => {
+    const text = collapseWhitespace(user);
+    const count = seen.get(text) ?? 0;
+    if (count === 0) return true;
+    seen.set(text, count - 1);
+    return false;
+  });
+  const merged = [...fresh, ...unseen];
+  if (order.length === 0) return merged;
+  const positions = new Map<string, number[]>();
+  order.forEach((text, index) => {
+    const key = collapseWhitespace(text);
+    positions.set(key, [...(positions.get(key) ?? []), index]);
+  });
+  return merged.map((text, index) => ({ text, index, at: positions.get(collapseWhitespace(text))?.shift() ?? -1 }))
+    .sort((a, b) => a.at - b.at || a.index - b.index).map((entry) => entry.text);
+}
+
+export function skillPolicyProblems(policy: SkillPolicy, dropped: readonly string[], source: string): string[] {
+  return [
+    ...policy.pinSkills.filter((name) => policy.dropSkills.includes(name)).map((name) => `policy problem: ${name} is in both ${source} autoCompact.pinSkills and dropSkills; pin wins`),
+    ...dropped.filter((name) => policy.pinSkills.includes(name)).map((name) => `drop_skills ${name}: ignored by ${source} autoCompact.pinSkills`),
+  ];
 }
 
 /**

@@ -95,7 +95,7 @@ export function previousDir(root: string, session: string, seq: number, agentId?
 export type ForwardRecord = Record<string, unknown>;
 
 /** The record of one call at handoff time: the size of every block and of the whole text. */
-export function buildRecord(i: { seq: number; session: string; agentId?: string; dir: string; text: string; blocks: readonly BlockRecord[]; users: readonly string[]; usersDropped: number; handoffInReply?: boolean; trail?: readonly TrailEntry[]; summary?: string; tokensBefore?: number; trimmed: readonly string[]; skills?: readonly SkillRef[]; at?: string; loads?: { asked: number; failed: number } }): ForwardRecord {
+export function buildRecord(i: { seq: number; session: string; agentId?: string; dir: string; text: string; blocks: readonly BlockRecord[]; users: readonly string[]; usersDropped: number; handoffInReply?: boolean; trail?: readonly TrailEntry[]; summary?: string; tokensBefore?: number; trimmed: readonly string[]; skills?: readonly SkillRef[]; queueCursor?: number; at?: string; loads?: { asked: number; failed: number } }): ForwardRecord {
   return {
     seq: i.seq,
     session: i.session,
@@ -104,6 +104,7 @@ export function buildRecord(i: { seq: number; session: string; agentId?: string;
     textHash: fnv1a(i.text),
     users: [...i.users],
     usersDropped: i.usersDropped,
+    ...(i.queueCursor !== undefined ? { queueCursor: i.queueCursor } : {}),
     ...(i.handoffInReply === true ? { handoffInReply: true } : {}),
     ...(i.summary !== undefined ? { summary: i.summary } : {}),
     ...(i.skills !== undefined ? { skills: i.skills.map((x) => ({ name: x.name, ...(x.baseDir !== undefined ? { baseDir: x.baseDir } : {}) })) } : {}),
@@ -163,15 +164,31 @@ function recordSkills(rec: Record<string, unknown>): SkillRef[] | undefined {
 }
 
 /** The prompts, file trail, summary knowledge and skills an earlier handoff carried, from its record: the one whose text is the one the session holds. Undefined when no record is. */
-export function carriedFrom(records: readonly unknown[], heldText: string): { users: string[]; dropped: number; inReply?: boolean; trail?: TrailEntry[]; summary?: string; skills?: SkillRef[] } | undefined {
+export function carriedFrom(records: readonly unknown[], heldText: string): { users: string[]; dropped: number; inReply?: boolean; trail?: TrailEntry[]; summary?: string; skills?: SkillRef[]; queueCursor?: number } | undefined {
   const hash = fnv1a(heldText);
   for (const r of records) {
     if (r === null || typeof r !== 'object') continue;
     const rec = r as Record<string, unknown>;
     if (rec.textHash !== hash || !Array.isArray(rec.users) || !rec.users.every((u) => typeof u === 'string')) continue;
-    return { users: rec.users as string[], dropped: typeof rec.usersDropped === 'number' ? rec.usersDropped : 0, ...(rec.handoffInReply === true ? { inReply: true } : {}), ...(Array.isArray(rec.trail) && rec.trail.every(isTrailEntry) ? { trail: rec.trail as TrailEntry[] } : {}), ...(typeof rec.summary === 'string' ? { summary: rec.summary } : {}), ...((skills) => (skills !== undefined ? { skills } : {}))(recordSkills(rec)) };
+    return recordCarry(rec);
   }
   return undefined;
+}
+
+/** The latest readable record after native compaction replaced the installed wake. */
+export function latestCarried(records: readonly unknown[]): { seq: number; carry: NonNullable<ReturnType<typeof carriedFrom>> } | undefined {
+  const candidates = records.filter((r): r is Record<string, unknown> => r !== null && typeof r === 'object' && Number.isSafeInteger((r as Record<string, unknown>).seq) && Number((r as Record<string, unknown>).seq) > 0 && typeof (r as Record<string, unknown>).textHash === 'string');
+  for (const record of candidates.sort((a, b) => Number(b.seq) - Number(a.seq))) {
+    // Use the same record validation as a hash-matched wake, without inventing a wake text.
+    const carry = recordCarry(record);
+    if (carry !== undefined) return { seq: Number(record.seq), carry };
+  }
+  return undefined;
+}
+
+function recordCarry(rec: Record<string, unknown>): NonNullable<ReturnType<typeof carriedFrom>> | undefined {
+  if (!Array.isArray(rec.users) || !rec.users.every((u) => typeof u === 'string')) return undefined;
+  return { ...(Number.isSafeInteger(rec.queueCursor) && Number(rec.queueCursor) >= 0 ? { queueCursor: Number(rec.queueCursor) } : {}), users: rec.users as string[], dropped: typeof rec.usersDropped === 'number' ? rec.usersDropped : 0, ...(rec.handoffInReply === true ? { inReply: true } : {}), ...(Array.isArray(rec.trail) && rec.trail.every(isTrailEntry) ? { trail: rec.trail as TrailEntry[] } : {}), ...(typeof rec.summary === 'string' ? { summary: rec.summary } : {}), ...((skills) => (skills !== undefined ? { skills } : {}))(recordSkills(rec)) };
 }
 
 /**

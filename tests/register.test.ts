@@ -53,7 +53,7 @@ describe('the environment reads in the hooks module', () => {
 
   it('spells each variable of OPTION_ENV as its own string literal, once, the name Claude Code lists', () => {
     const names = Object.values(OPTION_ENV);
-    expect(names).toHaveLength(14);
+    expect(names).toHaveLength(16);
     const spelled = [...source.matchAll(/readOptionVar\('([A-Z_]+)', \(\) => \$\.env\.get\('([A-Z_]+)'\)\)/g)].map((match) => [match[1], match[2]]);
     expect(spelled).toEqual(names.map((name) => [name, name]));
   });
@@ -77,6 +77,8 @@ describe('the environment reads in the hooks module', () => {
       compactTool: String(defaults.compactTool),
       agentDirs: 'empty',
       logFile: 'empty',
+      pinSkills: 'empty',
+      dropSkills: 'empty',
     };
     expect(Object.fromEntries(rows.map(([option, , shown]) => [option, shown!.replace(/`/g, '')]))).toEqual(held);
   });

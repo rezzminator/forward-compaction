@@ -1,0 +1,32 @@
+{
+  "source": {
+    "session": "05ee6a85-45ee-4b10-8a86-6df28033ad44",
+    "lines": [
+      9532
+    ],
+    "record": "31"
+  },
+  "prompt": "Do NOT stop till ALL of it is done, confirmed and WORKING FUNCTIONALLY\nGOT IT?\nAnd do NOT remove /god-speed skill in your forward handsoff, KEEP THAT SKILL GOT DAMN FUCKING HELL",
+  "transcript": [
+    {
+      "type": "attachment",
+      "attachment": {
+        "type": "queued_command",
+        "prompt": "Do NOT stop till ALL of it is done, confirmed and WORKING FUNCTIONALLY\nGOT IT?\nAnd do NOT remove /god-speed skill in your forward handsoff, KEEP THAT SKILL GOT DAMN FUCKING HELL",
+        "commandMode": "prompt",
+        "origin": {
+          "kind": "human"
+        },
+        "humanTurn": true
+      },
+      "rendered": [
+        {
+          "content": "<system-reminder>\nThe user sent a new message while you were working:\nDo NOT stop till ALL of it is done, confirmed and WORKING FUNCTIONALLY\nGOT IT?\nAnd do NOT remove /god-speed skill in your forward handsoff, KEEP THAT SKILL GOT DAMN FUCKING HELL\n\nThis is how Claude Code surfaces messages the user sends mid-turn — within the running turn, often alongside the next tool result, rather than as a separate conversation turn. Address the message above as you continue this turn.\n</system-reminder>"
+        }
+      ]
+    }
+  ],
+  "users": [
+    "GO, get it ALL DONE\nGod speed"
+  ]
+}

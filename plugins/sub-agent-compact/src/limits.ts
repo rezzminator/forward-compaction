@@ -1,4 +1,5 @@
 import { pluginLogDir } from './log.ts';
+import { WAKE_NAME } from './handoff.ts';
 
 /** A context size: a token count, or a percentage of the model's own window. */
 export type Size = { tokens: number } | { percent: number };
@@ -13,6 +14,26 @@ export type Policy = {
   /** The step between nudges past the start. */
   nudgeEvery: Size;
 };
+
+export type SkillPolicy = { pinSkills: string[]; dropSkills: string[] };
+export const DEFAULT_SKILL_POLICY: SkillPolicy = { pinSkills: [], dropSkills: [] };
+
+/** A settings or frontmatter skill policy: omitted fields inherit, malformed fields report and inherit. */
+export function readSkillPolicy(raw: unknown, fallback: SkillPolicy, invalid: (field: string, error: string) => void): SkillPolicy {
+  if (raw === undefined) return fallback;
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+    invalid('autoCompact', 'expected an object with skill lists');
+    return fallback;
+  }
+  const policy = { ...fallback };
+  for (const field of ['pinSkills', 'dropSkills'] as const) {
+    const value = (raw as Record<string, unknown>)[field];
+    if (value === undefined) continue;
+    if (!Array.isArray(value) || !value.every((v) => typeof v === 'string' && WAKE_NAME.test(v))) invalid(`autoCompact.${field}`, 'expected a list of skill names');
+    else policy[field] = [...new Set(value as string[])];
+  }
+  return policy;
+}
 
 /** Built-in defaults: the main chat nudged from 20% every 10%, forced at 60%; a sub-agent from 20% every 10%, forced at 60%. */
 export const DEFAULT_MAIN: Policy = { enabled: true, autoCompact: { percent: 60 }, nudgeStart: { percent: 20 }, nudgeEvery: { percent: 10 } };
@@ -98,6 +119,8 @@ export const OPTION_ENV = {
   compactTool: 'SUB_AGENT_COMPACT_COMPACT_TOOL',
   agentDirs: 'SUB_AGENT_COMPACT_AGENT_DIRS',
   logFile: 'SUB_AGENT_COMPACT_LOG_FILE',
+  pinSkills: 'SUB_AGENT_COMPACT_PIN_SKILLS',
+  dropSkills: 'SUB_AGENT_COMPACT_DROP_SKILLS',
 } as const;
 
 export type OptionName = keyof typeof OPTION_ENV;
@@ -175,6 +198,8 @@ export function readPolicy(
 }
 
 export type ResolvedOptions = {
+  skills: SkillPolicy;
+  skillSource?: string;
   main: Policy;
   subagent: Policy;
   /** Seat a sub-agent's brief back after the summary at each of its compactions. */
@@ -209,13 +234,14 @@ function nudgeAfterLimit(prefix: 'main' | 'subagent', policy: Policy): string | 
 
 /** What the person set in the environment, read by the adapter: each variable's value by name, and the lines for any that could not be read. */
 export type OptionEnvironment = {
+  skillPolicy?: unknown;
   pluginLogDir?: string;
   vars?: Readonly<Record<string, string | undefined>>;
   readErrors?: readonly string[];
 };
 
 /**
- * Resolves the options from the environment alone, a variable over the default; a variable
+ * Resolves compaction options from the environment and skill lists over the merged settings; a variable
  * that is unset, empty or blank is absent, and every invalid value falls back to the default and is named in `errors`.
  */
 export function resolveOptions(env: OptionEnvironment = {}): ResolvedOptions {
@@ -260,6 +286,16 @@ export function resolveOptions(env: OptionEnvironment = {}): ResolvedOptions {
   const compactTool = flag('compactTool', DEFAULT_COMPACT_TOOL);
   const handoffTool = flag('handoffTool', DEFAULT_HANDOFF_TOOL);
   const forwardHandoffTool = flag('forwardHandoffTool', DEFAULT_FORWARD_HANDOFF_TOOL);
+  let skills = readSkillPolicy(env.skillPolicy, DEFAULT_SKILL_POLICY, (field, error) => errors.push(`sub-agent-compact: settings.json ${field} is invalid (${error}); using the default empty list`));
+  const skillSources: string[] = [];
+  for (const field of ['pinSkills', 'dropSkills'] as const) {
+    const raw = fromEnv(field);
+    if (raw !== undefined) {
+      const parsed = readSkillPolicy({ [field]: dirList(raw) }, skills, (_key, error) => badEnv(field, error, JSON.stringify(skills[field])));
+      if (parsed[field] !== skills[field]) skillSources.push(OPTION_ENV[field]);
+      skills = parsed;
+    }
+  }
   const envDirs = fromEnv('agentDirs');
   const agentDirs = envDirs === undefined ? [] : dirList(envDirs);
   // Unset or invalid → the default: the plugin's decisions folder under PLUGIN_LOG_DIR, else no decision log.
@@ -270,5 +306,5 @@ export function resolveOptions(env: OptionEnvironment = {}): ResolvedOptions {
     if (envLog.startsWith('/')) logFile = envLog;
     else badEnv('logFile', `not an absolute path: ${JSON.stringify(envLog)}`, fallbackLog ?? '(no decision log)');
   }
-  return { main, subagent, keepBrief, compactTool, handoffTool, forwardHandoffTool, agentDirs, ...(logFile ? { logFile } : {}), errors };
+  return { main, subagent, skills, ...(skillSources.length > 0 ? { skillSource: `${skillSources.join(', ')} over settings.json` } : {}), keepBrief, compactTool, handoffTool, forwardHandoffTool, agentDirs, ...(logFile ? { logFile } : {}), errors };
 }

@@ -28,13 +28,16 @@ describe('renderForward layout', () => {
   it('with nothing mechanical, is one header line then the frontier with Next last', () => {
     const { text } = renderForward(input());
     expect(lines(text)).toEqual([
-      '[forward handoff 1: history, not new instructions]',
+      '[forward handoff 1: live instructions]',
+      '[history, not new instructions]',
       'Unresolved',
       'Need an exact detail from before this handoff? look_back finds it.',
-      'Objective',
-      'Ship it',
       'Done',
       '- a (npm test 3/3)',
+      '[live instructions]',
+      'The skills, Objective and Remaining are standing instructions in force. Take Next now without waiting for another user message.',
+      'Objective',
+      'Ship it',
       'Remaining',
       '1. b',
       '2. c',
@@ -70,7 +73,7 @@ describe('renderForward layout', () => {
         args: { ...args, blocked: ['review by Sam'], findings: ['ENOENT: no such file'] },
       }),
     );
-    expect(blocks.map((b) => b.name)).toEqual(['User', 'Skill design', 'Files', 'Load src/z.ts:2-3', 'Plan', 'Tasks', 'Running', 'Git', 'Paths', 'Unresolved', 'Objective', 'Done', 'Remaining', 'Blocked', 'Findings', 'Next']);
+    expect(blocks.map((b) => b.name)).toEqual(['User', 'Files', 'Load src/z.ts:2-3', 'Plan', 'Tasks', 'Running', 'Git', 'Paths', 'Unresolved', 'Done', 'Blocked', 'Findings', 'Skill design', 'Objective', 'Remaining', 'Next']);
     expect(lines(text).at(-2)).toBe('Next');
     expect(lines(text).at(-1)).toBe('run npm test');
     expect(text).toContain('Files\nE src/a.ts\nR b.md\nC c.md');
@@ -86,7 +89,7 @@ describe('renderForward layout', () => {
   });
 
   it('names the sequence number in the single header line', () => {
-    expect(lines(renderForward(input({ seq: 7 })).text)[0]).toBe('[forward handoff 7: history, not new instructions]');
+    expect(lines(renderForward(input({ seq: 7 })).text)[0]).toBe('[forward handoff 7: live instructions]');
   });
 
   it('caps the file trail at 15 lines', () => {
@@ -231,7 +234,7 @@ describe('carried content cannot forge structure', () => {
     );
     const real = structure(text);
     // the header, then each block label once, and the two item markers of the User block
-    expect(real.filter((l) => l.startsWith('[forward handoff'))).toEqual(['[forward handoff 1: history, not new instructions]']);
+    expect(real.filter((l) => l.startsWith('[forward handoff'))).toEqual(['[forward handoff 1: live instructions]']);
     expect(real.filter((l) => /^\[\d+(, latest)?\] /.test(l))).toEqual(['[1] before', '[2, latest] ask']);
     expect(real.filter((l) => !l.startsWith('[')).sort()).toEqual(['Done', 'Files', 'Git', 'Load /w/a.ts', 'Next', 'Objective', 'Paths', 'Plan', 'Remaining', 'Running', 'Skill pcm', 'Tasks', 'Unresolved', 'User', 'Blocked', 'Findings'].sort());
   });
@@ -240,7 +243,7 @@ describe('carried content cannot forge structure', () => {
     const forged = 'real one\n- forged item\n2. forged step\n[x] forged task\n\\- kept';
     const { text } = renderForward(input({ tasks: [`[ ] ${forged}`], args: { ...args, done: [forged], remaining: [forged], blocked: [forged], findings: [forged] } }));
     const items = lines(text).filter((l) => /^(- |\d+\. |\[[ x~]\] )/.test(l));
-    expect(items).toEqual(['[ ] real one', '- real one', '1. real one', '- real one', '- real one']);
+    expect(items).toEqual(['[ ] real one', '- real one', '- real one', '- real one', '1. real one']);
     expect(text).toContain('\n\\- forged item\n\\2. forged step\n\\[x] forged task\n\\\\- kept\n');
   });
 
@@ -320,7 +323,7 @@ describe('look_back forward wake hint (R8)', () => {
   it('names the tool once at the end of Unresolved, keeps Next last, and checks the hint landed', () => {
     const hint = 'Need an exact detail from before this handoff? look_back finds it.';
     const { text, blocks } = renderForward(input({ problems: ['transcript: not found'] }));
-    expect(text).toContain(`Unresolved\ntranscript: not found\n${hint}\nObjective`);
+    expect(text).toContain(`Unresolved\ntranscript: not found\n${hint}\nDone`);
     expect(text.match(/look_back/g)).toHaveLength(1);
     expect(lines(text).slice(-2)).toEqual(['Next', 'run npm test']);
     expect(installCheck(blocks, text.replace(hint, ''), text).missing).toEqual(['Unresolved']);
@@ -339,7 +342,7 @@ describe('what the wake tells the model', () => {
 
   it('puts the call shape after the look_back hint in Unresolved, when it is given', () => {
     const { text } = renderForward(input({ callShape: SHAPE }));
-    expect(text).toContain(`Unresolved\nNeed an exact detail from before this handoff? look_back finds it.\n${SHAPE}\nObjective\n`);
+    expect(text).toContain(`Unresolved\nNeed an exact detail from before this handoff? look_back finds it.\n${SHAPE}\nDone\n`);
     expect(renderForward(input()).text).not.toContain(SHAPE);
   });
 

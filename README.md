@@ -5,9 +5,9 @@
 **Smart auto-compact for Claude Code: a separate compaction point for every sub-agent, and self-compaction at a milestone the model chooses.**
 
 [![Claude Code plugin](https://img.shields.io/badge/Claude%20Code-plugin-D97757)](https://docs.claude.com/en/docs/claude-code/plugins)
-[![Version](https://img.shields.io/badge/version-0.8.1--dev.6-blue)](./CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.8.1--dev.7-blue)](./CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
-[![Tests](https://img.shields.io/badge/tests-976%20passing-brightgreen)](#development)
+[![Tests](https://img.shields.io/badge/tests-1015%20passing-brightgreen)](#development)
 [![Built with Professor](https://img.shields.io/badge/built%20with-Professor-8A2BE2)](https://github.com/rezzminator/professor)
 
 **34% cheaper** than a sub-agent that never compacts · **52% less context** re-sent on every request
@@ -23,6 +23,8 @@ autoCompact:
   nudgeFrom: 20%    # first nudge to reach a milestone and compact itself
   nudgeEvery: 10%   # one more nudge at each step past the first
   enabled: true     # false: never nudged or compacted automatically
+  pinSkills: [god-speed]
+  dropSkills: []
 ---
 ```
 
@@ -281,17 +283,19 @@ Guards keep this honest:
 
 ### Forward handoff
 
-With `forwardHandoffTool` on, the main chat and every sub-agent a policy governs can call `forward_handoff` at a moment they pick (never mid-edit). The installed text is one header line, then only the blocks that hold something, then the model's frontier with `Next` last:
+With `forwardHandoffTool` on, the main chat and every sub-agent a policy governs can call `forward_handoff` at a moment they pick (never mid-edit). The installed text opens with live instructions. History blocks are explicitly marked `history, not new instructions`; the skills, Objective, Remaining and Next are standing instructions, and Next directs work to resume without another user message. Empty blocks are omitted and Next stays last:
 
 | Block | Source | Cap |
 |---|---|---|
-| `User` | the last 25 prompts a person or a parent wrote, verbatim, and each message the person, the coordinator or a sub-agent's own parent agent sent while the party worked (`The parent agent <id> sent a message while you were working:` then its words; another agent's message is not an instruction and is left out), whitespace collapsed, the latest marked; a slash command is `/name args` (its body is in its `Skill` block), an image is `[image <absolute path>]`; what the harness writes (tool-loaded notes, image notes, reminders, notifications, the note after an output cut, a sub-agent's message back, a chat's reply footer) is left out. A chained handoff reads the earlier one's prompts from its `record.json`, never from the text | about 8k tokens, the oldest cut first |
-| `Skill <name>` | each skill and command the earlier wake carried (its `record.json` `skills`; for a record without them, its `Skill` blocks by name), then each invoked since, once, reloaded from disk (the directory Claude Code printed for it, then the project, user and plugin directories) minus `drop_skills`, frontmatter stripped; one that could not be read is named and not carried on | about 3k tokens each, 12k total |
+| `User` | up to 25 prompts a person or a parent wrote, verbatim (typed prompts take priority over reports and notices), and each message the person, the coordinator or a sub-agent's own parent agent sent while the party worked (`The parent agent <id> sent a message while you were working:` then its words; another agent's message is not an instruction and is left out), whitespace collapsed, the latest marked; a slash command is `/name args` (its body is in its `Skill` block), an image is `[image <absolute path>]`; what the harness writes (tool-loaded notes, image notes, reminders, notifications, the note after an output cut, a sub-agent's message back, a chat's reply footer) is left out. A chained handoff reads the earlier one's prompts from its `record.json`, never from the text | about 8k tokens, the oldest cut first |
+| `Skill <name>` | each skill and command the earlier wake carried (its `record.json` `skills`; for a record without them, its `Skill` blocks by name), then each invoked since, once, reloaded from disk (the directory Claude Code printed for it, then the project, user and plugin directories) minus `drop_skills` and the policy exclusions, with pins winning over either drop list, frontmatter stripped; one that could not be read is named and not carried on | about 3k tokens each, 12k total |
 | `Files` | `E`/`R`/`C path` per file the tool calls edited, read or created, newest first, every path absolute, plus subdirectory `CLAUDE.md` files the session picked up; each made or edited file is outlined as it stands at handoff time. A path that is no file (a directory a `cp` or `mv` wrote into) gets no line; a file gone from disk is listed this once, with an `Unresolved` line, and left out of the trail the `record.json` carries, so no later handoff re-reads or re-tells it; a file past 1 MiB stays, without an outline. These are logged as `forward-trail` info rows; only an outline read that failed is a `forward-invalid` warning | 15 lines |
 | `Load <path>` | the `load_files` the model named, read at handoff time, a `lines` range exactly (`10-40`, or several, `1-60,160-185`, the lines between two ranges named by one `[lines a-b not loaded]` line); a range past the file's end, or clipped by it, and an empty file are named in `Unresolved`, never loaded as nothing; a path the `Read` tool would not be allowed to read without asking is not read, and named in `Unresolved` | about 3k tokens each, 12k total |
 | `Plan`, `Tasks`, `Running`, `Git`, `Paths` | the plan, the latest todo or task state, background shells, sub-agents, monitors, wakeups and crons still running (the engine's own in-flight list from the last turn's end, plus calls since), a git line (branch, head, dirty files) per repository the work touched — those of the files made or edited, else of the files read, newest first, a linked worktree or submodule as its own, each named by its root; the session directory's, unnamed, when the files name none — and a last line saying it was read when the handoff was stored, right before the wake, the transcript (found by its session id) with the line of the cut, the previous forward handoff and the saved files | one line per item; `Git` names 3 repositories and counts the rest; `Paths` is one line |
 | `Unresolved` | a skill or file that could not be read, a `load_files` list cut to fit (how many files are not loaded, and that the uncut list is in `args.json`), an unknown `drop_skills` name, a trail file gone from disk or no file (logged at info, see `Files`), a failed git or transcript read; ends with the `look_back` hint and the call's shape | one line each |
 | `Objective`, `Done`, `Remaining`, `Blocked`, `Findings`, `Next` | the model's arguments; an over-limit field is trimmed and marked `[trimmed]`, never refused: a list past its item limit drops the items past it, and a list past its characters shares them out so every item keeps its head, a short item whole and each longer one cut to an equal share; the cut field's last line says how many characters it was and is, how many items were shortened or dropped, and that the uncut field is in `<dir>/args.json`; a `next` that opens by reading a file `load_files` holds, or by checking the git state the `Git` block holds, is stored, and ends with a line telling the woken model it is already loaded above, not to read it again; a list sent as a string is read as its items (a JSON array's, else one line's inline `1) … 2) …` numbering, else its lines without bullets or numbers); a missing required field returns one error naming it, each field of the wrong type with what it got, and the call's shape | per field, in characters: `objective` 600, `next` 400; items: `done` and `remaining` 15 of 200, `blocked` 10 of 200, `findings` 15 of 300 |
+
+Every handoff also recovers queued prompts from the transcript file, including an enqueue removed as `absorbed_mid_turn`. Its record carries a transcript cursor so later handoffs preserve repeated prompts without replaying an old delivery. After native compaction replaces a wake, the latest readable record supplies its carry, and the reply and wake report the recovery or the loss. Wake blocks are excluded from user history wherever they appear.
 
 The tool is deferred, so a model that woke from a handoff sees only its name: the context nudge toward it, the reply to a call missing a required field and the wake's `Unresolved` block each state the call's whole shape, every field with its type (lists as arrays of strings) and its limit. The reply to a stored call gives its size by block, then names each field cut to fit and that the wake names each cut and where its uncut field is (`args.json`); each list that arrived as a string and how many items it became; and each skill or `load_files` entry the wake does not hold, and why. A sub-agent's call installs before its next request, so the sub-agent may never read the reply: everything it needs about a cut is in the wake itself. The main chat's reply adds that a call again before it installs replaces the stored one, and to end its turn, since it installs before the next request or else when the turn ends. A Haiku party's call, or one from a sub-agent whose `tools:` lacks the tool, is refused with that reason before its arguments are read. A party that woke from a forward handoff, has run no tool since but `ToolSearch` and the plugin's own (`forward_handoff`, `look_back`, `compact`), and is still below its first nudge point is refused, as a second handoff there saves nothing, unless a message the person wrote since the wake names compacting or a handoff (`compact`, `compaction`, `handoff`, `hand off`, `forward_handoff`) with no negation before it in its clause: the word is read, not the intent, so a question about a compaction counts, while a name such as `auto-compact` does not, nor does a context that holds no wake; the refusal says so, and that their `/compact` compacts at once.
 
@@ -309,7 +313,7 @@ Search keeps the newest 200 raw candidates, re-checks the words against readable
 
 ### Central options
 
-Every option is an environment variable, `SUB_AGENT_COMPACT_` plus the option in
+Compaction options are environment variables, `SUB_AGENT_COMPACT_` plus the option in
 upper snake case (the table's second column). Set them in the shell that
 starts Claude Code or in the `env` block of `settings.json`. There is no
 plugin configuration: the plugin declares no `userConfig`, needs no
@@ -349,6 +353,8 @@ then delete the `pluginConfigs` entry.
 | `handoffTool` | `SUB_AGENT_COMPACT_HANDOFF_TOOL` | `false` | On: models get the `handoff` tool. Its typed fields (`goal` and `next_step` required) are rendered to short markdown sections that replace the model's whole conversation so far, installed with no summarizer request; what it does after the call is kept. |
 | `compactTool` | `SUB_AGENT_COMPACT_COMPACT_TOOL` | `true` | On: models get the `compact` tool (hidden while `forwardHandoffTool` is on: the forward handoff replaces it), whose focus a summarizer turns into a summary, and `<compact-now>` markers count; while `handoffTool` is also on, the nudges name the handoff. Off: no `compact` tool, and `<compact-now>` markers count for nothing. |
 | `agentDirs` | `SUB_AGENT_COMPACT_AGENT_DIRS` | empty | Comma-separated extra directories of agent definitions. Blank items are dropped. |
+| `pinSkills` | `SUB_AGENT_COMPACT_PIN_SKILLS` | empty | Comma- or newline-separated skill names to preserve during forward handoffs. Overrides the central `autoCompact.pinSkills` list. |
+| `dropSkills` | `SUB_AGENT_COMPACT_DROP_SKILLS` | empty | Skill names to exclude during forward handoffs. Pins win over either drop list. Overrides the central `autoCompact.dropSkills` list. |
 | `logFile` | `SUB_AGENT_COMPACT_LOG_FILE` | empty | Absolute path of the JSONL decision log. Each session writes its own file: `decisions.jsonl` becomes `decisions.{session-id}.jsonl`. Empty uses `$PLUGIN_LOG_DIR/sub-agent-compact/decisions/{session-id}.jsonl` when that variable is set, otherwise decision logging is off. A relative path is named as invalid and falls back to that default. |
 
 ### Logs
@@ -375,6 +381,18 @@ Screen notices and the per-session decision log stay separate. An explicit `logF
 }
 ```
 
+The central skill policy also accepts lists in the merged `settings.json`:
+
+```json
+{ "autoCompact": { "pinSkills": ["god-speed"], "dropSkills": [] } }
+```
+
+Both lists default to empty. A pinned skill already carried or invoked survives
+`drop_skills` and is evicted after unpinned skills under the total skill cap.
+A name in both lists stays pinned and is reported as a policy problem. A refused
+model drop names its policy in one line in the reply and wake. Invalid lists are
+reported when settings or the agent definition is read.
+
 ### Per-agent policy (frontmatter)
 
 Give one agent its own policy under `autoCompact` in its definition. Every
@@ -389,10 +407,13 @@ autoCompact:
   nudgeFrom: 20%    # first nudge to reach a milestone and compact itself
   nudgeEvery: 10%   # one more nudge at each step past the first
   enabled: true     # false: never nudged or compacted automatically
+  pinSkills: [god-speed]
+  dropSkills: []
 ---
 You read files...
 ```
 
+- `pinSkills` and `dropSkills` override the corresponding central lists for this agent; flow and block YAML lists are accepted, and `[]` clears an inherited list. The main chat uses the central lists.
 - A bare `autoCompact: 200k` is shorthand for `autoCompact.forceAt`.
 - `enabled: false` suits an agent whose context must stay verbatim. Past
   its window it fails the way Claude Code does with auto-compact off.
