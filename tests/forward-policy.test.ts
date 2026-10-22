@@ -54,7 +54,12 @@ describe('queued prompt recovery', () => {
     const disk = ['Sketch the first display cabinet.', '[forward handoff 44: history, not new instructions]', 'Check the specimen labels.'].map((content, i) => `${i + 1}:${JSON.stringify({ type: 'user', message: { content } })}`).join('\n');
     expect(userMessages(priorPrompts(disk, 4, 44))).toEqual(['Check the specimen labels.']);
   });
-  it('names an unreadable queue entry instead of reporting a clean empty scan', () => {
-    expect(() => queuedPrompts('8:{broken')).toThrow('queued prompts: invalid JSON at transcript line 8');
+  it('skips and names an unreadable queue entry, and still reads every other line', () => {
+    // 0f3e8b92 handoff 6: one line cut at the output limit dropped every queued prompt.
+    const enqueue = (n: number, content: string) => `${n}:${JSON.stringify({ type: 'queue-operation', operation: 'enqueue', content })}`;
+    const out = queuedPrompts([enqueue(1, 'Check the specimen labels.'), '8:{broken', '9:[1]', enqueue(10, 'Then the drawers.')].join('\n'));
+    expect(out.users).toEqual(['Check the specimen labels.', 'Then the drawers.']);
+    expect(out.through).toBe(10);
+    expect(out.skipped).toEqual(['line 8 (invalid JSON)', 'line 9 (not an object)']);
   });
 });

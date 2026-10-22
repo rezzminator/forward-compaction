@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { GIT_CURRENT } from '../plugins/sub-agent-compact/src/forward-text.ts';
@@ -117,6 +118,29 @@ describe('the forward handoff tool through the adapter', () => {
     expect(cc.written['/b/decisions.session-1.jsonl']).toContain('cwd unavailable');
   });
 
+  it('carries a queued prompt from a transcript whose scan passes the engine output limit', async () => {
+    // 0f3e8b92 handoff 6: the queued-prompt scan was cut at 4,194,304 characters mid-line, and every queued prompt was lost.
+    const directory = mkdtempSync(join(tmpdir(), 'forward-cap-'));
+    try {
+      const file = join(directory, 'transcript.jsonl');
+      const image = (n: number) => JSON.stringify({ type: 'user', message: { role: 'user', content: [text(`look at ${n}`), { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'A'.repeat(900_000) } }] } });
+      const result = (n: number) => JSON.stringify({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: `r${n}`, content: 'x'.repeat(900_000) }] } });
+      writeFileSync(file, [image(1), result(2), image(3), result(4), image(5), result(6), JSON.stringify({ type: 'queue-operation', operation: 'enqueue', content: 'Then label the drawers.' })].join('\n') + '\n');
+      const run = (argv: string[]) => {
+        if (!argv.includes(TRANSCRIPT)) return undefined;
+        const r = spawnSync(argv[0]!, argv.slice(1).map((a) => (a === TRANSCRIPT ? file : a)), { encoding: 'utf8', maxBuffer: 1e9 });
+        return { exitCode: r.status ?? 2, stdout: r.stdout, stderr: r.stderr };
+      };
+      const cc = engine({ forwardHandoffTool: true }, {}, api(), true, [], { run });
+      await cc.start();
+      await cc.step(250_000);
+      await cc.forward();
+      const wake = cc.written[`${DIR}/wake.txt`]!;
+      expect(wake).not.toContain('queued prompts');
+      expect(wake).toMatch(/\[\d+, latest, unanswered\] Then label the drawers\./);
+    } finally { rmSync(directory, { recursive: true, force: true }); }
+  });
+
   it('stores the text code carried and persists the raw arguments, the literal text and the record', async () => {
     const cc = engine();
     await cc.start();
@@ -127,7 +151,7 @@ describe('the forward handoff tool through the adapter', () => {
     expect(JSON.parse(cc.written[`${DIR}/args.json`]!)).toEqual(FIELDS);
     const wake = cc.written[`${DIR}/wake.txt`]!;
     expect(wake.split('\n')[0]).toBe('[forward handoff 1: live instructions]');
-    expect(wake).toContain('User\n[1, latest] rename qty to quantity in every report\n');
+    expect(wake).toContain('User\n[1, latest, unanswered] rename qty to quantity in every report\n');
     expect(wake).toContain('Files\nR /nowhere/reports/a.sql\n');
     expect(wake).toContain('Git\nmain@abc1234, 1 dirty: /nowhere/a.txt\n');
     expect(wake).toContain(`Paths\ntranscript ${TRANSCRIPT}:812 · saved ${DIR}\n`);
@@ -579,7 +603,7 @@ describe('the forward handoff tool through the adapter', () => {
     await cc.step(250_000, undefined, 'a1');
     await cc.forward(FIELDS, 'a1');
     const wake = Object.entries(cc.written).find(([k]) => k.endsWith('/agent-a1/1/wake.txt'))?.[1];
-    expect(wake).toContain('User\n[1] Review the diff.\n[2, latest] The parent agent a0123456789abcdef sent a message while you were working:\nAlso fix the docs.\n');
+    expect(wake).toContain('User\n[1] Review the diff.\n[2, latest, unanswered] The parent agent a0123456789abcdef sent a message while you were working:\nAlso fix the docs.\n');
   });
 
   it('refuses a second handoff from a party that woke from one while its context is below its first nudge point', async () => {
@@ -891,7 +915,7 @@ describe('look_back through the adapter (R1–R7, R9)', () => {
     const scan = cc.runCalls.find((argv) => argv[0] === 'sh' && argv.includes('alpha'))!;
     expect(scan.slice(4)).toEqual([TRANSCRIPT, '10', 'alpha', 'beta']);
     expect(scan[2]).toContain('1,$(($2 - 1))p');
-    expect(scan[2]).toContain("sed -n '1,200p'");
+    expect(scan[2]).toContain('NR > 200');
     expect(cc.runCalls.find((a) => a[0] === 'find')).toEqual(['find', '-H', '/h/u/.claude/projects', '-maxdepth', '2', '-type', 'f', '-name', 'session-1.jsonl']);
     expect(await saidLines(cc)).toEqual(['look back (main): query alpha beta — 1 hits']);
     expect(await lookRows(cc)).toEqual([expect.objectContaining({ event: 'look-back', party: 'main', query: 'alpha beta', hits: 1, boundary: 10 })]);

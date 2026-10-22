@@ -4,6 +4,15 @@ Every release of sub-agent-compact. Versions follow [semantic versioning](https:
 
 ## [Unreleased]
 
+## [0.8.1-dev.8] — 2026-10-22
+
+### Fixed
+
+- A forward handoff's `Running` block names the sub-agents from Claude Code's agent list at handoff time, as ListAgents shows them: an agent resumed by `SendMessage` and the children a sub-agent spawned are no longer missing, each child is named with its parent, and a sub-agent's block names only its own descendants.
+- The newest message a person wrote is tagged `answered`, `partially answered` or `unanswered` in the wake's `User` block, so a woken model knows whether its reply reached them without calling `look_back`; the status chains across handoffs, and task notifications after the message no longer hide it.
+- Claude Code cuts a command's output at 4,194,304 characters: the transcript scans (queued prompts, and prompts and files before a native compaction) now read in pages under it, and the queued-prompt scan leaves out tool results and image data. A transcript line that cannot be read is skipped and named, instead of losing every queued prompt.
+- `look_back` search stays under the same limit: image data is emptied before the search and the candidates passed on fit 3,000,000 bytes, so a query matching many large entries no longer fails with a missing completion marker.
+
 ## [0.8.1-dev.7] — 2026-10-22
 
 ### Added

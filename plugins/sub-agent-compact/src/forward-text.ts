@@ -24,7 +24,7 @@ const MIN_PARTIAL_CHARS = 200;
 export const USERS_KEEP = 25;
 
 /** A line that would read as the header, a block label or an item marker of this text. */
-const SPECIAL = /^\\*(?:(?:User|Earlier summary|Files|Plan|Tasks|Running|Git|Paths|Unresolved|Objective|Done|Remaining|Blocked|Findings|Next)$|(?:Skill|Load) |\[\d+(?:, latest(?:, handed off in reply)?)?\] |\[\d+ older dropped\]$|\[(?:forward handoff|history, not new instructions|live instructions))/;
+const SPECIAL = /^\\*(?:(?:User|Earlier summary|Files|Plan|Tasks|Running|Git|Paths|Unresolved|Objective|Done|Remaining|Blocked|Findings|Next)$|(?:Skill|Load) |\[\d+(?:, latest(?:, (?:handed off in reply|answered|partially answered|unanswered))?)?\] |\[\d+ older dropped\]$|\[(?:forward handoff|history, not new instructions|live instructions))/;
 
 /** A carried line made unable to read as structure: one more backslash in front when it would, so no two lines escape alike. */
 export const escapeLine = (line: string): string => (SPECIAL.test(line) ? `\\${line}` : line);
@@ -48,14 +48,33 @@ export const oneLineLabel = (text: string): string => text.replace(/[\u0000-\u00
  * The user messages carried: the earlier handoff's from its record, then those since, the last 25; how many went older
  * than that; and whether a handoff was the reply to the newest (this call's when a prompt came since, else the earlier one's).
  */
-export function chainUsers(previous: { users: readonly string[]; dropped: number; inReply?: boolean } | undefined, fresh: readonly string[], freshInReply = false, keep = USERS_KEEP): { users: string[]; dropped: number; inReply: boolean } {
+/** A carried message no person wrote: a notice from another session, an agent, a hook, a goal or a task. */
+export const NOTICE = /^(?:Another Claude session sent a message:|<agent-message\b|A session-scoped Stop hook\b|Goal (?:set|updated|completed):|<task-notification\b)/;
+
+/** Whether text reached the person after the newest message a person wrote (replyAfter). */
+export type ReplyStatus = 'answered' | 'partially answered' | 'unanswered';
+const REPLY_RANK: Record<ReplyStatus, number> = { unanswered: 0, 'partially answered': 1, answered: 2 };
+
+/**
+ * The newest message's reply status: the one since it when it came since (unanswered when the context does not hold it,
+ * a queued prompt), else the earlier handoff's, raised by any reply since. Undefined when no handoff knew it and none came.
+ */
+function chainReply(previous: ReplyStatus | undefined, fresh: readonly string[], since?: { status: ReplyStatus; found: boolean; latest?: string }): ReplyStatus | undefined {
+  if (fresh.length > 0) return since === undefined ? undefined : since.found && since.latest === fresh.at(-1) ? since.status : 'unanswered';
+  if (since === undefined) return previous;
+  if (previous === undefined) return since.status === 'unanswered' ? undefined : since.status;
+  return REPLY_RANK[since.status] > REPLY_RANK[previous] ? since.status : previous;
+}
+
+export function chainUsers(previous: { users: readonly string[]; dropped: number; inReply?: boolean; reply?: ReplyStatus } | undefined, fresh: readonly string[], freshInReply = false, keep = USERS_KEEP, since?: { status: ReplyStatus; found: boolean; latest?: string }): { users: string[]; dropped: number; inReply: boolean; reply?: ReplyStatus } {
   const all = [...(previous?.users ?? []), ...fresh];
   const over = Math.max(0, all.length - keep);
-  const notices = /^(?:Another Claude session sent a message:|<agent-message\b|A session-scoped Stop hook\b|Goal (?:set|updated|completed):|<task-notification\b)/;
-  const ranked = all.map((text, index) => ({ text, index, priority: notices.test(text) ? 0 : 1 }));
+  const ranked = all.map((text, index) => ({ text, index, priority: NOTICE.test(text) ? 0 : 1 }));
   const kept = ranked.sort((a, b) => b.priority - a.priority || b.index - a.index).slice(0, keep).sort((a, b) => a.index - b.index);
   const latest = kept.at(-1);
-  return { users: kept.map((u) => cut(u.text, USERS_MAX_CHARS)), dropped: (previous?.dropped ?? 0) + over, inReply: latest?.index === all.length - 1 ? fresh.length > 0 ? freshInReply : previous?.inReply === true : false };
+  const person = ranked.reduce((at, r) => (r.priority === 1 && r.index > at ? r.index : at), -1);
+  const reply = latest !== undefined && latest.index === person ? chainReply(previous?.reply, fresh.filter((t) => !NOTICE.test(t)), since) : undefined;
+  return { users: kept.map((u) => cut(u.text, USERS_MAX_CHARS)), dropped: (previous?.dropped ?? 0) + over, inReply: latest?.index === all.length - 1 ? fresh.length > 0 ? freshInReply : previous?.inReply === true : false, ...(reply !== undefined ? { reply } : {}) };
 }
 
 export type BlockRecord = { name: string; start: number; chars: number; tokens: number; items: number; hash: string };
@@ -69,6 +88,8 @@ export type RenderInput = {
   usersDropped?: number;
   /** The handoff call was the reply to the newest: its tag says so. */
   handoffInReply?: boolean;
+  /** Whether text reached the person after the newest (chainUsers): its tag says so. */
+  reply?: ReplyStatus;
   /** What Claude Code's own summary knew, when the work began before it. */
   summary?: string;
   /** The skills and commands to reload, oldest first: the body, or why there is none; the directory the harness printed for it, for the record. */
@@ -136,8 +157,8 @@ const body = (text: string): string => {
  * The user messages that fit the cap, newest first under it, only the oldest kept cut; rendered oldest first, numbered on
  * from the `base` earlier handoffs let go. The newest is tagged latest, and says so when the handoff was the reply to it.
  */
-export function renderUsers(msgs: readonly string[], max = USERS_MAX_CHARS, base = 0, inReply = false): { text: string; items: number; dropped: number } {
-  const tag = (i: number): string | undefined => (i === msgs.length - 1 ? (inReply ? IN_REPLY : 'latest') : undefined);
+export function renderUsers(msgs: readonly string[], max = USERS_MAX_CHARS, base = 0, inReply = false, reply?: ReplyStatus): { text: string; items: number; dropped: number } {
+  const tag = (i: number): string | undefined => (i === msgs.length - 1 ? (inReply ? IN_REPLY : reply !== undefined ? `latest, ${reply}` : 'latest') : undefined);
   const kept: string[] = [];
   let left = max;
   let stopped = msgs.length;
@@ -206,7 +227,7 @@ export function renderForward(i: RenderInput): { text: string; blocks: BlockReco
   };
 
   if (i.users.length > 0) {
-    const users = renderUsers(i.users, USERS_MAX_CHARS, i.usersDropped ?? 0, i.handoffInReply === true);
+    const users = renderUsers(i.users, USERS_MAX_CHARS, i.usersDropped ?? 0, i.handoffInReply === true, i.reply);
     add('User', users.text, users.items, true);
   }
   if (i.summary !== undefined) add('Earlier summary', cut(i.summary, SUMMARY_MAX_CHARS), 1);

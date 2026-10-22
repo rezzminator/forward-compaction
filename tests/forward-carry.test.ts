@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { chainSkills, promptsSinceWake, bashWrites, handoffInReply, collapseWhitespace, fileTrail, gitBlock, gitLine, GIT_REPOS, outsideRepository, trailDirs, invocationPaths, invocations, parseLineRanges, parsePorcelain, planAndTasks, runningWork, sliceFile, stripNoise, userMessages, absPath, findTranscriptArgv, firstFound, heldForward, opensWithSummary, priorPrompts, priorCalls, mergeTrail, settleTrail, openingSummary, summaryKnowledge, outline, parsePorcelain as porcelain, type ApiMsg } from '../plugins/sub-agent-compact/src/forward-carry.ts';
-import { renderForward } from '../plugins/sub-agent-compact/src/forward-text.ts';
+import { chainSkills, promptsSinceWake, bashWrites, handoffInReply, collapseWhitespace, fileTrail, gitBlock, gitLine, GIT_REPOS, outsideRepository, trailDirs, invocationPaths, invocations, parseLineRanges, parsePorcelain, planAndTasks, replyAfter, runningWork, sliceFile, stripNoise, userMessages, absPath, findTranscriptArgv, firstFound, heldForward, opensWithSummary, priorPrompts, priorCalls, mergeTrail, settleTrail, openingSummary, summaryKnowledge, outline, parsePorcelain as porcelain, type ApiMsg } from '../plugins/sub-agent-compact/src/forward-carry.ts';
+import { chainUsers, renderForward } from '../plugins/sub-agent-compact/src/forward-text.ts';
 import { HANDOFF_OPENING } from '../plugins/sub-agent-compact/src/handoff.ts';
 
 const t = (text: string) => ({ type: 'text', text });
@@ -414,6 +414,66 @@ describe('running work from the engine list', () => {
   it('without the engine list, a cron deleted by id is not running', () => {
     const m = [asst(use('CronCreate', { cron: '14 8 25 9 *', prompt: 'later' }, 'c1')), user(res('c1', 'Scheduled one-shot task e0ae8491 (14 8 25 9 *). It will fire once then auto-delete.')), asst(use('CronDelete', { id: 'e0ae8491' }))];
     expect(runningWork(m)).toEqual([]);
+  });
+});
+
+describe('running agents from the agent list', () => {
+  // 0f3e8b92 handoff 6: Running named one foreman while ListAgents showed five, among them one resumed by SendMessage and a foreman's children.
+  const live = (over: Record<string, unknown>) => ({ tasks: [], crons: [], started: new Set<string>(), ...over }) as never;
+  const rows = [
+    { id: 'fore1', type: 'gpt-foreman', description: 'Rename rendered speaker labels', status: 'running' },
+    { id: 'lab1', type: 'gpt-foreman', description: 'Lab round 2', status: 'running' },
+    { id: 'kid1', type: 'tracer', description: 'map the renderers', status: 'running', parentId: 'fore1' },
+    { id: 'kid2', type: 'collector', description: 'copy label lines', status: 'running', parentId: 'kid1' },
+    { id: 'old1', type: 'reviewer', description: 'old review', status: 'completed' },
+  ];
+  const m = [
+    asst(use('Agent', { description: 'rename labels', run_in_background: true }, 't1')),
+    user(res('t1', 'Async agent launched successfully.\nagentId: fore1')),
+    asst(use('Agent', { description: 'old review', run_in_background: true }, 't2')),
+    user(res('t2', 'Async agent launched successfully.\nagentId: old1')),
+  ];
+
+  it('mirrors every running agent the engine lists, resumed or spawned by a sub-agent, each child with its parent', () => {
+    const l = live({ tasks: [{ id: 'fore1', type: 'subagent', description: 'rename labels' }, { id: 'old1', type: 'subagent', description: 'old review' }, { id: 'sh1', type: 'shell', description: 'd', command: 'npm run dev' }] });
+    expect(runningWork(m, l, { rows })).toEqual([
+      'agent fore1 (gpt-foreman): Rename rendered speaker labels',
+      'agent lab1 (gpt-foreman): Lab round 2',
+      'agent kid1 (tracer, child of fore1): map the renderers',
+      'agent kid2 (collector, child of kid1): copy label lines',
+      'shell sh1: npm run dev',
+    ]);
+    expect(runningWork(m, undefined, { rows })).toEqual(runningWork(m, l, { rows }).slice(0, 4));
+  });
+
+  it("names a sub-agent's own descendants only, never itself or its siblings", () => {
+    expect(runningWork([], undefined, { rows, self: 'fore1' })).toEqual(['agent kid1 (tracer, child of fore1): map the renderers', 'agent kid2 (collector, child of kid1): copy label lines']);
+  });
+});
+
+describe('the reply to the newest user message', () => {
+  const fh = 'mcp__sub-agent-compact__forward_handoff';
+  // 0f3e8b92 handoff 6: the latest question had findings in Done, and nothing said whether a reply had reached the person.
+  it('is unanswered when no text reached the person after it, the handoff call\'s own text aside', () => {
+    expect(replyAfter([user('what changed in the diff?'), asst(use('Bash', { command: 'git diff' }, 'b1')), user(res('b1', 'diff')), asst({ type: 'text', text: 'Handing off.' }, use(fh, {}, 'f1'))])).toEqual({ status: 'unanswered', found: true, latest: 'what changed in the diff?' });
+  });
+  it('is partially answered when text reached the person mid-turn, and answered once a turn ended on text', () => {
+    expect(replyAfter([user('what changed?'), asst({ type: 'text', text: 'Wording only so far.' }, use('Bash', { command: 'git diff' }, 'b1')), user(res('b1', 'diff')), asst(use(fh, {}, 'f1'))]).status).toBe('partially answered');
+    expect(replyAfter([user('what changed?'), asst({ type: 'text', text: 'Only wording changed.' }), user('<task-notification>\n<status>completed</status>\n</task-notification>'), asst(use(fh, {}, 'f1'))]).status).toBe('answered');
+  });
+  it('judges the newest message a person wrote, past the task notifications that came after it', () => {
+    // 0f3e8b92 handoff 6: notices after the question outnumbered nothing, yet were the newest entries, so no status was given.
+    const note = '<task-notification>\n<task-id>a1</task-id>\n<status>completed</status>\n</task-notification>';
+    const m = [user('what changed in the diff?'), asst(use('Bash', { command: 'git diff' }, 'b1')), user(res('b1', 'diff'), note), asst(use(fh, {}, 'f1'))];
+    expect(replyAfter(m)).toEqual({ status: 'unanswered', found: true, latest: 'what changed in the diff?' });
+    const chain = chainUsers(undefined, [...Array.from({ length: 30 }, (_, i) => `ask ${i}`), 'what changed in the diff?', note], false, undefined, replyAfter(m));
+    expect(chain.users.at(-1)).toBe('what changed in the diff?');
+    expect(chain.reply).toBe('unanswered');
+  });
+  it('tags the newest message with its status in the wake, and carries it across a handoff with no prompt since', () => {
+    const r = renderForward({ seq: 2, users: ['first', 'what changed?'], reply: 'unanswered', skills: [], trail: [], outlines: {}, loaded: [], tasks: [], running: [], paths: [], problems: [], args: { objective: 'o', done: [], remaining: [], next: 'n', blocked: [], findings: [], loadFiles: [], dropSkills: [], trimmed: [] } } as never);
+    expect(r.text).toContain('[2, latest, unanswered] what changed?');
+    expect(replyAfter([user('[forward handoff 1: live instructions]'), asst({ type: 'text', text: 'Only wording changed.' }), user(res('x', 'ok')), asst(use(fh, {}, 'f1'))])).toEqual({ status: 'answered', found: false });
   });
 });
 

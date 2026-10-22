@@ -70,8 +70,15 @@ export function searchArgv(file: string, boundary: number, terms: readonly strin
   const refs = forms.flat().map((_, i) => `"\${${i + 3}}"`);
   // The term each form belongs to, as fixed numbers: awk counts a line's terms, not its forms.
   const groups = forms.flatMap((f, i) => f.map(() => i + 1)).join(' ');
-  return ['sh', '-c', `${checked}${prefix} | checked 1 grep -a -n -i -F ${refs.map((r) => `-e ${r}`).join(' ')} | checked 0 awk -v groups='${groups}' '${RANK}' ${refs.join(' ')} | checked 0 env LC_ALL=C sort -t: -k1,1nr -k2,2nr | checked 0 sed -n '1,200p' | checked 0 env LC_ALL=C sort -t: -k2,2n | checked 0 cut -d: -f2-${finish}`, 'sh', file, String(boundary), ...forms.flat()];
+  return ['sh', '-c', `${checked}${prefix} | ${STRIP_IMAGES} | checked 1 grep -a -n -i -F ${refs.map((r) => `-e ${r}`).join(' ')} | checked 0 awk -v groups='${groups}' '${RANK}' ${refs.join(' ')} | checked 0 env LC_ALL=C sort -t: -k1,1nr -k2,2nr | ${BUDGET} | checked 0 env LC_ALL=C sort -t: -k2,2n | checked 0 cut -d: -f2-${finish}`, 'sh', file, String(boundary), ...forms.flat()];
 }
+/**
+ * `$.process.run` keeps 4,194,304 characters of output (Claude Code 2.1.307) and cuts the rest, the completion marker with it.
+ * An image's base64 holds nothing to search: emptied, its entry still reads as an image block. The best 200 lines go on
+ * while they fit 3,000,000 bytes; every line is read, so no stage upstream is cut off mid-write.
+ */
+const STRIP_IMAGES = `checked 0 sed -E 's|"data":"[A-Za-z0-9+/=]{200,}"|"data":""|g'`;
+const BUDGET = `checked 0 env LC_ALL=C awk '{ n += length($0) + 1; if (NR > 200 || (NR > 1 && n > 3000000)) next; print }'`;
 /**
  * Prefixes each `grep -n` line with how many terms it holds, case aside; the forms come as operands, taken in BEGIN and
  * never read as files, so a term like `a=b` is never an assignment. The most-matching 200, newest first among equals, go on.

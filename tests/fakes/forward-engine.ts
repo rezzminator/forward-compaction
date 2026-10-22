@@ -136,9 +136,27 @@ export function engine(options: Record<string, unknown> = { forwardHandoffTool: 
           const out = await pluginExec('/bin/sh', argv.slice(1), { encoding: 'utf8' });
           return { exitCode: 0, ...out };
         }
+        // A paged scan (runPaged) as Claude Code returns it: the scan, run as scripted, from line PAGE_START, one page
+        // of at most 3,000,000 bytes and its marker, cut at the engine's 4,194,304-character output limit.
+        const paged = argv[0] === 'sh' ? /^\{ ([\s\S]*); \} \| tail -n \+"\$PAGE_START" \| /.exec(argv[2] ?? '') : null;
+        if (paged !== null) {
+          const inner = env.run?.(['sh', '-c', paged[1]!, ...argv.slice(3)], init) ?? { exitCode: 0, stdout: '', stderr: '' };
+          const all = inner.stdout.split('\n');
+          if (all.at(-1) === '') all.pop();
+          const page: string[] = [];
+          let bytes = 0;
+          let more = false;
+          for (const l of all.slice(Number((init as { env?: Record<string, string> } | undefined)?.env?.PAGE_START ?? 1) - 1)) {
+            bytes += Buffer.byteLength(l) + 1;
+            if (page.length > 0 && bytes > 3_000_000) { more = true; continue; }
+            page.push(l);
+          }
+          return { exitCode: 0, stdout: [...page, more ? '[page-more]' : '[page-end]', ''].join('\n').slice(0, 4_194_304), stderr: inner.stderr };
+        }
         const line = argv.join(' ');
         const scripted = env.run?.(argv, init);
-        if (scripted !== undefined) return scripted;
+        // Claude Code keeps 4,194,304 characters of a child's output and cuts the rest.
+        if (scripted !== undefined) return { ...scripted, stdout: scripted.stdout.slice(0, 4_194_304) };
         if (!git && argv[0] === 'git') return { exitCode: 128, stdout: '', stderr: 'fatal: not a git repository' };
         if (line === 'git rev-parse --abbrev-ref HEAD') return { exitCode: 0, stdout: 'main\n', stderr: '' };
         if (argv[0] === 'git' && argv[1] === '-C' && argv.slice(3).join(' ') === 'rev-parse --show-toplevel') {

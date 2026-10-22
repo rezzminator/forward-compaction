@@ -258,6 +258,27 @@ describe('look_back of a many-word prose query', () => {
   });
 });
 
+describe('look_back under the engine output cap', () => {
+  // 0f3e8b92 L8118: a many-word query matched 200 whole lines, image data among them, 7.7M characters; $.process.run keeps 4,194,304, so the marker was cut.
+  it('keeps the search output under the cap, drops image data, and still returns the best hits', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'look-back-cap-'));
+    try {
+      const file = join(directory, 'main.jsonl');
+      const big = (n: number) => JSON.stringify({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: `t${n}`, content: `verdict residual ${'x'.repeat(250_000)}` }] } });
+      const image = JSON.stringify({ type: 'user', message: { content: [{ type: 'text', text: 'verdict residual swap' }, { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'A'.repeat(900_000) } }] } });
+      writeFileSync(file, [...Array.from({ length: 30 }, (_, i) => big(i)), image, JSON.stringify({ subtype: 'compact_boundary' })].join('\n'));
+      const terms = api('parseLookBack')({ query: 'verdict residual swap' }).terms;
+      const argv = api('searchArgv')(file, 32, terms);
+      const stdout = execFileSync(argv[0], argv.slice(1), { encoding: 'utf8', maxBuffer: 1e9 });
+      expect(stdout.length).toBeLessThan(4_194_304);
+      const found = entries(api('processOutput')({ exitCode: 0, stdout, stderr: '' }, 'search', true));
+      expect(found.length).toBeGreaterThan(1);
+      const out = api('searchResults')(found, terms, 32);
+      expect(out.text.split('\n')[0]).toMatch(/^#31 /);
+    } finally { rmSync(directory, { recursive: true, force: true }); }
+  });
+});
+
 describe('look_back shell protocol (R3–R4)', () => {
   it('finds a term holding a quote or a backslash in the raw JSONL, where JSON escapes them', () => {
     const directory = mkdtempSync(join(tmpdir(), 'look-back-escape-'));
@@ -289,7 +310,7 @@ describe('look_back shell protocol (R3–R4)', () => {
       writeFileSync(file, [JSON.stringify({ type: 'user', message: { content: 'alpha ' + special } }), JSON.stringify({ type: 'user', message: { content: 'alpha current' } }), JSON.stringify({ subtype: 'compact_boundary' })].join('\n'));
       const argv = search(file, 2, ['alpha', special]);
       expect(argv.slice(4)).toEqual([file, '2', 'alpha', special]);
-      expect(argv[2]).toContain("sed -n '1,200p'");
+      expect(argv[2]).toContain('NR > 200');
       expect(argv[2]).not.toContain(special);
       const output = api('processOutput')({ exitCode: 0, stdout: execFileSync(argv[0], argv.slice(1), { encoding: 'utf8' }), stderr: '' }, 'search', true);
       expect(output).toContain('1:');

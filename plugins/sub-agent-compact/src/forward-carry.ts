@@ -1,5 +1,5 @@
 // What code carries into a forward handoff, read from the transcript in the Messages API form.
-import { FORWARD_OPENING, oneLineLabel } from './forward-text.ts';
+import { FORWARD_OPENING, NOTICE, oneLineLabel, type ReplyStatus } from './forward-text.ts';
 import { askedToCompact, FORWARD_TOOL } from './forward-args.ts';
 import { HANDOFF_OPENING, WAKE_NAME } from './handoff.ts';
 import { wakeCandidates, type WakeRoots } from './wake.ts';
@@ -106,14 +106,14 @@ export function userMessages(msgs: readonly ApiMsg[], opts: CarryOptions = {}): 
   return userEntries(msgs, opts).map((e) => e.text);
 }
 
-/** The user messages with whether each reached the party mid-turn (a queued message), for handoffInReply. */
-function userEntries(msgs: readonly ApiMsg[], { parent = [], delivered = [] }: CarryOptions): { text: string; queued: boolean }[] {
-  const out: { text: string; queued: boolean }[] = [];
+/** The user messages with whether each reached the party mid-turn (a queued message), for handoffInReply, and the index of the message holding it. */
+function userEntries(msgs: readonly ApiMsg[], { parent = [], delivered = [] }: CarryOptions): { text: string; queued: boolean; at: number }[] {
+  const out: { text: string; queued: boolean; at: number }[] = [];
   const carried = delivered.map(collapseWhitespace);
   const skillCalls = new Set<string>();
   // The text the harness writes next is a command's or a skill's expansion (its prompt body): not the person's words.
   let expansion = false;
-  for (const m of msgs) {
+  for (const [at, m] of msgs.entries()) {
     if (m.role !== 'user') {
       expansion = false;
       for (const b of blocksOf(m)) if (b.type === 'tool_use' && b.name === 'Skill' && typeof b.id === 'string') skillCalls.add(b.id);
@@ -182,13 +182,13 @@ function userEntries(msgs: readonly ApiMsg[], { parent = [], delivered = [] }: C
         if (at >= 0) last = `${last.slice(0, at)}${named}${last.slice(at + '[image]'.length)}`;
         else extra.push(named);
       }
-      out[out.length - 1] = { text: extra.length > 0 ? `${last} ${extra.join(' ')}` : last, queued: out[out.length - 1]!.queued };
-    } else if (joined !== '') out.push({ text: joined, queued: false });
+      out[out.length - 1] = { ...out[out.length - 1]!, text: extra.length > 0 ? `${last} ${extra.join(' ')}` : last };
+    } else if (joined !== '') out.push({ text: joined, queued: false, at });
     for (const said of queued) {
       const text = collapseWhitespace(said);
       const seen = carried.indexOf(text);
       if (seen >= 0) carried.splice(seen, 1);
-      else out.push({ text, queued: true });
+      else out.push({ text, queued: true, at });
     }
   }
   return out;
@@ -427,12 +427,27 @@ export function oneShotFired(schedule: string, now: number): boolean {
 
 const TASK_LABEL: Record<string, string> = { shell: 'shell', subagent: 'agent', monitor: 'monitor', workflow: 'workflow' };
 
+/** One row of `$.agent.list()`: what ListAgents shows. */
+export type AgentRow = { id: string; type: string; description: string; status: string; parentId?: string };
+
+/** The running agents under `self` (every one for the main chat), each child named with its parent, in list order. */
+function agentLines(rows: readonly AgentRow[], self?: string): string[] {
+  const parent = new Map(rows.map((r) => [r.id, r.parentId]));
+  const under = (id: string): boolean => {
+    for (let at = parent.get(id), hops = 0; at !== undefined && hops < rows.length; at = parent.get(at), hops++) if (at === self) return true;
+    return false;
+  };
+  return rows.filter((r) => r.status === 'running' && r.id !== self && (self === undefined || under(r.id)))
+    .map((r) => `agent ${r.id} (${r.type}${r.parentId !== undefined ? `, child of ${r.parentId}` : ''}): ${oneLine(r.description)}`);
+}
+
 /**
  * One line per piece of work still running: background shells, sub-agents, monitors, the wakeup and crons armed.
  * With the engine's `live` list, that list is the truth for everything started before it was taken, and the transcript
  * speaks only for the calls since; without it (no turn has ended yet) the transcript alone decides, by the endings it holds.
+ * With the engine's agent list, that list alone names the agents, as ListAgents shows them: resumed ones and a sub-agent's children too.
  */
-export function runningWork(msgs: readonly ApiMsg[], live?: LiveWork): string[] {
+export function runningWork(msgs: readonly ApiMsg[], live?: LiveWork, agents?: { rows: readonly AgentRow[]; self?: string }): string[] {
   const results = new Map<string, string>();
   const ended = new Set<string>();
   let notices = '';
@@ -478,7 +493,7 @@ export function runningWork(msgs: readonly ApiMsg[], live?: LiveWork): string[] 
       if (b.name === 'Bash' && input.run_in_background === true) {
         const shell = /background with ID:\s*([A-Za-z0-9_-]+)/.exec(result ?? '')?.[1] ?? id.slice(-8);
         if (!over(shell, id) && !finished(shell, at, id)) push(shell, `shell ${shell}: ${oneLine(String(input.command ?? ''))}, ${age}`);
-      } else if (b.name === 'Agent' || b.name === 'Task') {
+      } else if ((b.name === 'Agent' || b.name === 'Task') && agents === undefined) {
         const background = input.run_in_background === true;
         if (!background && result !== undefined) continue;
         const agent = /agentId:\s*([A-Za-z0-9]+)/.exec(result ?? '')?.[1] ?? id.slice(-8);
@@ -500,14 +515,16 @@ export function runningWork(msgs: readonly ApiMsg[], live?: LiveWork): string[] 
     listed.add(wakeup.id);
   }
   const lines = out.sort((a, b) => a.at - b.at).map((x) => x.line);
+  const named = agents !== undefined ? agentLines(agents.rows, agents.self) : [];
   if (live !== undefined) {
     const mine = [
-      ...live.tasks.filter((t) => !listed.has(t.id) && !over(t.id)).map((t) => `${TASK_LABEL[t.type] ?? t.type} ${t.id}: ${oneLine(t.command ?? t.description)}`),
+      ...named,
+      ...live.tasks.filter((t) => !listed.has(t.id) && !over(t.id) && !(agents !== undefined && t.type === 'subagent')).map((t) => `${TASK_LABEL[t.type] ?? t.type} ${t.id}: ${oneLine(t.command ?? t.description)}`),
       ...live.crons.filter((c) => !listed.has(c.id) && !over(c.id) && (c.recurring || live.now === undefined || !oneShotFired(c.schedule, live.now))).map((c) => `cron ${c.id}${c.recurring ? '' : ' once'}: ${oneLine(`${c.schedule} ${c.prompt}`)}`),
     ];
     return [...mine, ...lines].slice(-RUNNING_MAX);
   }
-  return lines.slice(-RUNNING_MAX);
+  return [...named, ...lines].slice(-RUNNING_MAX);
 }
 
 /** The paths of `git status --porcelain`, a rename as its target, absolute under `root` (the repository's top, where porcelain paths start). */
@@ -772,6 +789,24 @@ export function handoffInReply(msgs: readonly ApiMsg[], opts: CarryOptions = {})
 }
 
 /**
+ * Whether text reached the person after the newest message a person wrote in `msgs` (a notice is none): answered once a turn ended on text,
+ * partially answered when text came mid-turn, unanswered when none came. The text beside the handoff call is no reply.
+ * With no user message (`found` false), the same verdict on all of `msgs`, for a message an earlier handoff carried.
+ */
+export function replyAfter(msgs: readonly ApiMsg[], opts: CarryOptions = {}): { status: ReplyStatus; found: boolean; latest?: string } {
+  const latest = userEntries(msgs, opts).filter((e) => !NOTICE.test(e.text)).at(-1);
+  let status: ReplyStatus = 'unanswered';
+  for (const [i, m] of msgs.entries()) {
+    if (m.role !== 'assistant' || (latest !== undefined && i <= latest.at)) continue;
+    const blocks = blocksOf(m);
+    if (blocks.some((b) => b.type === 'tool_use' && reachesHandoff(b.name)) || !blocks.some((b) => b.type === 'text' && textOf(b).trim() !== '')) continue;
+    // A response without a tool call ends the turn: its text is the reply.
+    status = blocks.some((b) => b.type === 'tool_use') ? (status === 'answered' ? status : 'partially answered') : 'answered';
+  }
+  return { status, found: latest !== undefined, ...(latest !== undefined ? { latest: latest.text } : {}) };
+}
+
+/**
  * Whether the context opens with Claude Code's own summary: the prompts before it are then only in the transcript file.
  * The reminders Claude Code re-sends after a compaction (CLAUDE.md, session context, date) come before it.
  */
@@ -892,7 +927,9 @@ export function chainSkills(carried: readonly Invocation[] | undefined, invoked:
 }
 
 /** Queue events and rendered attachments missing from the messages API, after the last installed wake. */
-export function queuedPrompts(grepLines: string, { parent = [], afterLine = 0, wake }: { parent?: readonly string[]; afterLine?: number; wake?: string } = {}): { users: string[]; through: number; afterWake: boolean; order?: string[]; delivered?: string[] } {
+export function queuedPrompts(grepLines: string, { parent = [], afterLine = 0, wake }: { parent?: readonly string[]; afterLine?: number; wake?: string } = {}): { users: string[]; through: number; afterWake: boolean; order?: string[]; delivered?: string[]; skipped?: string[] } {
+  /** The lines that could not be read, each named: one bad line never costs the others. */
+  const skipped: string[] = [];
   const queued: { text: string; delivered: boolean; line: number; deliveryLine?: number }[] = [];
   const typed: { text: string; line: number }[] = [];
   let through = afterLine;
@@ -903,8 +940,8 @@ export function queuedPrompts(grepLines: string, { parent = [], afterLine = 0, w
     if (match === null) continue;
     const at = Number(match[1]);
     let entry: Record<string, any>;
-    try { entry = JSON.parse(match[2]!); } catch { throw new Error(`queued prompts: invalid JSON at transcript line ${match[1]}`); }
-    if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) throw new Error(`queued prompts: not an object at transcript line ${match[1]}`);
+    try { entry = JSON.parse(match[2]!); } catch { skipped.push(`line ${match[1]} (invalid JSON)`); continue; }
+    if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) { skipped.push(`line ${match[1]} (not an object)`); continue; }
     through = Math.max(through, at);
     if (entry.type === 'user') {
       const c = entry.message?.content;
@@ -933,7 +970,7 @@ export function queuedPrompts(grepLines: string, { parent = [], afterLine = 0, w
   const ordinary = typed.filter((q) => q.line > cutoff);
   const order = [...fresh, ...ordinary].sort((a, b) => a.line - b.line).map((q) => q.text);
   const delivered = queued.filter((q) => q.line <= cutoff && (q.deliveryLine ?? 0) > cutoff).map((q) => q.text);
-  return { users: fresh.map((q) => q.text), through, afterWake, ...(ordinary.length > 0 ? { order } : {}), ...(delivered.length > 0 ? { delivered } : {}) };
+  return { users: fresh.map((q) => q.text), through, afterWake, ...(ordinary.length > 0 ? { order } : {}), ...(delivered.length > 0 ? { delivered } : {}), ...(skipped.length > 0 ? { skipped } : {}) };
 }
 
 /** Match queue entries to API deliveries by occurrence; a carried cursor makes older identical prompts independent. */

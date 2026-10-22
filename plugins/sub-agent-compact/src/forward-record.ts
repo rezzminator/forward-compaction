@@ -1,5 +1,5 @@
 // What a forward handoff leaves on disk: where, and the measurement record the experiment reads.
-import { estimateTokens, fnv1a, type BlockRecord } from './forward-text.ts';
+import { estimateTokens, fnv1a, type BlockRecord, type ReplyStatus } from './forward-text.ts';
 import { isHarnessText, type HandoffMessage } from './handoff.ts';
 
 /** A skill or command a wake carried: its name, and the directory the harness printed for it. */
@@ -95,7 +95,7 @@ export function previousDir(root: string, session: string, seq: number, agentId?
 export type ForwardRecord = Record<string, unknown>;
 
 /** The record of one call at handoff time: the size of every block and of the whole text. */
-export function buildRecord(i: { seq: number; session: string; agentId?: string; dir: string; text: string; blocks: readonly BlockRecord[]; users: readonly string[]; usersDropped: number; handoffInReply?: boolean; trail?: readonly TrailEntry[]; summary?: string; tokensBefore?: number; trimmed: readonly string[]; skills?: readonly SkillRef[]; queueCursor?: number; at?: string; loads?: { asked: number; failed: number } }): ForwardRecord {
+export function buildRecord(i: { seq: number; session: string; agentId?: string; dir: string; text: string; blocks: readonly BlockRecord[]; users: readonly string[]; usersDropped: number; handoffInReply?: boolean; reply?: ReplyStatus; trail?: readonly TrailEntry[]; summary?: string; tokensBefore?: number; trimmed: readonly string[]; skills?: readonly SkillRef[]; queueCursor?: number; at?: string; loads?: { asked: number; failed: number } }): ForwardRecord {
   return {
     seq: i.seq,
     session: i.session,
@@ -106,6 +106,7 @@ export function buildRecord(i: { seq: number; session: string; agentId?: string;
     usersDropped: i.usersDropped,
     ...(i.queueCursor !== undefined ? { queueCursor: i.queueCursor } : {}),
     ...(i.handoffInReply === true ? { handoffInReply: true } : {}),
+    ...(i.reply !== undefined ? { reply: i.reply } : {}),
     ...(i.summary !== undefined ? { summary: i.summary } : {}),
     ...(i.skills !== undefined ? { skills: i.skills.map((x) => ({ name: x.name, ...(x.baseDir !== undefined ? { baseDir: x.baseDir } : {}) })) } : {}),
     ...(i.trail !== undefined ? { trail: i.trail.map((t) => ({ tag: t.tag, path: t.path })) } : {}),
@@ -164,7 +165,7 @@ function recordSkills(rec: Record<string, unknown>): SkillRef[] | undefined {
 }
 
 /** The prompts, file trail, summary knowledge and skills an earlier handoff carried, from its record: the one whose text is the one the session holds. Undefined when no record is. */
-export function carriedFrom(records: readonly unknown[], heldText: string): { users: string[]; dropped: number; inReply?: boolean; trail?: TrailEntry[]; summary?: string; skills?: SkillRef[]; queueCursor?: number } | undefined {
+export function carriedFrom(records: readonly unknown[], heldText: string): { users: string[]; dropped: number; inReply?: boolean; reply?: ReplyStatus; trail?: TrailEntry[]; summary?: string; skills?: SkillRef[]; queueCursor?: number } | undefined {
   const hash = fnv1a(heldText);
   for (const r of records) {
     if (r === null || typeof r !== 'object') continue;
@@ -188,7 +189,7 @@ export function latestCarried(records: readonly unknown[]): { seq: number; carry
 
 function recordCarry(rec: Record<string, unknown>): NonNullable<ReturnType<typeof carriedFrom>> | undefined {
   if (!Array.isArray(rec.users) || !rec.users.every((u) => typeof u === 'string')) return undefined;
-  return { ...(Number.isSafeInteger(rec.queueCursor) && Number(rec.queueCursor) >= 0 ? { queueCursor: Number(rec.queueCursor) } : {}), users: rec.users as string[], dropped: typeof rec.usersDropped === 'number' ? rec.usersDropped : 0, ...(rec.handoffInReply === true ? { inReply: true } : {}), ...(Array.isArray(rec.trail) && rec.trail.every(isTrailEntry) ? { trail: rec.trail as TrailEntry[] } : {}), ...(typeof rec.summary === 'string' ? { summary: rec.summary } : {}), ...((skills) => (skills !== undefined ? { skills } : {}))(recordSkills(rec)) };
+  return { ...(Number.isSafeInteger(rec.queueCursor) && Number(rec.queueCursor) >= 0 ? { queueCursor: Number(rec.queueCursor) } : {}), users: rec.users as string[], dropped: typeof rec.usersDropped === 'number' ? rec.usersDropped : 0, ...(rec.handoffInReply === true ? { inReply: true } : {}), ...(rec.reply === 'answered' || rec.reply === 'partially answered' || rec.reply === 'unanswered' ? { reply: rec.reply } : {}), ...(Array.isArray(rec.trail) && rec.trail.every(isTrailEntry) ? { trail: rec.trail as TrailEntry[] } : {}), ...(typeof rec.summary === 'string' ? { summary: rec.summary } : {}), ...((skills) => (skills !== undefined ? { skills } : {}))(recordSkills(rec)) };
 }
 
 /**

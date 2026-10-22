@@ -3,7 +3,7 @@ import { bounded, unlessAborted } from '../src/bounded.ts';
 import { LOOK_BACK_TOOL, LOOK_BACK_DESCRIPTION, LOOK_BACK_INPUT_SCHEMA, parseLookBack, boundaryArgv, boundaryLine, searchArgv, entryArgv, namesArgv, processOutput, parseEntries, toolNames, resultIds, searchResults, entryResult, manualTranscriptCall, lookBackNotice, type LookBackResult } from '../src/look-back.ts';
 import { servedOptions, toolsToRegister } from '../src/register.ts';
 import { askedToCompact, FORWARD_INPUT_SCHEMA, FORWARD_TOOL, FORWARD_TOOL_DESCRIPTION, forwardCallShape, forwardNudgeText, forwardRefusal, forwardStoredText, parseForwardArgs, rereadTarget, worksPastWake, type ForwardArgs } from '../src/forward-args.ts';
-import { absPath, fileTrail, handoffInReply, findTranscriptArgv, firstFound, gitBlock, gitLine, GIT_REPOS, heldForward, outsideRepository, opensWithSummary, openingSummary, summaryKnowledge, outline, OUTLINE_FILE_MAX_BYTES, settleTrail, priorCalls, priorPrompts, queuedPrompts, mergeQueuedUsers, skillPolicyProblems, mergeTrail, chainSkills, promptsSinceWake, invocationPaths, invocations, parseLineRanges, parsePorcelain, planAndTasks, runningWork, sliceFile, trailDirs, userMessages, type ApiMsg, type LiveWork, type TrailEntry, type TrailMiss } from '../src/forward-carry.ts';
+import { absPath, fileTrail, handoffInReply, findTranscriptArgv, firstFound, gitBlock, gitLine, GIT_REPOS, heldForward, outsideRepository, opensWithSummary, openingSummary, summaryKnowledge, outline, OUTLINE_FILE_MAX_BYTES, settleTrail, priorCalls, priorPrompts, queuedPrompts, mergeQueuedUsers, skillPolicyProblems, mergeTrail, chainSkills, promptsSinceWake, invocationPaths, invocations, parseLineRanges, parsePorcelain, planAndTasks, replyAfter, runningWork, sliceFile, trailDirs, userMessages, type ApiMsg, type LiveWork, type TrailEntry, type TrailMiss } from '../src/forward-carry.ts';
 import { buildRecord, carriedFrom, latestCarried, firstSeq, forwardClaimArgv, forwardDir, forwardRoots, forwardSessionDir, dropSkillProblem, missingRecordProblem, ownCall, previousDir, recoverForward, savedOf, withInstall, handoffLoads } from '../src/forward-record.ts';
 import { chainUsers, forwardInstalledLine, installCheck, renderForward, TRAIL_MAX, type BlockRecord, type RenderInput } from '../src/forward-text.ts';
 import { BRIEF_MAX_TOKENS, reseatBrief, seatedBrief } from '../src/brief.ts';
@@ -71,6 +71,8 @@ function say(st: State, $: EngineInterface, line: string, level: PluginLogLevel 
   if (row !== undefined) record(st, $, row, diagnostic === undefined);
 }
 /** The model's tool-call lines of a transcript before line $2, the newest 400: sed cuts at the boundary, so no line's length matters. */
+/** The entries a queued prompt can be in; a tool result holds none, and an image's base64 is emptied: neither is read. */
+const QUEUE_SCAN = `grep -a -n -e '"type":"queued_command"' -e '"type":"queue-operation"' -e '"type":"user"' "$1" | grep -a -v '"tool_use_id"' | sed -E 's|"data":"[A-Za-z0-9+/=]{200,}"|"data":""|g'`;
 const CALLS_BEFORE = `sed -n "1,$(($2 - 1))p" "$1" | grep -a -n '"type":"assistant"' | grep -a '"tool_use"' | tail -n 400`;
 /** Registering the tools holds a turn no longer than this: past it the turn goes on and the plugin stops waiting on registration. */
 const ENSURE_TOOLS_TIMEOUT_MS = 5_000;
@@ -927,6 +929,35 @@ async function readOne(st: State, $: EngineInterface, path: string, maxBytes: nu
 /** The first line of a process failure, or its exit code. */
 const failure = (out: { exitCode: number; stderr: string }): string => out.stderr.split('\n')[0]?.trim() || `exit ${out.exitCode}`;
 
+/**
+ * A transcript scan's whole output: `$.process.run` keeps 4,194,304 characters (Claude Code 2.1.307) and cuts the rest, so
+ * the scan is read in pages of at most 3,000,000 bytes, each re-run past the lines already read. Every page reads all its
+ * input, so no stage is cut off mid-write. A line too long for one page comes cut, for the parser to name, and is passed.
+ */
+const PAGE = `LC_ALL=C awk '{ n += length($0) + 1; if (NR > 1 && n > 3000000) { more = 1; next } print } END { print (more ? "[page-more]" : "[page-end]") }'`;
+const PAGES_MAX = 100;
+async function runPaged($: EngineInterface, script: string, args: readonly string[], init: { cwd?: string; timeoutMs?: number }): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+  const lines: string[] = [];
+  let first = 1;
+  for (let page = 0; page < PAGES_MAX; page++) {
+    const out = await $.process.run(['sh', '-c', `{ ${script}; } | tail -n +"$PAGE_START" | ${PAGE}`, 'sh', ...args], { ...init, env: { PAGE_START: String(first) } });
+    if (out.exitCode !== 0 || out.stderr.trim() !== '') return out;
+    const got = out.stdout.split('\n');
+    const marker = got.at(-2);
+    if (got.at(-1) === '' && (marker === '[page-end]' || marker === '[page-more]')) {
+      lines.push(...got.slice(0, -2));
+      if (marker === '[page-end]') return { exitCode: 0, stdout: lines.join('\n'), stderr: '' };
+      first += got.length - 2;
+    } else {
+      // Cut at the engine's limit: the lines that came, the last one cut, and on past them.
+      const came = got.at(-1) === '' ? got.slice(0, -1) : got;
+      lines.push(...came);
+      first += Math.max(1, came.length);
+    }
+  }
+  return { exitCode: 2, stdout: lines.join('\n'), stderr: `stopped after ${PAGES_MAX} pages of output` };
+}
+
 /** The records of this party's earlier forward handoffs on disk, newest first; a record that cannot be read is named in `unreadable`. */
 async function earlierRecords(st: State, $: EngineInterface, at: { session: string; agentId?: string }, unreadable: string[]): Promise<unknown[]> {
   // Every root, the HOME one first: a call numbered in both is read once, from the first.
@@ -1094,17 +1125,19 @@ async function gatherForward(st: State, $: EngineInterface, args: ForwardArgs, a
     problems.push(missingRecordProblem({ number, looked, foreign, others, unreadable }));
   }
   // A sub-agent's parent agent, by id and name: its mid-turn messages are instructions, any other agent's are not.
+  // The engine's agent list, as ListAgents shows it: the Running block's agents, and a sub-agent's parent.
   const carry: { parent: string[] } = { parent: [] };
-  if (at.agentId !== undefined) {
-    try {
-      const agents = await $.agent.list();
-      const self = agents.find((a) => a.id === at.agentId);
-      const parent = self?.parentId !== undefined ? agents.find((a) => a.id === self.parentId) : undefined;
-      if (self === undefined) problems.push(`parent agent: agent ${at.agentId} is not in the agent list, so a message from its parent while it worked is not carried`);
-      else if (self.parentId !== undefined) carry.parent.push(self.parentId, ...(parent?.name !== undefined ? [parent.name] : []));
-    } catch (error) {
-      problems.push(`parent agent: listing agents failed (${message(error)}), so a message from it while this agent worked is not carried`);
-    }
+  let agents: Awaited<ReturnType<EngineInterface['agent']['list']>> | undefined;
+  try {
+    agents = await $.agent.list();
+  } catch (error) {
+    problems.push(`running agents: listing agents failed (${message(error)}), so Running names only the agents the transcript shows${at.agentId !== undefined ? ', and a message from the parent while this agent worked is not carried' : ''}`);
+  }
+  if (at.agentId !== undefined && agents !== undefined) {
+    const self = agents.find((a) => a.id === at.agentId);
+    const parent = self?.parentId !== undefined ? agents.find((a) => a.id === self.parentId) : undefined;
+    if (self === undefined) problems.push(`parent agent: agent ${at.agentId} is not in the agent list, so a message from its parent while it worked is not carried`);
+    else if (self.parentId !== undefined) carry.parent.push(self.parentId, ...(parent?.name !== undefined ? [parent.name] : []));
   }
   // After Claude Code's own compaction the context opens with its summary: the prompts before it come from the transcript file.
   let prior: { users: string[]; dropped: number } | undefined;
@@ -1116,11 +1149,11 @@ async function gatherForward(st: State, $: EngineInterface, args: ForwardArgs, a
       if (bounds.exitCode !== 0 || !Number.isFinite(last) || last <= 0) problems.push(`prompts before the summary: no compaction found in the transcript (${failure(bounds)})`);
       else {
         // Tool results are user entries too: only the entries without one hold prompts.
-        const users = await $.process.run(['sh', '-c', 'grep -a -n -e \'"type":"user"\' -e \'"type":"queued_command"\' "$1" | grep -v \'"tool_use_id"\'', 'sh', transcript], { ...runCwd(transcript), timeoutMs: 30_000 });
+        const users = await runPaged($, 'grep -a -n -e \'"type":"user"\' -e \'"type":"queued_command"\' "$1" | grep -v \'"tool_use_id"\'', [transcript], { ...runCwd(transcript), timeoutMs: 30_000 });
         if (users.exitCode !== 0 && users.exitCode !== 1) problems.push(`prompts before the summary: reading the transcript failed (${failure(users)})`);
         else prior = { users: userMessages(priorPrompts(users.stdout, last, recovered?.seq), carry), dropped: 0 };
         // The files touched before it: the calls' lines up to the boundary, the newest kept.
-        const calls = await $.process.run(['sh', '-c', CALLS_BEFORE, 'sh', transcript, String(last)], { ...runCwd(transcript), timeoutMs: 30_000 });
+        const calls = await runPaged($, CALLS_BEFORE, [transcript, String(last)], { ...runCwd(transcript), timeoutMs: 30_000 });
         if (calls.exitCode !== 0 || calls.stderr.trim() !== '') problems.push(`files before the summary: reading the transcript failed (${failure(calls)})`);
         else priorTrail = fileTrail(priorCalls(calls.stdout, last), { cwd, home: st.home ?? '', max: TRAIL_MAX });
       }
@@ -1157,16 +1190,17 @@ async function gatherForward(st: State, $: EngineInterface, args: ForwardArgs, a
   let queue: ReturnType<typeof queuedPrompts> = { users: [], through: before?.queueCursor ?? 0, afterWake: false };
   if (transcript !== undefined) {
     try {
-      const out = await $.process.run(['grep', '-a', '-n', '-e', '"type":"queued_command"', '-e', '"type":"queue-operation"', '-e', '"type":"user"', transcript], { ...runCwd(transcript), timeoutMs: 30_000 });
-      if ((out.exitCode !== 0 && out.exitCode !== 1) || out.stderr.trim() !== '') problems.push(`queued prompts: reading the transcript failed (${failure(out)})`);
+      const out = await runPaged($, QUEUE_SCAN, [transcript], { ...runCwd(transcript), timeoutMs: 30_000 });
+      if (out.exitCode !== 0 || out.stderr.trim() !== '') problems.push(`queued prompts: reading the transcript failed (${failure(out)})`);
       else queue = queuedPrompts(out.stdout, { parent: carry.parent, afterLine: before?.queueCursor, wake: held?.text ?? (recovered !== undefined ? `[forward handoff ${recovered.seq}:` : undefined) });
+      if (queue.skipped !== undefined) problems.push(`queued prompts: ${queue.skipped.length} transcript ${queue.skipped.length === 1 ? 'line' : 'lines'} unreadable, skipped: ${queue.skipped.slice(0, 5).join(', ')}${queue.skipped.length > 5 ? ', …' : ''}`);
     } catch (error) { problems.push(`queued prompts: reading the transcript failed (${message(error)})`); }
   }
   // A latest saved record need not have installed; reconcile its snapshot with
   // recovered transcript history before adding truly new API/queue deliveries.
   const recoveredUsers = before !== undefined ? mergeQueuedUsers(before.users, [], prior?.users ?? []) : [];
   const freshUsers = mergeQueuedUsers((before ?? prior)?.users ?? [], [...recoveredUsers, ...userMessages(since, { ...carry, delivered: queue.delivered })], queue.users, before?.queueCursor !== undefined || queue.afterWake, queue.order);
-  const chain = chainUsers(before ?? prior, freshUsers, queue.users.length === 0 && handoffInReply(since, carry));
+  const chain = chainUsers(before ?? prior, freshUsers, queue.users.length === 0 && handoffInReply(since, carry), undefined, replyAfter(since, carry));
   // What Claude Code's own summary knew: from the one the context opens with, else from the earlier handoff's record.
   let summary = before?.summary;
   const opening = held === undefined ? openingSummary(api) : undefined;
@@ -1246,7 +1280,7 @@ async function gatherForward(st: State, $: EngineInterface, args: ForwardArgs, a
   const git = gitBlock(repos, { ...('top' in own ? { own: own.top } : {}), more: tops.slice(GIT_REPOS) });
   const live = at.agentId === undefined && st.live !== undefined ? { tasks: st.live.tasks, crons: st.live.crons, started: st.live.started, now: Date.now() } : undefined;
 
-  return { notes: settled.notes, carried: settled.carried, seq: at.seq, ...(queue.through > 0 ? { queueCursor: queue.through } : {}), users: chain.users, usersDropped: chain.dropped, ...(chain.inReply ? { handoffInReply: true } : {}), ...(summary !== undefined ? { summary } : {}), skills, trail, outlines, loaded, ...(plan !== undefined ? { plan } : {}), tasks: work.tasks, running: runningWork(api, live), ...(git !== undefined ? { git } : {}), paths: paths.length > 0 ? [paths.join(' · ')] : [], problems, args, callShape: forwardCallShape(st.forwardToolName ?? FORWARD_TOOL) };
+  return { notes: settled.notes, carried: settled.carried, seq: at.seq, ...(queue.through > 0 ? { queueCursor: queue.through } : {}), users: chain.users, usersDropped: chain.dropped, ...(chain.inReply ? { handoffInReply: true } : {}), ...(chain.reply !== undefined ? { reply: chain.reply } : {}), ...(summary !== undefined ? { summary } : {}), skills, trail, outlines, loaded, ...(plan !== undefined ? { plan } : {}), tasks: work.tasks, running: runningWork(api, live, agents !== undefined ? { rows: agents, ...(at.agentId !== undefined ? { self: at.agentId } : {}) } : undefined), ...(git !== undefined ? { git } : {}), paths: paths.length > 0 ? [paths.join(' · ')] : [], problems, args, callShape: forwardCallShape(st.forwardToolName ?? FORWARD_TOOL) };
 }
 
 /**
@@ -1361,7 +1395,7 @@ async function answerForwardTool(st: State, $: EngineInterface, e: Record<string
     const out = renderForward(from);
     // The skills the wake holds, for the next handoff to carry: one that failed to load is named in this one's reply and wake, never carried on.
     const skills = from.skills.filter((s) => out.skills.includes(s.name)).map((s) => ({ name: s.name, ...(s.baseDir !== undefined ? { baseDir: s.baseDir } : {}) }));
-    const base = buildRecord({ seq, session, ...(agentId !== undefined ? { agentId } : {}), dir: dir ?? '', text: out.text, blocks: out.blocks, ...(from.queueCursor !== undefined ? { queueCursor: from.queueCursor } : {}), users: from.users, usersDropped: from.usersDropped ?? 0, ...(from.handoffInReply === true ? { handoffInReply: true } : {}), trail: from.trail.filter((t) => carried.some((c) => c.path === t.path)), ...(from.summary !== undefined ? { summary: from.summary } : {}), ...(reading !== undefined ? { tokensBefore: reading } : {}), trimmed: parsed.args.trimmed, skills, at: new Date().toISOString(), loads: out.loads });
+    const base = buildRecord({ seq, session, ...(agentId !== undefined ? { agentId } : {}), dir: dir ?? '', text: out.text, blocks: out.blocks, ...(from.queueCursor !== undefined ? { queueCursor: from.queueCursor } : {}), users: from.users, usersDropped: from.usersDropped ?? 0, ...(from.handoffInReply === true ? { handoffInReply: true } : {}), ...(from.reply !== undefined ? { reply: from.reply } : {}), trail: from.trail.filter((t) => carried.some((c) => c.path === t.path)), ...(from.summary !== undefined ? { summary: from.summary } : {}), ...(reading !== undefined ? { tokensBefore: reading } : {}), trimmed: parsed.args.trimmed, skills, at: new Date().toISOString(), loads: out.loads });
     return { ...out, base };
   };
   let { text, blocks, unloaded, noted, base } = draft(input);
