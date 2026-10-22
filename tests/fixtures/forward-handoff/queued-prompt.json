@@ -1,6 +1,6 @@
 {
   "source": {
-    "session": "3c68b8b8-aa25-4a8b-979f-5640e605a581",
+    "session": "synthetic-queue-session",
     "lines": [
       513,
       519,
@@ -9,21 +9,21 @@
     ],
     "record": "1"
   },
-  "prompt": "Confirm you got it, if yes send a opus foreman",
+  "prompt": "Add a brass bookmark to the atlas entry for the imaginary island of Peloria.",
   "transcript": [
     {
       "type": "queue-operation",
       "operation": "enqueue",
-      "content": "Confirm you got it, if yes send a opus foreman"
+      "content": "Add a brass bookmark to the atlas entry for the imaginary island of Peloria."
     },
     {
       "type": "queue-operation",
       "operation": "remove",
-      "content": "Confirm you got it, if yes send a opus foreman",
+      "content": "Add a brass bookmark to the atlas entry for the imaginary island of Peloria.",
       "reason": "absorbed_mid_turn"
     }
   ],
   "users": [
-    "Alright make that a frontmatter of agents of this plugin so we can pin what skills drop and what not (for a skill to get pinned and model's drop (also) gets ignored"
+    "Create an illustrated atlas index containing five invented islands and their lighthouse symbols."
   ]
 }

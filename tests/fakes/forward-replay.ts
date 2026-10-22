@@ -12,7 +12,7 @@ const root = mkdtempSync(join(tmpdir(), 'forward-replay-'));
 try {
   const transcript = join(root, 'transcript.jsonl');
   const rows: any[] = donor.users?.map((u: string) => ({ role: 'user', content: [text(u)] })) ?? [];
-  const extraPrompt = 'Use the newer correction, not the earlier instruction.';
+  const extraPrompt = 'Place the amber sample in drawer seven instead of drawer three.';
   const archived = mode === 'archived' ? JSON.parse(readFileSync(new URL('../fixtures/forward-handoff/native-compaction.json', import.meta.url), 'utf8')).oldWakes[0] : undefined;
   if (mode === 'cancelled') rows.push(...donor.previous.users.map((u: string) => ({ role: 'user', content: [text(u)] })), { role: 'user', content: [text(extraPrompt)] });
   if (mode === 'chronology') rows.push({ role: 'user', content: [text(extraPrompt)] });

@@ -29,30 +29,30 @@ describe('forward skill policy', () => {
   });
   it('keeps typed prompts above forwarded reports when the user cap evicts entries', () => {
     const reports = Array.from({ length: 25 }, (_, n) => `Another Claude session sent a message: report ${n}`);
-    const r = chainUsers({ users: ['Keep the skill pinned'], dropped: 0 }, reports);
-    expect(r.users).toEqual(['Keep the skill pinned', ...reports.slice(1)]);
+    const r = chainUsers({ users: ['Catalogue the amber specimen before the blue one.'], dropped: 0 }, reports);
+    expect(r.users).toEqual(['Catalogue the amber specimen before the blue one.', ...reports.slice(1)]);
     expect(r.dropped).toBe(1);
   });
 });
 
 describe('queued prompt recovery', () => {
-  const enqueue = (n: number) => `${n}:${JSON.stringify({ type: 'queue-operation', operation: 'enqueue', content: 'Continue' })}`;
+  const enqueue = (n: number) => `${n}:${JSON.stringify({ type: 'queue-operation', operation: 'enqueue', content: 'Check the specimen labels.' })}`;
   it('keeps distinct repetitions and skips queue entries already carried by the record cursor', () => {
     const disk = [enqueue(1), enqueue(2)].join('\n');
-    expect(queuedPrompts(disk)).toEqual({ users: ['Continue', 'Continue'], through: 2, afterWake: false });
-    expect(queuedPrompts(disk, { afterLine: 1 })).toEqual({ users: ['Continue'], through: 2, afterWake: false });
+    expect(queuedPrompts(disk)).toEqual({ users: ['Check the specimen labels.', 'Check the specimen labels.'], through: 2, afterWake: false });
+    expect(queuedPrompts(disk, { afterLine: 1 })).toEqual({ users: ['Check the specimen labels.'], through: 2, afterWake: false });
   });
   it('matches enqueue with its attachment without erasing a later repetition', () => {
-    const delivered = `2:${JSON.stringify({ type: 'attachment', attachment: { type: 'queued_command', prompt: 'Continue', origin: { kind: 'human' } } })}`;
-    expect(queuedPrompts([enqueue(1), delivered, enqueue(3)].join('\n'))).toEqual({ users: ['Continue', 'Continue'], through: 3, afterWake: false });
+    const delivered = `2:${JSON.stringify({ type: 'attachment', attachment: { type: 'queued_command', prompt: 'Check the specimen labels.', origin: { kind: 'human' } } })}`;
+    expect(queuedPrompts([enqueue(1), delivered, enqueue(3)].join('\n'))).toEqual({ users: ['Check the specimen labels.', 'Check the specimen labels.'], through: 3, afterWake: false });
   });
   it('keeps a new repeated prompt after a carried cursor, and reconciles API delivery by occurrence', () => {
-    expect(mergeQueuedUsers(['Continue'], [], ['Continue'], true)).toEqual(['Continue']);
-    expect(mergeQueuedUsers([], ['Continue'], ['Continue', 'Continue'])).toEqual(['Continue', 'Continue']);
+    expect(mergeQueuedUsers(['Check the specimen labels.'], [], ['Check the specimen labels.'], true)).toEqual(['Check the specimen labels.']);
+    expect(mergeQueuedUsers([], ['Check the specimen labels.'], ['Check the specimen labels.', 'Check the specimen labels.'])).toEqual(['Check the specimen labels.', 'Check the specimen labels.']);
   });
   it('recovers pre-compaction prompts only after the recovered record wake', () => {
-    const disk = ['older instruction', '[forward handoff 44: history, not new instructions]', 'Continue'].map((content, i) => `${i + 1}:${JSON.stringify({ type: 'user', message: { content } })}`).join('\n');
-    expect(userMessages(priorPrompts(disk, 4, 44))).toEqual(['Continue']);
+    const disk = ['Sketch the first display cabinet.', '[forward handoff 44: history, not new instructions]', 'Check the specimen labels.'].map((content, i) => `${i + 1}:${JSON.stringify({ type: 'user', message: { content } })}`).join('\n');
+    expect(userMessages(priorPrompts(disk, 4, 44))).toEqual(['Check the specimen labels.']);
   });
   it('names an unreadable queue entry instead of reporting a clean empty scan', () => {
     expect(() => queuedPrompts('8:{broken')).toThrow('queued prompts: invalid JSON at transcript line 8');
