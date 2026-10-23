@@ -1,14 +1,13 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { join } from 'node:path';
 
 // A missing new module is an assertion red, not a transform/build-error red.
 let back: Record<string, any>;
 beforeAll(async () => {
-  const source = '../plugins/sub-agent-compact/src/look-back.ts';
+  const source = '../plugins/forward-compaction/src/look-back.ts';
   try { back = await import(/* @vite-ignore */ source); }
   catch (error) { back = { importError: String(error) }; }
 });
@@ -176,13 +175,13 @@ describe('look_back readable transcript entries (R4)', () => {
     const [e] = entries('4:{"type":"attachment","attachment":{"type":"file","content":{"file":{"content":"needle"}}}}');
     expect(e).toMatchObject({ kind: 'attachment file raw', text: '{"type":"file","content":{"file":{"content":"needle"}}}', warnings: [] });
   });
-  it("ranks the party's own forward handoff call below every other hit", () => {
+  it("ranks the party's own forward_compaction call below every other hit", () => {
     const found = entries([
       row(3, [text('the needle as the user said it')]),
-      row(5, [{ type: 'tool_use', id: 'f1', name: 'mcp__sub-agent-compact__forward_handoff', input: { next: 'needle' } }], 'assistant'),
-      row(6, [{ type: 'tool_result', tool_use_id: 'f1', content: 'Forward handoff stored: needle' }]),
+      row(5, [{ type: 'tool_use', id: 'f1', name: 'mcp__forward-compaction__forward_compaction', input: { next: 'needle' } }], 'assistant'),
+      row(6, [{ type: 'tool_result', tool_use_id: 'f1', content: 'Handoff stored: needle' }]),
     ].join('\n'));
-    const out = api('searchResults')(found, ['needle'], 9, api('toolNames')(found), 'mcp__sub-agent-compact__forward_handoff');
+    const out = api('searchResults')(found, ['needle'], 9, api('toolNames')(found), 'mcp__forward-compaction__forward_compaction');
     expect(out.text.split('\n\n').map((hit: string) => hit.split('  ')[0])).toEqual(['#3', '#6', '#5']);
   });
   it('resolves result tool names through ids and explicitly labels an unavailable name', () => {
@@ -203,13 +202,13 @@ describe('look_back public documentation and oversized queries', () => {
     expect(out.text).toContain('[query cut]');
     expect(out.text).toContain('Try other words.');
   });
-  it('documents look_back and counted misses in tools prose and the changelog (R10)', () => {
-    const readme = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'README.md'), 'utf8');
-    expect(readme).toContain('### Look back');
-    expect(readme).toContain('Every call is a counted compaction miss');
-    expect(readme).toContain('look-back-manual');
-    const changelog = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'CHANGELOG.md'), 'utf8');
-    expect(changelog.split('\n## [').some((section) => section.includes('`look_back`') && section.includes('shown to the person'))).toBe(true);
+  it('finds the transcript by its session id, never by a rebuilt directory name, and reports only a find that printed nothing', () => {
+    expect(api('findTranscriptArgv')({ configDir: '/c', session: 's-1' })).toEqual(['find', '-H', '/c/projects', '-maxdepth', '2', '-type', 'f', '-name', 's-1.jsonl']);
+    expect(api('findTranscriptArgv')({ configDir: '/c', session: 's-1', agentId: 'a9' })).toEqual(['find', '-H', '/c/projects', '-maxdepth', '4', '-type', 'f', '-path', '*/s-1/subagents/agent-a9.jsonl']);
+    // a project path over 200 chars is hashed by Claude Code: the real directory is whatever find prints
+    expect(api('firstFound')('/c/projects/-very-long-0a1b2c/s-1.jsonl\n')).toBe('/c/projects/-very-long-0a1b2c/s-1.jsonl');
+    expect(api('firstFound')('')).toBeUndefined();
+    expect(api('firstFound')('find: /c/projects/x: Permission denied\n')).toBeUndefined();
   });
 });
 

@@ -4,17 +4,17 @@ import { appendFileSync, chmodSync, existsSync, lutimesSync, mkdirSync, mkdtempS
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
-import * as log from '../plugins/sub-agent-compact/src/log.ts';
-import { runCwd, sessionLogPath } from '../plugins/sub-agent-compact/src/log.ts';
+import * as log from '../plugins/forward-compaction/src/log.ts';
+import { runCwd, sessionLogPath } from '../plugins/forward-compaction/src/log.ts';
 
 // Optional lookup lets the unimplemented writer fail on the required output, not an import error.
 const future: Record<string, any> = log;
-const fields = { plugin: 'sub-agent-compact', level: 'error', event: 'tool-register-failed', msg: 'registration failed', where: 'hooks/sub-agent-compact.ts#registerForwardTool', session: 's1', detail: { error: 'refused' } };
+const fields = { plugin: 'forward-compaction', level: 'error', event: 'tool-register-failed', msg: 'registration failed', where: 'hooks/forward-compaction.ts#registerForwardTool', session: 's1', detail: { error: 'refused' } };
 const now = 1791991231123;
 const render = (input = fields) => future.levelRow?.(input, now) ?? '';
 const exec = promisify(execFile);
 const rows = (dir: string, file: string): any[] => existsSync(join(dir, file)) ? readFileSync(join(dir, file), 'utf8').trim().split('\n').map((line) => JSON.parse(line)) : [];
-const shell = (dir: string, pairs: string[]) => exec('/bin/sh', ['-c', future.APPEND_SCRIPT ?? ':', 'plugin-log', dir, 'sub-agent-compact', ...pairs]);
+const shell = (dir: string, pairs: string[]) => exec('/bin/sh', ['-c', future.APPEND_SCRIPT ?? ':', 'plugin-log', dir, 'forward-compaction', ...pairs]);
 
 describe('sessionLogPath', () => {
   it.each([
@@ -23,7 +23,7 @@ describe('sessionLogPath', () => {
     ['/tmp/sac.d/decisions', 'abc', '/tmp/sac.d/decisions.abc'],
     ['/tmp/sac/.decisions', 'abc', '/tmp/sac/.decisions.abc'],
     ['/tmp/sac/a.b.jsonl', 'abc', '/tmp/sac/a.b.abc.jsonl'],
-    ['/x/logs/sub-agent-compact/decisions/.jsonl', 's1', '/x/logs/sub-agent-compact/decisions/s1.jsonl'],
+    ['/x/logs/forward-compaction/decisions/.jsonl', 's1', '/x/logs/forward-compaction/decisions/s1.jsonl'],
   ])('%s + %s → %s', (file, session, path) => {
     expect(sessionLogPath(file, session)).toBe(path);
   });
@@ -92,14 +92,14 @@ describe('plugin log', () => {
   ] as const)('appends exact rows with BSD chmod: %s %s', async (kind, state) => {
     const parent = mkdtempSync(join(tmpdir(), 'plugin-bsd-'));
     const bin = join(parent, 'bin');
-    const dir = log.pluginLogDir(kind === 'absolute' ? join(parent, 'logs') : '-logs', undefined, 'sub-agent-compact')!;
-    const disk = join(parent, kind === 'absolute' ? 'logs' : '-logs', 'sub-agent-compact');
+    const dir = log.pluginLogDir(kind === 'absolute' ? join(parent, 'logs') : '-logs', undefined, 'forward-compaction')!;
+    const disk = join(parent, kind === 'absolute' ? 'logs' : '-logs', 'forward-compaction');
     const levels = [['errors.jsonl', 'error'], ['warnings.jsonl', 'warning'], ['info.jsonl', 'info']] as const;
     const seed = (file: string) => JSON.stringify({ seed: file }) + '\n';
     const backup = (file: string) => `previous backup: ${file}\n`;
     const oversized = Buffer.alloc(log.PLUGIN_LOG_CAP_BYTES + 1, 'x');
     const pairs = levels.flatMap(([file, level]) => [file, render({ ...fields, level, msg: "literal $(touch bad); ' \\ text" })]);
-    const notice = (file: string) => JSON.stringify({ ts: '2026-10-14T15:20:31.123Z', plugin: 'sub-agent-compact', level: 'warning', event: 'log-capped', msg: 'level file exceeded 20971520 bytes; moved aside', where: 'src/log.ts#APPEND_SCRIPT', session: 's1', detail: { file } }) + '\n';
+    const notice = (file: string) => JSON.stringify({ ts: '2026-10-14T15:20:31.123Z', plugin: 'forward-compaction', level: 'warning', event: 'log-capped', msg: 'level file exceeded 20971520 bytes; moved aside', where: 'src/log.ts#APPEND_SCRIPT', session: 's1', detail: { file } }) + '\n';
     try {
       mkdirSync(bin);
       const shim = join(bin, 'chmod');
@@ -121,7 +121,7 @@ exec /bin/chmod "$@"
           for (const name of [file, `${file}.1`]) chmodSync(join(disk, name), 0o644);
         }
       }
-      const result = await exec('/bin/sh', ['-c', log.APPEND_SCRIPT, 'plugin-log', dir, 'sub-agent-compact', ...pairs], {
+      const result = await exec('/bin/sh', ['-c', log.APPEND_SCRIPT, 'plugin-log', dir, 'forward-compaction', ...pairs], {
         cwd: parent, env: { ...process.env, PATH: `${bin}:${process.env.PATH ?? '/usr/bin:/bin'}` },
       }).then(({ stderr }) => ({ code: 0, stderr }), (error) => ({ code: error.code, stderr: error.stderr }));
       for (const [index, [file]] of levels.entries()) {
@@ -150,7 +150,7 @@ exec /bin/chmod "$@"
     const session = String.fromCharCode(115, 34, 92, 10, 38634);
     const input = { ...fields, level, msg: 'literal ,"session":"decoy", "detail":{}', detail: detail ? { session: 'nested decoy' } : undefined, ...(known ? { session } : { session: undefined }) };
     const text = future.levelRow?.(input, now) ?? '';
-    const notice = (name: string) => ({ ts: '2026-10-14T15:20:31.123Z', plugin: 'sub-agent-compact', level: 'warning', event: 'log-capped', msg: 'level file exceeded 20971520 bytes; moved aside', where: 'src/log.ts#APPEND_SCRIPT', ...(known ? { session } : {}), detail: { file: name } });
+    const notice = (name: string) => ({ ts: '2026-10-14T15:20:31.123Z', plugin: 'forward-compaction', level: 'warning', event: 'log-capped', msg: 'level file exceeded 20971520 bytes; moved aside', where: 'src/log.ts#APPEND_SCRIPT', ...(known ? { session } : {}), detail: { file: name } });
     try {
       for (const name of new Set([file, 'warnings.jsonl'])) { writeFileSync(join(dir, name), Buffer.alloc(20971521, 'x')); chmodSync(join(dir, name), 0o644); }
       await shell(dir, [file as string, text]);
@@ -168,7 +168,7 @@ exec /bin/chmod "$@"
     try {
       writeFileSync(join(dir, 'errors.jsonl'), Buffer.alloc(20971521, 'x'));
       const text = future.levelRow?.({ ...fields, event: '', msg: '', where: '', session, detail: undefined }, now) ?? '';
-      const expected = { ts: '2026-10-14T15:20:31.123Z', plugin: 'sub-agent-compact', level: 'warning', event: 'log-capped', msg: 'level file exceeded 20971520 bytes; moved aside', where: 'src/log.ts#APPEND_SCRIPT', session, detail: { file: 'errors.jsonl' } };
+      const expected = { ts: '2026-10-14T15:20:31.123Z', plugin: 'forward-compaction', level: 'warning', event: 'log-capped', msg: 'level file exceeded 20971520 bytes; moved aside', where: 'src/log.ts#APPEND_SCRIPT', session, detail: { file: 'errors.jsonl' } };
       const detail = { truncated: true, bytes: Buffer.byteLength(JSON.stringify(expected) + '\n') };
       const available = 4096 - Buffer.byteLength(JSON.stringify({ ...expected, msg: '', detail }) + '\n');
       await shell(dir, ['errors.jsonl', text]);
@@ -202,12 +202,12 @@ exec /bin/chmod "$@"
   });
   it('bounds batches at 64 pairs and keeps rows in order', () => {
     const input = Array.from({ length: 65 }, (_, n) => JSON.stringify({ ...fields, msg: String(n) }) + '\n');
-    const batches: string[][] = future.appendArgv?.('/x/logs/sub-agent-compact', 'sub-agent-compact', input) ?? [];
-    expect(batches.map((a) => [a[0], a[3], a[4], a[5], (a.length - 6) / 2])).toEqual([['/bin/sh', 'plugin-log', '/x/logs/sub-agent-compact', 'sub-agent-compact', 64], ['/bin/sh', 'plugin-log', '/x/logs/sub-agent-compact', 'sub-agent-compact', 1]]);
+    const batches: string[][] = future.appendArgv?.('/x/logs/forward-compaction', 'forward-compaction', input) ?? [];
+    expect(batches.map((a) => [a[0], a[3], a[4], a[5], (a.length - 6) / 2])).toEqual([['/bin/sh', 'plugin-log', '/x/logs/forward-compaction', 'forward-compaction', 64], ['/bin/sh', 'plugin-log', '/x/logs/forward-compaction', 'forward-compaction', 1]]);
     expect(batches.flatMap((a) => a.slice(6).filter((_, n) => n % 2 === 1))).toEqual(input);
   });
   it('serializes concurrent flushes and rearms one fallback per failing streak', async () => {
-    const queue = future.PluginLogQueue ? new future.PluginLogQueue('/x/logs/sub-agent-compact', 'sub-agent-compact') : undefined;
+    const queue = future.PluginLogQueue ? new future.PluginLogQueue('/x/logs/forward-compaction', 'forward-compaction') : undefined;
     const notices: unknown[] = [];
     const run = async () => { throw new Error('permission denied'); };
     for (let n = 0; n < 2; n++) { queue?.add(JSON.stringify({ ...fields }) + '\n'); notices.push(await queue?.flush(run)); }
@@ -228,24 +228,21 @@ exec /bin/chmod "$@"
     expect(await queue?.flush(async () => { throw new Error('empty queue executed'); })).toEqual({ dropped: 0 });
   });
   it.each([
-    ...['tool-register-failed', 'look-back-manual-error', 'option-error', 'forward-unchecked', 'handoff-fallback'].map((event) => [event, 'error', event, {}] as [string, string, string, Record<string, unknown>]),
-    ['brief-error', 'error', 'brief-error', {}],
-    ...['warning', 'resolve-error', 'handoff-invalid', 'forward-invalid', 'compact-unseen', 'compaction-failed'].map((event) => [event, 'warning', event, {}] as [string, string, string, Record<string, unknown>]),
-    ...['handoff-refused', 'arm-refused', 'forward-refused', 'stop-refused'].map((event) => [event, 'info', event, {}] as [string, string, string, Record<string, unknown>]),
+    ...['error', 'tool-register-failed', 'look-back-manual-error', 'option-error'].map((event) => [event, 'error', event, {}] as [string, string, string, Record<string, unknown>]),
+    ...['warning', 'decision-retention-failed', 'compact-unseen', 'compaction-failed'].map((event) => [event, 'warning', event, {}] as [string, string, string, Record<string, unknown>]),
     ['session.compact', 'error', 'compact-error', { why: 'error', error: 'bad reading' }],
-    ['session.compact', 'warning', 'handoff-waits-skipped', { why: 'handoff-waits' }],
     ['turn.complete', 'error', 'turn-complete-error', { error: 'compaction failed' }],
   ])('routes %s as %s without carrying tool bodies', (event, level, output, extra) => {
     const routed = future.pluginLogEvent?.({ event, ...extra as object, line: 'diagnostic', party: 'main', error: 'diagnostic failure', focus: 'private prompt', text: 'private handoff', query: 'private query', input: { body: 'private input' } });
-    expect(routed).toMatchObject({ level, event: output, where: 'hooks/sub-agent-compact.ts#record' });
+    expect(routed).toMatchObject({ level, event: output, where: 'hooks/forward-compaction.ts#record' });
     expect(routed.detail).toEqual({ party: 'main', error: 'diagnostic failure', ...('why' in (extra as object) ? { why: (extra as any).why } : {}) });
   });
   it('logs unexpected API shapes without serializing transcript bodies', () => {
-    expect(future.pluginLogEvent?.({ event: 'forward-invalid', problem: 'transcript: unreadable ({"body":"private transcript"})' })).toMatchObject({ level: 'warning', event: 'forward-invalid', msg: 'transcript: unreadable (unexpected API shape)', detail: { problem: 'transcript: unreadable (unexpected API shape)' } });
+    expect(future.pluginLogEvent?.({ event: 'compaction-failed', problem: 'transcript: unreadable ({"body":"private transcript"})' })).toMatchObject({ level: 'warning', event: 'compaction-failed', msg: 'transcript: unreadable (unexpected API shape)', detail: { problem: 'transcript: unreadable (unexpected API shape)' } });
   });
   it('selects actionable diagnostics among routine hook traffic', () => {
-    const traffic = [{ event: 'nudge', focus: 'private' }, { event: 'brief-error', error: 'seating failed' }];
-    expect(traffic.flatMap((row) => future.pluginLogEvent?.(row) ?? []).map((row: any) => [row.level, row.event, row.msg])).toEqual([['error', 'brief-error', 'seating failed']]);
+    const traffic = [{ event: 'nudge', focus: 'private' }, { event: 'option-error', error: 'seating failed' }];
+    expect(traffic.flatMap((row) => future.pluginLogEvent?.(row) ?? []).map((row: any) => [row.level, row.event, row.msg])).toEqual([['error', 'option-error', 'seating failed']]);
   });
 });
 
@@ -260,9 +257,9 @@ describe('decision log', () => {
   it('reports at session end what the bound cut and every row the hold dropped, the cut branch included', () => {
     const at = { boundMs: 400, levelRows: 0, error: 'EACCES', path: '/logs/d.jsonl' };
     const cut = future.endReport?.({ ...at, timedOut: true, decisionRows: 7, held: 7, dropped: 3 });
-    expect(cut?.cut).toBe('sub-agent-compact: the session-end bound (400 ms) ran out before the logs were written; 7 decision rows may be lost');
-    expect(cut?.lost).toEqual({ line: 'sub-agent-compact: 3 decision rows were not written to /logs/d.jsonl (3 of them dropped past the 2000-row hold): EACCES', rows: 3, dropped: 3, error: 'EACCES' });
-    expect(future.endReport?.({ ...at, timedOut: true, decisionRows: 0, held: 0, dropped: 0 })).toEqual({ cut: 'sub-agent-compact: the session-end bound (400 ms) ran out while the log writes were finishing; no row was in flight' });
+    expect(cut?.cut).toBe('forward-compaction: the session-end bound (400 ms) ran out before the logs were written; 7 decision rows may be lost');
+    expect(cut?.lost).toEqual({ line: 'forward-compaction: 3 decision rows were not written to /logs/d.jsonl (3 of them dropped past the 2000-row hold): EACCES', rows: 3, dropped: 3, error: 'EACCES' });
+    expect(future.endReport?.({ ...at, timedOut: true, decisionRows: 0, held: 0, dropped: 0 })).toEqual({ cut: 'forward-compaction: the session-end bound (400 ms) ran out while the log writes were finishing; no row was in flight' });
     expect(future.endReport?.({ ...at, timedOut: false, decisionRows: 2, held: 2, dropped: 0 })?.lost?.rows).toBe(2);
     expect(future.endReport?.({ ...at, timedOut: false, decisionRows: 0, held: 0, dropped: 0 })).toEqual({});
   });
@@ -301,7 +298,7 @@ describe('decision log', () => {
     for (let i = 0; i < 102; i++) out.push(...(fold?.add(skip(`m${i}`, i)) ?? []));
     out.push(...(fold?.add(skip('a0', 7, 'agent-1')) ?? []), ...(fold?.add(skip('a1', 8, 'agent-1')) ?? []));
     out.push(...(fold?.add(skip('p0', 9, null, 'precompute')) ?? []));
-    out.push(...(fold?.add({ ts: 'w', event: 'session.compact', trigger: 'precompute', party: 'main', agentId: null, type: 'main', decision: 'skip', why: 'handoff-waits' }) ?? []));
+    out.push(...(fold?.add({ ts: 'w', event: 'session.compact', trigger: 'precompute', party: 'main', agentId: null, type: 'main', decision: 'skip', why: 'error' }) ?? []));
     out.push(...(fold?.drain() ?? []));
     expect(out.map((row: any) => [row.event, row.ts, row.count ?? null, row.agentId ?? null])).toEqual([
       ['session.compact', 'm0', null, null],
@@ -484,7 +481,7 @@ PATH='${realPath}' exec cat "$@"
     const row = JSON.stringify({ ts: '2026-10-14T15:20:31.123Z', ...fields }) + '\n';
     try {
       mkdirSync(join(dir, '.lock')); writeFileSync(join(dir, '.lock', 'pid'), `${process.pid}\n`);
-      const pending = runSh(['/bin/sh', '-c', future.APPEND_SCRIPT ?? ':', 'plugin-log', dir, 'sub-agent-compact', 'errors.jsonl', row]);
+      const pending = runSh(['/bin/sh', '-c', future.APPEND_SCRIPT ?? ':', 'plugin-log', dir, 'forward-compaction', 'errors.jsonl', row]);
       await new Promise((resolve) => setTimeout(resolve, 400));
       expect(existsSync(join(dir, 'errors.jsonl'))).toBe(false);
       rmSync(join(dir, '.lock'), { recursive: true, force: true });

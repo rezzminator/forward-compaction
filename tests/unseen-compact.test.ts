@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { register } from '../plugins/sub-agent-compact/hooks/sub-agent-compact.ts';
-import { optionVars } from './option-env.ts';
+import { optionVars } from './option-env-old.ts';
 import { unseenCompaction } from '../plugins/sub-agent-compact/src/unseen.ts';
 
 // Claude Code 2.1.299 on a machine with managed settings passes every user plugin's session.compact over

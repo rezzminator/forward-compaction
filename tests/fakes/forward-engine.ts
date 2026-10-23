@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { register } from '../../plugins/sub-agent-compact/hooks/sub-agent-compact.ts';
-import { optionVars } from '../option-env.ts';
+import { optionVars } from '../option-env-old.ts';
 
 type AnyHook = (...args: any[]) => any;
 export const TOOL = 'mcp__sub-agent-compact__forward_handoff';

@@ -4,3 +4,5 @@ node_modules
 .worktrees/
 plugins/sub-agent-compact/tsconfig.json
 plugins/sub-agent-compact/.claude-plugin/types/
+plugins/forward-compaction/tsconfig.json
+plugins/forward-compaction/.claude-plugin/types/

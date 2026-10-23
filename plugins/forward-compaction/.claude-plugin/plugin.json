@@ -1,0 +1,23 @@
+{
+  "name": "forward-compaction",
+  "version": "1.0.0-dev.1",
+  "description": "The model writes its own handoff through one tool and the plugin installs it at Claude Code's compaction, with facts recorded from typed events and every later message kept verbatim.",
+  "license": "MIT",
+  "author": {
+    "name": "Reza · Professor",
+    "url": "https://github.com/rezzminator/professor"
+  },
+  "repository": "https://github.com/rezzminator/sub-agent-compact",
+  "homepage": "https://github.com/rezzminator/sub-agent-compact",
+  "keywords": [
+    "claude-code",
+    "claude-code-plugin",
+    "compaction",
+    "context-window",
+    "handoff",
+    "function-hooks",
+    "claude-mods",
+    "multi-agent",
+    "professor"
+  ]
+}

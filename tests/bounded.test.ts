@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { bounded, unlessAborted } from '../plugins/sub-agent-compact/src/bounded.ts';
+import { bounded, unlessAborted } from '../plugins/forward-compaction/src/bounded.ts';
 
 // The hooks' environment has no setTimeout: the wait is `$.clock.after`, passed in.
 function clock() {

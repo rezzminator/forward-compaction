@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { register } from '../plugins/sub-agent-compact/hooks/sub-agent-compact.ts';
-import { optionVars } from './option-env.ts';
+import { optionVars } from './option-env-old.ts';
 
 // A log directory that cannot be written fails every flush the same way. The person is told once per
 // distinct failure, not on every row, while every hook keeps deciding as if the log were fine.

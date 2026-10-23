@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { register } from '../plugins/sub-agent-compact/hooks/sub-agent-compact.ts';
-import { optionVars } from './option-env.ts';
+import { optionVars } from './option-env-old.ts';
 import { HANDOFF_OPENING } from '../plugins/sub-agent-compact/src/handoff.ts';
 
 // The handoff path end to end through the adapter: the tool stores the text,

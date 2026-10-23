@@ -1,119 +1,177 @@
 import { describe, expect, it } from 'vitest';
-import { isFirstRequest, Parties } from '../plugins/sub-agent-compact/src/parties.ts';
+import { Parties, type StoredHandoff } from '../plugins/forward-compaction/src/parties.ts';
 
-describe('Parties', () => {
-  it('marks a held automatic ask unanswered until the party\'s next reading', () => {
-    const parties: any = new Parties();
-    parties.read('a', 150_000);
-    expect(parties.unanswered?.('a')).toBe(false);
-    parties.heldAsk?.('a');
-    expect(parties.unanswered?.('a')).toBe(true);
-    parties.read('a', 151_000);
-    expect(parties.unanswered?.('a')).toBe(false);
+const handoff = (toolUseId: string, storedAtTokens = 41_200): Omit<StoredHandoff, 'seq'> => ({
+  text: '## Objective\nx\n## Done\ny\n## Remaining\nz\n## Next\nw',
+  loadFiles: [],
+  toolUseId,
+  storedAtTokens,
+});
+
+describe('Parties state', () => {
+  it('creates a party on first touch with the defaults', () => {
+    const parties = new Parties(200_000);
+    expect(parties.get('main')).toMatchObject({ key: 'main', label: 'main', modelWin: 200_000, nudgeLevel: 0, nudgedNow: false, askHeld: false, installs: 0, installedThisTurn: false });
+    expect(parties.get('main').stored).toBeUndefined();
+    expect(parties.get('main').reading).toBeUndefined();
+    expect(parties.get('agent:a1').label).toBe('agent:a1');
   });
 
-  it('owes each nudge level once, and none while armed', () => {
+  it('describe sets the label, model and model window, leaving the rest', () => {
     const parties = new Parties();
-    parties.read('a', 105_000);
-    expect(parties.nudgeDue('a', 100_000, 100_000)).toBe(0);
-    expect(parties.nudgeDue('a', 100_000, 100_000)).toBeUndefined();
-    parties.read('a', 210_000);
-    parties.arm('a', 'next: file 9');
-    expect(parties.nudgeDue('a', 100_000, 100_000)).toBeUndefined();
+    parties.read('agent:a1', 12_000);
+    parties.describe('agent:a1', { label: 'general-purpose a1b2c3', model: 'sonnet', modelWin: 1_000_000 });
+    expect(parties.get('agent:a1')).toMatchObject({ label: 'general-purpose a1b2c3', model: 'sonnet', modelWin: 1_000_000, reading: 12_000 });
   });
 
-  it('starts a compacted party over from its size after the compaction, so a stale reading sends no nudge', () => {
+  it('keeps each party separate', () => {
     const parties = new Parties();
-    parties.read('a', 104_000);
-    expect(parties.nudgeDue('a', 100_000, 100_000)).toBe(0);
-    parties.arm('a', 'next: file 9');
-    parties.markContinued('a');
-    parties.compacted('a', 10_000);
-    expect(parties.reading('a')).toBe(10_000);
-    expect(parties.armed('a')).toBeUndefined();
-    expect(parties.continued('a')).toBe(false);
-    expect(parties.nudgeDue('a', 100_000, 100_000)).toBeUndefined();
-    parties.read('a', 101_000);
-    expect(parties.nudgeDue('a', 100_000, 100_000)).toBe(0);
-  });
-
-  it('reads 0 after a compaction that reported no size, never the stale figure', () => {
-    const parties = new Parties();
-    parties.read('a', 104_000);
-    parties.compacted('a', undefined);
-    expect(parties.reading('a')).toBe(0);
-  });
-
-  it('disarms a party without a compaction, keeping the nudges already sent so none repeats at once', () => {
-    const parties = new Parties();
-    parties.read('main', 301_000);
-    expect(parties.nudgeDue('main', 200_000, 100_000)).toBe(1);
-    parties.arm('main', 'next: dry run');
-    expect(parties.disarm('main')).toBe(true);
-    expect(parties.armed('main')).toBeUndefined();
-    expect(parties.reading('main')).toBe(301_000);
-    expect(parties.nudgeDue('main', 200_000, 100_000)).toBeUndefined();
-    parties.read('main', 401_000);
-    expect(parties.nudgeDue('main', 200_000, 100_000)).toBe(2);
-  });
-
-  it('reports nothing to disarm for a party that never armed', () => {
-    expect(new Parties().disarm('main')).toBe(false);
+    parties.read('main', 60_000);
+    parties.read('agent:a1', 10_000);
+    expect(parties.get('main').reading).toBe(60_000);
+    expect(parties.get('agent:a1').reading).toBe(10_000);
   });
 });
 
-describe('the first reading as a base for the size of a cut', () => {
-  it('is set only by a reading taken on the session\'s first request', () => {
+describe('store and takeStored', () => {
+  it('stores a handoff with a rising seq and returns the one it replaced', () => {
     const parties = new Parties();
-    parties.read('main', 208_000, false);
-    expect(parties.firstReading('main')).toBeUndefined();
-    parties.read('main', 40_000, true);
-    expect(parties.firstReading('main')).toBe(40_000);
-    parties.read('main', 90_000, true);
-    expect(parties.firstReading('main')).toBe(40_000);
+    expect(parties.store('main', handoff('t1', 30_500))).toBeUndefined();
+    expect(parties.get('main').stored).toMatchObject({ toolUseId: 't1', storedAtTokens: 30_500, seq: 1 });
+    const replaced = parties.store('main', handoff('t2'));
+    expect(replaced).toMatchObject({ toolUseId: 't1', storedAtTokens: 30_500 });
+    expect(parties.get('main').stored).toMatchObject({ toolUseId: 't2', seq: 2 });
+  });
+
+  it('takeStored hands it back once and clears it', () => {
+    const parties = new Parties();
+    parties.store('agent:a1', handoff('t1'));
+    expect(parties.takeStored('agent:a1')?.toolUseId).toBe('t1');
+    expect(parties.takeStored('agent:a1')).toBeUndefined();
+    expect(parties.get('agent:a1').stored).toBeUndefined();
+  });
+
+  it('takeStored on a party never seen is undefined and creates none', () => {
+    const parties = new Parties();
+    expect(parties.takeStored('agent:nope')).toBeUndefined();
   });
 });
 
-describe('notices to a party\'s model', () => {
-  it('queue in order, are taken once, and survive a compaction', () => {
+describe('nudgeDue (R30)', () => {
+  it('is true once per level, false on the second call at the same level', () => {
     const parties = new Parties();
-    parties.notify('a1', 'first');
-    parties.notify('a1', 'second');
-    parties.notify('main', 'other');
-    parties.compacted('a1', 5_000);
-    expect(parties.takeNotices('a1')).toEqual(['first', 'second']);
-    expect(parties.takeNotices('a1')).toEqual([]);
-    expect(parties.takeNotices('main')).toEqual(['other']);
+    expect(parties.nudgeDue('main', 2)).toBe(true);
+    expect(parties.nudgeDue('main', 2)).toBe(false);
   });
 
-  it('queue a line once while it waits unread, so two layers reporting the same skip show it once', () => {
+  it('is true again at a higher level, false at a lower one', () => {
     const parties = new Parties();
-    parties.notify('main', 'skipped: busy');
-    parties.notify('main', 'skipped: busy');
-    expect(parties.takeNotices('main')).toEqual(['skipped: busy']);
-    parties.notify('main', 'skipped: busy');
-    expect(parties.takeNotices('main')).toEqual(['skipped: busy']);
+    expect(parties.nudgeDue('main', 1)).toBe(true);
+    expect(parties.nudgeDue('main', 2)).toBe(true);
+    expect(parties.nudgeDue('main', 1)).toBe(false);
+  });
+
+  it('owes nothing at level 0 and nothing while a handoff is stored', () => {
+    const parties = new Parties();
+    expect(parties.nudgeDue('main', 0)).toBe(false);
+    parties.store('main', handoff('t1'));
+    expect(parties.nudgeDue('main', 5)).toBe(false);
+  });
+
+  it('keeps each party\'s levels apart', () => {
+    const parties = new Parties();
+    expect(parties.nudgeDue('main', 1)).toBe(true);
+    expect(parties.nudgeDue('agent:a1', 1)).toBe(true);
+  });
+
+  it('owes one more "now" delivery after a held ask even when its level was already delivered, and only one', () => {
+    const parties = new Parties();
+    expect(parties.nudgeDue('main', 2)).toBe(true);
+    parties.asked('main', 'skip');
+    expect(parties.get('main').askHeld).toBe(true);
+    expect(parties.nudgeDue('main', 2)).toBe(true);
+    expect(parties.get('main').nudgedNow).toBe(true);
+    parties.asked('main', 'skip');
+    expect(parties.nudgeDue('main', 2)).toBe(false);
+    expect(parties.nudgeDue('main', 3)).toBe(true);
+  });
+
+  it('owes the "now" delivery after a held ask even below the first nudge level', () => {
+    const parties = new Parties();
+    parties.asked('agent:a1', 'skip');
+    expect(parties.nudgeDue('agent:a1', 0)).toBe(true);
+    expect(parties.nudgeDue('agent:a1', 0)).toBe(false);
   });
 });
 
-describe('isFirstRequest', () => {
-  it('takes a sub-agent\'s step 0 of a turn that carries at most the prompt and its context lines', () => {
-    expect(isFirstRequest({ index: 0, messageCount: 1, main: false })).toBe(true);
-    expect(isFirstRequest({ index: 0, messageCount: 3, main: false })).toBe(true);
-    expect(isFirstRequest({ index: 0, messageCount: 4, main: false })).toBe(false);
-    expect(isFirstRequest({ index: 1, messageCount: 1, main: false })).toBe(false);
-    expect(isFirstRequest({ index: 0, main: false })).toBe(false);
+describe('asked, answered and reactive (D8)', () => {
+  it('is reactive after a skip until a step completes', () => {
+    const parties = new Parties();
+    expect(parties.reactive('main')).toBe(false);
+    parties.asked('main', 'skip');
+    expect(parties.get('main').lastDecision).toBe('skip');
+    expect(parties.reactive('main')).toBe(true);
+    parties.answered('main');
+    expect(parties.reactive('main')).toBe(false);
   });
 
-  it('takes the main chat\'s only when it is also the session\'s first prompt: after a reload, the step after a CLI compaction (summary and prompt, 2 messages) is not', () => {
-    expect(isFirstRequest({ index: 0, messageCount: 1, main: true, turns: 1 })).toBe(true);
-    expect(isFirstRequest({ index: 0, messageCount: 2, main: true, turns: 5 })).toBe(false);
-    expect(isFirstRequest({ index: 0, messageCount: 1, main: true, turns: 2 })).toBe(false);
-    expect(isFirstRequest({ index: 0, messageCount: 1, main: true, turns: 0 })).toBe(false);
+  it('is cleared by a reading, which only a completed step brings', () => {
+    const parties = new Parties();
+    parties.asked('agent:a1', 'skip');
+    parties.read('agent:a1', 68_000);
+    expect(parties.reactive('agent:a1')).toBe(false);
   });
 
-  it('is not first for the main chat when the prompt count is unknown, rather than guessing', () => {
-    expect(isFirstRequest({ index: 0, messageCount: 1, main: true })).toBe(false);
-    expect(isFirstRequest({ index: 0, messageCount: 1, main: true, turns: Number.NaN })).toBe(false);
+  it('is not reactive when the previous ask was not a skip', () => {
+    const parties = new Parties();
+    parties.asked('main', 'install');
+    expect(parties.reactive('main')).toBe(false);
+    parties.asked('main', 'skip');
+    parties.asked('main', 'mechanical');
+    expect(parties.reactive('main')).toBe(false);
+  });
+
+  it('is reactive for the second skip in a row only if no step completed between them', () => {
+    const parties = new Parties();
+    parties.asked('main', 'skip');
+    parties.answered('main');
+    parties.asked('main', 'skip');
+    expect(parties.reactive('main')).toBe(true);
+  });
+});
+
+describe('installed', () => {
+  it('clears the handoff and the nudges, counts the install, sets the reading and the turn mark', () => {
+    const parties = new Parties();
+    parties.read('main', 70_000);
+    parties.nudgeDue('main', 3);
+    parties.asked('main', 'skip');
+    parties.nudgeDue('main', 3);
+    parties.store('main', handoff('t1'));
+    parties.installed('main', 21_000);
+    expect(parties.get('main')).toMatchObject({ nudgeLevel: 0, nudgedNow: false, askHeld: false, installs: 1, installedThisTurn: true, reading: 21_000, lastDecision: 'install' });
+    expect(parties.get('main').stored).toBeUndefined();
+    expect(parties.reactive('main')).toBe(false);
+    expect(parties.nudgeDue('main', 1)).toBe(true);
+  });
+
+  it('turnEnded clears the turn mark and nothing else', () => {
+    const parties = new Parties();
+    parties.installed('main', 21_000);
+    parties.turnEnded('main');
+    expect(parties.get('main')).toMatchObject({ installedThisTurn: false, installs: 1, reading: 21_000 });
+  });
+});
+
+describe('forget', () => {
+  it('starts the party over as if never seen', () => {
+    const parties = new Parties();
+    parties.describe('agent:a1', { label: 'x', modelWin: 1_000_000 });
+    parties.read('agent:a1', 5_000);
+    parties.store('agent:a1', handoff('t1'));
+    parties.forget('agent:a1');
+    expect(parties.get('agent:a1')).toMatchObject({ label: 'agent:a1', installs: 0, modelWin: 200_000 });
+    expect(parties.get('agent:a1').stored).toBeUndefined();
+    expect(parties.get('agent:a1').reading).toBeUndefined();
   });
 });
