@@ -352,7 +352,7 @@ npm run replay:record # records a live replay fixture (a paid Claude Code sessio
 
 The live replay fixture exercises every replay invariant but two, which the replay test names: I2, a precompute ask (Claude Code 2.1.309 sent none; `tests/decide.test.ts` covers C2), and I11, tail handles shared by two chained installs (a chained handoff's call comes after everything the install before it kept, so the two tails share no message).
 
-Work lands on `develop`; `main` holds only releases, and each one is tagged `forward-compaction--vX.Y.Z` with its notes in [CHANGELOG.md](./CHANGELOG.md). Pull requests go to `develop`.
+Work lands on `develop`; `main` holds only releases. Merging the `develop → main` pull request is the release: [`release.yml`](./.github/workflows/release.yml) tags the merge commit `forward-compaction--vX.Y.Z` and publishes its notes from [CHANGELOG.md](./CHANGELOG.md). `make release-check` runs that pull request's checks locally first. Pull requests go to `develop`.
 
 `plugins/forward-compaction/hooks/forward-compaction.ts` is a thin adapter over `plugins/forward-compaction/src/`:
 
