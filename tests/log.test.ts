@@ -229,16 +229,15 @@ exec /bin/chmod "$@"
   });
   it.each([
     ...['error', 'tool-register-failed', 'look-back-manual-error', 'option-error'].map((event) => [event, 'error', event, {}] as [string, string, string, Record<string, unknown>]),
-    ...['warning', 'decision-retention-failed', 'compact-unseen', 'compaction-failed'].map((event) => [event, 'warning', event, {}] as [string, string, string, Record<string, unknown>]),
-    ['session.compact', 'error', 'compact-error', { why: 'error', error: 'bad reading' }],
-    ['turn.complete', 'error', 'turn-complete-error', { error: 'compaction failed' }],
+    ...['warning', 'decision-retention-failed', 'unseen-compaction'].map((event) => [event, 'warning', event, {}] as [string, string, string, Record<string, unknown>]),
+    ['compact', 'error', 'compact-error', { decision: 'error', error: 'bad reading' }],
   ])('routes %s as %s without carrying tool bodies', (event, level, output, extra) => {
     const routed = future.pluginLogEvent?.({ event, ...extra as object, line: 'diagnostic', party: 'main', error: 'diagnostic failure', focus: 'private prompt', text: 'private handoff', query: 'private query', input: { body: 'private input' } });
     expect(routed).toMatchObject({ level, event: output, where: 'hooks/forward-compaction.ts#record' });
     expect(routed.detail).toEqual({ party: 'main', error: 'diagnostic failure', ...('why' in (extra as object) ? { why: (extra as any).why } : {}) });
   });
   it('logs unexpected API shapes without serializing transcript bodies', () => {
-    expect(future.pluginLogEvent?.({ event: 'compaction-failed', problem: 'transcript: unreadable ({"body":"private transcript"})' })).toMatchObject({ level: 'warning', event: 'compaction-failed', msg: 'transcript: unreadable (unexpected API shape)', detail: { problem: 'transcript: unreadable (unexpected API shape)' } });
+    expect(future.pluginLogEvent?.({ event: 'decision-retention-failed', problem: 'transcript: unreadable ({"body":"private transcript"})' })).toMatchObject({ level: 'warning', event: 'decision-retention-failed', msg: 'transcript: unreadable (unexpected API shape)', detail: { problem: 'transcript: unreadable (unexpected API shape)' } });
   });
   it('selects actionable diagnostics among routine hook traffic', () => {
     const traffic = [{ event: 'nudge', focus: 'private' }, { event: 'option-error', error: 'seating failed' }];
@@ -276,19 +275,19 @@ describe('decision log', () => {
     });
   const append = (path: string, lines: string[], cap?: number) => runSh(future.decisionAppendArgv?.(path, ...(cap === undefined ? [] : [cap])) ?? ['/bin/sh', '-c', 'exit 9'], lines.map((line) => `${line}\n`).join(''));
   const lines = (path: string): string[] => existsSync(path) ? readFileSync(path, 'utf8').split('\n').filter(Boolean) : [];
-  const skip = (ts: string, tokens: number, agentId: string | null = null, trigger = 'auto') => ({ ts, event: 'session.compact', trigger, party: agentId ? 'sub' : 'main', agentId, type: agentId ? 'tracer' : 'main', limit: 120_000, tokens, decision: 'skip' });
+  const skip = (ts: string, tokens: number, agentId: string | null = null, trigger = 'auto') => ({ ts, event: 'compact', party: agentId ? `agent:${agentId}` : 'main', trigger, decision: 'skip', why: trigger === 'precompute' ? 'precompute' : 'waiting', tokens });
 
   it('writes the first skip of a streak, folds the rest, and closes the streak at the party\'s next decision', () => {
     const fold = future.SkipFold ? new future.SkipFold() : undefined;
     const out: any[] = [];
     for (let i = 0; i < 5; i++) out.push(...(fold?.add(skip(`t${i}`, 1000 + i)) ?? []));
     out.push(...(fold?.add({ ts: 't5', event: 'said', line: 'x' }) ?? []));
-    out.push(...(fold?.add({ ts: 't6', event: 'session.compact', trigger: 'auto', party: 'main', agentId: null, type: 'main', limit: 120_000, tokens: 125_000, decision: 'pass', why: 'self' }) ?? []));
+    out.push(...(fold?.add({ ts: 't6', event: 'compact', party: 'main', trigger: 'auto', decision: 'install', why: 'stored', tokens: 125_000 }) ?? []));
     expect(out).toEqual([
       skip('t0', 1000),
       { ts: 't5', event: 'said', line: 'x' },
-      { ts: 't4', event: 'skips', party: 'main', agentId: null, type: 'main', trigger: 'auto', count: 4, from: 't1', to: 't4', firstTokens: 1001, lastTokens: 1004, limit: 120_000 },
-      { ts: 't6', event: 'session.compact', trigger: 'auto', party: 'main', agentId: null, type: 'main', limit: 120_000, tokens: 125_000, decision: 'pass', why: 'self' },
+      { ts: 't4', event: 'skips', party: 'main', trigger: 'auto', count: 4, from: 't1', to: 't4', firstTokens: 1001, lastTokens: 1004 },
+      { ts: 't6', event: 'compact', party: 'main', trigger: 'auto', decision: 'install', why: 'stored', tokens: 125_000 },
     ]);
   });
 
@@ -298,16 +297,16 @@ describe('decision log', () => {
     for (let i = 0; i < 102; i++) out.push(...(fold?.add(skip(`m${i}`, i)) ?? []));
     out.push(...(fold?.add(skip('a0', 7, 'agent-1')) ?? []), ...(fold?.add(skip('a1', 8, 'agent-1')) ?? []));
     out.push(...(fold?.add(skip('p0', 9, null, 'precompute')) ?? []));
-    out.push(...(fold?.add({ ts: 'w', event: 'session.compact', trigger: 'precompute', party: 'main', agentId: null, type: 'main', decision: 'skip', why: 'error' }) ?? []));
+    out.push(...(fold?.add({ ts: 'w', event: 'compact', party: 'main', trigger: 'precompute', decision: 'error', error: 'bad reading' }) ?? []));
     out.push(...(fold?.drain() ?? []));
-    expect(out.map((row: any) => [row.event, row.ts, row.count ?? null, row.agentId ?? null])).toEqual([
-      ['session.compact', 'm0', null, null],
-      ['skips', 'm100', 100, null],
-      ['session.compact', 'a0', null, 'agent-1'],
-      ['session.compact', 'p0', null, null],
-      ['skips', 'm101', 1, null],
-      ['session.compact', 'w', null, null],
-      ['skips', 'a1', 1, 'agent-1'],
+    expect(out.map((row: any) => [row.event, row.ts, row.count ?? null, row.party])).toEqual([
+      ['compact', 'm0', null, 'main'],
+      ['skips', 'm100', 100, 'main'],
+      ['compact', 'a0', null, 'agent:agent-1'],
+      ['compact', 'p0', null, 'main'],
+      ['skips', 'm101', 1, 'main'],
+      ['compact', 'w', null, 'main'],
+      ['skips', 'a1', 1, 'agent:agent-1'],
     ]);
     expect(fold?.drain()).toEqual([]);
   });

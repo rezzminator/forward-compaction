@@ -197,10 +197,10 @@ export function retentionArgv(logFile: string, sessionPath: string, policy: { da
 }
 
 type DecisionRow = Record<string, unknown>;
-type SkipStreak = { party: unknown; agentId: unknown; type: unknown; trigger: unknown; count: number; from?: unknown; to?: unknown; firstTokens?: unknown; lastTokens?: unknown; limit?: unknown };
+type SkipStreak = { party: unknown; trigger: unknown; count: number; from?: unknown; to?: unknown; firstTokens?: unknown; lastTokens?: unknown };
 
 /**
- * Routine skips fold: a party asked to compact below its point on every request writes the first skip of a
+ * Skips fold (C2, C9): a party whose compaction is held on every request writes the first `compact` skip row of a
  * streak and counts the rest, closed as one `skips` row at the party's next compaction decision, every
  * `every` folded skips, and at session end. Every other row passes as it came.
  */
@@ -210,20 +210,19 @@ export class SkipFold {
 
   /** The rows to write for `row` (stamped with its `ts`), in order. */
   add(row: DecisionRow): DecisionRow[] {
-    if (row.event !== 'session.compact') return [row];
-    const owner = String(row.agentId ?? 'main');
-    if (row.decision !== 'skip' || row.why !== undefined) return [...this.close(owner), row];
+    if (row.event !== 'compact') return [row];
+    const owner = String(row.party);
+    if (row.decision !== 'skip') return [...this.close(owner), row];
     const key = `${owner}\u0000${String(row.trigger)}`;
     const streak = this.open.get(key);
     if (streak === undefined) {
-      this.open.set(key, { party: row.party, agentId: row.agentId, type: row.type, trigger: row.trigger, count: 0 });
+      this.open.set(key, { party: row.party, trigger: row.trigger, count: 0 });
       return [row];
     }
     if (streak.count === 0) { streak.from = row.ts; streak.firstTokens = row.tokens; }
     streak.count++;
     streak.to = row.ts;
     streak.lastTokens = row.tokens;
-    streak.limit = row.limit;
     if (streak.count < this.every) return [];
     const out = summary(streak);
     streak.count = 0;
@@ -249,7 +248,7 @@ export class SkipFold {
 }
 
 function summary(streak: SkipStreak): DecisionRow {
-  return { ts: streak.to, event: 'skips', party: streak.party, agentId: streak.agentId, type: streak.type, trigger: streak.trigger, count: streak.count, from: streak.from, to: streak.to, firstTokens: streak.firstTokens, lastTokens: streak.lastTokens, limit: streak.limit };
+  return { ts: streak.to, event: 'skips', party: streak.party, trigger: streak.trigger, count: streak.count, from: streak.from, to: streak.to, firstTokens: streak.firstTokens, lastTokens: streak.lastTokens };
 }
 
 export type PluginLogLevel = 'error' | 'warning' | 'info';
@@ -422,10 +421,9 @@ export class PluginLogQueue {
 export function pluginLogEvent(row: Record<string, unknown>): Omit<PluginLogFields, 'plugin' | 'session'> | undefined {
   row = Object.fromEntries(Object.entries(row).map(([key, value]) => [key, typeof value === 'string' ? pluginLogDiagnostic(value) : value]));
   let event = String(row.event);
-  if (event === 'session.compact' && row.why === 'error') event = 'compact-error';
-  if (event === 'turn.complete' && row.error !== undefined) event = 'turn-complete-error';
-  const errors = ['error', 'option-error', 'tool-register-failed', 'look-back-manual-error', 'compact-error', 'turn-complete-error'];
-  const warnings = ['warning', 'decision-retention-failed', 'compact-unseen', 'compaction-failed'];
+  if (event === 'compact' && row.decision === 'error') event = 'compact-error';
+  const errors = ['error', 'option-error', 'tool-register-failed', 'look-back-manual-error', 'compact-error'];
+  const warnings = ['warning', 'decision-retention-failed', 'unseen-compaction'];
   const level = errors.includes(event) ? 'error' : warnings.includes(event) ? 'warning' : undefined;
   if (level === undefined) return undefined;
   const detail: Record<string, unknown> = {};

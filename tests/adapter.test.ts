@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { fakeEngine, usage, type Script } from './fakes/engine.ts';
@@ -249,6 +249,38 @@ describe('skill attribution (R38)', () => {
     const r = await f.dispatch('session.compact', { trigger: 'auto', agentId: A1, messages: transcript('tu-none') }, async () => ({ skip: 'native ran' }));
     expect(r).toHaveProperty('messages');
     expect(r.messages[0].text).toContain('RULES SKILL BODY');
+  });
+});
+
+describe('the log rows the hook writes reach their folds and levels', () => {
+  /** The level file `name` (errors, warnings) of this session, once session.end has flushed it. */
+  async function level(f: Fake, name: string): Promise<Record<string, unknown>[]> {
+    await rows(f);
+    const path = join(f.home, `.local/state/forward-compaction/logs/${name}.jsonl`);
+    for (let i = 0; i < 50 && !existsSync(path); i++) await new Promise((resolve) => setTimeout(resolve, 10));
+    return existsSync(path) ? readFileSync(path, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)) : [];
+  }
+
+  it("folds main's held asks (C9) into the first skip row and one skips row", async () => {
+    const f = await begin();
+    for (let i = 0; i < 3; i++) {
+      await step(f, 64_000 + i);
+      await f.dispatch('session.compact', { trigger: 'auto', messages: transcript() }, async () => ({ skip: 'native ran' }));
+    }
+    const asks = (await rows(f)).filter((r) => r.event === 'compact' || r.event === 'skips');
+    expect(asks.map((r) => [r.event, r.party, r.decision ?? null, r.count ?? null])).toEqual([['compact', 'main', 'skip', null], ['skips', 'main', null, 2]]);
+  });
+
+  it('files an unseen compaction as a warning and a failed compaction as an error', async () => {
+    const f = await begin();
+    await spawn(f);
+    await step(f, 120_000, A1);
+    await step(f, 30_000, A1);
+    await step(f, 64_000);
+    const poisoned = [{ role: 'user', get text(): string { throw new Error('unreadable message'); }, toolUses: [] }];
+    await f.dispatch('session.compact', { trigger: 'auto', messages: poisoned }, async () => ({ skip: 'native ran' }));
+    expect((await level(f, 'warnings')).map((r) => r.event)).toContain('unseen-compaction');
+    expect((await level(f, 'errors')).map((r) => r.event)).toContain('compact-error');
   });
 });
 
