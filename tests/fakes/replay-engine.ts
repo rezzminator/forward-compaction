@@ -72,11 +72,14 @@ export async function replay(rows: readonly Row[]): Promise<Replay> {
     const pool = rec.calls.map((call) => ({ call, used: false }));
     const answer = (path: string, args: unknown[]): unknown => {
       const same = pool.filter((p) => !p.used && p.call.path === path);
-      const hit = same.find((p) => norm(p.call.args) === norm(args)) ?? same[0];
+      // shortcut: a process.run carries log rows stamped with the wall clock, so it is matched by path alone; upgrade when those rows are clock-free.
+      const hit = same.find((p) => norm(p.call.args) === norm(args)) ?? (path === 'process.run' ? same[0] : undefined);
       if (!hit) {
         const line = `unrecorded $ call ${path} in ${rec.hook} #${rec.id}`;
         unrecorded.push(line);
         out.calls.push({ path, args, error: { message: line } });
+        // a screen line returns nothing live: named unrecorded, it does not throw into the plugin's log chains
+        if (path === 'ui.log') return undefined;
         throw new Error(line);
       }
       hit.used = true;

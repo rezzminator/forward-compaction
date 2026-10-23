@@ -43,6 +43,23 @@ describe('splitAtCall (R18)', () => {
     expect(split.siblings.map((s) => [s.tool, s.text])).toEqual([['Grep', 'g'], ['Read', 'r']]);
   });
 
+  it('anchors on the last of two messages holding the call, and takes assistant messages after it into the response', () => {
+    const late = assistant('more calls', [{ id: 't11', tool: 'Grep' }]);
+    const split = splitAtCall([a1, u2, u0, a1, late, results(['t9', 'ok'], ['t10', 'r'], ['t11', 'g']), a3], 't9')!;
+    expect(split.tail).toEqual([a3]);
+    expect(split.siblings.map((s) => [s.tool, s.text])).toEqual([['Read', 'r'], ['Grep', 'g']]);
+  });
+
+  it('stops at a user message answering this response and another call alike', () => {
+    const mixed = results(['t10', 'r'], ['t0', 'old']);
+    expect(splitAtCall([a1, results(['t9', 'ok']), mixed, a3], 't9')!.tail).toEqual([mixed, a3]);
+  });
+
+  it("takes a sibling's recorded result over the text on its call", () => {
+    const withText: Msg = { ...a1, toolUses: a1.toolUses.map((u) => ({ ...u, text: 'call text' })) };
+    expect(splitAtCall([withText, u2], 't9')!.siblings[0]!.text).toBe('file body');
+  });
+
   it('stops at a user message whose results answer other calls, leaving it in the tail', () => {
     const stray = results(['t0', 'old']);
     expect(splitAtCall([u0, a1, u2, stray, a3], 't9')!.tail).toEqual([stray, a3]);
@@ -73,6 +90,13 @@ describe('fitTail (R19)', () => {
     const dropOrphan = fitTail([a, orphan, u], 100_000 /* all fit */);
     expect(dropOrphan.messages).toEqual([a, orphan, u]);
     expect(fitTail([orphan, orphan, a], 100_000).messages).toEqual([a]);
+  });
+
+  it('sizes a message by its tool inputs and its tool results, not its text alone', () => {
+    const bigInput = assistant('', [{ id: 'w', tool: 'Write', input: { content: 'i'.repeat(7000) } }]);
+    expect(fitTail([bigInput, u], 300).messages).toEqual([u]);
+    const bigResult = results(['w', 'r'.repeat(7000)]);
+    expect(fitTail([a, bigResult, u], 300).messages).toEqual([u]);
   });
 
   it('keeps the input objects, and nothing for a zero budget', () => {
@@ -129,6 +153,13 @@ describe('buildWake (R20)', () => {
     expect(Math.ceil(chars / 3.5)).toBeLessThanOrEqual(wakeBudget(4000));
   });
 
+  it('names the tool as registered when it asks for the next handoff', () => {
+    const filler = Array.from({ length: 10 }, (_, i) => assistant(`${i}`.repeat(1000), [], `e${i}`));
+    const tool = 'mcp__forward-compaction-dev__forward_compaction';
+    const h = buildWake({ ...mainInput([call, res, ...filler]), askPoint: 4000, toolUseId: 't9', handoff, tool }).messages[1] as BuiltMessage;
+    expect(h.text).toContain(`call ${tool} again at your next milestone`);
+  });
+
   it('never leaves a tool result at the head of the tail', () => {
     const useA = assistant('x'.repeat(2800), [{ id: 'r1', tool: 'Read' }]);
     const answer = results(['r1', 'y'.repeat(100)]);
@@ -157,6 +188,18 @@ describe('buildWake (R20)', () => {
     expect(wake.kept).toBeLessThan(6);
     const chars = wake.messages.reduce((n, m) => n + m.text.length, 0);
     expect(Math.ceil(chars / 3.5)).toBeLessThanOrEqual(wakeBudget(3000));
+  });
+
+  it("hands the facts a kept tool call's own text, so a fact the tail shows there is left out", () => {
+    const seen: string[][] = [];
+    const later: Msg = { role: 'assistant', text: '', handle: 'h-later', toolUses: [{ tool_use_id: 't20', tool: 'Skill', input: {}, text: 'SKILL-BODY' }] };
+    buildWake({ ...mainInput([call, res, later]), toolUseId: 't9', handoff, facts: (kept) => (seen.push([...kept]), noFacts) });
+    expect(seen[0]).toContain('SKILL-BODY');
+  });
+
+  it('states the context the handoff was written at, not the one it is installed at', () => {
+    const wake = buildWake({ ...mainInput([call, res]), toolUseId: 't9', handoff, tokens: 64_000, storedAt: 30_000 });
+    expect((wake.messages[1] as BuiltMessage).text).toContain('the handoff you wrote with forward_compaction at 30k tokens');
   });
 
   it('counts the F sections that hold content', () => {
@@ -190,6 +233,7 @@ describe('F sections', () => {
     expect(f).toContain("## The person's messages, oldest first (2 of 5; the 3 oldest are not carried: look_back finds them)");
     expect(f).toContain('p3 ');
     expect(f).toContain('p4 ');
+    expect(f.indexOf('p3 ')).toBeLessThan(f.indexOf('p4 '));
     expect(f).not.toContain('p2 ');
   });
 
@@ -290,6 +334,8 @@ describe('F sections', () => {
     const f = wakeOf({ f: { shells: { at: T0, tasks: [], crons: [] } } }).f;
     expect(f).toContain('(none running)');
     expect(f).not.toContain('unknown');
+    expect(wakeOf({ f: { shells: { at: T0, tasks: [], crons: [] } } }).wake.facts).toBe(1); // the sibling section alone
+    expect(wakeOf({ now: T0 + 30_000, f: { shells: { at: T0, tasks: [], crons: [] } } }).f).toContain('from the Stop event 30s before install');
   });
 
   it('carries load files with their range and why, and names those not carried (R22)', () => {
@@ -318,6 +364,8 @@ describe('F sections', () => {
     expect(f).toContain('### /abs/1.ts');
     expect(f).toContain('- /abs/2.ts: 9,000 characters, over the room left');
     expect(f).toContain('### /abs/3.ts');
+    const roomy = wakeOf({ askPoint: 1_000_000, files: [{ path: '/abs/big.ts', why: 'big', content: 'z'.repeat(40_001) }] }).f;
+    expect(roomy).toContain('- /abs/big.ts: 40,001 characters, over the room left');
   });
 });
 
@@ -350,6 +398,31 @@ describe('mechanicalWake (R23)', () => {
     expect(f).toContain('fix it');
     expect(f).not.toContain('beside the handoff');
     expect(wake.facts).toBe(1);
+  });
+
+  it('ends when the facts shrink as the tail shrinks: a fit never grows back over the facts rendered for it', () => {
+    const four = msgs.slice(0, 4);
+    let calls = 0;
+    const seen: string[][] = [];
+    // a fact that is large only while the oldest message is kept: dropping it makes room the old loop gave back to it, forever
+    const input = {
+      ...mainInput(four), askPoint: 3000, reason: { kind: 'reactive' as const },
+      facts: (kept: readonly string[]): WakeFacts => {
+        seen.push([...kept]);
+        // past 50 calls the fact stops flipping, so the old endless loop ends and the call count below names it
+        return { ...noFacts, person: ++calls <= 50 && kept.includes(four[0]!.text) ? [{ at: T0, text: 'p'.repeat(1200) }] : [{ at: T0, text: 'p' }] };
+      },
+    };
+    const wake = mechanicalWake(input);
+    expect(calls).toBe(2);
+    expect(wake.kept).toBe(3);
+    expect(wake.dropped).toBe(1);
+    expect(seen.at(-1)).toEqual(wake.messages.slice(2).map((m) => m.text));
+  });
+
+  it('names the tool as registered', () => {
+    const h = mechanicalWake({ ...mainInput(msgs), reason: { kind: 'reactive' }, tool: 'mcp__forward-compaction-dev__forward_compaction' }).messages[1] as BuiltMessage;
+    expect(h.text).toContain('call mcp__forward-compaction-dev__forward_compaction at your next milestone');
   });
 
   it('begins the tail on a plain message, never a tool result', () => {

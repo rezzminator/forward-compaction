@@ -38,7 +38,7 @@ typed_after() ( set +o pipefail; grep -l '"phase":"start","hook":"prompt.submit"
 wait_for() { # $1 label, $2 command that succeeds when the condition holds, $3 seconds (default STEP_LIMIT_S)
   local deadline=$((SECONDS + ${3:-$STEP_LIMIT_S}))
   until eval "$2"; do
-    [ $SECONDS -lt $deadline ] || { echo "drive: $1 did not happen within ${STEP_LIMIT_S}s" >&2; exit 1; }
+    [ $SECONDS -lt $deadline ] || { echo "drive: $1 did not happen within ${3:-$STEP_LIMIT_S}s" >&2; exit 1; }
     sleep 5
   done
 }

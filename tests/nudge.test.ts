@@ -38,3 +38,11 @@ describe('nudgeText (R29)', () => {
     expect(nudgeText({ tokens: 71_000, askPoint: 67_000, ceiling: 100_000, asked: true }).startsWith('forward-compaction: Claude Code is asking to compact you (71k tokens)')).toBe(true);
   });
 });
+
+describe('nudgeText names the tool as registered', () => {
+  it('uses the registered name, so a -dev copy is called by its own name', () => {
+    const dev = 'mcp__forward-compaction-dev__forward_compaction';
+    expect(nudgeText({ tokens: 55_400, askPoint: 67_000, ceiling: 120_000, asked: false, tool: dev })).toContain(`call ${dev} with your handoff`);
+    expect(nudgeText({ tokens: 71_000, askPoint: 67_000, ceiling: 120_000, asked: true, tool: dev })).toContain(`Call ${dev} now`);
+  });
+});

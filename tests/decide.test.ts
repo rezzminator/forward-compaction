@@ -179,6 +179,14 @@ describe('currentTokens', () => {
     expect(currentTokens(90_000, transcript)).toBe(90_000);
   });
 
+  it('adds what came back after the last response to the reading: a jump smaller than the estimate shortfall still counts', () => {
+    // the reading holds the system prompt and tools the transcript leaves out, so the estimate of the whole runs low
+    const before = [{ role: 'user' as const, text: 'x'.repeat(35_000) }, { role: 'assistant' as const, text: 'reading', toolUses: [{ tool_use_id: 'r1', input: {} }] }];
+    const jump = [...before, { role: 'user' as const, toolResults: [{ tool_use_id: 'r1', text: 'y'.repeat(350_000) }] }];
+    expect(currentTokens(590_000, jump)).toBe(590_000 + estimateTokens([jump[2]!]));
+    expect(currentTokens(590_000, before)).toBe(590_000);
+  });
+
   it('uses the estimate alone before the party has a reading, and has none for an empty transcript', () => {
     expect(currentTokens(undefined, transcript)).toBe(estimateTokens(transcript));
     expect(currentTokens(undefined, [])).toBeUndefined();

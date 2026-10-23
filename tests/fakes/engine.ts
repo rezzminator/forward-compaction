@@ -12,7 +12,8 @@ export type FileEntry = { content: string; kind?: 'file' | 'dir' | 'other' };
 
 export type Script = {
   env?: Record<string, string>;
-  window?: number;
+  /** Main's window `$.session.usage()` reports; a function is read at each call (a /model switch). */
+  window?: number | (() => number);
   files?: Record<string, FileEntry>;
   agents?: () => unknown;
   compact?: (args?: unknown) => unknown;
@@ -39,7 +40,7 @@ export function fakeEngine(script: Script = {}) {
     session: {
       id: () => (hangs('session.id') ? never : Promise.resolve('session-1')),
       cwd: async () => home,
-      usage: async () => ({ context: { tokens: 0, window: script.window ?? 200_000 } }),
+      usage: async () => ({ context: { tokens: 0, window: (typeof script.window === 'function' ? script.window() : script.window) ?? 200_000 } }),
       compact: async (...args: unknown[]) => {
         compactCalls.push(args);
         return script.compact ? script.compact(...args) : { messages: [] };

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Deterministic synthetic filler for the replay recording: the same seed gives the same files on every host.
-// Usage: node filler.mjs <dir> [count=10] [chars=35000]   (35,000 characters is about 10k tokens)
+// Usage: node filler.mjs <dir> [count=10] [chars=35000]   (35,000 characters of this filler tokenize to about 25k tokens)
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 

@@ -4,7 +4,7 @@
 export const FORWARD_TOOL = 'forward_compaction';
 
 export const FORWARD_TOOL_DESCRIPTION =
-  'Hands off your context — at a milestone once your context is large, or when a forward-compaction nudge asks. Stores your handoff; at Claude Code\'s next compaction everything before this call is replaced by it plus recorded facts (the person\'s messages or your brief, your skills), and every message after this call is kept verbatim. Returns a receipt saying when it installs; a refusal names what to fix and stores nothing. Example: forward_compaction({"handoff": "## Objective\\n…\\n## Done\\n…\\n## Remaining\\n…\\n## Next\\n…", "load_files": []}). Exact old detail later → look_back.';
+  'Hands off your context — at a milestone once your context is large, or when a forward-compaction nudge asks. Stores your handoff; at your next compaction everything before this call is replaced by it plus recorded facts (the person\'s messages or your brief, your skills), and every message after this call is kept verbatim. Returns a receipt saying when it installs; a refusal names what to fix and stores nothing. Example: forward_compaction({"handoff": "## Objective\\n…\\n## Done\\n…\\n## Remaining\\n…\\n## Next\\n…", "load_files": []}). Exact old detail later → look_back.';
 
 export const FORWARD_INPUT_SCHEMA = {
   type: 'object',

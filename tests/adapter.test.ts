@@ -134,7 +134,7 @@ describe('session.compact', () => {
     expect(r.messages[1].text).toContain(`=== handoff ===\n${HANDOFF}\n=== end of handoff ===`);
     expect(r.messages.slice(2)).toEqual([messages[3], messages[4]]);
     expect(r.messages[2]).toBe(messages[3]);
-    expect(r.tokensBefore).toBe(64_000);
+    expect(r.tokensBefore).toBe(64_000 + Math.ceil('a later note'.length / 3.5)); // the reading plus what followed the last response
     expect(typeof r.tokensAfter).toBe('number');
     const landed = f.screen.filter((c) => c.text.startsWith('general-purpose a1b2c3 handoff landed'));
     expect(landed).toHaveLength(1);
@@ -170,6 +170,29 @@ describe('session.compact', () => {
     expect(f.texts().some((t) => t.startsWith('main had no handoff at 125k (ceiling 120k) — mechanical wake installed'))).toBe(true);
   });
 
+  it('counts the tool results that came back since the last reading: a jump past the ceiling between two asks is C10, not a wait', async () => {
+    const f = await begin();
+    await step(f, 110_000);
+    const jumped = [...transcript(), { role: 'assistant', text: 'reading three files', toolUses: [{ tool_use_id: 'r1', tool: 'Read', input: {} }], handle: 'h5' },
+      { role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: 'r1', text: 'z'.repeat(175_000) }], handle: 'h6' }];
+    const r = await f.dispatch('session.compact', { trigger: 'auto', messages: jumped }, async () => ({ skip: 'native ran' }));
+    expect(r).toHaveProperty('messages');
+    expect(f.texts().some((t) => t.startsWith('main had no handoff at 160k (ceiling 120k) — mechanical wake installed'))).toBe(true);
+  });
+
+  it("re-reads main's window after /model: the ceiling follows the new model's window", async () => {
+    let window = 1_000_000;
+    const f = await begin({ window: () => window });
+    const mainStep = (tokens: number, model: string) =>
+      f.dispatch('turn.step', { turnId: 't1', index: 0, model, messageCount: 4 }, async () => ({ turnId: 't1', index: 0, answer: '', toolUses: [], stopReason: 'tool_use', ...usage(tokens) }));
+    await mainStep(40_000, 'claude-opus-5[1m]');
+    window = 200_000;
+    await mainStep(125_000, 'claude-opus-5');
+    const r = await f.dispatch('session.compact', { trigger: 'auto', messages: transcript() }, async () => ({ skip: 'native ran' }));
+    expect(r).toHaveProperty('messages');
+    expect(f.texts().some((t) => /^main had no handoff at 125k \(ceiling 120k\)/.test(t))).toBe(true);
+  });
+
   it('passes a foreign party to Claude Code (C6)', async () => {
     const f = await begin();
     const r = await f.dispatch('session.compact', { trigger: 'auto', agentId: 'fork-1', messages: transcript() }, async () => ({ skip: 'native ran' }));
@@ -185,6 +208,7 @@ describe('session.compact', () => {
     expect(r).toHaveProperty('messages');
     expect(r.messages[1].text).toMatch(/^\[forward-compaction: no frontier written by the model\]/);
     expect(f.texts().some((t) => /^error in session\.compact for general-purpose a1b2c3: .+; a mechanical wake was installed\.$/.test(t))).toBe(true);
+    expect(r.tokensBefore).toBe(64_000 + Math.ceil('a later note'.length / 3.5)); // the same current context C1-C10 reads
   });
 
   it("returns next(e)'s result when the mechanical wake throws too (R35)", async () => {
@@ -235,5 +259,13 @@ describe('an unseen compaction (R39)', () => {
     await step(f, 120_000, A1);
     await step(f, 30_000, A1);
     expect(f.texts().some((t) => t.startsWith("general-purpose a1b2c3's context fell from 120k to 30k"))).toBe(true);
+  });
+
+  it('does not call a compaction it passed to Claude Code unseen: the fall after a /compact draws no warning', async () => {
+    const f = await begin();
+    await step(f, 120_000);
+    await f.dispatch('session.compact', { trigger: 'manual', messages: transcript() }, async () => ({ skip: 'native ran' }));
+    await step(f, 30_000);
+    expect(f.texts().filter((t) => t.includes('context fell from'))).toEqual([]);
   });
 });

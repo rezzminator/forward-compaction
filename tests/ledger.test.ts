@@ -52,6 +52,13 @@ describe('attributeSkill (D5)', () => {
     })).toEqual({ party: 'unknown', how: 'ambiguous' });
   });
 
+  it('does not take a typed command or a pending spawn while two Skill calls are in flight', () => {
+    expect(attributeSkill({
+      pendingCommand: '/replay-rules', pendingSpawns: new Set(['s1']), skill: 'replay-rules',
+      inFlightSkills: [{ party: 'agent:a1', tool_use_id: 't1' }, { party: 'agent:a2', tool_use_id: 't2' }],
+    })).toEqual({ party: 'unknown', how: 'ambiguous' });
+  });
+
   it('is unknown when nothing matches, or two spawns are pending', () => {
     expect(attributeSkill({ ...base, inFlightSkills: [] })).toEqual({ party: 'unknown', how: 'ambiguous' });
     expect(attributeSkill({ ...base, inFlightSkills: [], pendingSpawns: new Set(['a', 'b']) }))
@@ -165,6 +172,23 @@ describe('factsFor', () => {
     expect(factsFor(ledger, 'agent:a3', none).brief).toBeUndefined();
     expect(factsFor(ledger, 'main', none).brief).toBeUndefined();
     expect(factsFor(ledger, 'agent:a2', { keptTexts: ['the brief two is first'] }).brief).toBeUndefined();
+  });
+
+  it('carries the latest brief of a party that was briefed twice', () => {
+    const brief = (text: string): EntryInput => ({ kind: 'brief', party: 'agent:a1', text, spawnedBy: 'main', at: 1 });
+    expect(factsFor(build(brief('first brief'), brief('second brief')), 'agent:a1', none).brief?.text).toBe('second brief');
+  });
+
+  it('leaves out a notice, a received message and a skill whose text the kept tail holds', () => {
+    const ledger = build(
+      { kind: 'notice', party: 'main', origin: 'task-notification', text: 'bg done', at: 1 },
+      { kind: 'received', party: 'main', origin: 'coordinator', text: 'peer says hi', at: 2 },
+      skill('main', 'alpha', 'alpha body'),
+    );
+    const kept = factsFor(ledger, 'main', { keptTexts: ['x bg done x', 'peer says hi', '<skill>alpha body</skill>'] });
+    expect([kept.notices, kept.received, kept.skills]).toEqual([[], [], []]);
+    const fresh = factsFor(ledger, 'main', { keptTexts: ['unrelated'] });
+    expect([fresh.notices.length, fresh.received.length, fresh.skills.length]).toEqual([1, 1, 1]);
   });
 
   it('keeps the latest text per skill name for the party, newest first', () => {

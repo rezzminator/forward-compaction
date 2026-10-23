@@ -18,6 +18,7 @@ export function contextTokens(usage: {
 }
 
 type TranscriptMessage = {
+  role?: 'user' | 'assistant';
   text?: string;
   toolUses?: readonly { tool_use_id: string; input?: unknown; text?: string }[];
   toolResults?: readonly { tool_use_id: string; text?: string }[];
@@ -49,13 +50,17 @@ export function estimateTokens(input: number | readonly TranscriptMessage[]): nu
 
 /**
  * A party's context now. The last response's usage lags by one step: the tool results that came back since are
- * not in it, and one step of parallel reads can add 100k tokens. The transcript estimate sees them, so the
- * larger of the two is taken. A party with no reading yet gets the estimate alone; an empty transcript has none.
+ * not in it, and one step of parallel reads can add 100k tokens. So the reading plus the estimate of what follows
+ * the last assistant message is taken, or the estimate of the whole transcript when that is larger (a reading
+ * from before a compaction). A party with no reading yet gets the estimate alone; an empty transcript has none.
  */
 export function currentTokens(lastResponse: number | undefined, messages: readonly TranscriptMessage[]): number | undefined {
   const estimate = estimateTokens(messages);
   if (lastResponse === undefined) return estimate > 0 ? estimate : undefined;
-  return Math.max(lastResponse, estimate);
+  let last = messages.length;
+  while (last > 0 && messages[last - 1]!.role !== 'assistant') last--;
+  const since = last === 0 ? 0 : estimateTokens(messages.slice(last));
+  return Math.max(lastResponse + since, estimate);
 }
 
 export type PartyKind = 'main' | 'subagent' | 'foreign';

@@ -11,7 +11,8 @@ Wait conditions: `main-turn` â€” a new main `turn.complete`; `manual-compact` â€
 What each step exercises: S1 a typed skill (D5 b); S2 main's handoff installed at its turn end (C3, P1, install #1);
 S3 two concurrent sub-agents, each loading the skill through the Skill tool (D5 a; D5 c if Claude Code preloads),
 A storing a handoff below its ask point (receipt "from about") and installed at its first ask (C7), B never storing,
-nudged, and compacted mechanically at its ceiling (C10); S4 a coordinator message to A (`session.receive`, I7);
+nudged, and compacted mechanically at its ceiling (C10: `settings.json` sets `FORWARD_COMPACTION_CEILING` to 100k, below
+what its batched Reads reach; the 60% default of a 1M window would never fire here); S4 a coordinator message to A (`session.receive`, I7);
 S5 a background shell and its task notification (Stop `background_tasks`, I8, I12); S6 main's second handoff
 (install #2, chained: I11); S7 `/compact` (C1, I1); S8 main past its ask point with no handoff (C9 skip, the "now"
 nudge), then its handoff installed at the next ask (C7).
@@ -25,4 +26,4 @@ nudge), then its handoff installed at the next ask (C7).
 | S5 | notification | Run the Bash command "sleep 20; echo replay-done" with run_in_background set, then end your turn. |
 | S6 | main-turn | Read filler/filler-4.txt and filler/filler-5.txt whole, one Read call each. Then call forward_compaction with Objective "replay step S6", and end your turn. |
 | S7 | manual-compact | /compact |
-| S8 | main-turn | Read filler/filler-1.txt to filler/filler-8.txt whole, one Read call each. Call forward_compaction only when a tool result tells you Claude Code is asking to compact you; then call it with Objective "replay step S8" and read on. |
+| S8 | main-turn | Read filler/filler-1.txt to filler/filler-8.txt whole, one Read call per message, waiting for each result before the next. Call forward_compaction only when a tool result tells you Claude Code is asking to compact you; then call it with Objective "replay step S8" and read on. |

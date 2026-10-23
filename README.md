@@ -7,7 +7,7 @@
 [![Claude Code plugin](https://img.shields.io/badge/Claude%20Code-plugin-D97757)](https://docs.claude.com/en/docs/claude-code/plugins)
 [![Version](https://img.shields.io/badge/version-1.0.0--dev.1-blue)](./CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
-[![Tests](https://img.shields.io/badge/tests-422%20passing-brightgreen)](#development)
+[![Tests](https://img.shields.io/badge/tests-440%20passing-brightgreen)](#development)
 [![Built with Professor](https://img.shields.io/badge/built%20with-Professor-8A2BE2)](https://github.com/rezzminator/professor)
 
 </div>
@@ -273,7 +273,7 @@ this rule. It is requested upstream in
 ### Model windows
 
 Percentages are of each model's own window. The main chat's comes from
-Claude Code, read at session start (200k when it cannot be read). A sub-agent's comes from its model
+Claude Code, read at session start and again when its model changes (`/model`); 200k when it cannot be read. A sub-agent's comes from its model
 id: Haiku 4.5 and older 200k; Haiku 5 and later, Sonnet 5 and any `[1m]`
 model 1M; a model that is not Claude (a GPT model behind a gateway) Claude
 Code's 200k default; any other Claude model the main chat's window.
@@ -349,6 +349,8 @@ npm run typecheck
 npm run validate:plugin
 npm run replay:record # records a live replay fixture (a paid Claude Code session)
 ```
+
+The live replay fixture exercises every replay invariant but two, which the replay test names: I2, a precompute ask (Claude Code 2.1.309 sent none; `tests/decide.test.ts` covers C2), and I11, tail handles shared by two chained installs (a chained handoff's call comes after everything the install before it kept, so the two tails share no message).
 
 Work lands on `develop`; `main` holds only releases, and each one is tagged `forward-compaction--vX.Y.Z` with its notes in [CHANGELOG.md](./CHANGELOG.md). Pull requests go to `develop`.
 

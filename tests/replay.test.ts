@@ -275,6 +275,13 @@ describe('replay gate (D19)', () => {
     expect(failures).toContain(`unrecorded $ call agent.list in session.compact #${install.id}`);
   });
 
+  it('a $ call whose arguments the recording lacks fails as unrecorded, never answered by another call of the path', async () => {
+    const rows = LIVE();
+    const env = rows.find((r) => r.phase === 'call' && r.path === 'env.get' && (r.args as unknown[] | undefined)?.[0] === 'CLAUDE_CODE_AUTO_COMPACT_WINDOW')!;
+    const failures = await gate(rows.map((r) => (r === env ? { ...r, args: ['SOME_OTHER_VARIABLE'] } : r)), LIVE_EXERCISES);
+    expect(failures).toContain(`unrecorded $ call env.get in session.start #${env.id}`);
+  });
+
   it('replays concurrent parties on the recorded timeline: a step that starts inside another party\'s open step runs after the steps recorded before it', async () => {
     // Party X's step 1 (30k) is open while party Y's step runs; X's step 2 (200k) starts inside Y's window, after X's step 1 ended.
     const live = LIVE();
@@ -369,14 +376,15 @@ describe('sanitize.mjs (R43)', () => {
   ];
 
   it('replaces the home, the account name, the session id and an email, and exits 0', () => {
-    const r = run([...base, { seq: 4, id: 1, phase: 'start', hook: 'tool.call', input: { path: `${home}/x`, who: 'casey', mail: 'casey.k@corp.example', session: '6f1c2d3e-0000-4000-8000-123456789abc' } }], home);
+    const r = run([...base, { seq: 4, id: 1, phase: 'start', hook: 'tool.call', input: { path: `${home}/x`, who: 'casey', by: 'Casey', mail: 'casey.k@corp.example', session: '6f1c2d3e-0000-4000-8000-123456789abc' } }], home);
     expect(r.stderr).toBe('');
     expect(r.code).toBe(0);
     expect(r.text).toContain('/HOME/x');
     expect(r.text).toContain('"who":"user"');
+    expect(r.text).toContain('"by":"user"'); // the account name in any case
     expect(r.text).toContain('"mail":"user@example.invalid"');
     expect(r.text).toContain('"session":"00000000-0000-0000-0000-000000000000"');
-    expect(r.text).not.toMatch(/casey|corp\.example|6f1c2d3e/);
+    expect(r.text).not.toMatch(/casey|corp\.example|6f1c2d3e/i);
   });
 
   it('exits 1 naming the row when an email the replacer missed survives', () => {

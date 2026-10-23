@@ -1,5 +1,6 @@
 // The wake: what a compaction installs. [facts] [handoff] [tail…] — the facts and the handoff are built here from typed values,
 // the tail is the engine's own messages returned untouched. Pure: files, agents and the clock arrive as inputs.
+import { DEFAULT_TOOL } from './nudge.ts';
 
 /** A message in `session.compact`'s shape; a SessionMessage fits. */
 export type WakeMessage = {
@@ -128,8 +129,11 @@ type Shared<M> = {
   facts: (keptTexts: readonly string[]) => WakeFacts;
   /** `$.agent.list()` rows, or its error; absent, no section. */
   agents?: readonly AgentRow[] | { error: string };
+  /** The registered `forward_compaction` name, DEFAULT_TOOL when absent. */
+  tool?: string;
 };
-export type BuildWakeInput<M> = Shared<M> & { toolUseId: string; handoff: string; files?: readonly WakeFile[] };
+/** `storedAt`: the context the handoff was written at (`tokens` when absent). */
+export type BuildWakeInput<M> = Shared<M> & { toolUseId: string; handoff: string; files?: readonly WakeFile[]; storedAt?: number };
 export type MechanicalWakeInput<M> = Shared<M> & { reason: { kind: 'ceiling'; ceiling: number } | { kind: 'reactive' } };
 
 export type Wake<M> = {
@@ -272,7 +276,7 @@ function keptTexts(kept: readonly WakeMessage[]): string[] {
 
 /**
  * [F, ...H, ...tail] around a head text: the tail is fitted to what the facts and the head leave of the budget, and the
- * facts are rendered against the tail kept, so each is sized for the other (the tail only ever shrinks, so this ends).
+ * facts are rendered against the tail kept, so each is sized for the other (the tail is only ever shrunk, so this ends).
  */
 function assemble<M extends WakeMessage>(
   input: Shared<M>,
@@ -286,13 +290,14 @@ function assemble<M extends WakeMessage>(
   for (;;) {
     const f = renderFacts(input, input.facts(keptTexts(kept)), extras);
     const fit = fitTail(candidates, B - tokensOf(f.text.length) - tokensOf(longest));
-    if (fit.messages.length !== kept.length) {
+    // only a smaller fit is taken: facts can shrink with the tail, and a fit growing back would loop forever
+    if (fit.messages.length < kept.length) {
       kept = fit.messages;
       continue;
     }
-    const counts = { kept: fit.messages.length, dropped: fit.dropped };
+    const counts = { kept: kept.length, dropped: candidates.length - kept.length };
     return {
-      messages: [{ role: 'user', text: f.text, toolUses: [] }, { role: 'user', text: head(counts), toolUses: [] }, ...fit.messages],
+      messages: [{ role: 'user', text: f.text, toolUses: [] }, { role: 'user', text: head(counts), toolUses: [] }, ...kept],
       facts: f.sections,
       ...counts,
     };
@@ -305,11 +310,11 @@ export function buildWake<M extends WakeMessage>(input: BuildWakeInput<M>): Wake
   if (split === undefined) throw new Error(`forward-compaction: call ${input.toolUseId} is not in the transcript to compact`);
   return assemble(input, split.tail, { siblings: split.siblings, files: input.files ?? [] }, ({ kept, dropped }) => {
     const lines = [
-      `[forward-compaction: handoff] Below is the handoff you wrote with forward_compaction at ${kilo(input.tokens)} tokens. It is your frontier: continue from its ## Next.`,
+      `[forward-compaction: handoff] Below is the handoff you wrote with forward_compaction at ${kilo(input.storedAt ?? input.tokens)} tokens. It is your frontier: continue from its ## Next.`,
       `=== handoff ===\n${input.handoff}\n=== end of handoff ===`,
     ];
     if (kept > 0) lines.push(`The ${kept} messages after this one are what happened after you wrote it, kept verbatim. Continue from where they leave off.`);
-    if (dropped > 0) lines.push(`${dropped} older messages after your handoff did not fit and are gone (look_back finds an exact detail); call forward_compaction again at your next milestone.`);
+    if (dropped > 0) lines.push(`${dropped} older messages after your handoff did not fit and are gone (look_back finds an exact detail); call ${input.tool ?? DEFAULT_TOOL} again at your next milestone.`);
     if (kept === 0) lines.push('Nothing happened after you wrote it. Continue from ## Next.');
     return lines.join('\n\n');
   });
@@ -320,7 +325,7 @@ export function mechanicalWake<M extends WakeMessage>(input: MechanicalWakeInput
   const why = input.reason.kind === 'ceiling' ? `, past the ${kilo(input.reason.ceiling)} ceiling` : ', and Claude Code reported your request too long';
   const source = input.party === 'main' ? "the person's messages" : 'your brief';
   return assemble(input, input.messages, { siblings: [], files: [] }, ({ kept, dropped }) =>
-    `[forward-compaction: no frontier written by the model] Your context reached ${kilo(input.tokens)} tokens${why}, and you had not called forward_compaction, so the plugin compacted it mechanically: the facts above and your newest ${kept} messages below, kept verbatim; ${dropped} older messages are gone (look_back finds an exact detail). No objective or next step was written. Re-establish them from ${source} and the messages below, then continue; call mcp__forward-compaction__forward_compaction at your next milestone.`,
+    `[forward-compaction: no frontier written by the model] Your context reached ${kilo(input.tokens)} tokens${why}, and you had not called forward_compaction, so the plugin compacted it mechanically: the facts above and your newest ${kept} messages below, kept verbatim; ${dropped} older messages are gone (look_back finds an exact detail). No objective or next step was written. Re-establish them from ${source} and the messages below, then continue; call ${input.tool ?? DEFAULT_TOOL} at your next milestone.`,
   );
 }
 

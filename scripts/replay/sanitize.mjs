@@ -65,7 +65,7 @@ export function replacer({ homes, names, sessions }) {
     ...sessions.map((s) => [new RegExp(escape(s), 'g'), ZERO_SESSION]),
     ...[...homes].sort((a, b) => b.length - a.length).map((h) => [new RegExp(escape(h), 'g'), '/HOME']),
     [EMAIL, SAFE_EMAIL],
-    ...names.map((n) => [new RegExp(`\\b${escape(n)}\\b`, 'g'), 'user']),
+    ...names.map((n) => [new RegExp(`\\b${escape(n)}\\b`, 'gi'), 'user']),
   ];
   return (text) => rules.reduce((t, [re, to]) => t.replace(re, (hit) => (hit === SAFE_EMAIL ? hit : to)), text);
 }
@@ -84,7 +84,7 @@ export function leaks(row, { names }) {
   for (const s of strings(row)) {
     for (const m of s.matchAll(/\/(?:home|Users)\/([^/\s"'`]+)/g)) found.add(`host path /…/${m[1]}`);
     for (const m of s.matchAll(ANY_EMAIL)) if (!m[0].endsWith(SAFE_EMAIL)) found.add('an email address');
-    for (const n of names) if (new RegExp(`\\b${escape(n)}\\b`).test(s)) found.add('the account name');
+    for (const n of names) if (new RegExp(`\\b${escape(n)}\\b`, 'i').test(s)) found.add('the account name');
   }
   return [...found];
 }

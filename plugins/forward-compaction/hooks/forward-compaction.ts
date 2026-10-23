@@ -497,16 +497,10 @@ async function conversationStartsOver(st: State, $: EngineInterface, reason: str
 /** session.start: the ledger starts, main's window is read, and a compaction window that holds a sub-agent's handoff back is named once (R33). */
 async function sessionBegins(st: State, $: EngineInterface): Promise<void> {
   st.ledger = markStart(st.ledger, await $.clock.now(), 'startup');
-  try {
-    const window = (await $.session.usage()).context.window;
-    if (typeof window === 'number' && window > 0) st.mainWindow = window;
-  } catch (error) {
-    warnOnce(st, $, 'usage', `forward-compaction: reading main's context window failed: ${message(error)}; using ${k(st.mainWindow)}`);
-  }
+  await readMainWindow(st, $);
   st.parties.describe('main', { label: 'main', modelWin: st.mainWindow });
   const raw = (await $.env.get('CLAUDE_CODE_AUTO_COMPACT_WINDOW'))?.trim() || undefined;
-  const parsed = raw === undefined ? NaN : Number(raw);
-  st.compactWindow = Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
+  st.compactWindow = Number.isInteger(Number(raw)) && Number(raw) > 0 ? Number(raw) : undefined;
   const subagentAsk = engineAskPoint(partyWindow(ENGINE_DEFAULT_WINDOW, st.compactWindow));
   if ((st.compactWindow === undefined || st.compactWindow > 100_000) && !st.warned.has('compact-window')) {
     st.warned.add('compact-window');
@@ -566,7 +560,7 @@ async function nudged(st: State, $: EngineInterface, key: string, result: ToolCa
     if (level === 0 || !st.parties.nudgeDue(key, level)) return result;
     const now = party.askHeld || party.reading >= m.askPoint;
     record(st, $, { event: 'nudge', party: key, level, tokens: party.reading, wording: now ? 'now' : 'soon' });
-    return { ...result, context: [...(result.context ?? []), nudgeText({ tokens: party.reading, askPoint: m.askPoint, ceiling: m.ceiling, asked: party.askHeld })] };
+    return { ...result, context: [...(result.context ?? []), nudgeText({ tokens: party.reading, askPoint: m.askPoint, ceiling: m.ceiling, asked: party.askHeld, tool: st.toolNames.forward_compaction })] };
   } catch (error) {
     say(st, $, `forward-compaction: nudging ${key} failed: ${message(error)}`, 'error', { event: 'nudge-error', party: key, error: message(error) });
     return result;
@@ -635,7 +629,7 @@ async function compactAsk(st: State, $: EngineInterface, e: SessionCompactInput,
   }
   if (action.action === 'next') {
     if (kind === 'foreign') st.parties.forget(key);
-    else st.parties.asked(key, action.decision);
+    else (st.parties.asked(key, action.decision), st.installedSince.add(key)); // Claude Code's own summary: its fall is seen
     record(st, $, row);
     if (action.decision === 'native' && action.why !== 'manual') tell(st, $, `forward-compaction: ${label} ${action.why === 'ceiling' ? `reached its ceiling ${k(m.ceiling)}` : 'was too long for its request'} with no handoff; Claude Code's own summary ran (FORWARD_COMPACTION_CEILING_NATIVE=1).`, { event: 'native', party: key, why: action.why });
     return pass();
@@ -648,8 +642,8 @@ async function compactAsk(st: State, $: EngineInterface, e: SessionCompactInput,
   }
   const shared = { messages: e.messages, party: kind === 'main' ? ('main' as const) : ('subagent' as const), tokens, askPoint: m.askPoint, now: await $.clock.now(), facts: (kept: readonly string[]) => factsFor(st.ledger, key, { keptTexts: kept }), agents: await agentRows($) };
   const wake = action.action === 'install'
-    ? buildWake({ ...shared, toolUseId: held!.toolUseId, handoff: held!.text, files: await readLoadFiles($, held!.loadFiles) })
-    : mechanicalWake({ ...shared, reason: action.why === 'ceiling' ? { kind: 'ceiling', ceiling: m.ceiling } : { kind: 'reactive' } });
+    ? buildWake({ ...shared, toolUseId: held!.toolUseId, handoff: held!.text, storedAt: held!.storedAtTokens, tool: st.toolNames.forward_compaction, files: await readLoadFiles($, held!.loadFiles) })
+    : mechanicalWake({ ...shared, tool: st.toolNames.forward_compaction, reason: action.why === 'ceiling' ? { kind: 'ceiling', ceiling: m.ceiling } : { kind: 'reactive' } });
   const after = estimateTokens(wake.messages);
   installed(st, key, after, signal);
   const line = action.action === 'install'
@@ -664,9 +658,9 @@ async function compactFailed(st: State, $: EngineInterface, e: SessionCompactInp
   const party = st.parties.get(key);
   const said = `forward-compaction: error in session.compact for ${party.label}: ${message(error)}`;
   try {
-    const tokens = party.reading ?? 0;
+    const tokens = currentTokens(party.reading, e.messages) ?? 0;
     const { askPoint, ceiling } = marks(st, key);
-    const wake = mechanicalWake({ messages: e.messages, party: key === 'main' ? 'main' : 'subagent', tokens, askPoint, now: Date.now(), facts: (kept) => factsFor(st.ledger, key, { keptTexts: kept }), reason: { kind: 'ceiling', ceiling } });
+    const wake = mechanicalWake({ messages: e.messages, party: key === 'main' ? 'main' : 'subagent', tokens, askPoint, now: Date.now(), facts: (kept) => factsFor(st.ledger, key, { keptTexts: kept }), tool: st.toolNames.forward_compaction, reason: { kind: 'ceiling', ceiling } });
     const after = estimateTokens(wake.messages);
     installed(st, key, after, signal);
     tell(st, $, `${said}; a mechanical wake was installed.`, { event: 'compact', party: key, decision: 'error', error: message(error), after });
@@ -677,10 +671,23 @@ async function compactFailed(st: State, $: EngineInterface, e: SessionCompactInp
   }
 }
 
+/** Main's window, at session start and again after its model changed (/model, `model`); a failed read keeps the one known. */
+async function readMainWindow(st: State, $: EngineInterface, model?: string): Promise<void> {
+  try {
+    const window = (await $.session.usage()).context.window;
+    if (typeof window !== 'number' || !(window > 0) || window === st.mainWindow) return;
+    if (model !== undefined) record(st, $, { event: 'window-changed', party: 'main', model, from: st.mainWindow, to: window });
+    st.mainWindow = window;
+  } catch (error) {
+    warnOnce(st, $, 'usage', `forward-compaction: reading main's context window${model === undefined ? '' : ` after its model changed to ${model}`} failed: ${message(error)}; using ${k(st.mainWindow)}`);
+  }
+}
+
 /** A step's usage is the party's reading; a sharp fall nobody here caused is an unseen compaction (R39). */
-function readStep(st: State, $: EngineInterface, e: TurnStepInput, r: TurnStepResult): void {
+async function readStep(st: State, $: EngineInterface, e: TurnStepInput, r: TurnStepResult): Promise<void> {
   const key = keyOf(e.agentId);
-  st.parties.describe(key, { model: e.model, modelWin: modelWindow(e.model, st.mainWindow) });
+  if (key === 'main' && e.model !== undefined && ![undefined, e.model].includes(st.parties.get(key).model)) await readMainWindow(st, $, e.model); // after /model
+  st.parties.describe(key, { model: e.model, modelWin: key === 'main' ? st.mainWindow : modelWindow(e.model, st.mainWindow) });
   if (key === 'main') st.pendingCommand = undefined;
   const tokens = contextTokens(r?.usage);
   if (tokens === undefined) return st.parties.answered(key);
@@ -725,7 +732,7 @@ async function noteSubmit(st: State, $: EngineInterface, e: PromptSubmitInput): 
 }
 
 async function noteReceived(st: State, $: EngineInterface, e: SessionReceiveInput): Promise<void> {
-  st.ledger = addEntry(st.ledger, { kind: 'received', party: keyOf(e.agentId), at: await $.clock.now(), origin: originKind(e.origin), text: e.text });
+  if (e.agentId !== undefined) st.ledger = addEntry(st.ledger, { kind: 'received', party: keyOf(e.agentId), at: await $.clock.now(), origin: originKind(e.origin), text: e.text });
 }
 
 /** D5: the party a skill belongs to, from the calls in flight around it (the event names none). */
