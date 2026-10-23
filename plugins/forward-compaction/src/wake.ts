@@ -93,6 +93,8 @@ export function fitTail<M extends WakeMessage>(messages: readonly M[], budgetTok
 /** What the ledger gives for a party (ledger.ts `Facts` fits); only what the wake renders. */
 export type WakeFacts = {
   person: readonly { at: number; text: string }[];
+  /** Person messages the ledger left out because the tail holds them. */
+  personInTail?: number;
   notices: readonly { at: number; origin: string; text: string }[];
   /** The `agent.spawn` prompt; absent when the agent was spawned before the ledger started. */
   brief?: { text: string };
@@ -176,6 +178,8 @@ function renderFacts<M>(input: Shared<M>, facts: WakeFacts, { siblings, files }:
     if (facts.brief === undefined) sections.push({ text: '## Your brief\n(not recorded: this agent was spawned before forward-compaction started in this process)', content: false });
     else if (facts.brief.text.length > cap) sections.push({ text: `## Your brief\n(not carried: ${num(facts.brief.text.length)} characters, over the ${num(cap)}-character room; look_back finds it)`, content: false });
     else sections.push(section(`## Your brief\n${facts.brief.text}`));
+  } else if (facts.person.length === 0 && (facts.personInTail ?? 0) > 0) {
+    sections.push({ text: `## The person's messages\n(all ${facts.personInTail} are in the messages below)`, content: false });
   } else if (facts.person.length === 0) {
     sections.push({ text: `## The person's messages\n(none recorded${facts.startedAt === undefined ? '' : ` since ${iso(facts.startedAt)}`})`, content: false });
   } else {

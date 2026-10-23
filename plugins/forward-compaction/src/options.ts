@@ -3,7 +3,7 @@ import { pluginLogDir } from './log.ts';
 /** A context size: a token count, or a percentage of the model's own window. */
 export type Size = { tokens: number } | { percent: number };
 
-/** With no handoff stored, the context at which a mechanical wake is installed: 60% of the model's window, held at or below the window Claude Code compacts against. */
+/** With no handoff stored, the context at which a mechanical wake is installed: 60% of the model's own window, never clamped to CLAUDE_CODE_AUTO_COMPACT_WINDOW. */
 export const DEFAULT_CEILING: Size = { percent: 60 };
 /** Mechanical wakes, not native summaries, at the ceiling. */
 export const DEFAULT_CEILING_NATIVE = false;

@@ -73,6 +73,8 @@ export function attributeSkill(input: {
 
 export type Facts = {
   person: PersonEntry[];
+  /** Person messages left out because the kept tail already holds them. */
+  personInTail: number;
   notices: NoticeEntry[];
   brief?: BriefEntry;
   received: ReceivedEntry[];
@@ -98,8 +100,11 @@ export function factsFor(ledger: Ledger, party: PartyKey, opts: { keptTexts: rea
   // Latest text per skill name wins before the kept filter: an older version is stale, not "already there".
   const newestFirst = (who: PartyKey) => latestPerSkill(mine('skill', who).reverse());
   const carried = new Set(newestFirst(party).map((s) => s.skill));
+  const person = mine('person', party);
+  const kept = person.filter(fresh);
   return {
-    person: mine('person', party).filter(fresh),
+    person: kept,
+    personInTail: person.length - kept.length,
     notices: mine('notice', party).filter(fresh),
     brief: mine('brief', party).filter(fresh).at(-1),
     received: mine('received', party).filter(fresh),

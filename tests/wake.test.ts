@@ -198,6 +198,12 @@ describe('F sections', () => {
     expect(wakeOf({}).f).toContain("## The person's messages\n(none recorded)");
   });
 
+  it('says every person message is in the messages below when the tail holds them all, never that none was recorded', () => {
+    const f = wakeOf({ f: { startedAt: T0, personInTail: 3 } }).f;
+    expect(f).toContain("## The person's messages\n(all 3 are in the messages below)");
+    expect(f).not.toContain('none recorded');
+  });
+
   it('adds the resume line only on resume', () => {
     expect(wakeOf({ f: { startedAt: T0, startReason: 'resume' } }).f).toContain('The ledger started at 2026-10-23T10:00:00.000Z when this process resumed; anything earlier is not recorded.');
     expect(wakeOf({ f: { startedAt: T0, startReason: 'startup' } }).f).not.toContain('resumed');

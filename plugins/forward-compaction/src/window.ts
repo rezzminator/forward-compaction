@@ -3,13 +3,14 @@ import { sizeTokens, type Size } from './options.ts';
 /**
  * What Claude Code keeps free below a window before it asks to compact: the
  * 13k auto-compact margin plus the 20k reserved for the summary's output.
- * The native ask point of a 1M window is therefore 967k, and of 200k, 167k.
+ * With the 4k the live probe adds (below), the native ask point of a 1M window is 963k, and of 200k, 163k.
  * Measured against the callmeter store: Claude Code asks a non-Haiku sub-agent
  * at 67k with `CLAUDE_CODE_AUTO_COMPACT_WINDOW=100000` (p10 59.5k, p50 65.2k,
- * p90 67.0k, n=255), so this 33k holds there. It asks a Haiku loop near 51k
+ * p90 67.0k, n=255); the live 2.1.309 probe's first automatic ask came at
+ * 63,827 on that window, so 37k, the earlier of the two, is held. It asks a Haiku loop near 51k
  * and a main chat on a 1M window at 51-54k: those parties are asked earlier than this point says.
  */
-export const ENGINE_COMPACT_BUFFER = 33_000;
+export const ENGINE_COMPACT_BUFFER = 37_000;
 
 /** The context at which Claude Code asks to compact a loop, given the window it compacts against. */
 export function engineAskPoint(window: number): number {

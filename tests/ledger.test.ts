@@ -125,6 +125,13 @@ describe('factsFor', () => {
       .toEqual(['also add tests']);
   });
 
+  it('counts the person messages left out because the tail holds them, so the wake never calls them unrecorded', () => {
+    const ledger = build(person('fix the parser'), person('also add tests'));
+    expect(factsFor(ledger, 'main', { keptTexts: ['fix the parser', 'also add tests'] })).toMatchObject({ person: [], personInTail: 2 });
+    expect(factsFor(ledger, 'main', { keptTexts: ['also add tests'] }).personInTail).toBe(1);
+    expect(factsFor(ledger, 'main', none).personInTail).toBe(0);
+  });
+
   it('keeps everything when nothing is kept, and never drops on an empty text', () => {
     const ledger = build(person(''), person('hello'));
     expect(factsFor(ledger, 'main', { keptTexts: ['anything'] }).person.map((e) => e.text)).toEqual(['', 'hello']);

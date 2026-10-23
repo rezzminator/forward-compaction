@@ -2,10 +2,10 @@ import { describe, expect, it } from 'vitest';
 import { ceilingTokens, ENGINE_COMPACT_BUFFER, ENGINE_DEFAULT_WINDOW, engineAskPoint, isClaude, modelWindow, partyWindow } from '../plugins/forward-compaction/src/window.ts';
 
 describe('engineAskPoint', () => {
-  it('is the window less the engine buffer (R2)', () => {
-    expect(ENGINE_COMPACT_BUFFER).toBe(33_000);
-    expect(engineAskPoint(100_000)).toBe(67_000);
-    expect(engineAskPoint(200_000)).toBe(167_000);
+  it('is the window less the engine buffer, calibrated to the first live ask at 63,827 on a 100k window (R2)', () => {
+    expect(ENGINE_COMPACT_BUFFER).toBe(37_000);
+    expect(engineAskPoint(100_000)).toBe(63_000);
+    expect(engineAskPoint(200_000)).toBe(163_000);
     expect(engineAskPoint(20_000)).toBe(0);
   });
 });
