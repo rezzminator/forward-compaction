@@ -1,6 +1,7 @@
-// The replay engine (spec § Tests, replay gate 5): a recording's hook invocations driven through the real `register`,
-// in start order, each invocation's nested ones (started between its `next` and `nextResult` rows) replayed inside
-// its fake `next`; every `$` call answered from that invocation's recorded calls. A call the recording lacks is
+// The replay engine (spec § Tests, replay gate 5): a recording's hook invocations driven through the real `register`
+// on the recorded timeline: each starts at its start row and its fake `next` is answered at its nextResult row, so the
+// ones started meanwhile (a Skill call's skill.prompt, another party's steps) run inside it as they did live; every
+// `$` call answered from that invocation's recorded calls. A call the recording lacks is
 // `unrecorded $ call {path} in {hook} #{id}`: re-record. `#{id}` is the invocation's number, the recorder's `id`.
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -99,51 +100,85 @@ export async function replay(rows: readonly Row[]): Promise<Replay> {
     });
   }
 
-  async function run(rec: Invocation): Promise<void> {
+  /** One invocation in flight: its hook runs until it ends or awaits `next`, which the timeline answers at the recorded nextResult. */
+  type Flight = { rec: Invocation; out: Invocation; state: 'running' | 'waiting' | 'done'; resolve?: () => void };
+  const flights = new Map<number, Flight>();
+
+  function launch(rec: Invocation): Flight {
     const out: Invocation = { id: rec.id, hook: rec.hook, seq: rec.seq, endSeq: rec.endSeq, input: rec.input, calls: [], ...(rec.parent !== undefined ? { parent: rec.parent } : {}) };
     replayed.push(out);
-    const children = recorded.filter((r) => r.parent === rec.id);
-    let childrenRan = false;
+    const flight: Flight = { rec, out, state: 'running' };
+    flights.set(rec.id, flight);
     const beneath = async (x: unknown): Promise<unknown> => {
       out.next = { input: x };
-      childrenRan = true;
-      for (const child of children) await run(child);
       if (!rec.nextResult) {
         unrecorded.push(`unrecorded next in ${rec.hook} #${rec.id}`);
         return undefined;
       }
+      // The recording answered this next at its nextResult row: the timeline resumes the hook there.
+      await new Promise<void>((resolve) => {
+        flight.state = 'waiting';
+        flight.resolve = resolve;
+      });
+      flight.state = 'running';
       out.nextResult = rec.nextResult;
       if (rec.nextResult.error) throw failure(rec.nextResult.error);
       return rec.nextResult.result;
     };
     const hook = hooks.get(rec.hook);
     const $ = engine(rec, out);
-    try {
-      let result: unknown;
-      if (!hook) result = await beneath(rec.input);
-      else if (isGenerator(hook)) {
-        const next = Object.assign(async function* (x: unknown) { return await beneath(x); }, { signal });
-        const it = hook($, rec.input, next);
-        let step = await it.next();
-        while (!step.done) step = await it.next();
-        result = step.value;
-      } else result = await hook($, rec.input, Object.assign(beneath, { signal }));
-      out.end = { result };
-    } catch (error) {
-      out.end = { error: { message: error instanceof Error ? error.message : String(error) } };
+    void (async () => {
+      try {
+        let result: unknown;
+        if (!hook) result = await beneath(rec.input);
+        else if (isGenerator(hook)) {
+          const next = Object.assign(async function* (x: unknown) { return await beneath(x); }, { signal });
+          const it = hook($, rec.input, next);
+          let step = await it.next();
+          while (!step.done) step = await it.next();
+          result = step.value;
+        } else result = await hook($, rec.input, Object.assign(beneath, { signal }));
+        out.end = { result };
+      } catch (error) {
+        out.end = { error: { message: error instanceof Error ? error.message : String(error) } };
+      }
+      flight.state = 'done';
+    })();
+    return flight;
+  }
+
+  /** Lets a flight run until it ends or awaits next; the plugin's queued work (log writes) settles with it, as the recording's did. */
+  async function settle(flight: Flight): Promise<void> {
+    for (let tick = 0; flight.state === 'running'; tick++) {
+      if (tick === 10_000) throw new Error(`replay: ${flight.rec.hook} #${flight.rec.id} neither ended nor awaited next`);
+      await new Promise((resolve) => setTimeout(resolve, 0));
     }
-    // A hook that no longer calls next: what ran beneath it in the recording still runs, so the session goes on.
-    if (!childrenRan) for (const child of children) await run(child);
-    // Work the plugin left queued (log writes) settles before the next invocation, as the recording's did.
     await new Promise((resolve) => setTimeout(resolve, 0));
   }
 
-  for (const rec of recorded.filter((r) => r.parent === undefined)) await run(rec);
+  // The recorded timeline: each invocation starts at its start row, and its next is answered at its nextResult row, so
+  // concurrent parties interleave as they did live. A hook that no longer calls next leaves the rest of the session to run.
+  const timeline = recorded.flatMap((rec) => [
+    { seq: rec.seq, rec, resume: false },
+    ...(rec.nextResult?.seq !== undefined ? [{ seq: rec.nextResult.seq, rec, resume: true }] : []),
+  ]).sort((a, b) => a.seq - b.seq);
+  for (const { rec, resume } of timeline) {
+    if (!resume) {
+      await settle(launch(rec));
+      continue;
+    }
+    const flight = flights.get(rec.id)!;
+    if (flight.state !== 'waiting') continue;
+    flight.resolve!();
+    flight.state = 'running';
+    await settle(flight);
+  }
+  for (const flight of flights.values()) if (flight.state !== 'done') unrecorded.push(`replay: ${flight.rec.hook} #${flight.rec.id} still awaits next at the end of the recording`);
   replayed.sort((a, b) => a.seq - b.seq);
   return { replayed, unrecorded };
 }
 
-// ---- The synthetic recording: a scripted engine under the real recorder (`REPLAY_WRITE_SYNTHETIC=1 npm test`). ----
+// ---- The synthetic recording: a scripted engine under the real recorder, for the recorder's own tests. ----
 
 export const A1 = 'a1b2c3d4e5';
 export const FORWARD = 'mcp__forward-compaction__forward_compaction';

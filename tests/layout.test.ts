@@ -1,7 +1,7 @@
 import { readdirSync, readFileSync, existsSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { OPTION_ENV } from '../plugins/forward-compaction/src/options.ts';
+import { DEFAULT_CEILING, DEFAULT_CEILING_NATIVE, DEFAULT_NUDGE_EVERY, DEFAULT_NUDGE_START, OPTION_ENV, parseEnvFlag, parseSize, resolveOptions, type OptionName } from '../plugins/forward-compaction/src/options.ts';
 
 const ROOT = join(import.meta.dirname, '..');
 const PLUGIN = 'plugins/forward-compaction';
@@ -49,6 +49,20 @@ function optionLiterals(text: string): Set<string> {
 }
 function sameSet(a: ReadonlySet<string>, b: ReadonlySet<string>): string[] {
   return [...[...a].filter((x) => !b.has(x)).map((x) => `+${x}`), ...[...b].filter((x) => !a.has(x)).map((x) => `-${x}`)];
+}
+// Gate 4, README half: each `| `FORWARD_COMPACTION_X` | type | default | meaning |` row against OPTION_ENV and the code's default.
+const CODE_DEFAULT: Record<OptionName, unknown> = { ceiling: DEFAULT_CEILING, ceilingNative: DEFAULT_CEILING_NATIVE, nudgeStart: DEFAULT_NUDGE_START, nudgeEvery: DEFAULT_NUDGE_EVERY, logFile: resolveOptions({ home: '~' }).logFile };
+function optionTableFaults(readme: string): string[] {
+  const rows = [...readme.matchAll(/^\|\s*`(FORWARD_COMPACTION_[A-Z_]+)`\s*\|[^|\n]*\|\s*`([^`\n]*)`[^|\n]*\|/gm)].map((m) => ({ name: m[1]!, cell: m[2]! }));
+  const faults = sameSet(new Set(rows.map((r) => r.name)), new Set(Object.values(OPTION_ENV)));
+  for (const { name, cell } of rows) {
+    const option = (Object.keys(OPTION_ENV) as OptionName[]).find((o) => OPTION_ENV[o] === name);
+    if (option === undefined) continue;
+    const want = CODE_DEFAULT[option];
+    const got = typeof want === 'boolean' ? parseEnvFlag(cell) : typeof want === 'object' ? parseSize(cell) : { ok: true, value: cell };
+    if (!got.ok || JSON.stringify(got.value) !== JSON.stringify(want)) faults.push(`${name} default ${cell}`);
+  }
+  return faults;
 }
 function overLong(list: readonly File[], limit: (path: string) => number): string[] {
   return enumerated(list).filter((f) => f.text.split('\n').length - (f.text.endsWith('\n') ? 1 : 0) > limit(f.path)).map((f) => f.path);
@@ -103,7 +117,14 @@ describe('layout gates (D22)', () => {
   it('(4) the adapter reads exactly the variables of OPTION_ENV', () => {
     expect(sameSet(optionLiterals(readFileSync(join(ROOT, ADAPTER), 'utf8')), new Set(Object.values(OPTION_ENV)))).toEqual([]);
   });
-  it.todo('(4) the README option table names exactly the variables of OPTION_ENV (README is rewritten in U9)');
+  it('(4) names a README option row missing, extra or with a default the code does not have', () => {
+    const row = (name: string, def: string): string => `| \`${name}\` | size | \`${def}\` | x |`;
+    const table = [row('FORWARD_COMPACTION_CEILING', '70%'), row('FORWARD_COMPACTION_CEILING_NATIVE', '0'), row('FORWARD_COMPACTION_NUDGE_START', '50k'), row('FORWARD_COMPACTION_EXTRA', '1'), row('FORWARD_COMPACTION_LOG_FILE', '~/.local/state/forward-compaction/logs/decisions/.jsonl')].join('\n');
+    expect(optionTableFaults(table)).toEqual(['+FORWARD_COMPACTION_EXTRA', '-FORWARD_COMPACTION_NUDGE_EVERY', 'FORWARD_COMPACTION_CEILING default 70%']);
+  });
+  it('(4) the README option table names exactly the variables of OPTION_ENV, each with the code\'s default', () => {
+    expect(optionTableFaults(readFileSync(join(ROOT, 'README.md'), 'utf8'))).toEqual([]);
+  });
 
   // A2: a write of 4 MiB or more fails the hook; the adapter writes no file through $, so no transcript or wake is ever written whole.
   it('the adapter writes no file through $.fs (A2: every $.fs.write below 4 MiB)', () => {

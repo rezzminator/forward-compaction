@@ -1,7 +1,7 @@
 // The replay gate (spec § Tests, replay gate 5-7; D19): every fixture under tests/fixtures/replay/*/ replayed
 // through the real register, and the invariants I1-I13 run on its recorded outputs (the live system) and on the
 // replayed outputs (current code). Each failure names the invariant, the hook, its invocation number and the party.
-import { execFileSync, spawnSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -13,10 +13,7 @@ import { engineAskPoint, modelWindow, partyWindow, ENGINE_DEFAULT_WINDOW } from 
 
 const ROOT = join(import.meta.dirname, '..');
 const FIXTURES = join(ROOT, 'tests/fixtures/replay');
-const SYNTHETIC = join(FIXTURES, 'synthetic/session.jsonl');
 const SANITIZE = join(ROOT, 'scripts/replay/sanitize.mjs');
-// U8 deletes this line once it commits tests/fixtures/replay/2.1.309/: until then the live pin is a named todo, after it a missing fixture fails.
-const LIVE_FIXTURE_PENDING = true;
 
 const ALL = ['I1', 'I2', 'I3', 'I4', 'I5', 'I6', 'I7', 'I8', 'I9', 'I10', 'I11', 'I12', 'I13'] as const;
 type Name = (typeof ALL)[number];
@@ -26,7 +23,8 @@ type View = readonly Invocation[];
 const party = (input: any): string => (typeof input?.agentId === 'string' && input.agentId !== '' ? `agent:${input.agentId}` : 'main');
 const at = (inv: Invocation): string => `${inv.hook} #${inv.id} ${party(inv.input)}`;
 const isForward = (tool: unknown): boolean => typeof tool === 'string' && tool.endsWith('__forward_compaction');
-const wakeOf = (inv: Invocation): any[] | undefined => (inv.hook === 'session.compact' && Array.isArray(inv.end?.result?.messages) ? inv.end!.result.messages : undefined);
+/** A wake this plugin built: the messages a session.compact returned without calling next (a native summary passed through next is Claude Code's, not an install). */
+const wakeOf = (inv: Invocation): any[] | undefined => (inv.hook === 'session.compact' && inv.next === undefined && Array.isArray(inv.end?.result?.messages) ? inv.end!.result.messages : undefined);
 const texts = (messages: readonly any[]): string => messages.map((m) => [m.text ?? '', ...(m.toolResults ?? []).map((r: any) => r.text ?? '')].join('\n')).join('\n');
 const nextWake = (view: View, key: string, after: number): Invocation | undefined => view.find((c) => c.seq > after && party(c.input) === key && wakeOf(c) !== undefined);
 const handoffOf = (call: Invocation): string | undefined => call.input?.handoff ?? call.input?.input?.handoff;
@@ -41,8 +39,9 @@ function askPointAt(view: View, key: string, seq: number): number {
   const model = [...view].reverse().find((i) => i.hook === 'turn.step' && i.seq < seq && party(i.input) === key)?.input?.model;
   return engineAskPoint(partyWindow(modelWindow(model, main), Number.isInteger(w) && w > 0 ? w : undefined));
 }
+/** The party's reading the plugin held at `seq`: the last of its steps that had ended by then (a step still open, its tools running, is not read yet). */
 function readingAt(view: View, key: string, seq: number): number | undefined {
-  const last = [...view].reverse().find((i) => i.hook === 'turn.step' && i.seq < seq && party(i.input) === key);
+  const last = [...view].reverse().find((i) => i.hook === 'turn.step' && i.endSeq < seq && party(i.input) === key);
   return last ? contextTokens(last.end?.result?.usage) : undefined;
 }
 
@@ -221,56 +220,81 @@ function pinned(version: string | undefined, dirs: readonly string[]): void {
 const fixtureDirs = (): string[] => (existsSync(FIXTURES) ? readdirSync(FIXTURES).filter((d) => existsSync(join(FIXTURES, d, 'session.jsonl.gz')) || existsSync(join(FIXTURES, d, 'session.jsonl'))) : []);
 const fixtureOf = (dir: string): string => (existsSync(join(FIXTURES, dir, 'session.jsonl.gz')) ? join(FIXTURES, dir, 'session.jsonl.gz') : join(FIXTURES, dir, 'session.jsonl'));
 
-const SYNTHETIC_EXERCISES: readonly Name[] = ['I3', 'I4', 'I5', 'I6', 'I10', 'I13'];
+/** What the live recording on 2.1.309 cannot give a subject, and why; every other invariant must run on one. */
+export const LIVE_NOT_EXERCISED: Partial<Record<Name, string>> = {
+  I2: 'Claude Code 2.1.309 sent no precompute ask in the recorded session (O3: its frequency is unproven)',
+  I11: "a chained install's anchor is a new forward_compaction call made after every message the install before it kept, so the two tails share no message",
+};
+const LIVE_EXERCISES: readonly Name[] = ALL.filter((name) => LIVE_NOT_EXERCISED[name] === undefined);
+const LIVE = (): Row[] => loadFixture(fixtureOf('2.1.309'));
+/** A skill.prompt loaded inside a Skill call, with the next wake of the party that made the call: an I5 subject. */
+function skillSubject(view: View): { skill: Invocation; call: Invocation; wake: Invocation } {
+  for (const skill of view.filter((i) => i.hook === 'skill.prompt')) {
+    const call = view.find((t) => t.id === skill.parent && t.input?.tool === 'Skill');
+    const wake = call && nextWake(view, party(call.input), skill.seq);
+    if (call && wake) return { skill, call, wake };
+  }
+  throw new Error('no skill.prompt inside a Skill call is followed by a wake of its party');
+}
 
 describe('replay gate (D19)', () => {
-  if (process.env.REPLAY_WRITE_SYNTHETIC === '1') {
-    it('writes the synthetic fixture from the scripted session', async () => {
-      const dir = mkdtempSync(join(tmpdir(), 'fc-synthetic-'));
-      try {
-        const rows = await recordSynthetic(dir);
-        execFileSync(process.execPath, [SANITIZE, rows, '--out', SYNTHETIC]);
-      } finally {
-        rmSync(dir, { recursive: true, force: true });
-      }
-    });
-  }
-
   it.each(fixtureDirs())('fixture %s passes every invariant on its recorded and replayed outputs', async (dir) => {
-    expect(await gate(loadFixture(fixtureOf(dir)), dir === 'synthetic' ? SYNTHETIC_EXERCISES : ALL)).toEqual([]);
+    expect(await gate(loadFixture(fixtureOf(dir)), LIVE_EXERCISES)).toEqual([]);
   });
 
-  it('the synthetic fixture holds the R40 scenario: session.start, a Skill call with skill.prompt nested, forward_compaction, an automatic ask (I3, I5)', async () => {
-    const view = invocations(loadFixture(SYNTHETIC));
-    const skill = view.find((i) => i.hook === 'skill.prompt')!;
-    expect(view.map((i) => i.hook)).toEqual(['session.start', 'prompt.submit', 'tool.call', 'agent.spawn', 'turn.step', 'tool.call', 'skill.prompt', 'turn.step', 'tool.call', 'turn.step', 'session.compact']);
-    expect(view.find((i) => i.id === skill.parent)?.input.tool).toBe('Skill');
-    expect(INVARIANTS.I3(view, true).subjects).toBe(1);
-    expect(INVARIANTS.I5(view, true).subjects).toBe(1);
+  it('the live fixture holds the R40 scenario: session.start, a Skill call with skill.prompt nested, forward_compaction, an automatic ask (I3, I5)', () => {
+    const view = invocations(LIVE());
+    expect(view[0]?.hook).toBe('session.start');
+    expect(skillSubject(view).call.input.tool).toBe('Skill');
+    expect(view.some((i) => i.hook === 'tool.call' && isForward(i.input?.tool))).toBe(true);
+    expect(view.some((i) => i.hook === 'session.compact' && i.input?.trigger === 'auto')).toBe(true);
+    expect(INVARIANTS.I3(view, true).subjects).toBeGreaterThan(0);
+    expect(INVARIANTS.I5(view, true).subjects).toBeGreaterThan(0);
   });
 
-  it('removing the nested skill.prompt fails the run naming I5', async () => {
-    const rows = loadFixture(SYNTHETIC);
-    const skill = invocations(rows).find((i) => i.hook === 'skill.prompt')!;
-    const failures = await gate(rows.filter((r) => r.id !== skill.id), SYNTHETIC_EXERCISES);
+  it('removing every skill.prompt fails the run naming I5', async () => {
+    const rows = LIVE();
+    const skills = new Set(invocations(rows).filter((i) => i.hook === 'skill.prompt').map((i) => i.id));
+    const failures = await gate(rows.filter((r) => !skills.has(r.id)), LIVE_EXERCISES);
     expect(failures).toContain('recorded: I5 not exercised: no subject in this fixture');
     expect(failures).toContain('replayed: I5 not exercised: no subject in this fixture');
   });
 
   it('a recorded wake without the skill text fails I5 naming the hook, its number and the party', async () => {
-    const rows = loadFixture(SYNTHETIC);
-    const view = invocations(rows);
-    const skill = view.find((i) => i.hook === 'skill.prompt')!;
-    const compact = view.find((i) => i.hook === 'session.compact')!;
-    const edited = rows.map((r) => (r.id === compact.id && r.phase === 'end' ? JSON.parse(JSON.stringify(r).split(JSON.stringify(skill.input.text).slice(1, -1)).join('(gone)')) : r));
-    expect(await gate(edited, SYNTHETIC_EXERCISES)).toContain(`recorded: I5 session.compact #${compact.id} agent:a1b2c3d4e5: the wake lacks the text of skill.prompt #${skill.id} (replay-rules), loaded inside agent:a1b2c3d4e5's Skill call tool.call #${skill.parent}`);
+    const rows = LIVE();
+    const { skill, call, wake } = skillSubject(invocations(rows));
+    const key = party(call.input);
+    const edited = rows.map((r) => (r.id === wake.id && r.phase === 'end' ? JSON.parse(JSON.stringify(r).split(JSON.stringify(skill.input.text).slice(1, -1)).join('(gone)')) : r));
+    expect(await gate(edited, LIVE_EXERCISES)).toContain(`recorded: I5 session.compact #${wake.id} ${key}: the wake lacks the text of skill.prompt #${skill.id} (${skill.input.skill}), loaded inside ${key}'s Skill call tool.call #${call.id}`);
   });
 
   it('a $ call the recording lacks fails as unrecorded (R41)', async () => {
-    const rows = loadFixture(SYNTHETIC);
-    const compact = invocations(rows).find((i) => i.hook === 'session.compact')!;
-    const failures = await gate(rows.filter((r) => !(r.id === compact.id && r.phase === 'call' && r.path === 'agent.list')), SYNTHETIC_EXERCISES);
-    expect(failures).toContain('unrecorded $ call agent.list in session.compact #11');
+    const rows = LIVE();
+    const install = invocations(rows).find((i) => wakeOf(i) !== undefined && i.calls.some((c) => c.path === 'agent.list'))!;
+    const failures = await gate(rows.filter((r) => !(r.id === install.id && r.phase === 'call' && r.path === 'agent.list')), LIVE_EXERCISES);
+    expect(failures).toContain(`unrecorded $ call agent.list in session.compact #${install.id}`);
+  });
+
+  it('replays concurrent parties on the recorded timeline: a step that starts inside another party\'s open step runs after the steps recorded before it', async () => {
+    // Party X's step 1 (30k) is open while party Y's step runs; X's step 2 (200k) starts inside Y's window, after X's step 1 ended.
+    const live = LIVE();
+    const start = live.filter((r) => r.id === invocations(live).find((i) => i.hook === 'session.start')!.id || r.phase === 'version');
+    const base = Math.max(...start.map((r) => r.seq));
+    const usage = (tokens: number) => ({ input_tokens: 2, output_tokens: 10, cache_read_input_tokens: tokens - 2, cache_creation_input_tokens: 0 });
+    const step = (id: number, agentId: string, index: number, at: [number, number, number, number], tokens: number): Row[] => {
+      const input = { turnId: `t-${agentId}`, index, model: 'claude-sonnet-4-5', messageCount: 10 + index, agentId };
+      const result = { turnId: input.turnId, index, answer: '', toolUses: [], stopReason: 'tool_use', usage: usage(tokens) };
+      return [
+        { seq: base + at[0], id, phase: 'start', hook: 'turn.step', input },
+        { seq: base + at[1], id, phase: 'next', input },
+        { seq: base + at[2], id, phase: 'nextResult', result },
+        { seq: base + at[3], id, phase: 'end', result },
+      ];
+    };
+    const rows = [...start, ...step(901, 'xxxxxxxxxx', 0, [1, 2, 9, 10], 30_000), ...step(902, 'yyyyyyyyyy', 0, [3, 4, 12, 13], 30_000), ...step(903, 'xxxxxxxxxx', 1, [11, 14, 15, 16], 200_000)].sort((a, b) => a.seq - b.seq);
+    const { replayed, unrecorded } = await replay(rows);
+    expect(unrecorded).toEqual([]);
+    expect(replayed.find((i) => i.id === 901)?.calls.filter((c) => c.path === 'ui.log')).toEqual([]);
   });
 
   it('zero invocations fails "replayed 0 invocations", never passes (R42)', async () => {
@@ -290,8 +314,7 @@ describe('replay gate (D19)', () => {
     }
   });
 
-  if (LIVE_FIXTURE_PENDING) it.todo(`the live fixture for Claude Code ${VERSION} (U8 records it; until then: no replay fixture for Claude Code ${VERSION}: run npm run replay:record)`);
-  else it('a fixture exists for the Claude Code version the types are written by (gate 7)', () => pinned(VERSION, fixtureDirs()));
+  it('a fixture exists for the Claude Code version the types are written by (gate 7)', () => pinned(VERSION, fixtureDirs()));
 });
 
 describe('the recorder', () => {

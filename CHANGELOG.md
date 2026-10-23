@@ -1,8 +1,70 @@
 # Changelog
 
-Every release of sub-agent-compact. Versions follow [semantic versioning](https://semver.org); each release is the `main` commit tagged `sub-agent-compact--v<version>`, with a GitHub release carrying the section below.
+Every release of forward-compaction, named sub-agent-compact before 1.0.0. Versions follow [semantic versioning](https://semver.org); each release is the `main` commit tagged `forward-compaction--v<version>` (`sub-agent-compact--v<version>` before 1.0.0), with a GitHub release carrying the section below.
 
 ## [Unreleased]
+
+## [1.0.0-dev.1] — 2026-10-23
+
+A breaking major: the plugin is rewritten and renamed. sub-agent-compact is gone; forward-compaction replaces it in the same repository, `github.com/rezzminator/sub-agent-compact`. The model writes its own handoff through one tool, the plugin installs it at Claude Code's compaction with facts recorded from typed hook events, and every message after the call is kept verbatim. No summarizer request runs.
+
+### Changed
+
+- **Renamed.** Plugin `sub-agent-compact` → `forward-compaction`; marketplace name `sub-agent-compact` → `forward-compaction`; install id `sub-agent-compact@sub-agent-compact` → `forward-compaction@forward-compaction`; tool server `sub-agent-compact` → `forward-compaction`; release tags `sub-agent-compact--v*` → `forward-compaction--v*`. The repository and its URL are unchanged.
+- **One tool, one markdown argument.** `forward_handoff` (`mcp__sub-agent-compact__forward_handoff`) → `forward_compaction` (`mcp__forward-compaction__forward_compaction`). The typed fields `objective`, `done`, `remaining`, `blocked`, `findings`, `next` and `drop_skills` are gone: the call is `forward_compaction({handoff, load_files?})`, where `handoff` is one markdown string of at most 20,000 characters with `## Objective`, `## Done`, `## Remaining` and `## Next` (each once, each with text under it; `## Blocked` and `## Findings` optional). `load_files` keeps its `{path, lines?, why}` shape, at most 8 files of at most 1,048,576 bytes each. Nothing is trimmed any more: a fault is refused with `forward_compaction refused, nothing stored:` and what to fix. The schema is in the tool list from the start (not deferred).
+- `look_back` keeps its description and arguments, under the new server: `mcp__sub-agent-compact__look_back` → `mcp__forward-compaction__look_back`.
+- The wake is built from facts recorded as they happened (the person's messages or a sub-agent's brief, coordinator messages and notifications, skills as loaded, agents, background shells), the handoff verbatim, and every message after the call, within a budget of half Claude Code's ask point. Nothing is read back from the transcript or from skill and agent files.
+- A message the person sends after a handoff no longer cancels it: it is kept after the call.
+- One ceiling for every party, as a percentage of its own model's window (60% by default), no longer held to `CLAUDE_CODE_AUTO_COMPACT_WINDOW`. A party with no handoff at its ceiling gets a mechanical wake (the facts and its newest messages), or Claude Code's own summary with `FORWARD_COMPACTION_CEILING_NATIVE=1`.
+- Nudges start at 50k tokens and come every 10k (were 20% and 10% of the window); they are the same for the main chat and sub-agents.
+- The decision log is on by default, under `~/.local/state/forward-compaction/logs/decisions/` (or `$PLUGIN_LOG_DIR/forward-compaction/decisions/`); before, it was off unless `PLUGIN_LOG_DIR` or the log file was set.
+
+### Options: old → new
+
+Every variable is renamed or removed; an old one is no longer read and no warning names it, so rename or delete each.
+
+| Old variable | New variable | How to migrate |
+| --- | --- | --- |
+| `SUB_AGENT_COMPACT_MAIN_AUTO_COMPACT` | `FORWARD_COMPACTION_CEILING` | One ceiling for every party now, applied only when no handoff is stored. Keep the larger of your main and sub-agent values, or drop it for the `60%` default. |
+| `SUB_AGENT_COMPACT_SUBAGENT_AUTO_COMPACT` | `FORWARD_COMPACTION_CEILING` | As above. |
+| `SUB_AGENT_COMPACT_MAIN_AUTO_COMPACT_NUDGE_START` | `FORWARD_COMPACTION_NUDGE_START` | One value for every party; default `50k`. |
+| `SUB_AGENT_COMPACT_SUBAGENT_AUTO_COMPACT_NUDGE_START` | `FORWARD_COMPACTION_NUDGE_START` | As above. |
+| `SUB_AGENT_COMPACT_MAIN_AUTO_COMPACT_NUDGE_EVERY` | `FORWARD_COMPACTION_NUDGE_EVERY` | One value for every party; default `10k`. |
+| `SUB_AGENT_COMPACT_SUBAGENT_AUTO_COMPACT_NUDGE_EVERY` | `FORWARD_COMPACTION_NUDGE_EVERY` | As above. |
+| `SUB_AGENT_COMPACT_MAIN_AUTO_COMPACT_ENABLED` | removed | No per-party switch; to leave compaction to Claude Code, disable the plugin. |
+| `SUB_AGENT_COMPACT_SUBAGENT_AUTO_COMPACT_ENABLED` | removed | As above. |
+| `SUB_AGENT_COMPACT_SUBAGENT_KEEP_BRIEF` | removed | A sub-agent's brief is always carried, verbatim, from the recorded spawn. |
+| `SUB_AGENT_COMPACT_FORWARD_HANDOFF_TOOL` | removed | `forward_compaction` is always registered. |
+| `SUB_AGENT_COMPACT_HANDOFF_TOOL` | removed | The `handoff` tool is gone; `forward_compaction` replaces it. |
+| `SUB_AGENT_COMPACT_COMPACT_TOOL` | removed | The `compact` tool and the summarizer focus are gone; `forward_compaction` replaces them. |
+| `SUB_AGENT_COMPACT_AGENT_DIRS` | removed | No agent definition is read. |
+| `SUB_AGENT_COMPACT_PIN_SKILLS` | removed | Skills are carried as they were loaded, newest first, while they fit; one left out is named with the call that loads it again. |
+| `SUB_AGENT_COMPACT_DROP_SKILLS` | removed | As above. |
+| `SUB_AGENT_COMPACT_LOG_FILE` | `FORWARD_COMPACTION_LOG_FILE` | Still an absolute path; each session writes its own file beside it. Unset now logs under `~/.local/state/forward-compaction/logs/decisions/`. |
+| `SUB_AGENT_COMPACT_PROBE_DIR` | removed | Not an option: the host probe (`npm run probe:installed`) that read it is gone. |
+| — | `FORWARD_COMPACTION_CEILING_NATIVE` | New: `1` lets Claude Code's own summary run at the ceiling instead of the mechanical wake. |
+
+The settings keys `autoCompact.pinSkills` and `autoCompact.dropSkills`, and every `autoCompact` key in agent frontmatter (`forceAt`, `nudgeFrom`, `nudgeEvery`, `enabled`, `pinSkills`, `dropSkills`, and the bare `autoCompact: <size>`), are no longer read: delete them.
+
+### Removed
+
+- The `compact` tool and the `handoff` tool, the `<compact-now>` and `<handoff>` markers, and the summarizer focus they armed.
+- Per-agent policy from frontmatter, the central skill pin and drop lists, and agent-definition lookup.
+- The Haiku pass-through: a Haiku party is nudged and compacted like any other.
+- Brief seating after a native summary: the brief is a recorded fact of every wake.
+- The disarm of a stored handoff by a person's message, an interrupt or a skipped compaction; a person's `/compact` still runs Claude Code's own summary and drops the stored handoff.
+- The saved handoff files (`forward-handoff/{session}/{n}/` with `args.json`, `wake.txt`, `record.json`) and the restore of a handoff from them after a reload: a stored handoff lives in memory until it installs, and its text stays in the transcript as the call's input, where `look_back` finds it.
+- Every transcript scan at handoff time: queued-prompt recovery, the file trail and outlines, the plan, task, git and path blocks, and the `answered` status of the person's last message.
+- The host probe and `npm run probe:installed`.
+- The benchmark figures: they measured sub-agent-compact's summarizer mechanism and are not claimed for forward-compaction, which has not been benchmarked yet.
+
+### Migrating
+
+1. Uninstall the old plugin and its marketplace: `claude plugin uninstall sub-agent-compact@sub-agent-compact`, then `claude plugin marketplace remove sub-agent-compact`.
+2. Add the marketplace again and install: `claude plugin marketplace add https://github.com/rezzminator/sub-agent-compact.git`, then `claude plugin install forward-compaction@forward-compaction`.
+3. Rename or delete each `SUB_AGENT_COMPACT_*` variable by the table above, and delete the `autoCompact` keys from settings and agent frontmatter.
+4. Replace every prompt, agent or rule naming `mcp__sub-agent-compact__forward_handoff` or `mcp__sub-agent-compact__look_back` with `mcp__forward-compaction__forward_compaction` and `mcp__forward-compaction__look_back`, and rewrite any instruction that fills the old typed fields into one markdown handoff.
+5. After uninstalling sub-agent-compact, delete ~/.local/state/sub-agent-compact/ yourself; forward-compaction never reads it. Its saved handoffs and logs are in a format the new plugin does not use, and it is neither moved nor deleted for you.
 
 ## [0.8.1-dev.8] — 2026-10-22
 
