@@ -1,0 +1,20 @@
+{
+  "autoCompactEnabled": true,
+  "autoMemoryEnabled": false,
+  "autoContinueAtUsageLimit": false,
+  "env": {
+    "CLAUDE_CODE_ENABLE_FUNCTION_HOOKS": "1",
+    "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "100000"
+  },
+  "permissions": {
+    "allow": [
+      "Agent",
+      "Read",
+      "Bash",
+      "Skill",
+      "SendMessage",
+      "mcp__forward-compaction__*"
+    ],
+    "defaultMode": "dontAsk"
+  }
+}
