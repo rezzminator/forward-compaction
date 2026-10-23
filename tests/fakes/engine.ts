@@ -17,6 +17,10 @@ export type Script = {
   agents?: () => unknown;
   compact?: (args?: unknown) => unknown;
   now?: number;
+  /** Answers a `$.process.run` in place of running it; `undefined` runs it for real. */
+  run?: (argv: string[]) => { exitCode: number; stdout: string; stderr: string } | undefined;
+  /** `$` calls that never settle. */
+  hang?: ('session.id' | 'tool.register')[];
 };
 
 export function fakeEngine(script: Script = {}) {
@@ -27,11 +31,13 @@ export function fakeEngine(script: Script = {}) {
   const compactCalls: unknown[][] = [];
   const hooks = new Map<string, Fn>();
   let now = script.now ?? Date.UTC(2026, 9, 23, 12, 0, 0);
+  const never = new Promise<never>(() => {});
+  const hangs = (call: 'session.id' | 'tool.register') => script.hang?.includes(call) === true;
 
   const enoent = (path: string) => Object.assign(new Error(`ENOENT: no such file, ${path}`), { code: 'ENOENT' });
   const base = {
     session: {
-      id: async () => 'session-1',
+      id: () => (hangs('session.id') ? never : Promise.resolve('session-1')),
       cwd: async () => home,
       usage: async () => ({ context: { tokens: 0, window: script.window ?? 200_000 } }),
       compact: async (...args: unknown[]) => {
@@ -54,6 +60,8 @@ export function fakeEngine(script: Script = {}) {
     },
     process: {
       run: async (argv: string[], init?: { stdin?: string; cwd?: string }) => {
+        const scripted = script.run?.(argv);
+        if (scripted !== undefined) return scripted;
         const out = spawnSync(argv[0]!, argv.slice(1), { input: init?.stdin, cwd: init?.cwd, encoding: 'utf8' });
         return { exitCode: out.status ?? -1, stdout: out.stdout, stderr: out.stderr };
       },
@@ -61,7 +69,7 @@ export function fakeEngine(script: Script = {}) {
     clock: { now: async () => now, after: (ms: number, fn: () => void) => { const t = setTimeout(fn, ms); return { cancel: () => clearTimeout(t) }; } },
     ui: { log: (text: string, opts?: unknown) => void screen.push(opts === undefined ? { text } : { text, opts }) },
     agent: { list: async () => (script.agents ? script.agents() : []) },
-    tool: { register: async (spec: { name: string }) => ({ tool: `mcp__forward-compaction__${spec.name}` }) },
+    tool: { register: (spec: { name: string }) => (hangs('tool.register') ? never : Promise.resolve({ tool: `mcp__forward-compaction__${spec.name}` })) },
   };
 
   const proxy = (target: Record<string, unknown>, path: string): any =>
@@ -78,9 +86,8 @@ export function fakeEngine(script: Script = {}) {
 
   register(((name: string, fn: Fn) => void hooks.set(name, fn)) as any, {} as any);
 
-  const signal = new AbortController().signal;
-  /** Runs one hook with `impl` as everything beneath it; a hook the plugin does not register passes straight to `impl`. */
-  async function dispatch(event: string, e: unknown, impl: Fn = async (x) => x): Promise<any> {
+  /** Runs one hook with `impl` as everything beneath it; a hook the plugin does not register passes straight to `impl`. `signal` is the dispatch's abort. */
+  async function dispatch(event: string, e: unknown, impl: Fn = async (x) => x, signal: AbortSignal = new AbortController().signal): Promise<any> {
     const hook = hooks.get(event);
     if (event === 'turn.step') {
       const next = Object.assign(async function* (x: unknown) { return await impl(x); }, { signal });

@@ -14,5 +14,5 @@
       "claude-code": ["./types/claude-code.d.ts"]
     }
   },
-  "include": ["plugins/sub-agent-compact/src", "plugins/forward-compaction/src", "tests"]
+  "include": ["plugins/forward-compaction/src", "tests"]
 }

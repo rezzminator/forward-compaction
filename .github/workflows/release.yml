@@ -2,7 +2,7 @@ name: release
 
 on:
   push:
-    tags: ['sub-agent-compact--v*']
+    tags: ['forward-compaction--v*']
 
 permissions:
   contents: write
@@ -23,11 +23,11 @@ jobs:
       - run: npm ci
       - name: The tag matches the manifest and CHANGELOG
         run: |
-          v="${GITHUB_REF_NAME#sub-agent-compact--v}"
-          test "$v" = "$(node -p 'require("./plugins/sub-agent-compact/.claude-plugin/plugin.json").version')"
+          v="${GITHUB_REF_NAME#forward-compaction--v}"
+          test "$v" = "$(node -p 'require("./plugins/forward-compaction/.claude-plugin/plugin.json").version')"
           scripts/release-check.sh
           awk -v v="$v" '$0 ~ "^## \\[" v "\\]" {f=1; next} /^## \[/ || /^\[/ {f=0} f' CHANGELOG.md > notes.md
           test -s notes.md
-      - run: gh release create "$GITHUB_REF_NAME" --title "sub-agent-compact ${GITHUB_REF_NAME#sub-agent-compact--v}" --notes-file notes.md --verify-tag
+      - run: gh release create "$GITHUB_REF_NAME" --title "forward-compaction ${GITHUB_REF_NAME#forward-compaction--v}" --notes-file notes.md --verify-tag
         env:
           GH_TOKEN: ${{ github.token }}

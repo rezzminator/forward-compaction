@@ -1,8 +1,8 @@
 {
   "name": "forward-compaction",
-  "version": "0.8.1-dev.8",
+  "version": "1.0.0-dev.1",
   "private": true,
-  "description": "Smart auto-compact for Claude Code: a separate compaction point for every sub-agent, and self-compaction at a milestone the model chooses.",
+  "description": "The model writes its own handoff through one tool and the plugin installs it at Claude Code's compaction, with facts recorded from typed events and every later message kept verbatim.",
   "type": "module",
   "license": "MIT",
   "engines": {
@@ -11,7 +11,6 @@
   "scripts": {
     "test": "vitest run --dir tests",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.hooks.json",
-    "probe:installed": "vitest run --dir scripts/host-probe",
     "validate:plugin": "claude plugin validate --strict . && claude plugin validate --strict plugins/forward-compaction",
     "release:check": "scripts/release-check.sh",
     "replay:record": "scripts/replay/record.sh"
@@ -24,16 +23,11 @@
   "keywords": [
     "claude-code",
     "claude-code-plugin",
-    "sub-agent",
-    "subagent",
-    "auto-compact",
     "compaction",
     "context-window",
-    "smart-compact",
-    "self-compaction",
+    "handoff",
     "function-hooks",
     "claude-mods",
-    "multi-agent",
-    "token-cost"
+    "multi-agent"
   ]
 }

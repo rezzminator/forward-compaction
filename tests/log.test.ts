@@ -435,10 +435,12 @@ PATH='${realPath}' exec cat "$@"
       a.child.stdin.write('{"w":"A",');
       await until(() => tokenPid(lockDir) === String(a.child.pid), 1500);
       writeFileSync(join(stall, 'go'), '');
-      // B finishing now means it appended under A's lock.
       await settle(b.done, 800);
       if (tokenPid(lockDir) === String(a.child.pid)) {
-        expect(await settle(b.done, 0)).toBe(false);
+        // B may have appended and released before A took the lock; under A's lock its row would land after A's half.
+        const text = () => { try { return readFileSync(path, 'utf8'); } catch { return ''; } };
+        expect(await until(() => text().includes('{"w":"A",'), 4000)).toBe(true);
+        expect(['{"w":"A",', '{"w":"B"}\n{"w":"A",']).toContain(text());
       } else {
         expect(await until(() => tokenPid(lockDir) === String(a.child.pid), 4000)).toBe(true);
       }
@@ -474,6 +476,32 @@ PATH='${realPath}' exec cat "$@"
       expect(lines(path).map((line) => JSON.parse(line).w).sort()).toEqual(['first', 'next']);
       expect(readdirSync(parent).filter((name) => name.includes('.lock'))).toEqual([]);
     } finally { rmSync(parent, { recursive: true, force: true }); }
+  }, 20_000);
+
+  it('keeps its own lock when its token was claimed away while it checked it', async () => {
+    const parent = mkdtempSync(join(tmpdir(), 'decision-log-'));
+    const path = join(parent, 'decisions.s1.jsonl');
+    const lockDir = `${path}.lock`;
+    const stall = mkdtempSync(join(tmpdir(), 'lock-claimed-'));
+    const realPath = process.env.PATH ?? '/usr/bin:/bin';
+    // The writer's first read of its new lock's token finds no token: a claimer (a waiter breaking a stale holder, or a
+    // holder outlived by an age break releasing) has renamed it aside for its check and puts it back right after.
+    writeFileSync(join(stall, 'cat'), `#!/bin/sh
+if [ $# -eq 1 ] && [ "$1" = '${lockDir}/pid' ] && [ ! -e '${stall}/claimed' ]; then : > '${stall}/claimed'; exit 1; fi
+PATH='${realPath}' exec cat "$@"
+`);
+    chmodSync(join(stall, 'cat'), 0o755);
+    const argv = future.decisionAppendArgv?.(path) ?? ['/bin/sh', '-c', 'exit 9'];
+    try {
+      const out = await new Promise<{ code: number | null; stderr: string }>((resolve) => {
+        const child = execFile(argv[0]!, argv.slice(1), { env: { ...process.env, PATH: `${stall}:${realPath}` } }, (error, _stdout, stderr) => resolve({ code: error ? (typeof error.code === 'number' ? error.code : 1) : 0, stderr }));
+        child.stdin!.end('{"a":1}\n');
+      });
+      expect(existsSync(join(stall, 'claimed'))).toBe(true);
+      expect(out.code, out.stderr).toBe(0);
+      expect(lines(path)).toEqual(['{"a":1}']);
+      expect(readdirSync(parent).filter((name) => name.includes('.lock'))).toEqual([]);
+    } finally { rmSync(parent, { recursive: true, force: true }); rmSync(stall, { recursive: true, force: true }); }
   }, 20_000);
 
   it('holds the plugin log directory lock across its cap and append', async () => {

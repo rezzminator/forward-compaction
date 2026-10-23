@@ -8,10 +8,10 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 read_json() { node -e 'const [f, e] = process.argv.slice(1); const j = JSON.parse(require("fs").readFileSync(f, "utf8")); process.stdout.write(String(e.split(".").reduce((o, k) => o?.[k], j) ?? ""))' "$1" "$2" || { echo "ERROR cannot read $1"; exit 2; }; }
-v=$(read_json plugins/sub-agent-compact/.claude-plugin/plugin.json version)
+v=$(read_json plugins/forward-compaction/.claude-plugin/plugin.json version)
 [ -n "$v" ] || { echo "ERROR plugin.json has no version"; exit 2; }
 fail=0
-m=$(node -e 'const j = require("./.claude-plugin/marketplace.json"); process.stdout.write(j.plugins.find((p) => p.name === "sub-agent-compact")?.version ?? "")') || { echo "ERROR cannot read marketplace.json"; exit 2; }
+m=$(node -e 'const j = require("./.claude-plugin/marketplace.json"); process.stdout.write(j.plugins.find((p) => p.name === "forward-compaction")?.version ?? "")') || { echo "ERROR cannot read marketplace.json"; exit 2; }
 p=$(read_json package.json version)
 b=$(grep -oE 'badge/version-[0-9A-Za-z.-]+-blue' README.md | sed -E 's/badge\/version-|-blue$//g; s/--/-/g')
 [ "$m" = "$v" ] || { echo "FAIL marketplace.json says $m, plugin.json $v"; fail=1; }

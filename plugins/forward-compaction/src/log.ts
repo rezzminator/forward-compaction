@@ -43,7 +43,8 @@ export const DECISION_LOG_RETENTION = { days: 14, keep: 200 } as const;
  * Breaking and releasing first claim the token by renaming `$lock/pid` to a private name: only one mover wins that
  * rename, and the claimer removes the lock only when the token it took is the one it saw stale (or its own), so no
  * waiter removes a lock another has since broken and taken, and a holder outlived by an age break never removes its
- * successor's lock.
+ * successor's lock. A claimer's rename can hide the token from its new holder's check for a moment: the holder that
+ * then reads its own token back owns the lock.
  */
 const LOCK_FN = `lk_claim() {
   lk_c="$lk_lock/pid.claim.$$"
@@ -72,6 +73,8 @@ lock() {
     tries=$((tries + 1))
     [ "$tries" -le 100 ] || fail "$lk_lock" 'lock held by another writer'
     holder=$(cat "$lk_lock/pid" 2>/dev/null) || holder=
+    # Our own token: our stage became the lock, and the check above read it while a claimer had it renamed aside.
+    if [ "$holder" = "$lk_token" ]; then break; fi
     if [ -n "$holder" ] && { ! kill -0 "\${holder%% *}" 2>/dev/null || [ -n "$(find "$lk_lock/pid" -mmin +1 2>/dev/null)" ]; }; then
       lk_claim "$holder" || :
       continue

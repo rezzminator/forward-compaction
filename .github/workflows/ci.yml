@@ -39,5 +39,5 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - run: git show origin/main:plugins/sub-agent-compact/.claude-plugin/plugin.json > /tmp/main-plugin.json 2>/dev/null || echo '{"version":"0.0.0"}' > /tmp/main-plugin.json
+      - run: git show origin/main:plugins/forward-compaction/.claude-plugin/plugin.json > /tmp/main-plugin.json 2>/dev/null || echo '{"version":"0.0.0"}' > /tmp/main-plugin.json
       - run: scripts/release-check.sh "$(node -p 'require("/tmp/main-plugin.json").version')"
