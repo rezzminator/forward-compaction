@@ -30,7 +30,7 @@ const iso = (at: number): string => new Date(at).toISOString();
  * skills in force are what a woken model most needs (a quarter each), sibling results a tenth, coordinator notices a
  * twentieth; the rest of B goes to the messages kept after the call. Load files have their own room, `loadFilesRoom`.
  */
-const SHARE = { people: 0.25, notices: 0.05, siblings: 0.1, skills: 0.25, tasks: 0.05 } as const;
+const SHARE = { people: 0.25, notices: 0.05, siblings: 0.1, skills: 1, tasks: 0.05 } as const;
 /** The most files the Files section lists, newest touch first: a path list stays a glance, as the old carry's trail did. */
 export const FILES_MAX = 15;
 /** The agents section's row cap: a design budget, enough for a coordinator's fleet, never the size of one. */
@@ -240,7 +240,7 @@ function renderFacts<M>(input: Shared<M>, facts: WakeFacts, { siblings, files, f
 
   const notCarried: string[] = [];
   const carriedSkills: string[] = [];
-  let skillRoom = room(SHARE.skills);
+  let skillRoom = room(SHARE.skills); // every skill the party invoked is carried whole: the whole budget, the tail fitted after it
   for (const s of facts.skills) {
     const block = `### ${s.skill} (${s.source ?? 'unknown source'}${s.path === undefined ? '' : `, ${s.path}`})\n${s.text}`;
     if (block.length + 1 > skillRoom) notCarried.push(`- ${s.skill}: over the skill room (${num(s.text.length)} characters); call Skill ${s.skill} to load it again.`);

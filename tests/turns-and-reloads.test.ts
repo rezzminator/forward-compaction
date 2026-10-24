@@ -119,7 +119,7 @@ describe('the hand-off gate', () => {
     const f = await begin();
     await f.dispatch('agent.spawn', { tool_use_id: 'tu-spawn', prompt: 'Brief', description: 'one', subagentType: 'general-purpose', provider: { kind: 'local' } }, async () => ({ model: 'sonnet', agentId: A }));
     await agentStep(f, 85_000);
-    expect((await read(f, A)).context?.at(-1)).toContain('From 100k every other call is refused until you have handed off.');
+    expect((await read(f, A)).context?.at(-1)).toContain('From 100k your other calls wait until you have handed off.');
     await agentStep(f, 99_000);
     expect(await read(f, A)).toMatchObject({ text: 'body' });
     await agentStep(f, 104_000);

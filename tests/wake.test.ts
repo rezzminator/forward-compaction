@@ -331,6 +331,14 @@ describe('F sections', () => {
     expect((wake.messages[0] as BuiltMessage).text).toContain('- Read: result not carried (5,000 characters)');
   });
 
+  it('carries every skill the party invoked whole, however much of the budget it takes, and names only one larger than the whole budget', () => {
+    // askPoint 2000 at 3.5 characters a token: B is 3,500 characters, 25% of it 875
+    const f = wakeOf({ askPoint: 2000, f: { skills: [{ skill: 'big', text: 'b'.repeat(2000), source: 'user' }, { skill: 'also', text: 'a'.repeat(1000), source: 'user' }] } }).f;
+    expect(f).toContain('### big (user)\n' + 'b'.repeat(2000));
+    expect(f).toContain('### also (user)\n' + 'a'.repeat(1000));
+    expect(f).not.toContain('## Skills not carried');
+  });
+
   it('carries skills newest first, names the ones over the room and the unattributed ones', () => {
     const f = wakeOf({
       askPoint: 2000,

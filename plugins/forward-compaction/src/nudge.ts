@@ -27,9 +27,12 @@ export type NudgeInput = {
 };
 
 /** What the model reads after a tool result once its context passes a nudge point: hand off at the next clean milestone; the model picks the moment, not whether. */
+/** Said in every nudge and refusal: a model that reads the handoff as a cost cuts its task short to avoid one. */
+export const FREE = 'A handoff costs you nothing: you continue from it with every message after it, as many times as the work needs, so carry the task through to its end; never cut it short to avoid one.';
+
 export function nudgeText({ tokens, window, ceiling, tool = DEFAULT_TOOL, gateAt }: NudgeInput): string {
   const percent = Math.round((tokens / Math.max(1, window)) * 100);
-  return `forward-compaction: your context is ${k(tokens)} tokens (${percent}% of your ${k(window)} max context), and every call re-sends all of it. Hand off at your next clean milestone: once the step in hand is finished and its results are written down, and before you start the next step, call ${tool} with objective, done, remaining and next. You pick the milestone, not whether: skip it only if nothing is left but writing your result and your final answer. ${gateAt !== undefined && tokens < gateAt ? `From ${k(gateAt)} every other call is refused until you have handed off. ` : ''}At ${k(ceiling)} the plugin compacts you mechanically, with no frontier from you. If this tool is not in your tool list, carry on.`;
+  return `forward-compaction: your context is ${k(tokens)} tokens (${percent}% of your ${k(window)} max context), and every call re-sends all of it. Hand off at your next clean milestone: once the step in hand is finished and its results are written down, and before you start the next step, call ${tool} with objective, done, remaining and next. You pick the milestone, not whether: skip it only if nothing is left but writing your result and your final answer. ${gateAt !== undefined && tokens < gateAt ? `From ${k(gateAt)} your other calls wait until you have handed off. ` : ''}At ${k(ceiling)} the plugin compacts you mechanically, with no frontier from you. ${FREE} If this tool is not in your tool list, carry on.`;
 }
 
 /** How many nudge levels past its first nudge a sub-agent's calls start waiting for its handoff: one, so the first nudge leaves it one step to pick its milestone. */
@@ -52,5 +55,5 @@ export function gated({ party, level, gateLevel, stored, ignored, tool, open }: 
 
 /** The refusal a gated call answers with: nothing ran, hand off now, then repeat the call. */
 export function gateText({ tokens, ceiling, tool = DEFAULT_TOOL }: { tokens: number; ceiling: number; tool?: string }): string {
-  return `forward-compaction: this call did not run. Your context is ${k(tokens)} tokens and you have not handed off; at ${k(ceiling)} the plugin compacts you mechanically and your work so far is lost. Call ${tool} now, with objective, done, remaining and next: what you have read and concluded so far goes in done and findings, what is left in remaining. Then repeat this call; every call runs again once the handoff is stored.`;
+  return `forward-compaction: this call did not run. Your context is ${k(tokens)} tokens and you have not handed off; at ${k(ceiling)} the plugin compacts you mechanically and your work so far is lost. Call ${tool} now, with objective, done, remaining and next: what you have read and concluded so far goes in done and findings, what is left in remaining. Then repeat this call; every call runs again once the handoff is stored. ${FREE}`;
 }

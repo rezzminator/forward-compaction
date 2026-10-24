@@ -19,7 +19,7 @@ describe('nudgeLevel (R29)', () => {
 describe('nudgeText (R29)', () => {
   it('asks for a handoff at the next clean milestone, leaving the model the moment and not the choice, with the exact text', () => {
     expect(nudgeText({ tokens: 55_400, window: 200_000, ceiling: 120_000 })).toBe(
-      'forward-compaction: your context is 55k tokens (28% of your 200k max context), and every call re-sends all of it. Hand off at your next clean milestone: once the step in hand is finished and its results are written down, and before you start the next step, call mcp__forward-compaction__forward_compaction with objective, done, remaining and next. You pick the milestone, not whether: skip it only if nothing is left but writing your result and your final answer. At 120k the plugin compacts you mechanically, with no frontier from you. If this tool is not in your tool list, carry on.',
+      'forward-compaction: your context is 55k tokens (28% of your 200k max context), and every call re-sends all of it. Hand off at your next clean milestone: once the step in hand is finished and its results are written down, and before you start the next step, call mcp__forward-compaction__forward_compaction with objective, done, remaining and next. You pick the milestone, not whether: skip it only if nothing is left but writing your result and your final answer. At 120k the plugin compacts you mechanically, with no frontier from you. A handoff costs you nothing: you continue from it with every message after it, as many times as the work needs, so carry the task through to its end; never cut it short to avoid one. If this tool is not in your tool list, carry on.',
     );
   });
 
@@ -70,12 +70,24 @@ describe('the hand-off gate', () => {
   });
 
   it('says nothing ran, to hand off now with what was found, and to repeat the call', () => {
-    expect(gateText({ tokens: 104_000, ceiling: 160_000, tool: 'FC' })).toBe('forward-compaction: this call did not run. Your context is 104k tokens and you have not handed off; at 160k the plugin compacts you mechanically and your work so far is lost. Call FC now, with objective, done, remaining and next: what you have read and concluded so far goes in done and findings, what is left in remaining. Then repeat this call; every call runs again once the handoff is stored.');
+    expect(gateText({ tokens: 104_000, ceiling: 160_000, tool: 'FC' })).toBe('forward-compaction: this call did not run. Your context is 104k tokens and you have not handed off; at 160k the plugin compacts you mechanically and your work so far is lost. Call FC now, with objective, done, remaining and next: what you have read and concluded so far goes in done and findings, what is left in remaining. Then repeat this call; every call runs again once the handoff is stored. A handoff costs you nothing: you continue from it with every message after it, as many times as the work needs, so carry the task through to its end; never cut it short to avoid one.');
   });
 
   it('is announced by the nudge before it, and not once it closed', () => {
-    expect(nudgeText({ tokens: 85_000, window: 200_000, ceiling: 160_000, gateAt: 100_000 })).toContain(' From 100k every other call is refused until you have handed off. At 160k');
-    expect(nudgeText({ tokens: 105_000, window: 200_000, ceiling: 160_000, gateAt: 100_000 })).not.toContain('every other call is refused');
-    expect(nudgeText({ tokens: 85_000, window: 200_000, ceiling: 160_000 })).not.toContain('every other call is refused');
+    expect(nudgeText({ tokens: 85_000, window: 200_000, ceiling: 160_000, gateAt: 100_000 })).toContain(' From 100k your other calls wait until you have handed off. ');
+    expect(nudgeText({ tokens: 105_000, window: 200_000, ceiling: 160_000, gateAt: 100_000 })).not.toContain('your other calls wait');
+    expect(nudgeText({ tokens: 85_000, window: 200_000, ceiling: 160_000 })).not.toContain('your other calls wait');
+  });
+});
+
+describe('a handoff is said to cost nothing', () => {
+  const FREE = 'A handoff costs you nothing: you continue from it with every message after it, as many times as the work needs, so carry the task through to its end; never cut it short to avoid one.';
+  it('in every nudge, before and after the gate, and in the refusal', () => {
+    expect(nudgeText({ tokens: 85_000, window: 200_000, ceiling: 160_000, gateAt: 100_000 })).toContain(FREE);
+    expect(nudgeText({ tokens: 300_000, window: 1_000_000, ceiling: 600_000 })).toContain(FREE);
+    expect(gateText({ tokens: 104_000, ceiling: 160_000, tool: 'FC' })).toContain(`Then repeat this call; every call runs again once the handoff is stored. ${FREE}`);
+  });
+  it('and the gate is named as a wait, not a refusal', () => {
+    expect(nudgeText({ tokens: 85_000, window: 200_000, ceiling: 160_000, gateAt: 100_000 })).toContain(' From 100k your other calls wait until you have handed off. ');
   });
 });

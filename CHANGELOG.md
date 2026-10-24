@@ -4,6 +4,13 @@ Every release of forward-compaction, named sub-agent-compact before 1.0.0. Versi
 
 ## [Unreleased]
 
+## [1.0.0-dev.5] — 2026-10-24
+
+### Changed
+
+- **A handoff is said to cost nothing.** In a live run a sub-agent handed off, woke, and at its next nudge quit at 17 of 94 files because "a second handoff would have been necessary". Every nudge and every gate refusal now says a handoff costs nothing, the model continues from it as many times as the work needs, and never cuts its task short to avoid one; the gate is named as a wait.
+- **Every skill and command the party invoked is carried whole.** Skills had 25% of the wake budget, so a large one was named and left out; they now have the whole budget, fitted before the verbatim tail. Only a skill larger than the whole budget is named, with the call that loads it again.
+
 ## [1.0.0-dev.4] — 2026-10-24
 
 ### Changed

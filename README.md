@@ -5,9 +5,9 @@
 **Compaction for Claude Code where the model writes its own handoff: the main chat and every sub-agent hand off through one tool, and everything after the call stays verbatim.**
 
 [![Claude Code plugin](https://img.shields.io/badge/Claude%20Code-plugin-D97757)](https://docs.claude.com/en/docs/claude-code/plugins)
-[![Version](https://img.shields.io/badge/version-1.0.0--dev.4-blue)](./CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.0.0--dev.5-blue)](./CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
-[![Tests](https://img.shields.io/badge/tests-547%20passing-brightgreen)](#development)
+[![Tests](https://img.shields.io/badge/tests-550%20passing-brightgreen)](#development)
 [![Built with Professor](https://img.shields.io/badge/built%20with-Professor-8A2BE2)](https://github.com/rezzminator/professor)
 
 </div>
@@ -132,7 +132,10 @@ and no ceiling, and an automatic ask from it with nothing stored is held as
    wait for its handoff. Every call but `forward_compaction`, `look_back` and
    `ToolSearch` is refused, unrun, with a line saying to hand off now with
    what it has read and concluded, then repeat the call; the first nudge
-   names the point. Once the handoff is stored every call runs again. The
+   names the point. Once the handoff is stored every call runs again. Every
+   nudge and refusal also says a handoff costs nothing: the model continues
+   from it, as many times as the work needs, and never cuts its task short
+   to avoid one. The
    main chat is never held this way: its person steers it.
 2. **Handing off.** The model calls `forward_compaction` (the model sees
    `mcp__forward-compaction__forward_compaction`). The plugin checks the
@@ -237,7 +240,8 @@ counts cancel. It is unmeasured until the reading has grown 5,000
 tokens past the base, or outside 1 to 8 characters a token, and unmeasured
 nothing is fitted: a handoff's wake carries the facts, the files and every
 message after the call, and a mechanical wake keeps no earlier message. Each section has a share — brief or person's messages 25%,
-coordinator messages or notifications 5%, sibling results 10%, skills 25%,
+coordinator messages or notifications 5%, sibling results 10%, skills the
+whole budget (every skill and command the party invoked is carried whole),
 and the files their own room above — and is carried whole or named as
 not carried, never cut; the person's messages and skills are carried newest
 first while they fit. The room left goes to the messages after the call: the
