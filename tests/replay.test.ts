@@ -6,10 +6,12 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSy
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
-import { loadFixture, invocations, replay, recordSynthetic, type Invocation } from './fakes/replay-engine.ts';
+import { ANSWERS, loadFixture, invocations, replay, recordSynthetic, type Invocation } from './fakes/replay-engine.ts';
 import { ENV_NAMES, PATHS, PART_CHARS, RECORDED, rowFiles, type Row } from '../scripts/replay/recorder.ts';
 import { contextTokens } from '../plugins/forward-compaction/src/decide.ts';
-import { engineAskPoint, modelWindow, partyWindow, ENGINE_DEFAULT_WINDOW } from '../plugins/forward-compaction/src/window.ts';
+import { parseHandoff } from '../plugins/forward-compaction/src/handoff.ts';
+import { resolveOptions } from '../plugins/forward-compaction/src/options.ts';
+import { askPointOf, partyMarks } from '../plugins/forward-compaction/src/window.ts';
 
 const ROOT = join(import.meta.dirname, '..');
 const FIXTURES = join(ROOT, 'tests/fixtures/replay');
@@ -27,17 +29,24 @@ const isForward = (tool: unknown): boolean => typeof tool === 'string' && tool.e
 const wakeOf = (inv: Invocation): any[] | undefined => (inv.hook === 'session.compact' && inv.next === undefined && Array.isArray(inv.end?.result?.messages) ? inv.end!.result.messages : undefined);
 const texts = (messages: readonly any[]): string => messages.map((m) => [m.text ?? '', ...(m.toolResults ?? []).map((r: any) => r.text ?? '')].join('\n')).join('\n');
 const nextWake = (view: View, key: string, after: number): Invocation | undefined => view.find((c) => c.seq > after && party(c.input) === key && wakeOf(c) !== undefined);
-const handoffOf = (call: Invocation): string | undefined => call.input?.handoff ?? call.input?.input?.handoff;
+/** The handoff the plugin assembled from the call's section arguments, or undefined when it refused them. */
+const SECTION_KEYS = ['objective', 'done', 'remaining', 'next', 'blocked', 'findings'];
+const handoffOf = (call: Invocation): string | undefined => {
+  const args = call.input?.objective !== undefined ? call.input : call.input?.input ?? {};
+  const out = parseHandoff(Object.fromEntries(SECTION_KEYS.filter((key) => key in args).map((key) => [key, args[key]])));
+  return 'handoff' in out ? out.handoff : undefined;
+};
 const count = (hay: string, needle: string): number => (needle === '' ? 0 : hay.split(needle).length - 1);
 const knownAgents = (view: View): Set<string> => new Set(view.filter((i) => i.hook === 'agent.spawn').map((i) => i.nextResult?.result?.agentId).filter((id): id is string => typeof id === 'string'));
 
-/** The ask point of a party at a moment, from what session.start read and the party's last step model. */
-function askPointAt(view: View, key: string, seq: number): number {
-  const start = view.find((i) => i.hook === 'session.start');
-  const w = Number(start?.calls.find((c) => c.path === 'env.get' && c.args[0] === 'CLAUDE_CODE_AUTO_COMPACT_WINDOW')?.result);
-  const main = start?.calls.find((c) => c.path === 'session.usage')?.result?.context?.window ?? ENGINE_DEFAULT_WINDOW;
-  const model = [...view].reverse().find((i) => i.hook === 'turn.step' && i.seq < seq && party(i.input) === key)?.input?.model;
-  return engineAskPoint(partyWindow(modelWindow(model, main), Number.isInteger(w) && w > 0 ? w : undefined));
+/** The ask point of a party, from what the plugin read through the API: session.start's `$.session.usage` breakdown, held at the party's max context from the recorded options. */
+function askPointAt(view: View, key: string): number {
+  const usage = view.find((i) => i.hook === 'session.start')?.calls.find((c) => c.path === 'session.usage')?.result?.context;
+  const vars = Object.fromEntries(view.flatMap((i) => i.calls).filter((c) => c.path === 'env.get' && typeof c.result === 'string').map((c) => [c.args[0] as string, c.result as string]));
+  const config = resolveOptions({ vars });
+  const api = askPointOf(usage?.breakdown, usage?.window)?.tokens;
+  const m = key === 'main' ? partyMarks(config.main, config.main.maxContext ?? usage?.window, api) : partyMarks(config.subagent, config.subagent.maxContext, api);
+  return m?.askPoint ?? Number.POSITIVE_INFINITY;
 }
 /** The party's reading the plugin held at `seq`: the last of its steps that had ended by then (a step still open, its tools running, is not read yet). */
 function readingAt(view: View, key: string, seq: number): number | undefined {
@@ -132,7 +141,8 @@ export const INVARIANTS: Record<Name, (view: View, recorded: boolean) => Verdict
       if (!stop) continue;
       subjects++;
       const wake = texts(wakeOf(c)!);
-      for (const t of stop.input?.background_tasks ?? []) if (!wake.includes(String(t.id)) || (typeof t.command === 'string' && !wake.includes(t.command))) failures.push(`I8 ${at(c)}: shell ${t.id} of ${stop.hook} #${stop.id} is not in the wake`);
+      // the woken sub-agent is not its own background task: its wake leaves it out (CHANGELOG 1.0.0-dev.2)
+      for (const t of stop.input?.background_tasks ?? []) if (t.id !== c.input?.agentId && (!wake.includes(String(t.id)) || (typeof t.command === 'string' && !wake.includes(t.command)))) failures.push(`I8 ${at(c)}: shell ${t.id} of ${stop.hook} #${stop.id} is not in the wake`);
     }
     return { subjects, failures };
   },
@@ -152,8 +162,14 @@ export const INVARIANTS: Record<Name, (view: View, recorded: boolean) => Verdict
     return { subjects, failures };
   },
   I10(view) {
+    // The landed line is measured: written at the party's first reading after the install (its next turn.step), or at its end.
     const subjects = view.filter((i) => wakeOf(i) !== undefined);
-    return { subjects: subjects.length, failures: subjects.filter((i) => !i.calls.some((c) => c.path === 'ui.log' && /handoff landed — |mechanical wake (was )?installed/.test(String(c.args[0])) && (c.args[1] as any)?.to !== 'debug')).map((i) => `I10 ${at(i)}: the install said nothing on screen`) };
+    const said = (wake: Invocation): boolean => {
+      const label = party(wake.input) === 'main' ? 'main' : String(wake.input.agentId).slice(0, 6);
+      const step = view.find((i) => i.hook === 'turn.step' && i.seq > wake.seq && party(i.input) === party(wake.input));
+      return view.some((i) => i.seq >= wake.seq && i.seq <= (step?.endSeq ?? Infinity) && i.calls.some((c) => c.path === 'ui.log' && /handoff landed — |mechanical wake (was )?installed/.test(String(c.args[0])) && String(c.args[0]).includes(label) && (c.args[1] as any)?.to !== 'debug'));
+    };
+    return { subjects: subjects.length, failures: subjects.filter((i) => !said(i)).map((i) => `I10 ${at(i)}: the install said nothing on screen by the party's first reading after it`) };
   },
   I11(view) {
     const failures: string[] = [];
@@ -188,7 +204,7 @@ export const INVARIANTS: Record<Name, (view: View, recorded: boolean) => Verdict
     let subjects = 0;
     for (const t of view.filter((i) => i.hook === 'tool.call' && isForward(i.input?.tool) && party(i.input) !== 'main')) {
       const reading = readingAt(view, party(t.input), t.seq);
-      if (reading === undefined || reading >= askPointAt(view, party(t.input), t.seq) || !/Handoff stored/.test(String(t.end?.result?.result))) continue;
+      if (reading === undefined || reading >= askPointAt(view, party(t.input)) || !/Handoff stored/.test(String(t.end?.result?.result))) continue;
       subjects++;
       if (!String(t.end?.result?.result).includes('from about')) failures.push(`I13 ${at(t)}: a sub-agent's receipt below its ask point lacks "from about"`);
     }
@@ -237,16 +253,22 @@ function skillSubject(view: View): { skill: Invocation; call: Invocation; wake: 
   throw new Error('no skill.prompt inside a Skill call is followed by a wake of its party');
 }
 
-describe('replay gate (D19)', () => {
+// Each replay really runs the plugin's log appends, so a fixture replay takes seconds.
+describe('replay gate (D19)', { timeout: 60_000 }, () => {
   it.each(fixtureDirs())('fixture %s passes every invariant on its recorded and replayed outputs', async (dir) => {
     expect(await gate(loadFixture(fixtureOf(dir)), LIVE_EXERCISES)).toEqual([]);
   });
 
-  it('the live fixture holds the R40 scenario: session.start, a Skill call with skill.prompt nested, forward_compaction, an automatic ask (I3, I5)', () => {
+  it('the live fixture holds the R40 scenario: session.start, a Skill call with skill.prompt nested, forward_compaction with a load file carried, an automatic ask (I3, I5)', () => {
     const view = invocations(LIVE());
     expect(view[0]?.hook).toBe('session.start');
     expect(skillSubject(view).call.input.tool).toBe('Skill');
     expect(view.some((i) => i.hook === 'tool.call' && isForward(i.input?.tool))).toBe(true);
+    // the six-argument tool: a call with load_files, its file read, and its lines carried in a wake
+    const loads = (i: Invocation): unknown => i.input?.load_files ?? i.input?.input?.load_files;
+    expect(view.some((i) => i.hook === 'tool.call' && isForward(i.input?.tool) && Array.isArray(loads(i)) && (loads(i) as unknown[]).length > 0)).toBe(true);
+    expect(view.some((i) => i.calls.some((c) => c.path === 'fs.read'))).toBe(true);
+    expect(view.some((i) => wakeOf(i) !== undefined && texts(wakeOf(i)!).includes('filler file 1: synthetic text'))).toBe(true);
     expect(view.some((i) => i.hook === 'session.compact' && i.input?.trigger === 'auto')).toBe(true);
     expect(INVARIANTS.I3(view, true).subjects).toBeGreaterThan(0);
     expect(INVARIANTS.I5(view, true).subjects).toBeGreaterThan(0);
@@ -268,18 +290,69 @@ describe('replay gate (D19)', () => {
     expect(await gate(edited, LIVE_EXERCISES)).toContain(`recorded: I5 session.compact #${wake.id} ${key}: the wake lacks the text of skill.prompt #${skill.id} (${skill.input.skill}), loaded inside ${key}'s Skill call tool.call #${call.id}`);
   });
 
-  it('a $ call the recording lacks fails as unrecorded (R41)', async () => {
+  it('a format-bearing $ path the recording never holds fails as unrecorded (R41)', async () => {
     const rows = LIVE();
     const install = invocations(rows).find((i) => wakeOf(i) !== undefined && i.calls.some((c) => c.path === 'agent.list'))!;
-    const failures = await gate(rows.filter((r) => !(r.id === install.id && r.phase === 'call' && r.path === 'agent.list')), LIVE_EXERCISES);
+    const failures = await gate(rows.filter((r) => !(r.phase === 'call' && r.path === 'agent.list')), LIVE_EXERCISES);
     expect(failures).toContain(`unrecorded $ call agent.list in session.compact #${install.id}`);
   });
 
-  it('a $ call whose arguments the recording lacks fails as unrecorded, never answered by another call of the path', async () => {
+  it('an env.get of a variable the recording never read fails as unrecorded, never answered by another variable', async () => {
     const rows = LIVE();
-    const env = rows.find((r) => r.phase === 'call' && r.path === 'env.get' && (r.args as unknown[] | undefined)?.[0] === 'CLAUDE_CODE_AUTO_COMPACT_WINDOW')!;
+    const env = rows.find((r) => r.phase === 'call' && r.path === 'env.get' && (r.args as unknown[] | undefined)?.[0] === 'FORWARD_COMPACTION_MAIN_CEILING')!;
     const failures = await gate(rows.map((r) => (r === env ? { ...r, args: ['SOME_OTHER_VARIABLE'] } : r)), LIVE_EXERCISES);
     expect(failures).toContain(`unrecorded $ call env.get in session.start #${env.id}`);
+  });
+
+  it('a recorded query whose arguments no longer match is answered by the latest recorded answer of its path, the world state then', async () => {
+    const rows = LIVE();
+    const list = rows.filter((r) => r.phase === 'call' && r.path === 'agent.list');
+    expect(list.length).toBeGreaterThan(0);
+    const changed = new Set(list);
+    expect(await gate(rows.map((r) => (changed.has(r) ? { ...r, args: ['an argument the plugin never passes'] } : r)), LIVE_EXERCISES)).toEqual([]);
+  });
+
+  it("the plugin's own utility and effect calls are not pinned: the fixture passes with every recorded process.run and all but one clock.now gone", async () => {
+    const rows = LIVE();
+    const firstNow = rows.find((r) => r.phase === 'call' && r.path === 'clock.now');
+    const stripped = rows.filter((r) => !(r.phase === 'call' && (r.path === 'process.run' || (r.path === 'clock.now' && r !== firstNow))));
+    expect(await gate(stripped, LIVE_EXERCISES)).toEqual([]);
+  });
+
+  it('process.run really runs the log appends in the sandbox, under the recorded home', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'fc-sandbox-'));
+    try {
+      const rows = LIVE();
+      const { replayed, unrecorded } = await replay(rows, dir);
+      expect(unrecorded).toEqual([]);
+      const runs = replayed.flatMap((i) => i.calls.filter((c) => c.path === 'process.run' && (c.args[0] as string[])[3] === 'plugin-log'));
+      expect(runs.length).toBeGreaterThan(0);
+      // the plugin's log dir as it built the argv, which the recorded home maps under the sandbox
+      const info = join(dir, (runs[0]!.args[0] as string[])[4]!, 'info.jsonl');
+      expect(existsSync(info)).toBe(true);
+      expect(readFileSync(info, 'utf8').trim().split('\n').map((l) => JSON.parse(l)).length).toBeGreaterThan(0);
+      expect(runs.every((c) => c.result?.exitCode === 0)).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('a process.run path outside the recorded home is refused as a failure', async () => {
+    const rows = LIVE();
+    const failures = await gate(rows.map((r) => (r.phase === 'call' && r.path === 'env.get' && (r.args as unknown[])[0] === 'PLUGIN_LOG_DIR' ? { ...r, result: '/elsewhere/logs' } : r)), LIVE_EXERCISES);
+    expect(failures.some((f) => f.startsWith('process.run outside the replay sandbox: /elsewhere/logs'))).toBe(true);
+  });
+
+  it('a hook event whose next the recording never answers fails, never passes silently', async () => {
+    const rows = LIVE();
+    const step = invocations(rows).find((i) => i.hook === 'turn.step' && i.nextResult !== undefined)!;
+    const failures = await gate(rows.filter((r) => !(r.id === step.id && (r.phase === 'nextResult' || r.phase === 'end'))), LIVE_EXERCISES);
+    expect(failures).toContain(`unrecorded next in turn.step #${step.id}`);
+  });
+
+  it('classifies every $ path the adapter calls, and the utility paths are the harness\'s', () => {
+    expect(new Set(Object.keys(ANSWERS))).toEqual(new Set(PATHS));
+    expect(Object.entries(ANSWERS).filter(([, how]) => how.from === 'harness').map(([path]) => path).sort()).toEqual(['clock.after', 'clock.now', 'process.run', 'session.id', 'tool.register', 'ui.log']);
   });
 
   it('replays concurrent parties on the recorded timeline: a step that starts inside another party\'s open step runs after the steps recorded before it', async () => {
@@ -295,6 +368,7 @@ describe('replay gate (D19)', () => {
         { seq: base + at[0], id, phase: 'start', hook: 'turn.step', input },
         { seq: base + at[1], id, phase: 'next', input },
         { seq: base + at[2], id, phase: 'nextResult', result },
+        { seq: base + at[2] + 0.5, id, phase: 'call', path: 'session.messages', args: [{ as: 'api', agentId }], result: [] }, // the party's ratio base, taken at its first reading
         { seq: base + at[3], id, phase: 'end', result },
       ];
     };

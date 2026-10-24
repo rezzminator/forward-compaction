@@ -9,5 +9,5 @@ You are taking part in a scripted recording of the forward-compaction plugin. Ev
 
 - Keep every answer to one short paragraph.
 - When a step says to read filler files, read them whole with Read, one per call, and say nothing about their content.
-- When a step says to call `forward_compaction`, write a handoff with exactly the four headings `## Objective`, `## Done`, `## Remaining`, `## Next`, each followed by one line.
+- When a step says to call `forward_compaction`, pass `objective`, `done`, `remaining` and `next`, each one line, plus exactly the other arguments the step names (`blocked`, `findings`, `load_files`) and no others.
 - The marker for this skill is `replay-rules-marker-7f3a`: repeat it when asked which rules are in force.

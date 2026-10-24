@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  buildWake, fitTail, landedLine, mechanicalLine, mechanicalWake, splitAtCall, wakeBudget,
+  buildWake, fitTail, landedLine, mechanicalWake, splitAtCall, wakeBudget,
   type BuiltMessage, type WakeFacts, type WakeMessage,
 } from '../plugins/forward-compaction/src/wake.ts';
 
@@ -14,7 +14,8 @@ const results = (...answers: [string, string][]): Msg => ({ role: 'user', text: 
 
 const noFacts: WakeFacts = { person: [], notices: [], received: [], skills: [], unattributedSkills: [] };
 const T0 = Date.UTC(2026, 9, 23, 10, 0, 0);
-const base = { tokens: 41_200, askPoint: 67_000, now: T0 + 60_000 };
+// 3.5 characters a token stands in for the ratio the adapter measures (window.ts `charsPerToken`).
+const base = { tokens: 41_200, askPoint: 67_000, now: T0 + 60_000, charsPerToken: 3.5 };
 const facts = (f: Partial<WakeFacts> = {}) => () => ({ ...noFacts, ...f });
 const mainInput = (messages: Msg[], f: Partial<WakeFacts> = {}) => ({ ...base, messages, party: 'main' as const, facts: facts(f) });
 
@@ -79,30 +80,30 @@ describe('fitTail (R19)', () => {
 
   it('drops from the oldest until the rest fits, then the leading tool-result user message too', () => {
     // orphan 200 tokens, a/u/a2 100 each: budget 300 keeps the last three
-    expect(fitTail([orphan, a, u, a2], 300)).toEqual({ messages: [a, u, a2], dropped: 1 });
+    expect(fitTail([orphan, a, u, a2], 300, 3.5)).toEqual({ messages: [a, u, a2], dropped: 1 });
     // budget 250 drops `a` too
-    expect(fitTail([orphan, a, u, a2], 250)).toEqual({ messages: [u, a2], dropped: 2 });
+    expect(fitTail([orphan, a, u, a2], 250, 3.5)).toEqual({ messages: [u, a2], dropped: 2 });
   });
 
   it('never starts with a tool-result user message, even when the budget would keep it', () => {
-    const kept = fitTail([assistant('x', [{ id: 'x', tool: 'Read' }]), orphan, a], 100_000);
+    const kept = fitTail([assistant('x', [{ id: 'x', tool: 'Read' }]), orphan, a], 100_000, 3.5);
     expect(kept.messages[0]!.toolResults).toBeUndefined();
-    const dropOrphan = fitTail([a, orphan, u], 100_000 /* all fit */);
+    const dropOrphan = fitTail([a, orphan, u], 100_000, 3.5 /* all fit */);
     expect(dropOrphan.messages).toEqual([a, orphan, u]);
-    expect(fitTail([orphan, orphan, a], 100_000).messages).toEqual([a]);
+    expect(fitTail([orphan, orphan, a], 100_000, 3.5).messages).toEqual([a]);
   });
 
   it('sizes a message by its tool inputs and its tool results, not its text alone', () => {
     const bigInput = assistant('', [{ id: 'w', tool: 'Write', input: { content: 'i'.repeat(7000) } }]);
-    expect(fitTail([bigInput, u], 300).messages).toEqual([u]);
+    expect(fitTail([bigInput, u], 300, 3.5).messages).toEqual([u]);
     const bigResult = results(['w', 'r'.repeat(7000)]);
-    expect(fitTail([a, bigResult, u], 300).messages).toEqual([u]);
+    expect(fitTail([a, bigResult, u], 300, 3.5).messages).toEqual([u]);
   });
 
   it('keeps the input objects, and nothing for a zero budget', () => {
-    const kept = fitTail([a, u], 1000).messages;
+    const kept = fitTail([a, u], 1000, 3.5).messages;
     expect(kept[0]).toBe(a);
-    expect(fitTail([a, u], 0)).toEqual({ messages: [], dropped: 2 });
+    expect(fitTail([a, u], 0, 3.5)).toEqual({ messages: [], dropped: 2 });
   });
 });
 
@@ -118,7 +119,7 @@ describe('buildWake (R20)', () => {
     const [f, h, ...tail] = wake.messages as [BuiltMessage, BuiltMessage, ...Msg[]];
     expect(f.text.startsWith('[forward-compaction: facts]')).toBe(true);
     expect(h.text).toContain(`=== handoff ===\n${handoff}\n=== end of handoff ===`);
-    expect(h.text).toContain('at 41k tokens');
+    expect(h.text).not.toMatch(/\d+k tokens/); // no size for the call: none is measured at that moment
     expect(h.text).toContain('The 2 messages after this one are what happened after you wrote it, kept verbatim.');
     expect(h.text).not.toContain('did not fit');
     expect((f as { handle?: string }).handle).toBeUndefined();
@@ -127,6 +128,12 @@ describe('buildWake (R20)', () => {
     expect(tail[1]).toBe(t2);
     expect(tail.map((m) => m.handle)).toEqual(['engine-1', 'engine-2']);
     expect(wake).toMatchObject({ kept: 2, dropped: 0 });
+  });
+
+  it("carries the call's own result verbatim, so the receipt and the experimental line reach the model", () => {
+    const receipt = 'Handoff stored (40 characters). It installs before your next request.\nforward-compaction is experimental. If it gave you any trouble, append a short note to /logs/issues.md.';
+    const h = buildWake({ ...mainInput([call, results(['t9', receipt])]), toolUseId: 't9', handoff }).messages[1] as BuiltMessage;
+    expect(h.text).toContain(`Your forward_compaction call returned:\n${receipt}`);
   });
 
   it('says nothing happened when the call was the last thing', () => {
@@ -197,9 +204,9 @@ describe('buildWake (R20)', () => {
     expect(seen[0]).toContain('SKILL-BODY');
   });
 
-  it('states the context the handoff was written at, not the one it is installed at', () => {
-    const wake = buildWake({ ...mainInput([call, res]), toolUseId: 't9', handoff, tokens: 64_000, storedAt: 30_000 });
-    expect((wake.messages[1] as BuiltMessage).text).toContain('the handoff you wrote with forward_compaction at 30k tokens');
+  it('prints no size for the call: the plugin measures none at that moment', () => {
+    const wake = buildWake({ ...mainInput([call, res]), toolUseId: 't9', handoff, tokens: 64_000 });
+    expect((wake.messages[1] as BuiltMessage).text.split('\n')[0]).toBe('[forward-compaction: handoff] Below is the handoff you wrote with forward_compaction. It is your frontier: continue from its ## Next.');
   });
 
   it('counts the F sections that hold content', () => {
@@ -309,6 +316,20 @@ describe('F sections', () => {
     expect(wakeOf({ agents: [] }).f).not.toContain('## Agents');
   });
 
+  it("lists only a sub-agent's own children, never itself or a sibling, and an emptied list renders no section", () => {
+    const rows = [
+      { id: 'a0', type: 'general-purpose', status: 'running', description: 'me' },
+      { id: 'a1', type: 'general-purpose', status: 'running', description: 'sibling' },
+      { id: 'a2', type: 'collector', status: 'running', description: 'child', parentId: 'a0' },
+      { id: 'a3', type: 'collector', status: 'running', description: "sibling's child", parentId: 'a1' },
+    ];
+    const f = wakeOf({ agents: rows, self: 'a0' }, 'subagent').f;
+    expect(f).toContain('## Agents, listed at install\n- a2 collector running: child\n\n');
+    expect(f).not.toMatch(/a0 general|a1 general|a3 collector/);
+    expect(wakeOf({ agents: rows.slice(0, 2), self: 'a0' }, 'subagent').f).not.toContain('## Agents');
+    expect(wakeOf({ agents: rows }).f).toContain('- a0 general-purpose running: me\n- a1 general-purpose running: sibling\n- a2 collector running: child\n- a3 collector running: sibling\'s child');
+  });
+
   it('states the unknown shells when no Stop event came (R24)', () => {
     expect(wakeOf({}).f).toContain('(unknown: no Stop event yet in this process)');
   });
@@ -318,16 +339,25 @@ describe('F sections', () => {
       f: {
         shells: {
           at: T0,
-          tasks: [{ id: 'b1', status: 'running', description: 'dev server', command: 'npm run dev' }, { id: 'b2', status: 'running', description: 'watcher' }],
+          tasks: [{ id: 'b1', type: 'local_bash', status: 'running', description: 'dev server', command: 'npm run dev' }, { id: 'b2', type: 'local_bash', status: 'running', description: 'watcher' }, { id: 'ag1', type: 'local_agent', status: 'running', description: 'a child agent' }],
           crons: [{ id: 'c1', schedule: '*/5 * * * *', recurring: true, prompt: 'check ci' }],
         },
       },
     }).f;
     expect(f).toContain('## Background shells and crons (session-wide, from the Stop event 1m before install)');
-    expect(f).toContain('- shell b1 running: npm run dev');
-    expect(f).toContain('- shell b2 running: watcher');
+    expect(f).toContain('- local_bash b1 running: npm run dev');
+    expect(f).toContain('- local_bash b2 running: watcher');
+    expect(f).toContain('- local_agent ag1 running: a child agent');
     expect(f).toContain('- cron c1 */5 * * * * recurring: check ci');
     expect(f).not.toContain('unknown');
+  });
+
+  it('leaves the woken party out of the background tasks, and an emptied list reads none running', () => {
+    const shells = { at: T0, tasks: [{ id: 'me', type: 'local_agent', status: 'running', description: 'me' }, { id: 'b1', type: 'local_bash', status: 'running', description: 'dev' }], crons: [] };
+    const f = wakeOf({ self: 'me', f: { shells } }).f;
+    expect(f).toContain('- local_bash b1 running: dev');
+    expect(f).not.toContain(' me running');
+    expect(wakeOf({ self: 'me', f: { shells: { ...shells, tasks: [shells.tasks[0]!] } } }).f).toContain('(none running)');
   });
 
   it('says a snapshot with nothing running as that, not as unknown', () => {
@@ -340,6 +370,8 @@ describe('F sections', () => {
 
   it('carries load files with their range and why, and names those not carried (R22)', () => {
     const { f } = wakeOf({
+      maxContext: 400_000,
+      charsPerToken: 2.5,
       files: [
         { path: '/abs/a.ts', lines: '1-3', why: 'the bug', content: 'line1\nline2\nline3' },
         { path: '/abs/f.ts', why: 'whole', content: 'x'.repeat(50_000) },
@@ -348,29 +380,48 @@ describe('F sections', () => {
       ],
     });
     expect(f).toContain('## Files you asked to carry\n### /abs/a.ts lines 1-3 — the bug\nline1\nline2\nline3');
-    expect(f).toContain('## Files not carried\n- /abs/f.ts: 50,000 characters, over the room left');
+    expect(f).toContain('## Files not carried\n- /abs/f.ts: 50,000 characters, over the room left'); // 50,000 + the 17 before it, past 400k × 5% × 2.5
     expect(f).toContain('- /abs/gone.ts: lines 10-40 out of range (5 lines)');
     expect(f).toContain('- /abs/err.ts: EACCES: permission denied');
     expect(f).not.toContain('xxxxxxxxxx');
   });
 
-  it('stops carrying files when the section room is spent, and a file past 40,000 characters is never carried', () => {
+  it("carries files in 5% of the party's max context at its measured ratio, whatever the ask point, and stops when that room is spent", () => {
     const files = [
-      { path: '/abs/1.ts', why: 'a', content: 'a'.repeat(9000) },
-      { path: '/abs/2.ts', why: 'b', content: 'b'.repeat(9000) },
-      { path: '/abs/3.ts', why: 'c', content: 'c'.repeat(100) },
+      { path: '/abs/1.ts', why: 'a', content: 'a'.repeat(30_000) },
+      { path: '/abs/2.ts', why: 'b', content: 'b'.repeat(20_001) },
+      { path: '/abs/3.ts', why: 'c', content: 'c'.repeat(20_000) },
     ];
-    const { f } = wakeOf({ files });
+    const { f } = wakeOf({ maxContext: 400_000, charsPerToken: 2.5, files }); // room 50,000 characters
     expect(f).toContain('### /abs/1.ts');
-    expect(f).toContain('- /abs/2.ts: 9,000 characters, over the room left');
+    expect(f).toContain('- /abs/2.ts: 20,001 characters, over the room left');
     expect(f).toContain('### /abs/3.ts');
-    const roomy = wakeOf({ askPoint: 1_000_000, files: [{ path: '/abs/big.ts', why: 'big', content: 'z'.repeat(40_001) }] }).f;
-    expect(roomy).toContain('- /abs/big.ts: 40,001 characters, over the room left');
+    const big = wakeOf({ maxContext: 1_000_000, charsPerToken: 2.5, files: [{ path: '/abs/big.ts', why: 'big', content: 'z'.repeat(60_000) }] }).f; // inside 125,000
+    expect(big).toContain('### /abs/big.ts — big\nzzz');
+    expect(wakeOf({ files: [{ path: '/abs/x.ts', why: 'x', content: 'x' }] }).f).toContain('- /abs/x.ts: 1 characters, over the room left'); // no max context, no room
+  });
+
+  it('with no measured ratio carries every file and every message after the call, unfitted, and reports each section size', () => {
+    const files = [{ path: '/abs/huge.ts', why: 'h', content: 'h'.repeat(500_000) }, { path: '/abs/gone.ts', why: 'g', problem: 'ENOENT' }];
+    const tail = Array.from({ length: 40 }, (_, i) => user(`after ${i} ${'y'.repeat(5_000)}`, `t${i}`));
+    const wake = buildWake({ ...mainInput([call, res, ...tail], { person: [{ at: T0, text: 'p'.repeat(100_000) }] }), charsPerToken: undefined, askPoint: 2000, maxContext: 200_000, files, toolUseId: 't9', handoff: '## Next\nx' });
+    expect(wake).toMatchObject({ kept: 40, dropped: 0, carried: ['/abs/huge.ts'], notCarried: ['/abs/gone.ts'] });
+    expect((wake.messages[0] as BuiltMessage).text).toContain('p'.repeat(100_000));
+    expect(wake.sizes.map((s) => s.section)).toEqual(expect.arrayContaining(["## The person's messages, oldest first (1 of 1)", '## Files you asked to carry', '## Files not carried']));
+    expect(wake.sizes.find((s) => s.section === '## Files you asked to carry')!.chars).toBeGreaterThan(500_000);
+    expect(wake.headChars).toBe((wake.messages[1] as BuiltMessage).text.length);
   });
 });
 
 describe('mechanicalWake (R23)', () => {
   const msgs = Array.from({ length: 6 }, (_, i) => user(`m${i} ${'x'.repeat(900)}`, `e${i}`));
+
+  it('with no measured ratio keeps no earlier message and says the size was not measured', () => {
+    const wake = mechanicalWake({ ...mainInput(msgs), charsPerToken: undefined, tokens: undefined, askPoint: 3000, reason: { kind: 'reactive' } });
+    expect(wake).toMatchObject({ kept: 0, dropped: 6 });
+    expect(wake.messages).toHaveLength(2);
+    expect((wake.messages[1] as BuiltMessage).text).toContain('Your context reached a size not measured yet, and Claude Code reported your request too long');
+  });
 
   it('opens H with the no-frontier line, states the ceiling and how many older messages are gone', () => {
     const wake = mechanicalWake({ ...mainInput(msgs), askPoint: 3000, tokens: 120_000, reason: { kind: 'ceiling', ceiling: 100_000 } });
@@ -432,16 +483,23 @@ describe('mechanicalWake (R23)', () => {
 });
 
 describe('screen lines', () => {
-  it('says what landed', () => {
-    expect(landedLine({ label: 'main', before: 164_000, after: 46_000, chars: 4812, facts: 3, kept: 5, dropped: 0 }))
-      .toBe('forward-compaction: main handoff landed — 164k → 46k tokens; frontier 4,812 characters, 3 facts, 5 messages kept verbatim.');
-    expect(landedLine({ label: 'general-purpose a1b2c3', before: 90_000, after: 30_000, chars: 100, facts: 1, kept: 2, dropped: 4 }))
-      .toContain('2 messages kept verbatim, 4 dropped.');
+  const handoffLanding = { kind: 'handoff' as const, label: 'main', before: 164_000, chars: 4812, facts: 3, kept: 5, dropped: 0 };
+  const mechanical = { kind: 'mechanical' as const, label: 'main', before: 125_000, tokens: 125_000, ceiling: 120_000 };
+
+  it('says what landed, in the readings before the install and after it', () => {
+    expect(landedLine(handoffLanding, 46_000))
+      .toBe('forward-compaction: main handoff landed — 164k → 46k context, measured; frontier 4,812 characters, 3 facts, 5 messages kept verbatim.');
+    expect(landedLine({ ...handoffLanding, label: 'general-purpose a1b2c3', kept: 2, dropped: 4 }, 30_000)).toContain('2 messages kept verbatim, 4 dropped.');
   });
 
-  it('says what a mechanical wake did', () => {
-    expect(mechanicalLine({ label: 'main', tokens: 100_000, ceiling: 100_000, before: 100_000, after: 40_000 }))
-      .toBe('forward-compaction: main had no handoff at 100k (ceiling 100k) — mechanical wake installed, 100k → 40k.');
+  it('says an unmeasured size as unknown, never guessed', () => {
+    expect(landedLine(handoffLanding)).toBe('forward-compaction: main handoff landed — 164k → unknown context (it ended before a request after the install measured it); frontier 4,812 characters, 3 facts, 5 messages kept verbatim.');
+    expect(landedLine({ ...handoffLanding, before: undefined }, 46_000)).toContain('— unknown → 46k context (no reading before the install), measured after;');
+  });
+
+  it('says what a mechanical wake did, measured the same way', () => {
+    expect(landedLine(mechanical, 38_000)).toBe('forward-compaction: main had no handoff at 125k (ceiling 120k) — mechanical wake installed, 125k → 38k context, measured.');
+    expect(landedLine({ ...mechanical, before: undefined, tokens: undefined }, 38_000)).toBe('forward-compaction: main had no handoff at an unmeasured size (no reading yet) (ceiling 120k) — mechanical wake installed, unknown → 38k context (no reading before the install), measured after.');
   });
 
   it('sets the budget at half the ask point', () => {

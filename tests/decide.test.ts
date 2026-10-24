@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { contextTokens, currentTokens, decide, estimateTokens, knownTrigger, turnEndDoor, type DecideInput } from '../plugins/forward-compaction/src/decide.ts';
+import { contextTokens, readingTokens, decide, knownTrigger, turnEndDoor, type DecideInput } from '../plugins/forward-compaction/src/decide.ts';
 
 const base: DecideInput = { trigger: 'auto', party: 'main', stored: false, tokens: 80_000, ceiling: 100_000, reactive: false, ceilingNative: false, label: 'main' };
 const ask = (patch: Partial<DecideInput>) => decide({ ...base, ...patch });
@@ -58,22 +58,23 @@ describe('decide: automatic ask (C6-C10, R26-R28)', () => {
   });
 
   it('C8 drops a stored handoff whose call is not in the messages, then goes on as if none were stored (skip)', () => {
-    expect(ask({ stored: false, storedMissing: true, tokens: 80_000 })).toMatchObject({ action: 'skip', dropStored: true, nudge: 'now' });
+    expect(ask({ stored: false, storedMissing: true, tokens: 80_000 })).toMatchObject({ action: 'skip', dropStored: true });
   });
 
   it('C8 drops it and goes on to a mechanical wake at the ceiling', () => {
     expect(ask({ stored: false, storedMissing: true, tokens: 100_000 })).toMatchObject({ action: 'mechanical', dropStored: true });
   });
 
-  it('C9 skips below the ceiling with nothing stored, asks for a "now" nudge and names the party', () => {
-    expect(ask({ stored: false, tokens: 80_000, ceiling: 100_000, reactive: false })).toMatchObject({
+  it('C9 skips below the ceiling with nothing stored, names the party, and asks for no nudge of its own', () => {
+    const skip = ask({ stored: false, tokens: 80_000, ceiling: 100_000, reactive: false });
+    expect(skip).toMatchObject({
       action: 'skip',
       decision: 'skip',
       why: 'waiting',
-      nudge: 'now',
-      reason: "forward-compaction: waiting for main's handoff",
+      reason: "forward-compaction: holding Claude Code's compaction for main until its handoff is stored or the ceiling is reached",
     });
-    expect(ask({ party: 'subagent', label: 'general-purpose a1b2c3', tokens: 70_000 })).toMatchObject({ reason: "forward-compaction: waiting for general-purpose a1b2c3's handoff" });
+    expect(skip).not.toHaveProperty('nudge');
+    expect(ask({ party: 'subagent', label: 'general-purpose a1b2c3', tokens: 70_000 })).toMatchObject({ reason: "forward-compaction: holding Claude Code's compaction for general-purpose a1b2c3 until its handoff is stored or the ceiling is reached" });
     expect(ask({ tokens: 99_999 }).action).toBe('skip');
   });
 
@@ -82,12 +83,20 @@ describe('decide: automatic ask (C6-C10, R26-R28)', () => {
   });
 
   it('C9 skips when the party has no reading at all and is not reactive', () => {
-    expect(ask({ tokens: undefined })).toMatchObject({ action: 'skip', why: 'waiting' });
+    expect(ask({ tokens: undefined })).toMatchObject({ action: 'skip', why: 'no-reading' });
   });
 
   it('C10 installs a mechanical wake at the ceiling and above it', () => {
     expect(ask({ tokens: 100_000 })).toMatchObject({ action: 'mechanical', decision: 'mechanical', why: 'ceiling' });
     expect(ask({ tokens: 130_000, party: 'subagent' })).toMatchObject({ action: 'mechanical', why: 'ceiling' });
+  });
+
+  it('C9 holds a sub-agent whose window is not known past the ceiling, as waiting; a request too long stays mechanical', () => {
+    expect(ask({ party: 'subagent', tokens: 189_000, ceiling: 120_000, windowUnknown: true, label: 'flights-foreman-sonnet a55986' })).toEqual({
+      action: 'skip', decision: 'skip', why: 'waiting', reason: "forward-compaction: holding Claude Code's compaction for flights-foreman-sonnet a55986 until its handoff is stored or the ceiling is reached",
+    });
+    expect(ask({ party: 'subagent', tokens: 189_000, ceiling: 120_000, windowUnknown: true, reactive: true })).toMatchObject({ action: 'mechanical', why: 'reactive' });
+    expect(ask({ party: 'subagent', tokens: 189_000, ceiling: 120_000, windowUnknown: true, stored: true })).toMatchObject({ action: 'install' });
   });
 
   it('C10 leaves it to Claude Code at the ceiling when FORWARD_COMPACTION_CEILING_NATIVE is on', () => {
@@ -146,49 +155,51 @@ describe('contextTokens', () => {
   });
 });
 
-describe('estimateTokens', () => {
-  const file = 'x'.repeat(35_000);
-  const transcript = [
-    { text: 'read the files', toolUses: [], toolResults: [] },
-    { text: '', toolUses: [{ tool_use_id: 't1', input: { file_path: 'a.go' }, text: file }, { tool_use_id: 't2', input: { file_path: 'b.go' }, text: file }] },
-    { text: '', toolUses: [], toolResults: [{ tool_use_id: 't1', text: file }, { tool_use_id: 't2', text: file }] },
-  ];
 
-  it('is characters over 3.5, rounded up', () => {
-    expect(estimateTokens(7)).toBe(2);
-    expect(estimateTokens(8)).toBe(3);
-    expect(estimateTokens(0)).toBe(0);
+describe('readingTokens', () => {
+  it("adds the response's own output to the context it was answered over", () => {
+    expect(readingTokens({ input_tokens: 100_000, output_tokens: 10_000 })).toBe(110_000);
+    expect(readingTokens({ input_tokens: 10, cache_read_input_tokens: 20_000, cache_creation_input_tokens: 500, output_tokens: 90 })).toBe(20_600);
   });
 
-  it('counts a transcript\'s text, tool inputs and each tool result once', () => {
-    const tokens = estimateTokens(transcript);
-    expect(tokens).toBeGreaterThan(20_000);
-    expect(tokens).toBeLessThan(20_100);
-  });
-
-  it('counts a call whose answer is missing by its own text', () => {
-    expect(estimateTokens([transcript[1]!])).toBeGreaterThan(20_000);
+  it('counts an absent output as 0 and has no reading without the input count', () => {
+    expect(readingTokens({ input_tokens: 10, cache_read_input_tokens: 20_000 })).toBe(20_010);
+    expect(readingTokens({ output_tokens: 5 })).toBeUndefined();
+    expect(readingTokens(undefined)).toBeUndefined();
   });
 });
 
-describe('currentTokens', () => {
-  const transcript = [{ text: 'x'.repeat(35_000) }];
-
-  it('takes the larger of the last reading and the transcript estimate (the one-step lag)', () => {
-    expect(currentTokens(5_000, transcript)).toBe(estimateTokens(transcript));
-    expect(currentTokens(90_000, transcript)).toBe(90_000);
+describe('decide: ignored model (Ignored models)', () => {
+  it("holds an ignored party's automatic ask as ignored-model, a Haiku sub-agent asked at 64k included, never passing it to Claude Code", () => {
+    for (const party of ['main', 'subagent'] as const) {
+      for (const state of [{}, { stored: true }, { tokens: 64_000, ceiling: 160_000 }, { tokens: undefined, ceiling: 160_000 }]) {
+        expect(decide({ trigger: 'auto', party, ignored: true, label: 'x', ...state })).toEqual({ action: 'skip', decision: 'skip', why: 'ignored-model', reason: "forward-compaction: holding Claude Code's compaction for x: its model is on the ignore list, so it is compacted mechanically at its ceiling" });
+      }
+    }
   });
 
-  it('adds what came back after the last response to the reading: a jump smaller than the estimate shortfall still counts', () => {
-    // the reading holds the system prompt and tools the transcript leaves out, so the estimate of the whole runs low
-    const before = [{ role: 'user' as const, text: 'x'.repeat(35_000) }, { role: 'assistant' as const, text: 'reading', toolUses: [{ tool_use_id: 'r1', input: {} }] }];
-    const jump = [...before, { role: 'user' as const, toolResults: [{ tool_use_id: 'r1', text: 'y'.repeat(350_000) }] }];
-    expect(currentTokens(590_000, jump)).toBe(590_000 + estimateTokens([jump[2]!]));
-    expect(currentTokens(590_000, before)).toBe(590_000);
+  it('gives an ignored party the mechanical wake at its ceiling or a reactive ask, and the native summary with the native flag', () => {
+    expect(decide({ trigger: 'auto', party: 'subagent', ignored: true, tokens: 160_000, ceiling: 160_000 })).toEqual({ action: 'mechanical', decision: 'mechanical', why: 'ceiling' });
+    expect(decide({ trigger: 'auto', party: 'subagent', ignored: true, tokens: 64_000, ceiling: 160_000, reactive: true })).toMatchObject({ action: 'mechanical', why: 'reactive' });
+    expect(decide({ trigger: 'auto', party: 'subagent', ignored: true, tokens: 170_000, ceiling: 160_000, ceilingNative: true })).toMatchObject({ action: 'next', decision: 'native', why: 'ceiling' });
   });
 
-  it('uses the estimate alone before the party has a reading, and has none for an empty transcript', () => {
-    expect(currentTokens(undefined, transcript)).toBe(estimateTokens(transcript));
-    expect(currentTokens(undefined, [])).toBeUndefined();
+  it('keeps a manual ask native and a precompute skipped', () => {
+    expect(decide({ trigger: 'manual', party: 'main', ignored: true })).toMatchObject({ action: 'next', decision: 'native', why: 'manual' });
+    expect(decide({ trigger: 'precompute', party: 'subagent', ignored: true })).toMatchObject({ action: 'skip', why: 'precompute' });
+  });
+});
+
+describe('decide: no reading', () => {
+  it('holds an automatic ask from a party with no reading and nothing stored as no-reading, the next reading deciding', () => {
+    for (const party of ['main', 'subagent'] as const) {
+      expect(decide({ trigger: 'auto', party, ceiling: 120_000, label: 'x' })).toEqual({ action: 'skip', decision: 'skip', why: 'no-reading', reason: "forward-compaction: holding Claude Code's compaction for x: it has no reading yet, and its next reading decides" });
+    }
+  });
+
+  it('still installs a stored handoff and still goes mechanical on a reactive ask with no reading', () => {
+    expect(decide({ trigger: 'auto', party: 'subagent', stored: true })).toMatchObject({ action: 'install' });
+    expect(decide({ trigger: 'auto', party: 'main', ceiling: 120_000, reactive: true })).toMatchObject({ action: 'mechanical', why: 'reactive' });
+    expect(decide({ trigger: 'auto', party: 'main', ceiling: 120_000, storedMissing: true })).toMatchObject({ why: 'no-reading', dropStored: true });
   });
 });

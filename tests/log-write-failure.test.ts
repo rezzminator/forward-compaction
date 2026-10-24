@@ -13,12 +13,13 @@ afterEach(() => {
   }
 });
 
-/** An engine whose decision-log append fails with `writeError()` until `healed.on`, then succeeds; every other run is real. */
+/** An engine whose decision-log append fails with `writeError()` until `healed.on`, then succeeds; a level-log append succeeds unrun (each decision row is a level row too, and 2,000 real appends outrun the bound); every other run is real. */
 function engine(writeError: () => string) {
   const healed = { on: false };
+  const ok = { exitCode: 0, stdout: '', stderr: '' };
   const f = fakeEngine({
     env: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '100000', FORWARD_COMPACTION_LOG_FILE: '/logs/decisions.jsonl' },
-    run: (argv) => (argv[3] !== 'decision-log' ? undefined : healed.on ? { exitCode: 0, stdout: '', stderr: '' } : { exitCode: 1, stdout: '', stderr: `${writeError()}\n` }),
+    run: (argv) => (argv[3] === 'plugin-log' ? ok : argv[3] !== 'decision-log' ? undefined : healed.on ? ok : { exitCode: 1, stdout: '', stderr: `${writeError()}\n` }),
   });
   fakes.push(f);
   const settle = () => new Promise<void>((resolve) => setTimeout(resolve, 0));

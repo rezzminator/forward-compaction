@@ -14,6 +14,10 @@ export type Script = {
   env?: Record<string, string>;
   /** Main's window `$.session.usage()` reports; a function is read at each call (a /model switch). */
   window?: number | (() => number);
+  /** The `context.breakdown` `$.session.usage({ breakdown: 'summary' })` reports: by default a 100k compaction window asking at 63k; null reports none. */
+  breakdown?: Record<string, unknown> | null;
+  /** What `$.session.messages(args)` answers; an empty transcript by default. */
+  messages?: (args?: { agentId?: string }) => unknown;
   files?: Record<string, FileEntry>;
   agents?: () => unknown;
   compact?: (args?: unknown) => unknown;
@@ -40,7 +44,14 @@ export function fakeEngine(script: Script = {}) {
     session: {
       id: () => (hangs('session.id') ? never : Promise.resolve('session-1')),
       cwd: async () => home,
-      usage: async () => ({ context: { tokens: 0, window: (typeof script.window === 'function' ? script.window() : script.window) ?? 200_000 } }),
+      usage: async () => ({
+        context: {
+          tokens: 0,
+          window: (typeof script.window === 'function' ? script.window() : script.window) ?? 200_000,
+          ...(script.breakdown === null ? {} : { breakdown: script.breakdown ?? { rawMaxTokens: 100_000, autocompactSource: 'env', autoCompactThreshold: 63_000, isAutoCompactEnabled: true, model: 'claude-sonnet-4-5' } }),
+        },
+      }),
+      messages: async (args?: { agentId?: string }) => (script.messages ? script.messages(args) : []),
       compact: async (...args: unknown[]) => {
         compactCalls.push(args);
         return script.compact ? script.compact(...args) : { messages: [] };
@@ -110,5 +121,5 @@ export function fakeEngine(script: Script = {}) {
   };
 }
 
-/** A turn.step whose response was answered over `input` tokens. */
-export const usage = (input: number) => ({ usage: { input_tokens: input, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } });
+/** A turn.step whose response was answered over `input` tokens and wrote `output` (left out when absent). */
+export const usage = (input: number, output?: number) => ({ usage: { input_tokens: input, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, ...(output !== undefined ? { output_tokens: output } : {}) } });

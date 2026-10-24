@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { nudgeLevel, nudgeText } from '../plugins/forward-compaction/src/nudge.ts';
+import { k, nudgeLevel, nudgeText } from '../plugins/forward-compaction/src/nudge.ts';
 
 describe('nudgeLevel (R29)', () => {
   it('is 0 below the start, 1 at it, and one more per step of growth', () => {
@@ -17,32 +17,35 @@ describe('nudgeLevel (R29)', () => {
 });
 
 describe('nudgeText (R29)', () => {
-  it('says "soon" below the ask point when no ask was held yet, with the exact wording', () => {
-    expect(nudgeText({ tokens: 55_400, askPoint: 67_000, ceiling: 120_000, asked: false })).toBe(
-      'forward-compaction: your context is 55k tokens. At your next milestone, at a clean point and never mid-edit, call mcp__forward-compaction__forward_compaction with your handoff (## Objective, ## Done, ## Remaining, ## Next). The plugin keeps the person\'s messages or your brief, your skills, and every message after the call; you write the frontier. If only your final answer is left, give it instead. If this tool is not in your tool list, carry on: a mechanical compaction at 120k keeps your brief, skills and newest messages.',
+  it('asks for a handoff at the next clean milestone, leaving the model the moment and not the choice, with the exact text', () => {
+    expect(nudgeText({ tokens: 55_400, window: 200_000, ceiling: 120_000 })).toBe(
+      'forward-compaction: your context is 55k tokens (28% of your 200k max context), and every call re-sends all of it. Hand off at your next clean milestone: once the step in hand is finished and its results are written down, and before you start the next step, call mcp__forward-compaction__forward_compaction with objective, done, remaining and next. You pick the milestone, not whether: skip it only if nothing is left but writing your result and your final answer. At 120k the plugin compacts you mechanically, with no frontier from you. If this tool is not in your tool list, carry on.',
     );
   });
 
-  it('says "now" once the reading is at the ask point, with the exact wording', () => {
-    expect(nudgeText({ tokens: 71_000, askPoint: 67_000, ceiling: 100_000, asked: false })).toBe(
-      'forward-compaction: Claude Code is asking to compact you (71k tokens) and no handoff is stored. Call mcp__forward-compaction__forward_compaction now, at a clean point. At 100k the plugin compacts you mechanically, with no frontier from you. If this tool is not in your tool list, carry on.',
-    );
-    expect(nudgeText({ tokens: 67_000, askPoint: 67_000, ceiling: 100_000, asked: false })).toContain('Claude Code is asking to compact you (67k tokens)');
-  });
-
-  it('says "now" below the ask point when an ask was held', () => {
-    expect(nudgeText({ tokens: 60_000, askPoint: 67_000, ceiling: 100_000, asked: true })).toMatch(/^forward-compaction: Claude Code is asking to compact you \(60k tokens\)/);
-  });
-
-  it('starts as R29 gives it', () => {
-    expect(nudgeText({ tokens: 71_000, askPoint: 67_000, ceiling: 100_000, asked: true }).startsWith('forward-compaction: Claude Code is asking to compact you (71k tokens)')).toBe(true);
+  it('never says "now" or "soon", whatever the reading', () => {
+    for (const tokens of [30_000, 67_000, 90_000, 119_000]) {
+      const text = nudgeText({ tokens, window: 200_000, ceiling: 120_000 });
+      expect(text).not.toMatch(/\bnow\b|\bsoon\b|asking to compact/);
+      expect(text).toContain(`your context is ${Math.round(tokens / 1000)}k tokens (${Math.round((tokens / 200_000) * 100)}% of your 200k max context)`);
+    }
   });
 });
 
 describe('nudgeText names the tool as registered', () => {
   it('uses the registered name, so a -dev copy is called by its own name', () => {
     const dev = 'mcp__forward-compaction-dev__forward_compaction';
-    expect(nudgeText({ tokens: 55_400, askPoint: 67_000, ceiling: 120_000, asked: false, tool: dev })).toContain(`call ${dev} with your handoff`);
-    expect(nudgeText({ tokens: 71_000, askPoint: 67_000, ceiling: 120_000, asked: true, tool: dev })).toContain(`Call ${dev} now`);
+    expect(nudgeText({ tokens: 55_400, window: 1_000_000, ceiling: 600_000, tool: dev })).toContain(`call ${dev} with objective, done, remaining and next`);
+  });
+});
+
+describe('k', () => {
+  it('prints thousands as k and a million or more as M with at most one decimal', () => {
+    expect([0, 999, 51_400, 999_499].map(k)).toEqual(['0k', '1k', '51k', '999k']);
+    expect([999_500, 1_000_000, 1_049_999, 1_500_000, 2_000_000].map(k)).toEqual(['1M', '1M', '1M', '1.5M', '2M']);
+  });
+
+  it('names a 1M window "1M" in the nudge, never "1000k"', () => {
+    expect(nudgeText({ tokens: 213_000, window: 1_000_000, ceiling: 600_000 })).toContain('(21% of your 1M max context)');
   });
 });

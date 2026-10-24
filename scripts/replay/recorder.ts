@@ -56,19 +56,25 @@ async function writeVersion($: EngineInterface): Promise<void> {
 }
 
 /** The plugin's environment reads, each spelled as the literal Claude Code requires; `tests/replay.test.ts` holds this list to the adapter's. */
-export const ENV_NAMES = ['HOME', 'PLUGIN_LOG_DIR', 'CLAUDE_CONFIG_DIR', 'CLAUDE_CODE_AUTO_COMPACT_WINDOW', 'FORWARD_COMPACTION_CEILING', 'FORWARD_COMPACTION_CEILING_NATIVE', 'FORWARD_COMPACTION_NUDGE_START', 'FORWARD_COMPACTION_NUDGE_EVERY', 'FORWARD_COMPACTION_LOG_FILE'] as const;
+export const ENV_NAMES = ['HOME', 'PLUGIN_LOG_DIR', 'CLAUDE_CONFIG_DIR', 'FORWARD_COMPACTION_MAIN_MAX_CONTEXT', 'FORWARD_COMPACTION_MAIN_CEILING', 'FORWARD_COMPACTION_MAIN_NUDGE_START', 'FORWARD_COMPACTION_MAIN_NUDGE_EVERY', 'FORWARD_COMPACTION_SUBAGENT_MAX_CONTEXT', 'FORWARD_COMPACTION_SUBAGENT_CEILING', 'FORWARD_COMPACTION_SUBAGENT_NUDGE_START', 'FORWARD_COMPACTION_SUBAGENT_NUDGE_EVERY', 'FORWARD_COMPACTION_CEILING_NATIVE', 'FORWARD_COMPACTION_LOG_FILE', 'FORWARD_COMPACTION_IGNORE_MODELS', 'FORWARD_COMPACTION_DEBUG'] as const;
 
 function envGet($: EngineInterface, name: string): Promise<string | undefined> {
   switch (name) {
     case 'HOME': return $.env.get('HOME');
     case 'PLUGIN_LOG_DIR': return $.env.get('PLUGIN_LOG_DIR');
     case 'CLAUDE_CONFIG_DIR': return $.env.get('CLAUDE_CONFIG_DIR');
-    case 'CLAUDE_CODE_AUTO_COMPACT_WINDOW': return $.env.get('CLAUDE_CODE_AUTO_COMPACT_WINDOW');
-    case 'FORWARD_COMPACTION_CEILING': return $.env.get('FORWARD_COMPACTION_CEILING');
+    case 'FORWARD_COMPACTION_MAIN_MAX_CONTEXT': return $.env.get('FORWARD_COMPACTION_MAIN_MAX_CONTEXT');
+    case 'FORWARD_COMPACTION_MAIN_CEILING': return $.env.get('FORWARD_COMPACTION_MAIN_CEILING');
+    case 'FORWARD_COMPACTION_MAIN_NUDGE_START': return $.env.get('FORWARD_COMPACTION_MAIN_NUDGE_START');
+    case 'FORWARD_COMPACTION_MAIN_NUDGE_EVERY': return $.env.get('FORWARD_COMPACTION_MAIN_NUDGE_EVERY');
+    case 'FORWARD_COMPACTION_SUBAGENT_MAX_CONTEXT': return $.env.get('FORWARD_COMPACTION_SUBAGENT_MAX_CONTEXT');
+    case 'FORWARD_COMPACTION_SUBAGENT_CEILING': return $.env.get('FORWARD_COMPACTION_SUBAGENT_CEILING');
+    case 'FORWARD_COMPACTION_SUBAGENT_NUDGE_START': return $.env.get('FORWARD_COMPACTION_SUBAGENT_NUDGE_START');
+    case 'FORWARD_COMPACTION_SUBAGENT_NUDGE_EVERY': return $.env.get('FORWARD_COMPACTION_SUBAGENT_NUDGE_EVERY');
     case 'FORWARD_COMPACTION_CEILING_NATIVE': return $.env.get('FORWARD_COMPACTION_CEILING_NATIVE');
-    case 'FORWARD_COMPACTION_NUDGE_START': return $.env.get('FORWARD_COMPACTION_NUDGE_START');
-    case 'FORWARD_COMPACTION_NUDGE_EVERY': return $.env.get('FORWARD_COMPACTION_NUDGE_EVERY');
     case 'FORWARD_COMPACTION_LOG_FILE': return $.env.get('FORWARD_COMPACTION_LOG_FILE');
+    case 'FORWARD_COMPACTION_IGNORE_MODELS': return $.env.get('FORWARD_COMPACTION_IGNORE_MODELS');
+    case 'FORWARD_COMPACTION_DEBUG': return $.env.get('FORWARD_COMPACTION_DEBUG');
     default: throw new Error(`recorder: env ${name} is not in ENV_NAMES (scripts/replay/recorder.ts)`);
   }
 }
@@ -85,7 +91,7 @@ const given = (...args: unknown[]): unknown[] => {
  * this list to the adapter's. Each call is answered by the engine and written with its path, arguments and outcome;
  * a path missing here is written as an error row and throws, so the recording shows it.
  */
-export const PATHS = ['agent.list', 'clock.after', 'clock.now', 'env.get', 'fs.read', 'fs.stat', 'process.run', 'session.compact', 'session.id', 'session.usage', 'tool.register', 'ui.log'] as const;
+export const PATHS = ['agent.list', 'clock.after', 'clock.now', 'env.get', 'fs.read', 'fs.stat', 'process.run', 'session.compact', 'session.id', 'session.messages', 'session.usage', 'tool.register', 'ui.log'] as const;
 
 function engineFor($: EngineInterface, id: number): any {
   const call = (path: string, args: unknown[], run: () => unknown): unknown => {
@@ -124,6 +130,7 @@ function engineFor($: EngineInterface, id: number): any {
     session: {
       compact: (args?: any) => call('session.compact', given(args), () => (args === undefined ? $.session.compact() : $.session.compact(args))),
       id: () => call('session.id', [], () => $.session.id()),
+      messages: (args?: any) => call('session.messages', given(args), () => (args === undefined ? $.session.messages() : $.session.messages(args))),
       usage: (args?: any) => call('session.usage', given(args), () => (args === undefined ? $.session.usage() : $.session.usage(args))),
     },
     tool: { register: (spec: any) => call('tool.register', [spec], () => $.tool.register(spec)) },

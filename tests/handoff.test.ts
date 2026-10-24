@@ -8,151 +8,147 @@ import {
   LOAD_FILE_MAX_BYTES,
   WHY_MAX_CHARS,
   loadFileRefusal,
+  loadRoomRefusal,
   parseHandoff,
   parseLineRanges,
+  experimental,
   receipt,
   sliceFile,
+  ignoredRefusal,
 } from '../plugins/forward-compaction/src/handoff.ts';
 
-const valid = '## Objective\nship it\n## Done\nparser, tested\n## Remaining\nthe adapter\n## Next\nwire the hook';
+const valid = { objective: 'ship it', done: 'parser, tested', remaining: 'the adapter', next: 'wire the hook' };
+const text = '## Objective\nship it\n\n## Done\nparser, tested\n\n## Remaining\nthe adapter\n\n## Next\nwire the hook';
 const P = 'forward_compaction refused, nothing stored: ';
 const refusal = (input: unknown): string | undefined => {
   const out = parseHandoff(input);
   return 'refusal' in out ? out.refusal : undefined;
 };
+const SECTIONS = ['objective', 'done', 'remaining', 'next', 'blocked', 'findings'];
 
 describe('the forward_compaction tool as registered', () => {
-  it('is named forward_compaction and its description is short and holds one example call (R17)', () => {
+  it('is named forward_compaction and its description is short and holds one example call with the section arguments (R17)', () => {
     expect(FORWARD_TOOL).toBe('forward_compaction');
     expect(FORWARD_TOOL_DESCRIPTION.length).toBeLessThanOrEqual(600);
-    expect(FORWARD_TOOL_DESCRIPTION).toContain('forward_compaction({"handoff":');
+    expect(FORWARD_TOOL_DESCRIPTION).toContain('forward_compaction({"objective": "…", "done": "…", "remaining": "…", "next": "…", "load_files": []})');
+    expect(FORWARD_TOOL_DESCRIPTION).not.toContain('"handoff"');
   });
 
   it('names its caps once, and the schema agrees with them', () => {
     expect([HANDOFF_MAX_CHARS, LOAD_FILES_MAX, WHY_MAX_CHARS, LOAD_FILE_MAX_BYTES]).toEqual([20_000, 8, 200, 1_048_576]);
     expect(FORWARD_INPUT_SCHEMA.properties.load_files.maxItems).toBe(LOAD_FILES_MAX);
     expect(FORWARD_INPUT_SCHEMA.properties.load_files.items.properties.why.maxLength).toBe(WHY_MAX_CHARS);
-    expect(FORWARD_INPUT_SCHEMA.properties.handoff.description).toContain(`${HANDOFF_MAX_CHARS} characters`);
+    expect(FORWARD_TOOL_DESCRIPTION).toContain(`${HANDOFF_MAX_CHARS.toLocaleString('en-US')} characters`);
   });
 
-  it('closes the schema: one required markdown handoff, at most 8 load_files with a path and a why', () => {
-    expect(FORWARD_INPUT_SCHEMA).toMatchObject({ type: 'object', additionalProperties: false, required: ['handoff'] });
-    expect(Object.keys(FORWARD_INPUT_SCHEMA.properties)).toEqual(['handoff', 'load_files']);
+  it('closes the schema: four required sections, two optional ones, at most 8 load_files with a path and a why', () => {
+    expect(FORWARD_INPUT_SCHEMA).toMatchObject({ type: 'object', additionalProperties: false, required: ['objective', 'done', 'remaining', 'next'] });
+    expect(Object.keys(FORWARD_INPUT_SCHEMA.properties)).toEqual([...SECTIONS, 'load_files']);
+    for (const name of SECTIONS) expect(FORWARD_INPUT_SCHEMA.properties[name as 'objective']).toMatchObject({ type: 'string', description: expect.any(String) });
+    expect(FORWARD_INPUT_SCHEMA.properties.objective.description).toBe('What the work is for and what done means.');
+    expect(FORWARD_INPUT_SCHEMA.properties.findings.description).toBe('Optional: decisions with why, errors verbatim.');
     const files = FORWARD_INPUT_SCHEMA.properties.load_files;
     expect(files).toMatchObject({ type: 'array', maxItems: 8, items: { additionalProperties: false, required: ['path', 'why'], properties: { why: { maxLength: 200 } } } });
-    for (const heading of ['## Objective', '## Done', '## Remaining', '## Next', '## Blocked', '## Findings']) expect(FORWARD_INPUT_SCHEMA.properties.handoff.description).toContain(heading);
   });
 });
 
-describe('parseHandoff accepts and keeps the text whole', () => {
-  it('returns the handoff verbatim and no load files when none are given', () => {
-    expect(parseHandoff({ handoff: valid })).toEqual({ handoff: valid, loadFiles: [] });
+describe('parseHandoff assembles the sections and keeps their text whole', () => {
+  it('assembles the four required sections in order, and no load files when none are given', () => {
+    expect(parseHandoff(valid)).toEqual({ handoff: text, loadFiles: [] });
   });
 
-  it('keeps other headings, blank lines, trailing space and Windows line ends untouched', () => {
-    const text = '## Objective\r\nx  \r\n\r\n## Done\r\ny\r\n## Remaining\r\nz\r\n## Next\r\nn\r\n## Findings\r\nf\r\n## Notes\r\n\r\n';
-    expect(parseHandoff({ handoff: text })).toEqual({ handoff: text, loadFiles: [] });
+  it('places the optional sections after them, Blocked before Findings, and leaves out an absent or blank one', () => {
+    expect(parseHandoff({ findings: 'f', ...valid, blocked: 'b' })).toEqual({ handoff: `${text}\n\n## Blocked\nb\n\n## Findings\nf`, loadFiles: [] });
+    expect(parseHandoff({ ...valid, findings: 'f' })).toEqual({ handoff: `${text}\n\n## Findings\nf`, loadFiles: [] });
+    expect(parseHandoff({ ...valid, blocked: '  ' })).toEqual({ handoff: text, loadFiles: [] });
+  });
+
+  it('keeps a section\'s own headings, blank lines, trailing space and Windows line ends untouched', () => {
+    const own = 'x  \r\n\r\n### Goal\r\n## Notes\r\n';
+    expect(parseHandoff({ ...valid, objective: own })).toEqual({ handoff: text.replace('ship it', own), loadFiles: [] });
   });
 
   it('keeps a load file as given, lines and why included', () => {
     const files = [{ path: '/a/b.ts', lines: '1-60,160-185', why: 'the parser' }, { path: 'C:\\a\\b.ts', why: 'win' }];
-    expect(parseHandoff({ handoff: valid, load_files: files })).toEqual({ handoff: valid, loadFiles: files });
+    expect(parseHandoff({ ...valid, load_files: files })).toEqual({ handoff: text, loadFiles: files });
   });
 
-  it('takes a 20,000-character handoff (R12) and exactly 8 files', () => {
-    const text = valid + 'x'.repeat(HANDOFF_MAX_CHARS - valid.length);
-    expect(text.length).toBe(20_000);
-    expect(parseHandoff({ handoff: text })).toEqual({ handoff: text, loadFiles: [] });
+  it('takes a 20,000-character assembled handoff (R12) and exactly 8 files', () => {
+    const next = valid.next + 'x'.repeat(HANDOFF_MAX_CHARS - text.length);
+    const out = parseHandoff({ ...valid, next });
+    expect('handoff' in out && out.handoff.length).toBe(20_000);
     const eight = Array.from({ length: 8 }, (_, i) => ({ path: `/f${i}`, why: 'w' }));
-    expect(parseHandoff({ handoff: valid, load_files: eight })).toMatchObject({ loadFiles: eight });
-    expect(parseHandoff({ handoff: valid, load_files: [{ path: '/f', why: 'w'.repeat(200) }] })).not.toHaveProperty('refusal');
+    expect(parseHandoff({ ...valid, load_files: eight })).toMatchObject({ loadFiles: eight });
+    expect(parseHandoff({ ...valid, load_files: [{ path: '/f', why: 'w'.repeat(200) }] })).not.toHaveProperty('refusal');
   });
 });
 
 describe('parseHandoff refuses, naming what to fix', () => {
-  it('V1 an unknown field (R14)', () => {
-    expect(refusal({ handoff: valid, drop_skills: [] })).toBe(`${P}unknown field "drop_skills". The fields are handoff and load_files.`);
+  it('V1 an unknown field, the old handoff argument included (R14)', () => {
+    expect(refusal({ ...valid, drop_skills: [] })).toBe(`${P}unknown field "drop_skills". The fields are objective, done, remaining, next, blocked, findings and load_files.`);
+    expect(refusal({ ...valid, handoff: text })).toContain('unknown field "handoff"');
   });
 
-  it('V2 a handoff that is not a string, or no handoff at all', () => {
-    expect(refusal({ handoff: 5 })).toBe(`${P}handoff must be a markdown string; got number.`);
-    expect(refusal({})).toBe(`${P}handoff must be a markdown string; got undefined.`);
-    expect(refusal({ handoff: null })).toBe(`${P}handoff must be a markdown string; got null.`);
-    expect(refusal({ handoff: ['a'] })).toBe(`${P}handoff must be a markdown string; got array.`);
-    expect(refusal('## Objective')).toBe(`${P}handoff must be a markdown string; got undefined.`);
-    expect(refusal(undefined)).toBe(`${P}handoff must be a markdown string; got undefined.`);
+  it('V2 a required section that is missing, not a string or blank, by name', () => {
+    expect(refusal({ ...valid, objective: 5 })).toBe(`${P}objective must be a non-blank string; got number.`);
+    expect(refusal({ ...valid, done: undefined })).toBe(`${P}done must be a non-blank string; got undefined.`);
+    expect(refusal({ ...valid, remaining: null })).toBe(`${P}remaining must be a non-blank string; got null.`);
+    expect(refusal({ ...valid, next: ' \n ' })).toBe(`${P}next must be a non-blank string; got a blank string.`);
   });
 
-  it('V3 a handoff over 20,000 characters, with the count in thousands separators (R12)', () => {
-    const text = valid + 'x'.repeat(20_001 - valid.length);
-    expect(refusal({ handoff: text })).toBe(`${P}the handoff is 20,001 characters, over the 20,000 cap. Shorten it (detail can go in load_files, or stay in the transcript for look_back) and call again.`);
+  it('V3 an optional section that is present but not a string, by name', () => {
+    expect(refusal({ ...valid, blocked: ['a'] })).toBe(`${P}blocked must be a string when given; got array.`);
+    expect(refusal({ ...valid, findings: 3 })).toBe(`${P}findings must be a string when given; got number.`);
   });
 
-  it('V4 a missing required heading, the first in order (R11)', () => {
-    const message = `${P}the handoff has no "## Next" heading. Required, each followed by at least one line: ## Objective, ## Done, ## Remaining, ## Next. Call again with all four.`;
-    expect(refusal({ handoff: '## Objective\nx\n## Done\ny\n## Remaining\nz' })).toBe(message);
-    expect(refusal({ handoff: '## Done\ny\n## Remaining\nz\n## Next\nn' })).toContain('no "## Objective" heading');
-    expect(refusal({ handoff: '## Objective\nx\n## Remaining\nz' })).toContain('no "## Done" heading');
+  it('V4 names every bad argument in one refusal, one line each', () => {
+    expect(refusal({ done: 'd', extra: 1, findings: {} })).toBe([
+      `${P}unknown field "extra". The fields are objective, done, remaining, next, blocked, findings and load_files.`,
+      'objective must be a non-blank string; got undefined.',
+      'remaining must be a non-blank string; got undefined.',
+      'next must be a non-blank string; got undefined.',
+      'findings must be a string when given; got object.',
+    ].join('\n'));
+    for (const input of ['## Objective', undefined, null]) expect(refusal(input)?.split('\n')).toHaveLength(4);
   });
 
-  it('V4 counts only a whole heading line: a deeper heading, a suffixed one or an indented one is no heading', () => {
-    for (const bad of ['### Next', '## Next steps', ' ## Next', '#Next', '## next']) {
-      expect(refusal({ handoff: `## Objective\nx\n## Done\ny\n## Remaining\nz\n${bad}\nn` })).toContain('no "## Next" heading');
-    }
-  });
-
-  it('V4 beats V5 and V6: absence is reported first', () => {
-    expect(refusal({ handoff: '## Objective\n## Objective\n' })).toContain('no "## Done" heading');
-  });
-
-  it('V5 a heading twice, required or optional (R13)', () => {
-    expect(refusal({ handoff: `${valid}\n## Next\nagain` })).toBe(`${P}the handoff has "## Next" 2 times; give it once.`);
-    expect(refusal({ handoff: `${valid}\n## Findings\na\n## Findings\nb\n## Findings\nc` })).toBe(`${P}the handoff has "## Findings" 3 times; give it once.`);
-    expect(refusal({ handoff: `${valid}\n## Blocked\na\n## Blocked\nb` })).toContain('"## Blocked" 2 times');
-  });
-
-  it('V6 a required heading with no text under it (R13)', () => {
-    expect(refusal({ handoff: '## Objective\nx\n## Done\n## Remaining\nz\n## Next\nn' })).toBe(`${P}"## Done" has no text under it.`);
-    expect(refusal({ handoff: '## Objective\nx\n## Done\ny\n## Remaining\nz\n## Next\n  \n\n' })).toBe(`${P}"## Next" has no text under it.`);
-    expect(refusal({ handoff: '## Objective\n\n## Done\ny\n## Remaining\nz\n## Next\nn' })).toContain('"## Objective" has no text');
-  });
-
-  it('V6 text under a deeper heading or before the next section counts as text', () => {
-    expect(parseHandoff({ handoff: '## Objective\n### Goal\nx\n## Done\ny\n## Remaining\nz\n## Next\nn' })).not.toHaveProperty('refusal');
+  it('V5 an assembled handoff over 20,000 characters, refused with its total and the cap, never trimmed (R12)', () => {
+    const next = valid.next + 'x'.repeat(20_001 - text.length);
+    expect(refusal({ ...valid, next })).toBe(`${P}the handoff assembled from your sections is 20,001 characters, over the 20,000 cap. Shorten it (detail can go in load_files, or stay in the transcript for look_back) and call again.`);
   });
 
   it('V7 load_files that is not an array', () => {
-    for (const bad of ['a', {}, null, 3]) expect(refusal({ handoff: valid, load_files: bad })).toBe(`${P}load_files must be an array of {path, lines?, why}.`);
+    for (const bad of ['a', {}, null, 3]) expect(refusal({ ...valid, load_files: bad })).toBe(`${P}load_files must be an array of {path, lines?, why}.`);
   });
 
   it('V8 more than 8 entries (R15)', () => {
     const nine = Array.from({ length: 9 }, (_, i) => ({ path: `/f${i}`, why: 'w' }));
-    expect(refusal({ handoff: valid, load_files: nine })).toBe(`${P}load_files has 9 entries, over the 8 cap.`);
+    expect(refusal({ ...valid, load_files: nine })).toBe(`${P}load_files has 9 entries, over the 8 cap.`);
   });
 
   it('V9 a path that is missing or not absolute (R15)', () => {
-    expect(refusal({ handoff: valid, load_files: [{ path: 'src/a.ts', why: 'x' }] })).toBe(`${P}load_files[0].path must be an absolute path; got "src/a.ts".`);
-    expect(refusal({ handoff: valid, load_files: [{ path: '/ok', why: 'x' }, { why: 'x' }] })).toBe(`${P}load_files[1].path must be an absolute path; got "undefined".`);
-    expect(refusal({ handoff: valid, load_files: ['/ok'] })).toContain('load_files[0].path must be an absolute path');
+    expect(refusal({ ...valid, load_files: [{ path: 'src/a.ts', why: 'x' }] })).toBe(`${P}load_files[0].path must be an absolute path; got "src/a.ts".`);
+    expect(refusal({ ...valid, load_files: [{ path: '/ok', why: 'x' }, { why: 'x' }] })).toBe(`${P}load_files[1].path must be an absolute path; got "undefined".`);
+    expect(refusal({ ...valid, load_files: ['/ok'] })).toContain('load_files[0].path must be an absolute path');
   });
 
   it('V10 a why that is missing, empty or over 200', () => {
-    expect(refusal({ handoff: valid, load_files: [{ path: '/a' }] })).toBe(`${P}load_files[0].why must be 1–200 characters; it is 0.`);
-    expect(refusal({ handoff: valid, load_files: [{ path: '/a', why: '' }] })).toContain('it is 0.');
-    expect(refusal({ handoff: valid, load_files: [{ path: '/a', why: '   ' }] })).toContain('1–200 characters');
-    expect(refusal({ handoff: valid, load_files: [{ path: '/a', why: 'w'.repeat(201) }] })).toBe(`${P}load_files[0].why must be 1–200 characters; it is 201.`);
+    expect(refusal({ ...valid, load_files: [{ path: '/a' }] })).toBe(`${P}load_files[0].why must be 1–200 characters; it is 0.`);
+    expect(refusal({ ...valid, load_files: [{ path: '/a', why: '' }] })).toContain('it is 0.');
+    expect(refusal({ ...valid, load_files: [{ path: '/a', why: '   ' }] })).toContain('1–200 characters');
+    expect(refusal({ ...valid, load_files: [{ path: '/a', why: 'w'.repeat(201) }] })).toBe(`${P}load_files[0].why must be 1–200 characters; it is 201.`);
   });
 
   it('V11 lines that are not a range list (R15)', () => {
-    expect(refusal({ handoff: valid, load_files: [{ path: '/a', why: 'x', lines: '10-' }] })).toBe(`${P}load_files[0].lines "10-" is not a range like "10-40" or "1-60,160-185".`);
-    expect(refusal({ handoff: valid, load_files: [{ path: '/a', why: 'x', lines: '' }] })).toContain('load_files[0].lines ""');
-    expect(refusal({ handoff: valid, load_files: [{ path: '/a', why: 'x', lines: 5 }] })).toContain('load_files[0].lines "5" is not a range');
+    expect(refusal({ ...valid, load_files: [{ path: '/a', why: 'x', lines: '10-' }] })).toBe(`${P}load_files[0].lines "10-" is not a range like "10-40" or "1-60,160-185".`);
+    expect(refusal({ ...valid, load_files: [{ path: '/a', why: 'x', lines: '' }] })).toContain('load_files[0].lines ""');
+    expect(refusal({ ...valid, load_files: [{ path: '/a', why: 'x', lines: 5 }] })).toContain('load_files[0].lines "5" is not a range');
   });
 
-  it('refuses in table order: an unknown field before a bad handoff, a bad handoff before a bad file', () => {
-    expect(refusal({ extra: 1, handoff: 5, load_files: 'x' })).toContain('unknown field "extra"');
-    expect(refusal({ handoff: 5, load_files: 'x' })).toContain('handoff must be a markdown string');
-    expect(refusal({ handoff: valid, load_files: [{ path: 'rel', why: '' }] })).toContain('.path must be an absolute path');
+  it('refuses in table order: the arguments before the cap, the cap before a bad file', () => {
+    expect(refusal({ ...valid, objective: 5, next: 'x'.repeat(20_001), load_files: 'x' })).toBe(`${P}objective must be a non-blank string; got number.`);
+    expect(refusal({ ...valid, next: 'x'.repeat(20_001), load_files: 'x' })).toContain('over the 20,000 cap');
+    expect(refusal({ ...valid, load_files: [{ path: 'rel', why: '' }] })).toContain('.path must be an absolute path');
   });
 });
 
@@ -185,7 +181,7 @@ describe('loadFileRefusal judges what $.fs.stat found', () => {
 describe('receipt says when the handoff installs, per party (R16)', () => {
   it('sub-agent below its ask point: the spec example, word for word', () => {
     expect(receipt({ party: 'subagent', chars: 4812, files: 0, tokens: 41_200, askPoint: 67_000 })).toBe(
-      "Handoff stored (4,812 characters, 0 files). Claude Code has not asked to compact you yet: it installs at Claude Code's next ask, from about 67k context (you are at 41k). Everything after this call is kept verbatim behind it. Carry on with your work.",
+      "Handoff stored (4,812 characters, 0 files). Claude Code has not asked to compact you yet: it installs at Claude Code's next ask, from about 67k context. Everything after this call is kept verbatim behind it. Carry on with your work.",
     );
   });
 
@@ -201,10 +197,28 @@ describe('receipt says when the handoff installs, per party (R16)', () => {
     expect(receipt({ party: 'main', chars: 4812, files: 3, tokens: 80_000, askPoint: 67_000 })).toBe(text);
   });
 
-  it('appends what it replaced, in thousands rounded', () => {
-    expect(receipt({ party: 'main', chars: 10, files: 0, replaced: 30_500 })).toMatch(/ It replaces the handoff you stored at 31k\.$/);
-    expect(receipt({ party: 'subagent', chars: 10, files: 0, tokens: 90_000, askPoint: 67_000, replaced: 30_400 })).toMatch(/ It replaces the handoff you stored at 30k\.$/);
+  it('says it replaced one, printing no size for either call', () => {
+    expect(receipt({ party: 'main', chars: 10, files: 0, replaced: true })).toMatch(/ It replaces the handoff you stored before\.$/);
+    expect(receipt({ party: 'subagent', chars: 10, files: 0, tokens: 90_000, askPoint: 67_000, replaced: true })).toMatch(/ It replaces the handoff you stored before\.$/);
     expect(receipt({ party: 'main', chars: 10, files: 0 })).not.toContain('replaces');
+  });
+
+  it('takes a sub-agent with no reading (none since an install) as below its ask point', () => {
+    expect(receipt({ party: 'subagent', chars: 10, files: 0, askPoint: 67_000 })).toContain('Claude Code has not asked to compact you yet');
+  });
+});
+
+describe("loadRoomRefusal (M4): load files past 5% of the max context, at the party's measured characters per token", () => {
+  it('passes files that come to the room, and refuses one character past it, naming each file, its size and the room', () => {
+    expect(loadRoomRefusal([{ path: '/a', chars: 50_000 }], 400_000, 2.5)).toBeUndefined();
+    expect(loadRoomRefusal([], 1_000_000, 2.5)).toBeUndefined();
+    expect(loadRoomRefusal([{ path: '/a', chars: 9_000_000 }], 200_000, undefined)).toBeUndefined(); // no reading: nothing measured, accepted
+    expect(loadRoomRefusal([{ path: '/a', chars: 30_000 }, { path: '/b', chars: 20_001 }], 400_000, 2.5)).toBe([
+      'forward_compaction refused, nothing stored: load_files come to 50,001 characters, over the 50,000-character room for carried files (5% of your 400k max context):',
+      '- /a: 30,000 characters',
+      '- /b: 20,001 characters',
+      'Pass lines ranges (like "10-40" or "1-60,160-185") to carry only what you need, or fewer files, and call again.',
+    ].join('\n'));
   });
 });
 
@@ -245,5 +259,25 @@ describe('parseLineRanges and sliceFile (copied from the old carry module)', () 
     const file = 'a\nb\nc\nd\ne\nf\ng\n';
     expect(sliceFile(file, [{ from: 6, to: 7 }, { from: 1, to: 2 }])).toEqual({ body: 'a\nb\n[lines 3-5 not loaded]\nf\ng', shown: '1-2,6-7' });
     expect(sliceFile(file, [{ from: 1, to: 3 }, { from: 2, to: 4 }, { from: 5, to: 5 }])).toEqual({ body: 'a\nb\nc\nd\ne', shown: '1-5' });
+  });
+});
+
+describe('ignoredRefusal (Ignored models)', () => {
+  it('names the ignore-list entry and the ceiling it is compacted mechanically at, in one line', () => {
+    expect(ignoredRefusal('haiku', 160_000)).toBe('forward_compaction refused, nothing stored: your model is on forward-compaction\'s ignore list ("haiku"), so it takes no handoff from you; carry on with your work, and at 160k the plugin compacts you mechanically.');
+    expect(ignoredRefusal(undefined, 160_000)).toBeUndefined();
+  });
+});
+
+describe('every answer ends with the experimental line', () => {
+  it('names the issues file in the level-log directory', () => {
+    expect(experimental('Handoff stored (1 characters, 0 files).', '/logs/forward-compaction')).toBe(
+      'Handoff stored (1 characters, 0 files).\nforward-compaction is experimental. If it gave you any trouble, append a short note of what happened to /logs/forward-compaction/issues.md; it will be taken care of later.',
+    );
+    expect(experimental('x', '/logs/forward-compaction/')).toContain('to /logs/forward-compaction/issues.md;');
+  });
+
+  it('asks for the note in the reply when no directory resolves', () => {
+    expect(experimental('refused', undefined)).toBe('refused\nforward-compaction is experimental. If it gave you any trouble, append a short note of what happened to your reply.');
   });
 });

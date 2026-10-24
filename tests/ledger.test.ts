@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  PERSON_ORIGINS, addEntry, attributeSkill, factsFor, isPersonOrigin, markStart, newLedger, resolveSpawn,
+  PERSON_ORIGINS, addEntry, attributeSkill, factsFor, isPersonOrigin, markStart, newLedger, resolveSpawn, shellsOf,
   type EntryInput, type Ledger, type PartyKey,
 } from '../plugins/forward-compaction/src/ledger.ts';
 
@@ -230,5 +230,15 @@ describe('resolveSpawn', () => {
     expect(skillParty(resolved, 'other')).toBe('spawn:toolu_8');
     expect(factsFor(resolved, 'main', none).skills.map((s) => s.skill)).toEqual(['m']);
     expect(skillParty(ledger, 'replay-rules')).toBe('spawn:toolu_9');
+  });
+});
+
+describe('shellsOf', () => {
+  it("reads a Stop event's tasks and crons, and a field that is no list as none", () => {
+    expect(shellsOf({ background_tasks: [{ id: 1, type: 'local_bash', status: 'running', command: 'sleep 1' }], session_crons: [{ id: 'c1', schedule: '* * * * *', recurring: true }] })).toEqual({
+      tasks: [{ id: '1', type: 'local_bash', status: 'running', description: '', command: 'sleep 1' }],
+      crons: [{ id: 'c1', schedule: '* * * * *', recurring: true, prompt: '' }],
+    });
+    expect(shellsOf({ background_tasks: 'x' })).toEqual({ tasks: [], crons: [] });
   });
 });

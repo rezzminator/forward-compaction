@@ -119,8 +119,8 @@ describe('the plugin as loaded', () => {
   });
 
   it('names an invalid option on the screen, without the plugin name Claude Code already prints', async () => {
-    const { screen, dispatch } = load({ FORWARD_COMPACTION_CEILING: 'abc' });
+    const { screen, dispatch } = load({ FORWARD_COMPACTION_MAIN_CEILING: 'abc' });
     await dispatch('session.start', { reason: 'startup' });
-    expect(screen).toContain('env FORWARD_COMPACTION_CEILING is invalid (not an integer, a k/m value or a percentage: "abc"); using the default 60%');
+    expect(screen).toContain('env FORWARD_COMPACTION_MAIN_CEILING is invalid (not an integer, a k/m value or a percentage: "abc"); using the default 60%');
   });
 });

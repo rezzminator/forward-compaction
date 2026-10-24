@@ -1,35 +1,23 @@
 import type { EngineInterface, On, PluginOptions, Register, SessionCompactInput, SessionCompactResult, ToolCallResult, TurnStepInput, TurnStepResult, TurnCompleteInput, PromptSubmitInput, SessionReceiveInput, SkillPromptInput, AgentSpawnInput, AgentSpawnResult } from 'claude-code';
 import { bounded, unlessAborted } from '../src/bounded.ts';
-import { FORWARD_INPUT_SCHEMA, FORWARD_TOOL, FORWARD_TOOL_DESCRIPTION, parseHandoff, loadFileRefusal, receipt, parseLineRanges, sliceFile, type FileCheck, type LoadFile } from '../src/handoff.ts';
-import { newLedger, markStart, addEntry, resolveSpawn, attributeSkill, factsFor, isPersonOrigin, type Ledger, type PartyKey } from '../src/ledger.ts';
-import { splitAtCall, buildWake, mechanicalWake, landedLine, mechanicalLine, type WakeFile, type AgentRow } from '../src/wake.ts';
-import { decide, turnEndDoor, estimateTokens, currentTokens, contextTokens, knownTrigger } from '../src/decide.ts';
-import { nudgeLevel, nudgeText } from '../src/nudge.ts';
-import { Parties } from '../src/parties.ts';
-import { engineAskPoint, partyWindow, modelWindow, ceilingTokens, ENGINE_DEFAULT_WINDOW } from '../src/window.ts';
-import { sizeTokens } from '../src/options.ts';
+import { experimental, parseHandoff, loadFileRefusal, loadRoomRefusal, receipt, ignoredRefusal, parseLineRanges, sliceFile, toolInput, type FileCheck, type LoadFile } from '../src/handoff.ts';
+import { newLedger, markStart, addEntry, resolveSpawn, attributeSkill, shellsOf, factsFor, isPersonOrigin, keyOf, originKind, type Ledger, type PartyKey } from '../src/ledger.ts';
+import { splitAtCall, buildWake, mechanicalWake, landedLine, type WakeFile, type AgentRow, type Landing } from '../src/wake.ts';
+import { decide, turnEndDoor, readingTokens, knownTrigger } from '../src/decide.ts';
+import { k, nudgeLevel, nudgeText } from '../src/nudge.ts';
+import { Parties, type Judging } from '../src/parties.ts';
+import { askPointOf, charsPerToken, partyMarks, startWarnings, apiChars, type AskPoint, type Marks, type UsageBreakdown } from '../src/window.ts';
 import { unseenCompaction } from '../src/unseen.ts';
-import { LOOK_BACK_TOOL, LOOK_BACK_DESCRIPTION, LOOK_BACK_INPUT_SCHEMA, parseLookBack, boundaryArgv, boundaryLine, searchArgv, entryArgv, namesArgv, processOutput, parseEntries, toolNames, resultIds, searchResults, entryResult, manualTranscriptCall, lookBackNotice, findTranscriptArgv, firstFound, type LookBackResult } from '../src/look-back.ts';
-import { sessionLogPath, runCwd, noticeOnScreen, decisionAppendArgv, retentionArgv, requeueRows, keptRowsText, endReport, SkipFold, pluginLogDir, levelRow, pluginLogEvent, PluginLogQueue, type PluginLogLevel, type PluginLogFields } from '../src/log.ts';
+import { parseLookBack, boundaryArgv, boundaryLine, searchArgv, entryArgv, namesArgv, processOutput, parseEntries, toolNames, resultIds, searchResults, entryResult, manualTranscriptCall, lookBackNotice, findTranscriptArgv, firstFound, type LookBackResult } from '../src/look-back.ts';
+import { DecisionWriteError, hookRow, sessionLogPath, runCwd, noticeOnScreen, decisionAppendArgv, retentionArgv, requeueRows, keptRowsText, endReport, SkipFold, pluginLogDir, levelRow, pluginLogEvent, PluginLogQueue, type PluginLogLevel, type PluginLogFields } from '../src/log.ts';
 import { resolveOptions, type OptionEnvironment, type ResolvedOptions } from '../src/options.ts';
-import { toolsToRegister, type ToolKind } from '../src/register.ts';
+import { TOOLS, toolsToRegister, ENSURE_TOOLS_TIMEOUT_MS, END_CORE_RESERVE_MS, REGISTER_TRIES, PENDING_BEFORE_CONFIG, type ToolKind } from '../src/register.ts';
 
 // Thin adapter: every decision lives in src/. Each hook catches its own failures, logs them with context and lets the compaction through.
 
-/** Registering the tools holds a turn no longer than this: past it the turn goes on and the plugin stops waiting on registration. */
-const ENSURE_TOOLS_TIMEOUT_MS = 5_000;
-/** Of session.end's one bound, the share left for Claude Code's own end step after the log writes. */
-const END_CORE_RESERVE_MS = 300;
-/** Registering a tool is tried on this many hook calls before it is given up on. */
-const REGISTER_TRIES = 3;
-/** Rows held back while the environment layer is still being read; later ones are dropped. */
-const PENDING_BEFORE_CONFIG = 500;
-
 type Row = Record<string, unknown>;
 
-function message(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
+const message = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 
 type State = {
   config: ResolvedOptions;
@@ -55,7 +43,9 @@ type State = {
   pending: string[];
   rowsWriting: number; // Rows the decision append in flight carries; 0 when none is.
   levelRowsWriting: number; // Level-log rows queued or being written: what a cut end flush may lose from the level log.
+  levelLinks: number; levelBatched: number; // Level-log rows whose write is chained, and rows queued for the burst's one append.
   skips: SkipFold; // Routine skips fold into one `skips` row per streak.
+  levelSkips: SkipFold; // The same fold for the level log, which writes whether or not the decision log is on.
   retained?: boolean; // Old sessions' logs were cleaned up once this session (or tried).
   writeError?: string; // Why the last decision append failed, while its rows wait in `pending`; cleared by the next append that succeeds.
   rowsDropped?: { rows: number; error: string }; // Rows the hold let go this session, and the failure that dropped the last of them: counted at session end.
@@ -68,8 +58,8 @@ type State = {
   pendingCommand?: string; // The command main typed, until its first step: a skill it expands is main's.
   pendingSpawns: Set<string>; // agent.spawn calls running now: a skill loaded meanwhile is a preload of the one spawn.
   knownAgents: Map<string, string>; // Sub-agents spawned here, id to type: an ask for any other agent id is the engine's own (C6).
-  compactWindow?: number; // CLAUDE_CODE_AUTO_COMPACT_WINDOW, when set to a whole number.
-  mainWindow: number; // Main's window, from `$.session.usage()`.
+  mainWindow?: number; // Main's window as `$.session.usage()` last reported it: main's max context unless FORWARD_COMPACTION_MAIN_MAX_CONTEXT is set.
+  apiAsk?: AskPoint; breakdown?: UsageBreakdown; // Claude Code's ask point and the breakdown it was read from, at session start and each main-window read.
   installedSince: Set<string>; // Parties this plugin compacted since their last reading: a fall in that reading is no unseen compaction.
 };
 
@@ -78,9 +68,7 @@ function show($: EngineInterface, line: string): void {
   $.ui.log(screenLine(line));
 }
 
-function screenLine(line: string): string {
-  return line.replace(/^forward-compaction: /, '');
-}
+const screenLine = (line: string): string => line.replace(/^forward-compaction: /, '');
 
 /** Every line said lands in the decision log as a `said` row; a routine one reaches the screen too while there is no log to hold it. A line said with its diagnostic row is one level-log entry: the row's, at the level said. */
 function say(st: State, $: EngineInterface, line: string, level: PluginLogLevel = 'error', row?: Row): void {
@@ -97,7 +85,9 @@ function plog(st: State, $: EngineInterface, fields: Omit<PluginLogFields, 'plug
   const queue = st.pluginLog;
   if (queue === undefined) { if (!st.pluginInitialized) st.pluginRows.push(fields); return; }
   let rows = 1;
+  let held = false; // this row waits in the queue for a later row's append
   st.levelRowsWriting += rows;
+  st.levelLinks++;
   st.pluginWriting = st.pluginWriting.then(async () => {
     let session: string | undefined;
     let sessionError: string | undefined;
@@ -111,13 +101,16 @@ function plog(st: State, $: EngineInterface, fields: Omit<PluginLogFields, 'plug
       show($, sessionError);
     }
     queue.add(levelRow({ plugin: 'forward-compaction', ...fields, ...(session ? { session } : {}) }, now));
+    st.levelBatched += rows;
+    if (st.levelLinks > 1) return void (held = true); // a burst of rows is one append process: the burst's last row writes them all
+    [rows, st.levelBatched] = [st.levelBatched, 0];
     const out = await queue.flush((argv) => $.process.run(argv, { ...runCwd(st.pluginLogDir ?? ''), timeoutMs: 15_000 }));
     if (out.error !== undefined && !st.pluginFailing) pluginLogFailed(st, $, out.error, out.dropped);
     st.pluginFailing = out.dropped !== 0;
   }).catch((error) => {
     if (!st.pluginFailing) pluginLogFailed(st, $, message(error), rows);
     st.pluginFailing = true;
-  }).finally(() => { st.levelRowsWriting -= rows; });
+  }).finally(() => { st.levelLinks--; if (!held) st.levelRowsWriting -= rows; });
 }
 
 /** Once per failing streak: on the screen and in the decision log, whose row maps to no level, so it never recurses into the failing log. */
@@ -128,16 +121,28 @@ function pluginLogFailed(st: State, $: EngineInterface, error: string, dropped: 
 
 // Rows queue in memory; each flush appends them to the session's file through the append script, under its lock, so a resumed session keeps its earlier rows, no row is rewritten and no other chat shares the file.
 function record(st: State, $: EngineInterface, row: Row, levelRow = true): void {
-  const diagnostic = levelRow ? pluginLogEvent(row) : undefined;
-  if (diagnostic !== undefined) plog(st, $, diagnostic);
+  dbg(st, $, `row:${String(row.event)}`, row); // every decision row, whole, before any fold
+  const ts = new Date().toISOString(); // one stamp for both logs. Folded first: a held-ask streak reaches the level log as its first row and one `skips` row.
+  if (levelRow) for (const diagnostic of st.levelSkips.add({ ts, ...row }).map(pluginLogEvent)) if (diagnostic !== undefined) plog(st, $, diagnostic);
   // The decision log's file may come from the environment, which `start` reads: a row before that waits, so the session's one file is chosen from the full config. `settleConfig` writes what waited.
   if (!st.configured) {
-    for (const out of st.skips.add({ ts: new Date().toISOString(), ...row })) if (st.pending.length < PENDING_BEFORE_CONFIG) st.pending.push(JSON.stringify(out));
+    for (const out of st.skips.add({ ts, ...row })) if (st.pending.length < PENDING_BEFORE_CONFIG) st.pending.push(JSON.stringify(out));
     return;
   }
   if (!st.config.logFile) return;
-  for (const out of st.skips.add({ ts: new Date().toISOString(), ...row })) st.pending.push(JSON.stringify(out));
+  for (const out of st.skips.add({ ts, ...row })) st.pending.push(JSON.stringify(out));
   flushDecisions(st, $);
+}
+
+/** What every party is judged by now: main's max context known, and the ignore list. */
+const judging = (st: State): Judging => ({ mainKnown: st.config.main.maxContext !== undefined || st.mainWindow !== undefined, ignore: st.config.ignoreModels });
+
+/** A party's ignore judgement, written as an `ignore` row when it is new or has changed. */
+function judge(st: State, $: EngineInterface, key: string): void { const row = st.parties.judged(key, judging(st)); if (row) record(st, $, row); }
+
+/** A debug row (`debug.jsonl`) while FORWARD_COMPACTION_DEBUG is on: numbers as the API gave them. */
+function dbg(st: State, $: EngineInterface, event: string, detail: Row): void {
+  if (st.config.debug) plog(st, $, { level: 'debug', event, msg: event, where: 'hooks/forward-compaction.ts', detail });
 }
 
 /** Marks the config as final and writes the rows that waited for it, or drops them when no decision log is on. */
@@ -214,13 +219,6 @@ function flushDecisions(st: State, $: EngineInterface, last = false): void {
     });
 }
 
-/** A failed append whose rows went back to the queue: how many, and how many old ones the hold let go. */
-class DecisionWriteError extends Error {
-  constructor(cause: string, readonly rows: number, readonly dropped: number) {
-    super(cause);
-  }
-}
-
 /** Once per session, after its first append: old sessions' logs beside this one go; a failure is told once, in both logs, and the log goes on. */
 async function retainLogs(st: State, $: EngineInterface, file: string, path: string): Promise<void> {
   try {
@@ -234,21 +232,14 @@ async function retainLogs(st: State, $: EngineInterface, file: string, path: str
 
 /** After a /clear or a resume: main's conversation is a new one, under a new session id and its own decision log file. */
 function startOver(st: State): void {
-  st.sessionId = undefined;
-  st.logPath = undefined;
-  st.pending = [];
-  st.retained = false;
-  st.writeError = undefined;
-  st.rowsDropped = undefined;
+  Object.assign(st, { sessionId: undefined, logPath: undefined, pending: [], retained: false, writeError: undefined, rowsDropped: undefined });
 }
-
 
 function warnOnce(st: State, $: EngineInterface, key: string, line: string, level: PluginLogLevel = 'warning'): void {
   if (st.warned.has(key)) return;
   st.warned.add(key);
   say(st, $, line, level, { event: level === 'error' ? 'error' : 'warning', key, line });
 }
-
 
 /** The environment variable of each option, by name. Claude Code reads only a name spelled as a string literal, so each is written out twice here (the key and the call); a test holds them to `OPTION_ENV`. */
 async function readOptionEnv($: EngineInterface): Promise<Pick<OptionEnvironment, 'vars' | 'readErrors'>> {
@@ -263,11 +254,18 @@ async function readOptionEnv($: EngineInterface): Promise<Pick<OptionEnvironment
     }
   };
   await Promise.all([
-    readOptionVar('FORWARD_COMPACTION_CEILING', () => $.env.get('FORWARD_COMPACTION_CEILING')),
+    readOptionVar('FORWARD_COMPACTION_MAIN_MAX_CONTEXT', () => $.env.get('FORWARD_COMPACTION_MAIN_MAX_CONTEXT')),
+    readOptionVar('FORWARD_COMPACTION_MAIN_CEILING', () => $.env.get('FORWARD_COMPACTION_MAIN_CEILING')),
+    readOptionVar('FORWARD_COMPACTION_MAIN_NUDGE_START', () => $.env.get('FORWARD_COMPACTION_MAIN_NUDGE_START')),
+    readOptionVar('FORWARD_COMPACTION_MAIN_NUDGE_EVERY', () => $.env.get('FORWARD_COMPACTION_MAIN_NUDGE_EVERY')),
+    readOptionVar('FORWARD_COMPACTION_SUBAGENT_MAX_CONTEXT', () => $.env.get('FORWARD_COMPACTION_SUBAGENT_MAX_CONTEXT')),
+    readOptionVar('FORWARD_COMPACTION_SUBAGENT_CEILING', () => $.env.get('FORWARD_COMPACTION_SUBAGENT_CEILING')),
+    readOptionVar('FORWARD_COMPACTION_SUBAGENT_NUDGE_START', () => $.env.get('FORWARD_COMPACTION_SUBAGENT_NUDGE_START')),
+    readOptionVar('FORWARD_COMPACTION_SUBAGENT_NUDGE_EVERY', () => $.env.get('FORWARD_COMPACTION_SUBAGENT_NUDGE_EVERY')),
     readOptionVar('FORWARD_COMPACTION_CEILING_NATIVE', () => $.env.get('FORWARD_COMPACTION_CEILING_NATIVE')),
-    readOptionVar('FORWARD_COMPACTION_NUDGE_START', () => $.env.get('FORWARD_COMPACTION_NUDGE_START')),
-    readOptionVar('FORWARD_COMPACTION_NUDGE_EVERY', () => $.env.get('FORWARD_COMPACTION_NUDGE_EVERY')),
     readOptionVar('FORWARD_COMPACTION_LOG_FILE', () => $.env.get('FORWARD_COMPACTION_LOG_FILE')),
+    readOptionVar('FORWARD_COMPACTION_IGNORE_MODELS', () => $.env.get('FORWARD_COMPACTION_IGNORE_MODELS')),
+    readOptionVar('FORWARD_COMPACTION_DEBUG', () => $.env.get('FORWARD_COMPACTION_DEBUG')),
   ]);
   return { vars, readErrors };
 }
@@ -293,9 +291,13 @@ function start(st: State, $: EngineInterface): Promise<void> {
     st.pluginLogDir = pluginLogDir(override, home, 'forward-compaction');
     if (st.pluginLogDir !== undefined) st.pluginLog = new PluginLogQueue(st.pluginLogDir, 'forward-compaction');
     else show($, 'plugin log off: no PLUGIN_LOG_DIR and no HOME');
-    const earlyRows = st.pluginRows.splice(0);
-    if (st.pluginLog !== undefined) for (const fields of earlyRows) plog(st, $, fields);
-    st.config = resolveOptions({ pluginLogDir: override, home, ...(await readOptionEnv($)) });
+    const env = await readOptionEnv($);
+    st.config = resolveOptions({ pluginLogDir: override, home, ...env });
+    const earlyRows = st.pluginRows.splice(0); // rows held before the level log had a home: debug ones only while the debug log is on
+    if (st.pluginLog !== undefined) for (const fields of earlyRows) if (fields.level !== 'debug' || st.config.debug) plog(st, $, fields);
+    dbg(st, $, 'env', { HOME: home ?? null, PLUGIN_LOG_DIR: override ?? null, ...env.vars, readErrors: env.readErrors });
+    const { errors: _, ...options } = st.config;
+    dbg(st, $, 'options', options);
     settleConfig(st, $);
     for (const { line, level } of early) say(st, $, line, level);
     for (const line of st.config.errors) {
@@ -311,27 +313,10 @@ function start(st: State, $: EngineInterface): Promise<void> {
       say(st, $, `forward-compaction: reading CLAUDE_CONFIG_DIR failed: ${message(error)}; look_back reads ~/.claude only`, 'warning');
       st.configDir = home ? `${home}/.claude` : undefined;
     }
-    record(st, $, { event: 'start', ceiling: st.config.ceiling, ceilingNative: st.config.ceilingNative, nudgeStart: st.config.nudgeStart, nudgeEvery: st.config.nudgeEvery });
+    record(st, $, { event: 'start', main: st.config.main, subagent: st.config.subagent, ceilingNative: st.config.ceilingNative, ignoreModels: st.config.ignoreModels });
   })().finally(() => settleConfig(st, $));
   return st.started;
 }
-
-/** Keys the tool.call event carries beside the tool's arguments. */
-const EVENT_KEYS = new Set(['tool', 'tool_use_id', 'agentId']);
-
-/** The arguments of a tool call: every key of the event but its own (a key that is not a field included, so the check names it) or, when none is there, the event's `input`. */
-function toolInput(e: Record<string, unknown>): Record<string, unknown> {
-  const top: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(e)) if (!EVENT_KEYS.has(key) && key !== 'input' && value !== undefined) top[key] = value;
-  if (Object.keys(top).length > 0) return top;
-  const nested = e.input;
-  return nested !== null && typeof nested === 'object' && !Array.isArray(nested) ? (nested as Record<string, unknown>) : {};
-}
-
-const TOOLS = {
-  forward_compaction: { name: FORWARD_TOOL, description: FORWARD_TOOL_DESCRIPTION, inputSchema: FORWARD_INPUT_SCHEMA, isDeferred: false, lost: 'no party can hand off' },
-  look_back: { name: LOOK_BACK_TOOL, description: LOOK_BACK_DESCRIPTION, inputSchema: LOOK_BACK_INPUT_SCHEMA, lost: 'transcript recovery is unavailable' },
-} as const;
 
 async function registerTool(st: State, $: EngineInterface, kind: ToolKind): Promise<void> {
   const { lost, ...spec } = TOOLS[kind];
@@ -403,7 +388,6 @@ async function observeManualLookBack(st: State, $: EngineInterface, e: Record<st
   }
 }
 
-
 /** `$.clock.after`, or, where the engine has none, a timer that never fires and a warning once: the wait is then unbounded, as it was. A call a hook refuses without throwing never fires either and is not reported: that wait is unbounded too. */
 function afterOrNever(st: State, $: EngineInterface, ms: number, fn: () => void, what: string): { cancel: () => void } {
   try {
@@ -417,13 +401,7 @@ function afterOrNever(st: State, $: EngineInterface, ms: number, fn: () => void,
 /** Registers each tool that is not registered yet, up to REGISTER_TRIES hook calls each: `session.start` may not fire (a plugin loaded mid-session) or may run before the session can take a tool. Hooks that need a tool wait on it. */
 async function ensureTools(st: State, $: EngineInterface, signal?: AbortSignal): Promise<void> {
   if (st.toolsAbandoned || st.toolsSettled) return;
-  const left = () =>
-    toolsToRegister(
-      { forward_compaction: true, look_back: true },
-      { forward_compaction: st.toolNames.forward_compaction !== undefined, look_back: st.toolNames.look_back !== undefined },
-      st.toolTries,
-      REGISTER_TRIES,
-    );
+  const left = () => toolsToRegister({ forward_compaction: true, look_back: true }, { forward_compaction: st.toolNames.forward_compaction !== undefined, look_back: st.toolNames.look_back !== undefined }, st.toolTries, REGISTER_TRIES);
   const began = Date.now();
   const names = () => Object.values(st.toolNames);
   const had = new Set(names());
@@ -458,10 +436,6 @@ async function ensureTools(st: State, $: EngineInterface, signal?: AbortSignal):
   warnOnce(st, $, 'tools-timeout', `forward-compaction: registering the tools did not finish within ${ENSURE_TOOLS_TIMEOUT_MS / 1000}s; it goes on, turns do not wait for it, and the tools come into use once it finishes`);
 }
 
-const k = (tokens: number): string => `${Math.round(tokens / 1000)}k`;
-const keyOf = (agentId: unknown): PartyKey => (typeof agentId === 'string' && agentId !== '' ? `agent:${agentId}` : 'main');
-const originKind = (origin: unknown): string => (origin !== null && typeof origin === 'object' && typeof (origin as { kind?: unknown }).kind === 'string' ? (origin as { kind: string }).kind : 'unknown');
-
 /** A line the person always sees (a landed compaction, a dropped handoff, a fault the plugin worked around), and its row. */
 function tell(st: State, $: EngineInterface, line: string, row: Row): void {
   show($, line);
@@ -469,7 +443,8 @@ function tell(st: State, $: EngineInterface, line: string, row: Row): void {
 }
 
 /** D9: a hook's own work never throws out of the plugin; a failure is said with the hook it came from, and the event goes on. */
-async function guard(st: State, $: EngineInterface, where: string, work: () => unknown): Promise<void> {
+async function guard(st: State, $: EngineInterface, where: string, work: () => unknown, e?: unknown): Promise<void> {
+  dbg(st, $, 'hook', hookRow(where, e));
   try {
     await work();
   } catch (error) {
@@ -477,16 +452,14 @@ async function guard(st: State, $: EngineInterface, where: string, work: () => u
   }
 }
 
-/** A party's token marks, from its model's window: Claude Code's ask point, the ceiling, the nudge start and step. */
-function marks(st: State, key: string): { askPoint: number; ceiling: number; start: number; every: number } {
-  const win = st.parties.get(key).modelWin;
-  return { askPoint: engineAskPoint(partyWindow(win, st.compactWindow)), ceiling: ceilingTokens(st.config.ceiling, win), start: sizeTokens(st.config.nudgeStart, win), every: sizeTokens(st.config.nudgeEvery, win) };
+/** A party's token marks against its max context (main's option or reported window, the sub-agent option); undefined while main's is not known. */
+function marks(st: State, key: string): Marks | undefined {
+  return key === 'main' ? partyMarks(st.config.main, st.config.main.maxContext ?? st.mainWindow, st.apiAsk?.tokens) : partyMarks(st.config.subagent, st.config.subagent.maxContext, st.apiAsk?.tokens);
 }
 
 /** After a /clear or a resume: no party, fact or call of the old conversation carries into the new one. */
 async function conversationStartsOver(st: State, $: EngineInterface, reason: string): Promise<void> {
-  st.parties = new Parties(ENGINE_DEFAULT_WINDOW);
-  st.parties.describe('main', { label: 'main', modelWin: st.mainWindow });
+  st.parties = new Parties();
   st.ledger = markStart(newLedger(), await $.clock.now(), reason);
   st.inFlight.clear();
   st.pendingSpawns.clear();
@@ -494,33 +467,19 @@ async function conversationStartsOver(st: State, $: EngineInterface, reason: str
   st.pendingCommand = undefined;
 }
 
-/** session.start: the ledger starts, main's window is read, and a compaction window that holds a sub-agent's handoff back is named once (R33). */
+/** session.start: the ledger starts, main's window and Claude Code's ask point are read, and a compaction window that holds a handoff back is named once (R33). */
 async function sessionBegins(st: State, $: EngineInterface): Promise<void> {
   st.ledger = markStart(st.ledger, await $.clock.now(), 'startup');
   await readMainWindow(st, $);
-  st.parties.describe('main', { label: 'main', modelWin: st.mainWindow });
-  const raw = (await $.env.get('CLAUDE_CODE_AUTO_COMPACT_WINDOW'))?.trim() || undefined;
-  st.compactWindow = Number.isInteger(Number(raw)) && Number(raw) > 0 ? Number(raw) : undefined;
-  const subagentAsk = engineAskPoint(partyWindow(ENGINE_DEFAULT_WINDOW, st.compactWindow));
-  if ((st.compactWindow === undefined || st.compactWindow > 100_000) && !st.warned.has('compact-window')) {
-    st.warned.add('compact-window');
-    tell(st, $, `forward-compaction: CLAUDE_CODE_AUTO_COMPACT_WINDOW is ${raw ?? 'unset'}; Claude Code asks to compact a sub-agent only from about ${k(subagentAsk)}, so a sub-agent's handoff installs no earlier. Set it to 100000 in your settings env.`, { event: 'warning', key: 'compact-window' });
-  }
-  const { askPoint, ceiling } = marks(st, 'main');
-  if (ceiling < askPoint && !st.warned.has('ceiling-below-ask')) {
-    st.warned.add('ceiling-below-ask');
-    tell(st, $, `forward-compaction: the ceiling ${k(ceiling)} is below Claude Code's ask point ${k(askPoint)}; a party with no handoff is compacted mechanically at its first ask.`, { event: 'warning', key: 'ceiling-below-ask' });
-  }
+  judge(st, $, 'main');
+  for (const w of startWarnings(st.breakdown, st.apiAsk, marks(st, 'main'), marks(st, 'agent:')!)) if (!st.warned.has(w.key)) (st.warned.add(w.key), tell(st, $, w.line, w.row));
 }
 
 /** ENOENT is a missing file; any other failure to stat is said as the error it is. */
-async function statFile($: EngineInterface, path: string): Promise<FileCheck> {
-  try {
-    const stat = await $.fs.stat(path);
-    return { kind: stat.kind, size: stat.size };
-  } catch (error) {
-    return (error as { code?: unknown } | null)?.code === 'ENOENT' ? { absent: true } : { error: message(error) };
-  }
+async function statFile(st: State, $: EngineInterface, path: string): Promise<FileCheck> {
+  const check: FileCheck = await Promise.resolve().then(() => $.fs.stat(path)).then((stat) => ({ kind: stat.kind, size: stat.size }), (error: unknown) => ((error as { code?: unknown } | null)?.code === 'ENOENT' ? { absent: true } : { error: message(error) }));
+  dbg(st, $, 'fs.stat', { path, ...check });
+  return check;
 }
 
 /** The forward_compaction tool (R31): the handoff is checked, stored for the party, and answered with the receipt of its door. */
@@ -529,38 +488,45 @@ async function answerForward(st: State, $: EngineInterface, e: Record<string, un
   try {
     await start(st, $);
     const parsed = parseHandoff(toolInput(e));
-    let refusal = 'refusal' in parsed ? parsed.refusal : undefined;
-    if (!('refusal' in parsed)) for (const [index, file] of parsed.loadFiles.entries()) refusal ??= loadFileRefusal(index, file.path, await statFile($, file.path));
+    const m = marks(st, key);
+    const matched = st.parties.ignored(key, st.config.ignoreModels);
+    let refusal = ignoredRefusal(matched, m?.ceiling) ?? ('refusal' in parsed ? parsed.refusal : undefined);
+    if (!('refusal' in parsed)) for (const [index, file] of parsed.loadFiles.entries()) refusal ??= loadFileRefusal(index, file.path, await statFile(st, $, file.path));
+    if (refusal === undefined && !('refusal' in parsed) && parsed.loadFiles.length > 0) {
+      const ratio = ratioOf(st, $, key, 'tool-call', await partyChars(st, $, key, e.agentId), m);
+      const files = (await readLoadFiles($, parsed.loadFiles)).map((f) => ({ path: f.path, chars: f.content?.length ?? 0 }));
+      if (ratio === undefined || m === undefined) say(st, $, `forward-compaction: ${key}'s load_files were accepted without a size check: ${m === undefined ? "main's max context is not known yet" : 'its characters per token are not measured yet'}; the wake names any file it cannot carry`, 'warning', { event: 'warning', key: 'load-files-unchecked', party: key, files: files.length });
+      else refusal = loadRoomRefusal(files, m.maxContext, ratio);
+    }
     if (refusal === undefined && typeof e.tool_use_id !== 'string') refusal = 'forward_compaction refused, nothing stored: the call has no tool_use_id, so the wake cannot find it.';
     if (refusal !== undefined || 'refusal' in parsed) {
-      record(st, $, { event: 'refused', party: key, refusal });
+      record(st, $, { event: 'refused', party: key, refusal, ...(matched !== undefined ? { matched } : {}) }); // the refusal names the field that failed
       return refusal!;
     }
-    const party = st.parties.get(key);
-    const tokens = party.reading ?? 0;
-    const replaced = st.parties.store(key, { text: parsed.handoff, loadFiles: parsed.loadFiles, toolUseId: e.tool_use_id as string, storedAtTokens: tokens })?.storedAtTokens;
+    const tokens = st.parties.get(key).reading; // the last reading: the call's own context is measured only by the next request
+    const replaced = st.parties.store(key, { text: parsed.handoff, loadFiles: parsed.loadFiles, toolUseId: e.tool_use_id as string, storedAtTokens: tokens });
     const files = parsed.loadFiles.length;
-    record(st, $, { event: 'stored', party: key, chars: parsed.handoff.length, files, tokens, ...(replaced !== undefined ? { replaced } : {}) });
-    return receipt({ party: key === 'main' ? 'main' : 'subagent', chars: parsed.handoff.length, files, tokens, askPoint: marks(st, key).askPoint, ...(replaced !== undefined ? { replaced } : {}) });
+    record(st, $, { event: 'stored', party: key, chars: parsed.handoff.length, files, tokens: tokens ?? null, ...(replaced !== undefined ? { replaced: replaced.storedAtTokens ?? null } : {}) });
+    return key === 'main' ? receipt({ party: 'main', chars: parsed.handoff.length, files, tokens, askPoint: m?.askPoint, replaced: replaced !== undefined }) : receipt({ party: 'subagent', chars: parsed.handoff.length, files, tokens, askPoint: m!.askPoint, replaced: replaced !== undefined });
   } catch (error) {
     say(st, $, `forward-compaction: storing ${key}'s handoff failed: ${message(error)}`, 'error', { event: 'store-error', party: key, error: message(error) });
     return `forward_compaction failed, nothing stored: ${message(error)}`;
   }
 }
 
-/** Past a nudge point with nothing stored, the tool result carries the nudge once per level, and once more after a held ask (R37). */
+/** Past a nudge point with nothing stored, the tool result carries the nudge once per level (R37). */
 async function nudged(st: State, $: EngineInterface, key: string, result: ToolCallResult): Promise<ToolCallResult> {
   if (result.deny !== undefined) return result;
   try {
     await start(st, $);
-    const party = st.parties.get(key);
-    if (party.reading === undefined) return result;
+    judge(st, $, key); const party = st.parties.get(key);
+    const tokens = party.reading; // measured only: a step late at worst, never an estimate
     const m = marks(st, key);
-    const level = nudgeLevel(party.reading, m.start, m.every);
-    if (level === 0 || !st.parties.nudgeDue(key, level)) return result;
-    const now = party.askHeld || party.reading >= m.askPoint;
-    record(st, $, { event: 'nudge', party: key, level, tokens: party.reading, wording: now ? 'now' : 'soon' });
-    return { ...result, context: [...(result.context ?? []), nudgeText({ tokens: party.reading, askPoint: m.askPoint, ceiling: m.ceiling, asked: party.askHeld, tool: st.toolNames.forward_compaction })] };
+    const level = tokens === undefined || m === undefined ? 0 : nudgeLevel(tokens, m.start, m.every);
+    const withheld = tokens === undefined ? 'no-reading' : m === undefined ? 'window-unknown' : level === 0 ? 'below-start' : st.parties.ignored(key, st.config.ignoreModels) !== undefined ? 'ignored-model' : !st.parties.nudgeDue(key, level) ? 'not-due' : undefined;
+    if (withheld !== undefined) return (dbg(st, $, 'nudge-withheld', { party: key, why: withheld, tokens: tokens ?? null, level, start: m?.start ?? null, every: m?.every ?? null }), result);
+    record(st, $, { event: 'nudge', party: key, level, tokens, start: m!.start, every: m!.every });
+    return { ...result, context: [...(result.context ?? []), nudgeText({ tokens: tokens!, window: m!.maxContext, ceiling: m!.ceiling, tool: st.toolNames.forward_compaction })] };
   } catch (error) {
     say(st, $, `forward-compaction: nudging ${key} failed: ${message(error)}`, 'error', { event: 'nudge-error', party: key, error: message(error) });
     return result;
@@ -571,7 +537,9 @@ async function nudged(st: State, $: EngineInterface, key: string, result: ToolCa
 async function partyKind(st: State, $: EngineInterface, agentId: string): Promise<'subagent' | 'foreign'> {
   if (st.knownAgents.has(agentId)) return 'subagent';
   try {
-    const agent = (await $.agent.list()).find((a) => a.id === agentId);
+    const agents = await $.agent.list();
+    const agent = agents.find((a) => a.id === agentId);
+    dbg(st, $, 'agent.list', { count: agents.length, agentId, found: agent !== undefined });
     if (agent === undefined) return 'foreign';
     st.knownAgents.set(agentId, agent.type);
     st.parties.describe(`agent:${agentId}`, { label: `${agent.type} ${agentId.slice(0, 6)}` });
@@ -585,7 +553,7 @@ async function partyKind(st: State, $: EngineInterface, agentId: string): Promis
 /** A rejected list is the wake's own agents error; a list that is no list throws, and the ask falls to C11. */
 async function agentRows($: EngineInterface): Promise<AgentRow[] | { error: string }> {
   const list = await $.agent.list().then((agents) => agents, (error: unknown) => ({ error: message(error) }));
-  return 'error' in list ? list : list.map((a) => ({ id: a.id, type: a.type, status: a.status, description: a.description }));
+  return 'error' in list ? list : list.map((a) => ({ id: a.id, type: a.type, status: a.status, description: a.description, ...(a.parentId !== undefined ? { parentId: a.parentId } : {}) }));
 }
 
 /** Each load file read now, whole or by its lines; one that cannot be read is carried as its problem. */
@@ -600,11 +568,16 @@ async function readLoadFiles($: EngineInterface, files: readonly LoadFile[]): Pr
   }));
 }
 
-/** A wake the engine took: the party's reading is the size after it, and its next fall is no unseen compaction. */
-function installed(st: State, key: string, after: number, signal?: AbortSignal): void {
+/** A wake the engine took: no reading stands until the next request's, its next fall is no unseen compaction, and a landing still waiting from an earlier install is said now. */
+function installed(st: State, $: EngineInterface, key: string, landing: Landing | undefined, signal?: AbortSignal): void {
   if (signal?.aborted) return;
-  st.parties.installed(key, after);
+  land(st, $, key, st.parties.installed(key, landing));
   st.installedSince.add(key);
+}
+
+/** M2: an installed wake's landed line and `landed` row, at the party's first reading after it (`after`), or at its end with `after` unknown. */
+function land(st: State, $: EngineInterface, key: string, landing: Landing | undefined, after?: number): void {
+  if (landing !== undefined) tell(st, $, landedLine(landing, after), { event: 'landed', party: key, kind: landing.kind, before: landing.before ?? null, after: after ?? null });
 }
 
 /** One session.compact ask, rows C1-C10: decide, then pass, hold, or install the handoff or a mechanical wake. */
@@ -616,13 +589,14 @@ async function compactAsk(st: State, $: EngineInterface, e: SessionCompactInput,
     trigger = 'auto';
   }
   const kind = key === 'main' ? 'main' : await partyKind(st, $, e.agentId!);
-  const party = st.parties.get(key);
+  judge(st, $, key); const party = st.parties.get(key);
   const { label, stored: held } = party;
   const found = held !== undefined && splitAtCall(e.messages, held.toolUseId) !== undefined;
-  const tokens = currentTokens(party.reading, e.messages) ?? 0;
+  const tokens = party.reading; // measured only; none since an install, or yet, is unknown
   const m = marks(st, key);
-  const action = decide({ trigger, party: kind, stored: found, storedMissing: held !== undefined && !found, tokens, ceiling: m.ceiling, reactive: st.parties.reactive(key), ceilingNative: st.config.ceilingNative, label });
-  const row: Row = { event: 'compact', party: key, trigger, decision: action.decision, why: action.why, tokens };
+  const matched = st.parties.ignored(key, st.config.ignoreModels);
+  const action = decide({ trigger, party: kind, stored: found, storedMissing: held !== undefined && !found, tokens, ceiling: m?.ceiling, reactive: st.parties.reactive(key), ceilingNative: st.config.ceilingNative, label, ignored: matched !== undefined, windowUnknown: st.parties.windowUnknown(key, judging(st).mainKnown) });
+  const row: Row = { event: 'compact', party: key, trigger, decision: action.decision, why: action.why, tokens: tokens ?? null, ceiling: m?.ceiling ?? null, askPoint: m?.askPoint ?? null, ...(matched !== undefined ? { matched } : {}) };
   if ('dropStored' in action && action.dropStored && held !== undefined) {
     st.parties.takeStored(key);
     tell(st, $, action.why === 'manual' ? `forward-compaction: /compact ran Claude Code's own summary; ${label}'s stored handoff was dropped.` : `forward-compaction: ${label}'s stored handoff is no longer in its transcript (compacted by something else); it was dropped.`, { event: 'dropped', party: key, why: action.why });
@@ -631,26 +605,36 @@ async function compactAsk(st: State, $: EngineInterface, e: SessionCompactInput,
     if (kind === 'foreign') st.parties.forget(key);
     else (st.parties.asked(key, action.decision), st.installedSince.add(key)); // Claude Code's own summary: its fall is seen
     record(st, $, row);
-    if (action.decision === 'native' && action.why !== 'manual') tell(st, $, `forward-compaction: ${label} ${action.why === 'ceiling' ? `reached its ceiling ${k(m.ceiling)}` : 'was too long for its request'} with no handoff; Claude Code's own summary ran (FORWARD_COMPACTION_CEILING_NATIVE=1).`, { event: 'native', party: key, why: action.why });
+    if (action.decision === 'native' && action.why !== 'manual') tell(st, $, `forward-compaction: ${label} ${action.why === 'ceiling' ? `reached its ceiling ${k(m!.ceiling)}` : 'was too long for its request'} with no handoff; Claude Code's own summary ran (FORWARD_COMPACTION_CEILING_NATIVE=1).`, { event: 'native', party: key, why: action.why });
     return pass();
   }
   if (action.action === 'skip') {
-    // A precompute is no ask for a handoff: only a held one turns the nudge to "now".
-    if (action.why === 'waiting') st.parties.asked(key, 'skip');
+    // A precompute is no ask for a handoff: only a held one makes the next ask reactive (D8).
+    if (action.why !== 'precompute') st.parties.asked(key, 'skip');
     record(st, $, { ...row, reason: action.reason });
     return { skip: action.reason };
   }
-  const shared = { messages: e.messages, party: kind === 'main' ? ('main' as const) : ('subagent' as const), tokens, askPoint: m.askPoint, now: await $.clock.now(), facts: (kept: readonly string[]) => factsFor(st.ledger, key, { keptTexts: kept }), agents: await agentRows($) };
+  const shared = { messages: e.messages, party: kind === 'main' ? ('main' as const) : ('subagent' as const), tokens, askPoint: m?.askPoint ?? 0, charsPerToken: ratioOf(st, $, key, 'compact', await partyChars(st, $, key, e.agentId), m), now: await $.clock.now(), facts: (kept: readonly string[]) => factsFor(st.ledger, key, { keptTexts: kept }), agents: await agentRows($), ...(e.agentId !== undefined ? { self: e.agentId } : {}) };
   const wake = action.action === 'install'
-    ? buildWake({ ...shared, toolUseId: held!.toolUseId, handoff: held!.text, storedAt: held!.storedAtTokens, tool: st.toolNames.forward_compaction, files: await readLoadFiles($, held!.loadFiles) })
-    : mechanicalWake({ ...shared, tool: st.toolNames.forward_compaction, reason: action.why === 'ceiling' ? { kind: 'ceiling', ceiling: m.ceiling } : { kind: 'reactive' } });
-  const after = estimateTokens(wake.messages);
-  installed(st, key, after, signal);
-  const line = action.action === 'install'
-    ? landedLine({ label, before: tokens, after, chars: held!.text.length, facts: wake.facts, kept: wake.kept, dropped: wake.dropped })
-    : mechanicalLine({ label, tokens, ceiling: m.ceiling, before: tokens, after });
-  tell(st, $, line, { ...row, after, facts: wake.facts, kept: wake.kept, dropped: wake.dropped });
-  return { messages: wake.messages, tokensBefore: tokens, tokensAfter: after };
+    ? buildWake({ ...shared, toolUseId: held!.toolUseId, handoff: held!.text, maxContext: m?.maxContext, tool: st.toolNames.forward_compaction, files: await readLoadFiles($, held!.loadFiles) })
+    : mechanicalWake({ ...shared, tool: st.toolNames.forward_compaction, reason: action.why === 'ceiling' ? { kind: 'ceiling', ceiling: m!.ceiling } : { kind: 'reactive' } });
+  dbg(st, $, 'wake', { party: key, kind: action.action, ratio: shared.charsPerToken ?? null, askPoint: shared.askPoint, sizes: wake.sizes, headChars: wake.headChars, carried: wake.carried, notCarried: wake.notCarried, kept: wake.kept, dropped: wake.dropped });
+  installed(st, $, key, action.action === 'install' ? { kind: 'handoff', label, before: tokens, chars: held!.text.length, facts: wake.facts, kept: wake.kept, dropped: wake.dropped } : { kind: 'mechanical', label, before: tokens, tokens, ceiling: m?.ceiling ?? 0 }, signal);
+  record(st, $, { ...row, facts: wake.facts, kept: wake.kept, dropped: wake.dropped });
+  return { messages: wake.messages, ...(tokens !== undefined ? { tokensBefore: tokens } : {}) }; // tokensAfter: the next reading measures it (M2)
+}
+
+/** A party's live-window characters through `$.session.messages({ as: 'api' })` (main: no agentId), what its reading counts; a denied or failed read is said in its row and is no count. */
+async function partyChars(st: State, $: EngineInterface, key: string, agentId: unknown): Promise<number | undefined> {
+  return Promise.resolve().then(() => (typeof agentId !== 'string' ? $.session.messages({ as: 'api' }) : $.session.messages({ as: 'api', agentId }))).then((found) => ('deny' in found ? (dbg(st, $, 'session.messages-denied', { party: key, deny: found.deny }), undefined) : apiChars(found)), (error: unknown) => (dbg(st, $, 'session.messages-failed', { party: key, error: message(error) }), undefined));
+}
+
+/** A party's measured characters per token on its growth since its base, every count the live window `$.session.messages({ as: 'api' })` answers; unmeasured, or with no marks, nothing is converted, and its row says why. */
+function ratioOf(st: State, $: EngineInterface, key: string, at: 'compact' | 'tool-call', chars: number | undefined, m: Marks | undefined): number | undefined {
+  const { reading, base } = st.parties.get(key);
+  const r: { ratio?: number; why?: string; delta?: number } = m === undefined ? { why: 'no-marks' } : charsPerToken(base, chars, reading);
+  dbg(st, $, r.ratio === undefined ? 'ratio-unmeasured' : 'ratio', { party: key, at, baseChars: base?.chars ?? null, baseTokens: base?.tokens ?? null, chars: chars ?? null, reading: reading ?? null, ...r });
+  return r.ratio;
 }
 
 /** C11 (R35): an ask whose handling threw gets a mechanical wake, never the engine's summarizer by accident (A2); only when that throws too does Claude Code's own summary run. */
@@ -658,45 +642,58 @@ async function compactFailed(st: State, $: EngineInterface, e: SessionCompactInp
   const party = st.parties.get(key);
   const said = `forward-compaction: error in session.compact for ${party.label}: ${message(error)}`;
   try {
-    const tokens = currentTokens(party.reading, e.messages) ?? 0;
-    const { askPoint, ceiling } = marks(st, key);
-    const wake = mechanicalWake({ messages: e.messages, party: key === 'main' ? 'main' : 'subagent', tokens, askPoint, now: Date.now(), facts: (kept) => factsFor(st.ledger, key, { keptTexts: kept }), tool: st.toolNames.forward_compaction, reason: { kind: 'ceiling', ceiling } });
-    const after = estimateTokens(wake.messages);
-    installed(st, key, after, signal);
-    tell(st, $, `${said}; a mechanical wake was installed.`, { event: 'compact', party: key, decision: 'error', error: message(error), after });
-    return { messages: wake.messages, tokensBefore: tokens, tokensAfter: after };
+    const tokens = party.reading;
+    const m = marks(st, key);
+    const wake = mechanicalWake({ messages: e.messages, party: key === 'main' ? 'main' : 'subagent', tokens, askPoint: m?.askPoint ?? 0, charsPerToken: ratioOf(st, $, key, 'compact', await partyChars(st, $, key, e.agentId), m), now: Date.now(), facts: (kept) => factsFor(st.ledger, key, { keptTexts: kept }), tool: st.toolNames.forward_compaction, reason: m === undefined ? { kind: 'reactive' } : { kind: 'ceiling', ceiling: m.ceiling } });
+    installed(st, $, key, undefined, signal); // the error line below is said now; no landing waits
+    tell(st, $, `${said}; a mechanical wake was installed.`, { event: 'compact', party: key, decision: 'error', error: message(error), kept: wake.kept, dropped: wake.dropped });
+    return { messages: wake.messages, ...(tokens !== undefined ? { tokensBefore: tokens } : {}) };
   } catch (again) {
     tell(st, $, `${said}; Claude Code's own summary ran.`, { event: 'compact', party: key, decision: 'error', error: message(error), fallback: message(again) });
     return pass();
   }
 }
 
-/** Main's window, at session start and again after its model changed (/model, `model`); a failed read keeps the one known. */
+/** Main's window and Claude Code's ask point, at session start, at main's first step when not read yet, and after its model changed (/model, `model`); a failed read keeps what is known. */
 async function readMainWindow(st: State, $: EngineInterface, model?: string): Promise<void> {
   try {
-    const window = (await $.session.usage()).context.window;
-    if (typeof window !== 'number' || !(window > 0) || window === st.mainWindow) return;
-    if (model !== undefined) record(st, $, { event: 'window-changed', party: 'main', model, from: st.mainWindow, to: window });
-    st.mainWindow = window;
+    const { context } = await $.session.usage({ breakdown: 'summary' });
+    const b = context.breakdown;
+    dbg(st, $, 'session.usage', { model: model ?? null, window: context.window ?? null, tokens: context.tokens ?? null, autoCompactThreshold: b?.autoCompactThreshold ?? null, rawMaxTokens: b?.rawMaxTokens ?? null, autocompactSource: b?.autocompactSource ?? null, isAutoCompactEnabled: b?.isAutoCompactEnabled ?? null, breakdownModel: b?.model ?? null });
+    const window = typeof context.window === 'number' && context.window > 0 ? context.window : st.mainWindow;
+    if (model !== undefined && st.mainWindow !== undefined && window !== st.mainWindow) record(st, $, { event: 'window-changed', party: 'main', model, from: st.mainWindow, to: window });
+    Object.assign(st, { mainWindow: window, breakdown: b, apiAsk: askPointOf(b, window) });
+    const missing = st.apiAsk?.missing;
+    if (missing !== undefined) warnOnce(st, $, `ask-point:${missing}`, `forward-compaction: $.session.usage reported no ${missing === 'breakdown' ? 'context breakdown' : 'autoCompactThreshold (auto-compaction is off)'}; Claude Code's ask point is taken as its ${st.apiAsk!.source} ${k(st.apiAsk!.tokens)}`);
   } catch (error) {
-    warnOnce(st, $, 'usage', `forward-compaction: reading main's context window${model === undefined ? '' : ` after its model changed to ${model}`} failed: ${message(error)}; using ${k(st.mainWindow)}`);
+    warnOnce(st, $, 'usage', `forward-compaction: reading main's context window${model === undefined ? '' : ` after its model changed to ${model}`} failed: ${message(error)}; ${st.mainWindow === undefined ? "main's window stays unknown" : `keeping ${k(st.mainWindow)}`}`);
   }
 }
 
 /** A step's usage is the party's reading; a sharp fall nobody here caused is an unseen compaction (R39). */
 async function readStep(st: State, $: EngineInterface, e: TurnStepInput, r: TurnStepResult): Promise<void> {
   const key = keyOf(e.agentId);
-  if (key === 'main' && e.model !== undefined && ![undefined, e.model].includes(st.parties.get(key).model)) await readMainWindow(st, $, e.model); // after /model
-  st.parties.describe(key, { model: e.model, modelWin: key === 'main' ? st.mainWindow : modelWindow(e.model, st.mainWindow) });
+  const u = r?.usage;
+  dbg(st, $, 'turn.step', { party: key, model: e.model ?? null, input_tokens: u?.input_tokens ?? null, cache_read_input_tokens: u?.cache_read_input_tokens ?? null, cache_creation_input_tokens: u?.cache_creation_input_tokens ?? null, output_tokens: u?.output_tokens ?? null, usageModel: u?.model ?? null });
+  if (key === 'main' && e.model !== undefined && (st.mainWindow === undefined || (st.parties.get(key).model ?? e.model) !== e.model)) await readMainWindow(st, $, e.model); // not read yet, or after /model
+  st.parties.describe(key, { model: e.model }); judge(st, $, key);
   if (key === 'main') st.pendingCommand = undefined;
-  const tokens = contextTokens(r?.usage);
+  const tokens = readingTokens(u);
   if (tokens === undefined) return st.parties.answered(key);
   const party = st.parties.get(key);
   if (unseenCompaction(party.reading, tokens, st.installedSince.has(key))) {
     tell(st, $, `forward-compaction: ${party.label}'s context fell from ${k(party.reading!)} to ${k(tokens)} with no compaction this plugin handled (another plugin or Claude Code compacted it).`, { event: 'unseen-compaction', party: key, before: party.reading, after: tokens });
+    st.parties.rebase(key, undefined);
   }
-  st.parties.read(key, tokens);
+  const m = marks(st, key);
+  const level = m === undefined ? 0 : nudgeLevel(tokens, m.start, m.every);
+  dbg(st, $, 'reading', { party: key, tokens, level, from: party.reading ?? null, absorb: party.absorbNext });
+  land(st, $, key, st.parties.read(key, tokens, level), tokens);
   st.installedSince.delete(key);
+  if (party.base !== undefined) return; // the first reading in its live window takes the ratio's base (window.ts `charsPerToken`)
+  const chars = await partyChars(st, $, key, e.agentId);
+  dbg(st, $, 'ratio-base', { party: key, chars: chars ?? null, tokens });
+  if (chars !== undefined) st.parties.rebase(key, { chars, tokens });
 }
 
 /** P1 (R32): main's answered turn with a handoff stored compacts once; a sub-agent's turn end is its finish, and its party goes. */
@@ -704,6 +701,7 @@ async function turnEnds(st: State, $: EngineInterface, e: TurnCompleteInput): Pr
   const key = keyOf(e.agentId);
   if (key !== 'main') {
     if (st.parties.takeStored(key) !== undefined) record(st, $, { event: 'dropped', party: key, why: 'agent finished' });
+    land(st, $, key, st.parties.takeLanding(key));
     st.parties.forget(key);
     st.installedSince.delete(key);
     return;
@@ -750,15 +748,12 @@ async function noteSpawn(st: State, $: EngineInterface, e: AgentSpawnInput, r: A
   const key: PartyKey = `agent:${id}`;
   st.ledger = resolveSpawn(addEntry(st.ledger, { kind: 'brief', party: key, at: await $.clock.now(), text: e.prompt, description: e.description, subagentType: e.subagentType, spawnedBy: st.inFlight.get(e.tool_use_id)?.party ?? 'unknown' }), e.tool_use_id, id);
   st.knownAgents.set(id, e.subagentType);
-  st.parties.describe(key, { label: `${e.subagentType} ${id.slice(0, 6)}` });
+  st.parties.describe(key, { label: `${e.subagentType} ${id.slice(0, 6)}` }); judge(st, $, key);
 }
 
 /** The shells and crons running at a stop: the latest snapshot is a fact of every wake. */
 async function noteShells(st: State, $: EngineInterface, e: Record<string, unknown>): Promise<void> {
-  const list = (value: unknown): Record<string, unknown>[] => (Array.isArray(value) ? value : []);
-  const tasks = list(e.background_tasks).map((t) => ({ id: String(t.id), type: String(t.type), status: String(t.status), description: String(t.description ?? ''), ...(typeof t.command === 'string' ? { command: t.command } : {}) }));
-  const crons = list(e.session_crons).map((c) => ({ id: String(c.id), schedule: String(c.schedule), recurring: c.recurring === true, prompt: String(c.prompt ?? '') }));
-  st.ledger = addEntry(st.ledger, { kind: 'shells', at: await $.clock.now(), tasks, crons });
+  st.ledger = addEntry(st.ledger, { kind: 'shells', at: await $.clock.now(), ...shellsOf(e) });
 }
 
 export const register: Register = (on: On, options: PluginOptions) => {
@@ -768,21 +763,22 @@ export const register: Register = (on: On, options: PluginOptions) => {
     pluginRows: [], pluginInitialized: false, pluginWriting: Promise.resolve(), pluginFailing: false,
     toolNames: {}, toolTries: { forward_compaction: 0, look_back: 0 },
     warned: new Set(), logFailures: new Set(),
-    pending: [], rowsWriting: 0, levelRowsWriting: 0, skips: new SkipFold(), writing: Promise.resolve(),
-    parties: new Parties(ENGINE_DEFAULT_WINDOW), ledger: newLedger(), mainWindow: ENGINE_DEFAULT_WINDOW,
+    pending: [], rowsWriting: 0, levelRowsWriting: 0, levelLinks: 0, levelBatched: 0, skips: new SkipFold(), levelSkips: new SkipFold(), writing: Promise.resolve(),
+    parties: new Parties(), ledger: newLedger(),
     inFlight: new Map(), pendingSpawns: new Set(), knownAgents: new Map(), installedSince: new Set(),
   };
 
   on('session.start', async ($, e, next) => {
     const result = await next(e);
     await ensureTools(st, $, next.signal);
-    await guard(st, $, 'session.start', () => sessionBegins(st, $));
+    await guard(st, $, 'session.start', () => sessionBegins(st, $), e);
     return result;
   });
 
   on('tool.call', async ($, e, next) => {
+    dbg(st, $, 'hook', hookRow('tool.call', e));
     if (st.toolNames.look_back !== undefined && e.tool === st.toolNames.look_back) return { result: await answerLookBackTool(st, $, e as Record<string, unknown>) };
-    if (st.toolNames.forward_compaction !== undefined && e.tool === st.toolNames.forward_compaction) return { result: await answerForward(st, $, e as Record<string, unknown>) };
+    if (st.toolNames.forward_compaction !== undefined && e.tool === st.toolNames.forward_compaction) return { result: experimental(await answerForward(st, $, e as Record<string, unknown>), st.pluginLogDir) };
     await unlessAborted(observeManualLookBack(st, $, e as Record<string, unknown>), next.signal);
     const key = keyOf(e.agentId);
     const id = e.tool_use_id;
@@ -799,6 +795,7 @@ export const register: Register = (on: On, options: PluginOptions) => {
 
   on('session.compact', async ($, e, next) => {
     const key = keyOf(e.agentId);
+    dbg(st, $, 'hook', hookRow('session.compact', e));
     try {
       return await compactAsk(st, $, e, key, () => next(e), next.signal);
     } catch (error) {
@@ -808,28 +805,28 @@ export const register: Register = (on: On, options: PluginOptions) => {
 
   on('turn.step', async function* ($, e, next) {
     const r = yield* next(e);
-    await guard(st, $, 'turn.step', () => readStep(st, $, e, r));
+    await guard(st, $, 'turn.step', () => readStep(st, $, e, r), e);
     return r;
   });
 
   on('turn.complete', async ($, e, next) => {
     const r = await next(e);
-    await guard(st, $, 'turn.complete', () => turnEnds(st, $, e));
+    await guard(st, $, 'turn.complete', () => turnEnds(st, $, e), e);
     return r;
   });
 
   on('prompt.submit', async ($, e, next) => {
-    await guard(st, $, 'prompt.submit', () => noteSubmit(st, $, e));
+    await guard(st, $, 'prompt.submit', () => noteSubmit(st, $, e), e);
     return next(e);
   });
 
   on('session.receive', async ($, e, next) => {
-    await guard(st, $, 'session.receive', () => noteReceived(st, $, e));
+    await guard(st, $, 'session.receive', () => noteReceived(st, $, e), e);
     return next(e);
   });
 
   on('skill.prompt', async ($, e, next) => {
-    await guard(st, $, 'skill.prompt', () => noteSkill(st, $, e));
+    await guard(st, $, 'skill.prompt', () => noteSkill(st, $, e), e);
     return next(e);
   });
 
@@ -841,25 +838,28 @@ export const register: Register = (on: On, options: PluginOptions) => {
     } finally {
       st.pendingSpawns.delete(e.tool_use_id);
     }
-    await guard(st, $, 'agent.spawn', () => noteSpawn(st, $, e, r));
+    await guard(st, $, 'agent.spawn', () => noteSpawn(st, $, e, r), e);
     return r;
   });
 
   on('classic.Stop', async ($, e, next) => {
-    await guard(st, $, 'classic.Stop', () => noteShells(st, $, e as Record<string, unknown>));
+    await guard(st, $, 'classic.Stop', () => noteShells(st, $, e as Record<string, unknown>), e);
     return next(e);
   });
 
   on('classic.SubagentStop', async ($, e, next) => {
-    await guard(st, $, 'classic.SubagentStop', () => noteShells(st, $, e as Record<string, unknown>));
+    await guard(st, $, 'classic.SubagentStop', () => (land(st, $, keyOf(e.agent_id), st.parties.takeLanding(keyOf(e.agent_id))), noteShells(st, $, e as Record<string, unknown>)), e);
     return next(e);
   });
 
   on('session.end', async ($, e, next) => {
     // A /clear or a resume ends the conversation, and the process goes on under a new session id with no session.start.
     const goesOn = e.reason === 'clear' || e.reason === 'resume';
+    dbg(st, $, 'hook', { ...hookRow('session.end', e), reason: e.reason });
     if (goesOn) record(st, $, { event: 'cleared', party: 'main', reason: e.reason });
+    for (const [key, landing] of st.parties.takeLandings()) land(st, $, key, landing); // ended with no reading after its install
     // The open skip streaks close now, and the session ends only once every queued row is written.
+    for (const diagnostic of st.levelSkips.drain().map(pluginLogEvent)) if (diagnostic !== undefined) plog(st, $, diagnostic);
     if (st.config.logFile) {
       for (const out of st.skips.drain()) st.pending.push(JSON.stringify(out));
       flushDecisions(st, $, true);

@@ -78,9 +78,10 @@ describe('plugin log', () => {
   it('appends one exact row per level with private modes and positional shell data', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'plugin-log-'));
     try {
-      const pairs = ['error', 'warning', 'info'].flatMap((level) => [level === 'error' ? 'errors.jsonl' : level === 'warning' ? 'warnings.jsonl' : 'info.jsonl', JSON.stringify({ ...fields, level, ts: '2026-10-14T15:20:31.123Z', msg: "literal $(touch bad); ' \n text" }) + '\n']);
+      const file = (level: string) => ({ error: 'errors.jsonl', warning: 'warnings.jsonl', info: 'info.jsonl', debug: 'debug.jsonl' })[level]!;
+      const pairs = ['error', 'warning', 'info', 'debug'].flatMap((level) => [file(level), JSON.stringify({ ...fields, level, ts: '2026-10-14T15:20:31.123Z', msg: "literal $(touch bad); ' \n text" }) + '\n']);
       await shell(dir, pairs);
-      for (const [level, file] of [['error', 'errors.jsonl'], ['warning', 'warnings.jsonl'], ['info', 'info.jsonl']]) {
+      for (const [level, file] of [['error', 'errors.jsonl'], ['warning', 'warnings.jsonl'], ['info', 'info.jsonl'], ['debug', 'debug.jsonl']]) {
         expect(rows(dir, file!)).toEqual([{ ...fields, level, ts: '2026-10-14T15:20:31.123Z', msg: "literal $(touch bad); ' \n text" }]);
         expect(statSync(join(dir, file!)).mode & 0o777).toBe(0o600);
       }
@@ -200,6 +201,10 @@ exec /bin/chmod "$@"
       await expect(shell(dir, ['errors.jsonl', JSON.stringify({ ts: '2026-10-14T15:20:31.123Z', ...fields }) + '\n'])).rejects.toMatchObject({ stderr: expect.stringContaining(path) });
     } finally { chmodSync(path, 0o600); rmSync(dir, { recursive: true, force: true }); }
   });
+  it('maps the debug level to debug.jsonl beside the other level files', () => {
+    const [argv] = log.appendArgv('/x/logs/forward-compaction', 'forward-compaction', [JSON.stringify({ ...fields, level: 'debug' }) + '\n']);
+    expect(argv![6]).toBe('debug.jsonl');
+  });
   it('bounds batches at 64 pairs and keeps rows in order', () => {
     const input = Array.from({ length: 65 }, (_, n) => JSON.stringify({ ...fields, msg: String(n) }) + '\n');
     const batches: string[][] = future.appendArgv?.('/x/logs/forward-compaction', 'forward-compaction', input) ?? [];
@@ -234,14 +239,37 @@ exec /bin/chmod "$@"
   ])('routes %s as %s without carrying tool bodies', (event, level, output, extra) => {
     const routed = future.pluginLogEvent?.({ event, ...extra as object, line: 'diagnostic', party: 'main', error: 'diagnostic failure', focus: 'private prompt', text: 'private handoff', query: 'private query', input: { body: 'private input' } });
     expect(routed).toMatchObject({ level, event: output, where: 'hooks/forward-compaction.ts#record' });
-    expect(routed.detail).toEqual({ party: 'main', error: 'diagnostic failure', ...('why' in (extra as object) ? { why: (extra as any).why } : {}) });
+    expect(routed.detail).toEqual({ party: 'main', error: 'diagnostic failure', ...('why' in (extra as object) ? { why: (extra as any).why } : {}), ...('decision' in (extra as object) ? { decision: (extra as any).decision } : {}) });
   });
   it('logs unexpected API shapes without serializing transcript bodies', () => {
     expect(future.pluginLogEvent?.({ event: 'decision-retention-failed', problem: 'transcript: unreadable ({"body":"private transcript"})' })).toMatchObject({ level: 'warning', event: 'decision-retention-failed', msg: 'transcript: unreadable (unexpected API shape)', detail: { problem: 'transcript: unreadable (unexpected API shape)' } });
   });
-  it('selects actionable diagnostics among routine hook traffic', () => {
-    const traffic = [{ event: 'nudge', focus: 'private' }, { event: 'option-error', error: 'seating failed' }];
-    expect(traffic.flatMap((row) => future.pluginLogEvent?.(row) ?? []).map((row: any) => [row.level, row.event, row.msg])).toEqual([['error', 'option-error', 'seating failed']]);
+  it('files routine hook traffic at info, keeping errors and warnings at their levels', () => {
+    const traffic = [{ event: 'nudge', party: 'main', tokens: 51_000, focus: 'private' }, { event: 'option-error', error: 'seating failed' }, { event: 'stored', party: 'main', chars: 40, line: 'stored 40 characters' }, { event: 'compact', party: 'main', decision: 'install', why: 'stored', line: 'main handoff landed' }];
+    expect(traffic.flatMap((row) => future.pluginLogEvent?.(row) ?? []).map((row: any) => [row.level, row.event, row.msg])).toEqual([
+      ['info', 'nudge', 'nudge'], ['error', 'option-error', 'seating failed'], ['info', 'stored', 'stored 40 characters'], ['info', 'compact', 'main handoff landed'],
+    ]);
+    expect(future.pluginLogEvent?.({ event: 'nudge', party: 'main', tokens: 51_000, focus: 'private' }).detail).toEqual({ party: 'main', tokens: 51_000 });
+    expect(future.pluginLogEvent?.({ event: 'stored', party: 'main', chars: 40, files: 2, tokens: 9 }).detail).toEqual({ party: 'main', chars: 40, files: 2, tokens: 9 });
+    expect(future.pluginLogEvent?.({ event: 'refused', party: 'main', refusal: 'forward_compaction refused, nothing stored: x' })).toMatchObject({ level: 'info', msg: 'forward_compaction refused, nothing stored: x' });
+    expect(future.pluginLogEvent?.({ event: 'skips', party: 'main', count: 7 })).toMatchObject({ level: 'info', event: 'skips', msg: '7 more held compaction asks folded' });
+    expect(future.pluginLogEvent?.({ event: 'nudge', party: 'main', level: 2, tokens: 9 }).detail).toEqual({ party: 'main', level: 2, tokens: 9 });
+    expect(future.pluginLogEvent?.({ event: 'compact', party: 'main', trigger: 'auto', decision: 'skip', why: 'waiting', tokens: 9 }).detail).toEqual({ party: 'main', trigger: 'auto', decision: 'skip', why: 'waiting', tokens: 9 });
+    expect(future.pluginLogEvent?.({ event: 'skips', party: 'main', count: 4, from: 'a', to: 'b', firstTokens: 1, lastTokens: 2, ts: 'b' }).detail).toEqual({ party: 'main', count: 4, from: 'a', to: 'b', firstTokens: 1, lastTokens: 2 });
+  });
+  it('stamps a folded skips row with its streak\'s time and any other row with the writing time', () => {
+    const stamp = (fields: object, now: number) => JSON.parse(future.levelRow?.({ plugin: 'p', level: 'info', event: 'skips', msg: 'm', where: 'w', ...fields }, now) ?? '{}').ts;
+    const late = Date.parse('2026-10-24T00:06:52.411Z');
+    expect(stamp({}, late)).toBe('2026-10-24T00:06:52.411Z');
+    expect(stamp({ ts: '2026-10-24T00:06:25.004Z' }, late)).toBe('2026-10-24T00:06:25.004Z');
+    expect(stamp({ ts: 'not a time' }, late)).toBe('2026-10-24T00:06:52.411Z');
+    expect((future.pluginLogEvent?.({ event: 'skips', party: 'main', count: 4, ts: '2026-10-24T00:06:25.004Z' }) as any).ts).toBe('2026-10-24T00:06:25.004Z');
+    expect((future.pluginLogEvent?.({ event: 'nudge', party: 'main', ts: '2026-10-24T00:06:25.004Z' }) as any).ts).toBeUndefined();
+  });
+
+  it('maps no said row (say writes its own) and no plugin-log failure (it would recurse into the failing log)', () => {
+    expect(future.pluginLogEvent?.({ event: 'said', line: 'x', shown: false })).toBeUndefined();
+    expect(future.pluginLogEvent?.({ event: 'plugin-log-failed', error: 'EACCES', dropped: 1 })).toBeUndefined();
   });
 });
 
@@ -634,5 +662,14 @@ describe('runCwd', () => {
     expect(runCwd('logs/x.jsonl')).toEqual({});
     expect(runCwd('')).toEqual({});
     expect(runCwd()).toEqual({});
+  });
+});
+
+describe('hookRow: the debug row of a hook entry', () => {
+  it('names the hook, the party, and the trigger, model and tool the event carries', () => {
+    expect(log.hookRow('session.compact', { agentId: 'a1', trigger: 'auto', messages: [] })).toEqual({ hook: 'session.compact', party: 'agent:a1', trigger: 'auto', model: null, tool: null });
+    expect(log.hookRow('turn.step', { model: 'claude-haiku-4-5' })).toEqual({ hook: 'turn.step', party: 'main', trigger: null, model: 'claude-haiku-4-5', tool: null });
+    expect(log.hookRow('tool.call', { tool: 'Read', agentId: '' })).toEqual({ hook: 'tool.call', party: 'main', trigger: null, model: null, tool: 'Read' });
+    expect(log.hookRow('session.end', undefined)).toEqual({ hook: 'session.end', party: 'main', trigger: null, model: null, tool: null });
   });
 });

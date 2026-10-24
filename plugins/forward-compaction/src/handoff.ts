@@ -1,25 +1,39 @@
 // The forward_compaction tool contract: what the model may send, what is refused (never trimmed), and what the receipt says.
 
+import { k } from './nudge.ts';
+import { loadFilesRoom } from './window.ts';
+
 /** The tool's name as registered; the model sees `mcp__forward-compaction__forward_compaction`. */
 export const FORWARD_TOOL = 'forward_compaction';
 
 export const FORWARD_TOOL_DESCRIPTION =
-  'Hands off your context — at a milestone once your context is large, or when a forward-compaction nudge asks. Stores your handoff; at your next compaction everything before this call is replaced by it plus recorded facts (the person\'s messages or your brief, your skills), and every message after this call is kept verbatim. Returns a receipt saying when it installs; a refusal names what to fix and stores nothing. Example: forward_compaction({"handoff": "## Objective\\n…\\n## Done\\n…\\n## Remaining\\n…\\n## Next\\n…", "load_files": []}). Exact old detail later → look_back.';
+  'Hands off your context — at a clean milestone once context is large. Stores your handoff, one argument per section (20,000 characters in all), written for yourself after a reset; at your next compaction everything before this call is replaced by it plus recorded facts (the person\'s messages or your brief, your skills), and every later message stays verbatim. Returns a receipt of when it installs; a refusal names what to fix and stores nothing. Example: forward_compaction({"objective": "…", "done": "…", "remaining": "…", "next": "…", "load_files": []}). Exact old detail later → look_back.';
+
+/** The handoff's sections in the order they are assembled: the argument, its heading, whether it is required, and what it holds. */
+const SECTIONS = [
+  { key: 'objective', heading: 'Objective', required: true, description: 'What the work is for and what done means.' },
+  { key: 'done', heading: 'Done', required: true, description: 'Finished pieces, each with how it was verified.' },
+  { key: 'remaining', heading: 'Remaining', required: true, description: 'Every step left, in order.' },
+  { key: 'next', heading: 'Next', required: true, description: 'The first concrete action after the wake.' },
+  { key: 'blocked', heading: 'Blocked', required: false, description: 'Optional: what waits on whom.' },
+  { key: 'findings', heading: 'Findings', required: false, description: 'Optional: decisions with why, errors verbatim.' },
+] as const;
 
 export const FORWARD_INPUT_SCHEMA = {
   type: 'object',
   additionalProperties: false,
-  required: ['handoff'],
+  required: ['objective', 'done', 'remaining', 'next'],
   properties: {
-    handoff: {
-      type: 'string',
-      description:
-        'Markdown, at most 20000 characters, with these level-2 headings, each followed by at least one line: ## Objective (what the work is for and what done means), ## Done (finished pieces, each with how it was verified), ## Remaining (every step left, in order), ## Next (the first concrete action after the wake). Optional: ## Blocked (what waits on whom), ## Findings (decisions with why, errors verbatim). Write it for yourself after a reset: the messages before this call will be gone.',
-    },
+    objective: { type: 'string', description: SECTIONS[0].description },
+    done: { type: 'string', description: SECTIONS[1].description },
+    remaining: { type: 'string', description: SECTIONS[2].description },
+    next: { type: 'string', description: SECTIONS[3].description },
+    blocked: { type: 'string', description: SECTIONS[4].description },
+    findings: { type: 'string', description: SECTIONS[5].description },
     load_files: {
       type: 'array',
       maxItems: 8,
-      description: 'Files carried whole into the new context, read when it installs. A file too big to carry is named in the wake as not carried, never cut.',
+      description: 'Files carried whole into the new context, read when it installs. Files that come to more than 5% of your window are refused at the call: pass lines ranges or fewer files.',
       items: {
         type: 'object',
         additionalProperties: false,
@@ -34,9 +48,14 @@ export const FORWARD_INPUT_SCHEMA = {
   },
 } as const;
 
+// Format caps: design budgets on what the model may send, never a measured size.
+/** The assembled handoff's cap: a frontier stays a page or two the woken model reads whole, well inside any wake budget. */
 export const HANDOFF_MAX_CHARS = 20_000;
+/** Load files per call: enough for a plan, a spec and the files in hand, few enough that each is named and chosen. */
 export const LOAD_FILES_MAX = 8;
+/** A load file's `why`: one line saying what it is for. */
 export const WHY_MAX_CHARS = 200;
+/** A load file's size on disk (1 MiB): a file past it is a dump to slice with `lines`, not a file to carry whole. */
 export const LOAD_FILE_MAX_BYTES = 1_048_576;
 
 /** One file the model asked to carry whole into the wake; every field is the model's own text, kept verbatim. */
@@ -45,8 +64,7 @@ export type LoadFile = { path: string; lines?: string; why: string };
 export type ParsedHandoff = { handoff: string; loadFiles: LoadFile[] };
 export type Refusal = { refusal: string };
 
-const REQUIRED = ['Objective', 'Done', 'Remaining', 'Next'] as const;
-const OPTIONAL = ['Blocked', 'Findings'] as const;
+const FIELDS = [...SECTIONS.map((section) => section.key), 'load_files'];
 const PREFIX = 'forward_compaction refused, nothing stored: ';
 const refuse = (text: string): Refusal => ({ refusal: PREFIX + text });
 const num = (n: number): string => n.toLocaleString('en-US');
@@ -54,36 +72,34 @@ const kind = (v: unknown): string => (v === null ? 'null' : Array.isArray(v) ? '
 const isAbsolutePath = (p: string): boolean => /^(\/|[A-Za-z]:[\\/]|\\\\)/.test(p);
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 
-/** The 1-based lines of `text` holding exactly `## {name}`; `\r` before the newline is whitespace. */
-const headingLines = (lines: readonly string[], name: string): number[] => {
-  const re = new RegExp(`^## ${name}\\s*$`);
-  return lines.flatMap((line, i) => (re.test(line) ? [i] : []));
-};
+/** One line per bad argument: an unknown field, a required section missing, not a string or blank, an optional one given but not a string. */
+function argumentFaults(fields: Record<string, unknown>): string[] {
+  const unknown = Object.keys(fields).filter((key) => !FIELDS.includes(key)).map((key) => `unknown field "${key}". The fields are ${FIELDS.slice(0, -1).join(', ')} and load_files.`);
+  const sections = SECTIONS.flatMap(({ key, required }) => {
+    const value = fields[key];
+    if (required && (typeof value !== 'string' || value.trim() === '')) return [`${key} must be a non-blank string; got ${typeof value === 'string' ? 'a blank string' : kind(value)}.`];
+    if (!required && value !== undefined && typeof value !== 'string') return [`${key} must be a string when given; got ${kind(value)}.`];
+    return [];
+  });
+  return [...unknown, ...sections];
+}
 
 /**
- * Validates the model's tool input before anything is stored (V1-V11 of the spec table, first failure wins). The
- * handoff and the files come back exactly as sent: nothing is trimmed, a fault is refused for the model to fix.
+ * Validates the model's tool input before anything is stored (V1-V11 of the spec table), every bad argument named in
+ * one refusal, then assembles the handoff from its sections in order, an absent or blank optional one left out. Each
+ * section's text and the files come back exactly as sent: nothing is trimmed, a fault is refused for the model to fix.
  * `$.fs.stat` checks (V12-V15) are the adapter's, through `loadFileRefusal`.
  */
 export function parseHandoff(input: unknown): ParsedHandoff | Refusal {
   const fields = isObject(input) ? input : {};
-  for (const key of Object.keys(fields)) if (key !== 'handoff' && key !== 'load_files') return refuse(`unknown field "${key}". The fields are handoff and load_files.`);
-  const { handoff, load_files: files } = fields;
-  if (typeof handoff !== 'string') return refuse(`handoff must be a markdown string; got ${kind(handoff)}.`);
-  if (handoff.length > HANDOFF_MAX_CHARS) return refuse(`the handoff is ${num(handoff.length)} characters, over the ${num(HANDOFF_MAX_CHARS)} cap. Shorten it (detail can go in load_files, or stay in the transcript for look_back) and call again.`);
-
-  const lines = handoff.split('\n');
-  const missing = REQUIRED.find((name) => headingLines(lines, name).length === 0);
-  if (missing !== undefined) return refuse(`the handoff has no "## ${missing}" heading. Required, each followed by at least one line: ${REQUIRED.map((n) => `## ${n}`).join(', ')}. Call again with all four.`);
-  for (const name of [...REQUIRED, ...OPTIONAL]) {
-    const count = headingLines(lines, name).length;
-    if (count > 1) return refuse(`the handoff has "## ${name}" ${count} times; give it once.`);
-  }
-  for (const name of REQUIRED) {
-    const at = headingLines(lines, name)[0]!;
-    const end = lines.findIndex((line, i) => i > at && line.startsWith('## '));
-    if (!lines.slice(at + 1, end === -1 ? undefined : end).some((line) => line.trim() !== '')) return refuse(`"## ${name}" has no text under it.`);
-  }
+  const faults = argumentFaults(fields);
+  if (faults.length > 0) return refuse(faults.join('\n'));
+  const handoff = SECTIONS.flatMap(({ key, heading }) => {
+    const text = fields[key];
+    return typeof text === 'string' && text.trim() !== '' ? [`## ${heading}\n${text}`] : [];
+  }).join('\n\n');
+  if (handoff.length > HANDOFF_MAX_CHARS) return refuse(`the handoff assembled from your sections is ${num(handoff.length)} characters, over the ${num(HANDOFF_MAX_CHARS)} cap. Shorten it (detail can go in load_files, or stay in the transcript for look_back) and call again.`);
+  const files = fields.load_files;
 
   if (files === undefined) return { handoff, loadFiles: [] };
   if (!Array.isArray(files)) return refuse('load_files must be an array of {path, lines?, why}.');
@@ -113,20 +129,59 @@ export function loadFileRefusal(index: number, path: string, check: FileCheck): 
   return undefined;
 }
 
+/** `tokens`: the party's last reading, absent when it has none; it picks the sentence and is never printed, being a step behind the call. */
 export type ReceiptInput =
-  | { party: 'main'; chars: number; files: number; tokens?: number; askPoint?: number; replaced?: number }
-  | { party: 'subagent'; chars: number; files: number; tokens: number; askPoint: number; replaced?: number };
-
-const k = (tokens: number): string => `${Math.round(tokens / 1000)}k`;
+  | { party: 'main'; chars: number; files: number; tokens?: number; askPoint?: number; replaced?: boolean }
+  | { party: 'subagent'; chars: number; files: number; tokens?: number; askPoint: number; replaced?: boolean };
 
 /** The tool result of a stored handoff: when it installs, true to the party's door (a sub-agent's only door is Claude Code's ask). */
 export function receipt(input: ReceiptInput): string {
   const stored = `Handoff stored (${num(input.chars)} characters, ${input.files} files).`;
   const behind = 'Everything after this call is kept verbatim behind it';
-  const replaced = input.replaced === undefined ? '' : ` It replaces the handoff you stored at ${k(input.replaced)}.`;
+  const replaced = input.replaced ? ' It replaces the handoff you stored before.' : '';
   if (input.party === 'main') return `${stored} It installs at the end of this turn, or at Claude Code's next compaction ask if one comes first. ${behind}, so finish the step in hand; you need not stop.${replaced}`;
-  if (input.tokens >= input.askPoint) return `${stored} It installs at Claude Code's next compaction ask, before your next request. ${behind}.${replaced}`;
-  return `${stored} Claude Code has not asked to compact you yet: it installs at Claude Code's next ask, from about ${k(input.askPoint)} context (you are at ${k(input.tokens)}). ${behind}. Carry on with your work.${replaced}`;
+  if (input.tokens !== undefined && input.tokens >= input.askPoint) return `${stored} It installs at Claude Code's next compaction ask, before your next request. ${behind}.${replaced}`;
+  return `${stored} Claude Code has not asked to compact you yet: it installs at Claude Code's next ask, from about ${k(input.askPoint)} context. ${behind}. Carry on with your work.${replaced}`;
+}
+
+/**
+ * The refusal for load files whose content comes to more than `loadFilesRoom` of the party's max context at its measured
+ * characters per token (`ratio`), each file named with its size (`chars`, as read for the wake: a `lines` range counts its
+ * lines alone); undefined when they fit, and with no ratio (unmeasured yet), when nothing can be measured. Refused, never trimmed.
+ */
+export function loadRoomRefusal(files: readonly { path: string; chars: number }[], maxContext: number, ratio: number | undefined): string | undefined {
+  const room = loadFilesRoom(maxContext, ratio);
+  const total = files.reduce((sum, f) => sum + f.chars, 0);
+  if (total <= room) return undefined;
+  return [
+    PREFIX + `load_files come to ${num(total)} characters, over the ${num(room)}-character room for carried files (5% of your ${k(maxContext)} max context):`,
+    ...files.map((f) => `- ${f.path}: ${num(f.chars)} characters`),
+    'Pass lines ranges (like "10-40" or "1-60,160-185") to carry only what you need, or fewer files, and call again.',
+  ].join('\n');
+}
+
+/** The answer to a forward_compaction call from a party whose model is on the ignore list (`Parties.ignored`, the entry it matched): refused, nothing stored. Undefined for a party the plugin manages. */
+export function ignoredRefusal(matched: string | undefined, ceiling: number | undefined): string | undefined {
+  if (matched === undefined) return undefined;
+  return `forward_compaction refused, nothing stored: your model is on forward-compaction's ignore list ("${matched}"), so it takes no handoff from you; carry on with your work, and at ${ceiling === undefined ? 'your ceiling' : k(ceiling)} the plugin compacts you mechanically.`;
+}
+
+/** Keys the tool.call event carries beside the tool's arguments. */
+const EVENT_KEYS = new Set(['tool', 'tool_use_id', 'agentId']);
+
+/** The arguments of a tool call: every key of the event but its own (a key that is not a field included, so the check names it) or, when none is there, the event's `input`. */
+export function toolInput(e: Record<string, unknown>): Record<string, unknown> {
+  const top: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(e)) if (!EVENT_KEYS.has(key) && key !== 'input' && value !== undefined) top[key] = value;
+  if (Object.keys(top).length > 0) return top;
+  const nested = e.input;
+  return nested !== null && typeof nested === 'object' && !Array.isArray(nested) ? (nested as Record<string, unknown>) : {};
+}
+
+/** Every forward_compaction answer, receipt or refusal, ends with this line; `logDir` is the level-log directory, where the issues file lives. */
+export function experimental(text: string, logDir: string | undefined): string {
+  const where = logDir === undefined ? 'your reply.' : `${logDir.replace(/\/+$/, '')}/issues.md; it will be taken care of later.`;
+  return `${text}\nforward-compaction is experimental. If it gave you any trouble, append a short note of what happened to ${where}`;
 }
 
 export function parseLineRanges(text: string): { from: number; to: number }[] | undefined {

@@ -1,8 +1,10 @@
 /** The tool's name as the installed copy registered it; a `-dev` copy's differs. */
 export const DEFAULT_TOOL = 'mcp__forward-compaction__forward_compaction';
 
-function k(tokens: number): string {
-  return `${Math.round(tokens / 1000)}k`;
+/** A token size for model-facing and screen text: thousands as `51k`, a million or more as `1M` or `1.5M`. */
+export function k(tokens: number): string {
+  const thousands = Math.round(tokens / 1000);
+  return thousands < 1000 ? `${thousands}k` : `${Math.round(tokens / 100_000) / 10}M`;
 }
 
 /** 0 below `start`, 1 at it, and one more per `every` tokens past it. */
@@ -12,25 +14,18 @@ export function nudgeLevel(tokens: number, start: number, every: number): number
 }
 
 export type NudgeInput = {
-  /** The party's context reading. */
+  /** The party's last measured reading. */
   tokens: number;
-  /** The context at which Claude Code starts asking to compact the party. */
-  askPoint: number;
+  /** The party's model window, which the nudge percentages are taken against. */
+  window: number;
   /** The context at which the plugin compacts the party mechanically. */
   ceiling: number;
-  /** True once an automatic ask for the party was held with no handoff stored. */
-  asked: boolean;
   /** The registered `forward_compaction` name; DEFAULT_TOOL when absent. */
   tool?: string;
 };
 
-/**
- * What the model reads after a tool result once its context passes a nudge point: "soon" while Claude Code
- * has not asked to compact the party, "now" once the reading is at the ask point or an ask was held.
- */
-export function nudgeText({ tokens, askPoint, ceiling, asked, tool = DEFAULT_TOOL }: NudgeInput): string {
-  if (asked || tokens >= askPoint) {
-    return `forward-compaction: Claude Code is asking to compact you (${k(tokens)} tokens) and no handoff is stored. Call ${tool} now, at a clean point. At ${k(ceiling)} the plugin compacts you mechanically, with no frontier from you. If this tool is not in your tool list, carry on.`;
-  }
-  return `forward-compaction: your context is ${k(tokens)} tokens. At your next milestone, at a clean point and never mid-edit, call ${tool} with your handoff (## Objective, ## Done, ## Remaining, ## Next). The plugin keeps the person's messages or your brief, your skills, and every message after the call; you write the frontier. If only your final answer is left, give it instead. If this tool is not in your tool list, carry on: a mechanical compaction at ${k(ceiling)} keeps your brief, skills and newest messages.`;
+/** What the model reads after a tool result once its context passes a nudge point: hand off at the next clean milestone; the model picks the moment, not whether. */
+export function nudgeText({ tokens, window, ceiling, tool = DEFAULT_TOOL }: NudgeInput): string {
+  const percent = Math.round((tokens / Math.max(1, window)) * 100);
+  return `forward-compaction: your context is ${k(tokens)} tokens (${percent}% of your ${k(window)} max context), and every call re-sends all of it. Hand off at your next clean milestone: once the step in hand is finished and its results are written down, and before you start the next step, call ${tool} with objective, done, remaining and next. You pick the milestone, not whether: skip it only if nothing is left but writing your result and your final answer. At ${k(ceiling)} the plugin compacts you mechanically, with no frontier from you. If this tool is not in your tool list, carry on.`;
 }

@@ -251,13 +251,13 @@ function summary(streak: SkipStreak): DecisionRow {
   return { ts: streak.to, event: 'skips', party: streak.party, trigger: streak.trigger, count: streak.count, from: streak.from, to: streak.to, firstTokens: streak.firstTokens, lastTokens: streak.lastTokens };
 }
 
-export type PluginLogLevel = 'error' | 'warning' | 'info';
+export type PluginLogLevel = 'error' | 'warning' | 'info' | 'debug';
 
 /** Errors always show; warnings and info show only when logging is unavailable or failing. */
 export function noticeOnScreen({ level, decisionLog, pluginLog, logOff }: { level: PluginLogLevel; decisionLog: boolean; pluginLog: boolean; logOff?: boolean }): boolean {
   return level === 'error' || logOff === true || (!decisionLog && !pluginLog);
 }
-export type PluginLogFields = { plugin: string; level: PluginLogLevel; event: string; msg: string; where: string; session?: string; detail?: Record<string, unknown> };
+export type PluginLogFields = { plugin: string; level: PluginLogLevel; event: string; msg: string; where: string; session?: string; detail?: Record<string, unknown>; /** The row's own time, when it is not the writing time: a folded `skips` row is stamped with its streak's. */ ts?: string };
 export const PLUGIN_LOG_CAP_BYTES = 20971520;
 export const ROW_MAX_BYTES = 4096;
 
@@ -297,7 +297,8 @@ function pluginLogTimestamp(nowMs: number): string {
 
 /** Ordered JSONL, bounded after serialization (including escapes and newline). */
 export function levelRow(fields: PluginLogFields, nowMs: number): string {
-  const row: PluginLogFields & { ts: string } = { ts: pluginLogTimestamp(nowMs), plugin: fields.plugin, level: fields.level, event: fields.event, msg: pluginLogDiagnostic(fields.msg), where: fields.where, ...(fields.session ? { session: fields.session } : {}), ...(fields.detail !== undefined ? { detail: fields.detail } : {}) };
+  const own = fields.ts === undefined ? Number.NaN : Date.parse(fields.ts);
+  const row: PluginLogFields & { ts: string } = { ts: pluginLogTimestamp(Number.isFinite(own) ? own : nowMs), plugin: fields.plugin, level: fields.level, event: fields.event, msg: pluginLogDiagnostic(fields.msg), where: fields.where, ...(fields.session ? { session: fields.session } : {}), ...(fields.detail !== undefined ? { detail: fields.detail } : {}) };
   const serialize = () => `${JSON.stringify(row)}\n`;
   let text = serialize();
   const bytes = pluginLogBytes(text);
@@ -356,7 +357,7 @@ capped() {
 }
 while [ "$#" -gt 0 ]; do
   file=$1; row=$2; shift 2
-  case "$file" in errors.jsonl|warnings.jsonl|info.jsonl) ;; *) printf '%s: invalid level file: %s\\n' "$dir" "$file" >&2; exit 2;; esac
+  case "$file" in errors.jsonl|warnings.jsonl|info.jsonl|debug.jsonl) ;; *) printf '%s: invalid level file: %s\\n' "$dir" "$file" >&2; exit 2;; esac
   ts=\${row#*\\"ts\\":\\"}; ts=\${ts%%\\"*}
   header=\${row%?}; header=\${header%?}; header=\${header%%,\\"detail\\":*}
   case "$header" in *',"session":'*) session=',"session":'\${header##*,\\"session\\":};; *) session=;; esac
@@ -374,7 +375,7 @@ export function appendArgv(dir: string, plugin: string, rows: readonly string[])
   for (let at = 0; at < rows.length; at += 64) {
     const pairs = rows.slice(at, at + 64).flatMap((row) => {
       const level: unknown = JSON.parse(row).level;
-      const file = level === 'error' ? 'errors.jsonl' : level === 'warning' ? 'warnings.jsonl' : level === 'info' ? 'info.jsonl' : undefined;
+      const file = level === 'error' ? 'errors.jsonl' : level === 'warning' ? 'warnings.jsonl' : level === 'info' ? 'info.jsonl' : level === 'debug' ? 'debug.jsonl' : undefined;
       if (file === undefined) throw new Error(`plugin log invalid level: ${String(level)}`);
       return [file, row];
     });
@@ -417,20 +418,36 @@ export class PluginLogQueue {
   }
 }
 
-/** Only diagnostics enter the level files; never copy a whole decision or tool input. */
+/** Decision rows that are never level rows: `say` writes its own line, and a plugin-log failure would recurse into the failing log. */
+const NO_LEVEL_ROW = ['said', 'plugin-log-failed'];
+
+/** Every decision event enters the level files, errors and warnings at their levels and the rest at info; never a whole decision or tool input. */
 export function pluginLogEvent(row: Record<string, unknown>): Omit<PluginLogFields, 'plugin' | 'session'> | undefined {
   row = Object.fromEntries(Object.entries(row).map(([key, value]) => [key, typeof value === 'string' ? pluginLogDiagnostic(value) : value]));
   let event = String(row.event);
+  if (NO_LEVEL_ROW.includes(event)) return undefined;
   if (event === 'compact' && row.decision === 'error') event = 'compact-error';
   const errors = ['error', 'option-error', 'tool-register-failed', 'look-back-manual-error', 'compact-error'];
   const warnings = ['warning', 'decision-retention-failed', 'unseen-compaction'];
-  const level = errors.includes(event) ? 'error' : warnings.includes(event) ? 'warning' : undefined;
-  if (level === undefined) return undefined;
+  const level = errors.includes(event) ? 'error' : warnings.includes(event) ? 'warning' : 'info';
   const detail: Record<string, unknown> = {};
-  for (const key of ['party', 'type', 'tool', 'tries', 'seq', 'why', 'tokens', 'chars', 'before', 'after', 'held', 'error', 'problem', 'dir']) {
+  for (const key of ['party', 'type', 'tool', 'tries', 'seq', 'why', 'tokens', 'chars', 'files', 'before', 'after', 'held', 'error', 'problem', 'dir', 'level', 'decision', 'trigger', 'count', 'from', 'to', 'firstTokens', 'lastTokens', 'label', 'model', 'judged', 'matched']) {
     const value = row[key];
     if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean' || value === null) detail[key] = value;
   }
-  const msg = [row.line, row.error, row.problem, row.detail, row.why].find((value) => typeof value === 'string');
-  return { level, event, msg: typeof msg === 'string' ? msg : event.replace(/-/g, ' '), where: 'hooks/forward-compaction.ts#record', detail };
+  const skips = event === 'skips' && typeof row.count === 'number' ? `${row.count} more held compaction asks folded` : undefined;
+  const msg = [row.line, row.error, row.problem, row.detail, row.refusal, skips, row.reason, row.why].find((value) => typeof value === 'string');
+  return { level, event, msg: typeof msg === 'string' ? msg : event.replace(/-/g, ' '), where: 'hooks/forward-compaction.ts#record', detail, ...(event === 'skips' && typeof row.ts === 'string' ? { ts: row.ts } : {}) };
+}
+
+/** The debug row of a hook entry: the hook, the party its `agentId` names, and the trigger, model and tool the event carries (null where none). */
+export function hookRow(hook: string, e: unknown): Record<string, unknown> {
+  const ev = (e !== null && typeof e === 'object' ? e : {}) as Record<string, unknown>;
+  const text = (value: unknown): string | null => (typeof value === 'string' && value !== '' ? value : null);
+  return { hook, party: text(ev.agentId) === null ? 'main' : `agent:${ev.agentId as string}`, trigger: text(ev.trigger), model: text(ev.model), tool: text(ev.tool) };
+}
+
+/** A failed decision-log append whose rows went back to the queue: how many, and how many old ones the hold let go. */
+export class DecisionWriteError extends Error {
+  constructor(cause: string, readonly rows: number, readonly dropped: number) { super(cause); }
 }

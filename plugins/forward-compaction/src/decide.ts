@@ -17,50 +17,10 @@ export function contextTokens(usage: {
   return usage.input_tokens + (usage.cache_read_input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0);
 }
 
-type TranscriptMessage = {
-  role?: 'user' | 'assistant';
-  text?: string;
-  toolUses?: readonly { tool_use_id: string; input?: unknown; text?: string }[];
-  toolResults?: readonly { tool_use_id: string; text?: string }[];
-};
-
-/** Characters per token for the estimate; code runs near 3.5. */
-export const CHARS_PER_TOKEN = 3.5;
-
-/**
- * A rough token count: of a character count, or of a transcript in `session.compact`'s shape (message text,
- * tool inputs and each tool result once; a result the transcript carries both on the call and on the answer
- * is counted once). A transcript leaves out the system prompt and tool definitions, so it runs below the true context.
- */
-export function estimateTokens(input: number | readonly TranscriptMessage[]): number {
-  if (typeof input === 'number') return Math.ceil(input / CHARS_PER_TOKEN);
-  let chars = 0;
-  const answered = new Set<string>();
-  for (const message of input) for (const result of message.toolResults ?? []) answered.add(result.tool_use_id);
-  for (const message of input) {
-    chars += message.text?.length ?? 0;
-    for (const use of message.toolUses ?? []) {
-      chars += JSON.stringify(use.input ?? {}).length;
-      if (!answered.has(use.tool_use_id)) chars += use.text?.length ?? 0;
-    }
-    for (const result of message.toolResults ?? []) chars += result.text?.length ?? 0;
-  }
-  return estimateTokens(chars);
-}
-
-/**
- * A party's context now. The last response's usage lags by one step: the tool results that came back since are
- * not in it, and one step of parallel reads can add 100k tokens. So the reading plus the estimate of what follows
- * the last assistant message is taken, or the estimate of the whole transcript when that is larger (a reading
- * from before a compaction). A party with no reading yet gets the estimate alone; an empty transcript has none.
- */
-export function currentTokens(lastResponse: number | undefined, messages: readonly TranscriptMessage[]): number | undefined {
-  const estimate = estimateTokens(messages);
-  if (lastResponse === undefined) return estimate > 0 ? estimate : undefined;
-  let last = messages.length;
-  while (last > 0 && messages[last - 1]!.role !== 'assistant') last--;
-  const since = last === 0 ? 0 : estimateTokens(messages.slice(last));
-  return Math.max(lastResponse + since, estimate);
+/** A party's reading: the context its response was answered over plus that response's own output, which the next request carries too. */
+export function readingTokens(usage: ({ output_tokens?: number } & NonNullable<Parameters<typeof contextTokens>[0]>) | null | undefined): number | undefined {
+  const context = contextTokens(usage);
+  return context === undefined ? undefined : context + (typeof usage?.output_tokens === 'number' ? usage.output_tokens : 0);
 }
 
 export type PartyKind = 'main' | 'subagent' | 'foreign';
@@ -72,7 +32,7 @@ export type DecideInput = {
   stored?: boolean;
   /** A handoff is stored but its call is not in `e.messages`: something else compacted the party since. */
   storedMissing?: boolean;
-  /** The party's current context (currentTokens); undefined when neither a reading nor an estimate exists. */
+  /** The party's last reading; undefined when it has none (none yet, or none since an install): no ceiling is reached then. */
   tokens?: number;
   /** The context at which a party with no handoff gets a mechanical wake. Left out, it is never reached. */
   ceiling?: number;
@@ -82,12 +42,16 @@ export type DecideInput = {
   ceilingNative?: boolean;
   /** Screen name of the party: "main", or "{subagentType} {agentId first 6}". */
   label?: string;
+  /** `Parties.ignored`: the party's model is on the ignore list: it takes no handoff, and its asks are held until its ceiling. */
+  ignored?: boolean;
+  /** `Parties.windowUnknown`: the party's ceiling is not known, so it is never reached; a reactive ask stays mechanical. */
+  windowUnknown?: boolean;
 };
 
 /** The decision row's `decision` for the action. */
 export type Action =
   | { action: 'next'; decision: 'native' | 'pass' | 'foreign'; why: 'manual' | 'plugin' | 'foreign' | 'ceiling' | 'reactive'; dropStored?: true }
-  | { action: 'skip'; decision: 'skip'; why: 'precompute' | 'waiting'; reason: string; nudge?: 'now'; dropStored?: true }
+  | { action: 'skip'; decision: 'skip'; why: 'precompute' | 'waiting' | 'no-reading' | 'ignored-model'; reason: string; dropStored?: true }
   | { action: 'install'; decision: 'install'; why: 'stored' }
   | { action: 'mechanical'; decision: 'mechanical'; why: 'ceiling' | 'reactive'; dropStored?: true };
 
@@ -97,9 +61,11 @@ export type Action =
  * (the turn-end door) and for any party at an automatic ask. With nothing stored an automatic ask is held until
  * the ceiling, or at once when it follows a held ask unanswered (the request was too long), and then the party
  * gets a mechanical wake, or Claude Code's own summary when the ceiling is native. A foreign party (the engine's own
- * fork) is never ours. A stored handoff whose call left the transcript is dropped, and the ask goes on as if none were stored.
+ * fork) is never ours: its automatic ask passes. A party whose model is on the ignore list stores nothing, so its ask is
+ * held as `ignored-model` until the ceiling. An automatic ask from any other party with no reading and nothing stored is
+ * held as `no-reading`: the next reading decides. A stored handoff whose call left the transcript is dropped, and the ask goes on as if none were stored.
  */
-export function decide({ trigger, party, stored = false, storedMissing = false, tokens, ceiling = Number.POSITIVE_INFINITY, reactive = false, ceilingNative = false, label = 'main' }: DecideInput): Action {
+export function decide({ trigger, party, stored = false, storedMissing = false, tokens, ceiling = Number.POSITIVE_INFINITY, reactive = false, ceilingNative = false, label = 'main', ignored = false, windowUnknown = false }: DecideInput): Action {
   const drop = storedMissing ? ({ dropStored: true } as const) : {};
   if (trigger === 'manual') return { action: 'next', decision: 'native', why: 'manual', dropStored: true };
   if (trigger === 'precompute') return { action: 'skip', decision: 'skip', why: 'precompute', reason: 'forward-compaction: precompute is never used' };
@@ -108,14 +74,16 @@ export function decide({ trigger, party, stored = false, storedMissing = false, 
     return { action: 'next', decision: 'pass', why: 'plugin', ...(party === 'main' ? drop : {}) };
   }
   if (party === 'foreign') return { action: 'next', decision: 'foreign', why: 'foreign' };
-  if (stored) return { action: 'install', decision: 'install', why: 'stored' };
-  const atCeiling = tokens !== undefined && tokens >= ceiling;
+  if (stored && !ignored) return { action: 'install', decision: 'install', why: 'stored' };
+  const atCeiling = !windowUnknown && tokens !== undefined && tokens >= ceiling;
   if (atCeiling || reactive) {
     const why = atCeiling ? 'ceiling' : 'reactive';
     if (ceilingNative) return { action: 'next', decision: 'native', why, ...drop };
     return { action: 'mechanical', decision: 'mechanical', why, ...drop };
   }
-  return { action: 'skip', decision: 'skip', why: 'waiting', reason: `forward-compaction: waiting for ${label}'s handoff`, nudge: 'now', ...drop };
+  if (ignored) return { action: 'skip', decision: 'skip', why: 'ignored-model', reason: `forward-compaction: holding Claude Code's compaction for ${label}: its model is on the ignore list, so it is compacted mechanically at its ceiling`, ...drop };
+  if (tokens === undefined) return { action: 'skip', decision: 'skip', why: 'no-reading', reason: `forward-compaction: holding Claude Code's compaction for ${label}: it has no reading yet, and its next reading decides`, ...drop };
+  return { action: 'skip', decision: 'skip', why: 'waiting', reason: `forward-compaction: holding Claude Code's compaction for ${label} until its handoff is stored or the ceiling is reached`, ...drop };
 }
 
 export type TurnEndInput = {

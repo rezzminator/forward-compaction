@@ -1,6 +1,12 @@
 // The ledger: typed facts recorded as events happen, reduced by pure functions. Nothing is read from rendered text.
 
 export type PartyKey = 'main' | 'unknown' | `agent:${string}` | `spawn:${string}`;
+
+/** The party an event's `agentId` names: main when there is none. */
+export const keyOf = (agentId: unknown): PartyKey => (typeof agentId === 'string' && agentId !== '' ? `agent:${agentId}` : 'main');
+
+/** An event origin's kind, `unknown` when it carries none. */
+export const originKind = (origin: unknown): string => (origin !== null && typeof origin === 'object' && typeof (origin as { kind?: unknown }).kind === 'string' ? (origin as { kind: string }).kind : 'unknown');
 export type SkillHow = 'skill-tool' | 'typed-command' | 'preload' | 'ambiguous';
 export type ShellTask = { id: string; type: string; status: string; description: string; command?: string };
 export type CronJob = { id: string; schedule: string; recurring: boolean; prompt: string };
@@ -26,6 +32,14 @@ export type Ledger = { startedAt?: number; startReason?: string; nextSeq: number
 export const PERSON_ORIGINS: ReadonlySet<string> = new Set(['composer', 'bridge', 'sdk']);
 export function isPersonOrigin(kind: string | undefined): boolean {
   return kind !== undefined && PERSON_ORIGINS.has(kind);
+}
+
+/** The shells and crons of a Stop event's `background_tasks` and `session_crons`; anything that is not a list is none. */
+export function shellsOf(e: Record<string, unknown>): { tasks: ShellTask[]; crons: CronJob[] } {
+  const list = (value: unknown): Record<string, unknown>[] => (Array.isArray(value) ? value : []);
+  const tasks = list(e.background_tasks).map((t) => ({ id: String(t.id), type: String(t.type), status: String(t.status), description: String(t.description ?? ''), ...(typeof t.command === 'string' ? { command: t.command } : {}) }));
+  const crons = list(e.session_crons).map((c) => ({ id: String(c.id), schedule: String(c.schedule), recurring: c.recurring === true, prompt: String(c.prompt ?? '') }));
+  return { tasks, crons };
 }
 
 export function newLedger(): Ledger {

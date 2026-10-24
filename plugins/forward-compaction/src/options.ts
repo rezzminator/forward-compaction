@@ -1,15 +1,21 @@
 import { pluginLogDir } from './log.ts';
 
-/** A context size: a token count, or a percentage of the model's own window. */
+/** A context size: a token count, or a percentage of the party's max context. */
 export type Size = { tokens: number } | { percent: number };
 
-/** With no handoff stored, the context at which a mechanical wake is installed: 60% of the model's own window, never clamped to CLAUDE_CODE_AUTO_COMPACT_WINDOW. */
-export const DEFAULT_CEILING: Size = { percent: 60 };
+/** Each party's sizes: the ceiling (with no handoff stored, the context at which a mechanical wake is installed), where the first nudge goes out and the growth between nudges, each a token count or a percentage of the party's max context. */
+export type PartySizes = { ceiling: Size; nudgeStart: Size; nudgeEvery: Size };
+export const DEFAULT_MAIN: PartySizes = { ceiling: { percent: 60 }, nudgeStart: { percent: 15 }, nudgeEvery: { percent: 5 } };
+/** 160k on the 200k sub-agent max context; the first nudge at 80k sits above the floor a sub-agent's wake lands at. */
+export const DEFAULT_SUBAGENT: PartySizes = { ceiling: { percent: 80 }, nudgeStart: { percent: 40 }, nudgeEvery: { percent: 10 } };
+/** Every sub-agent's max context: Claude Code's API reports no sub-agent's window. Main's defaults to the window `$.session.usage()` reports. */
+export const DEFAULT_SUBAGENT_MAX_CONTEXT = 200_000;
 /** Mechanical wakes, not native summaries, at the ceiling. */
 export const DEFAULT_CEILING_NATIVE = false;
-/** Where the first nudge to hand off goes out, and the growth between nudges after it. */
-export const DEFAULT_NUDGE_START: Size = { tokens: 50_000 };
-export const DEFAULT_NUDGE_EVERY: Size = { tokens: 10_000 };
+/** Models the plugin leaves to Claude Code's own compaction, matched as case-insensitive substrings of the model id a step reports. */
+export const DEFAULT_IGNORE_MODELS: readonly string[] = ['haiku'];
+/** The debug log (`debug.jsonl`): a row at every step. */
+export const DEFAULT_DEBUG = true;
 
 export type Parse<T> = { ok: true; value: T } | { ok: false; error: string };
 
@@ -54,11 +60,18 @@ export function formatSize(size: Size): string {
  * The hooks module spells each name as a literal of its own: Claude Code reads only literal names.
  */
 export const OPTION_ENV = {
-  ceiling: 'FORWARD_COMPACTION_CEILING',
+  mainMaxContext: 'FORWARD_COMPACTION_MAIN_MAX_CONTEXT',
+  mainCeiling: 'FORWARD_COMPACTION_MAIN_CEILING',
+  mainNudgeStart: 'FORWARD_COMPACTION_MAIN_NUDGE_START',
+  mainNudgeEvery: 'FORWARD_COMPACTION_MAIN_NUDGE_EVERY',
+  subagentMaxContext: 'FORWARD_COMPACTION_SUBAGENT_MAX_CONTEXT',
+  subagentCeiling: 'FORWARD_COMPACTION_SUBAGENT_CEILING',
+  subagentNudgeStart: 'FORWARD_COMPACTION_SUBAGENT_NUDGE_START',
+  subagentNudgeEvery: 'FORWARD_COMPACTION_SUBAGENT_NUDGE_EVERY',
   ceilingNative: 'FORWARD_COMPACTION_CEILING_NATIVE',
-  nudgeStart: 'FORWARD_COMPACTION_NUDGE_START',
-  nudgeEvery: 'FORWARD_COMPACTION_NUDGE_EVERY',
   logFile: 'FORWARD_COMPACTION_LOG_FILE',
+  ignoreModels: 'FORWARD_COMPACTION_IGNORE_MODELS',
+  debug: 'FORWARD_COMPACTION_DEBUG',
 } as const;
 
 export type OptionName = keyof typeof OPTION_ENV;
@@ -72,13 +85,15 @@ export function parseEnvFlag(raw: string): Parse<boolean> {
 }
 
 export type ResolvedOptions = {
-  /** With no handoff stored, the size at which a mechanical wake is installed. */
-  ceiling: Size;
+  /** Main's sizes and max context; no max context set means the window `$.session.usage()` reports. */
+  main: PartySizes & { maxContext?: number };
+  subagent: PartySizes & { maxContext: number };
   /** At the ceiling with no handoff, Claude Code's own summary runs instead of the mechanical wake. */
   ceilingNative: boolean;
-  nudgeStart: Size;
-  nudgeEvery: Size;
   logFile?: string;
+  /** Lower-cased ignore-list entries; empty when the variable is set empty. */
+  ignoreModels: string[];
+  debug: boolean;
   /** One line per option that was invalid and fell back; empty when all were valid. */
   errors: string[];
 };
@@ -91,15 +106,16 @@ export type OptionEnvironment = {
   readErrors?: readonly string[];
 };
 
-/** A nudge start at or past the ceiling in the same unit: both are kept, the person is told. Across units only the window decides. */
-function nudgeAfterCeiling(start: Size, ceiling: Size): string | undefined {
+/** A nudge start at or past the ceiling in the same unit: both are kept, the person is told. Across units only the max context decides. */
+function nudgeAfterCeiling(party: 'main' | 'subagent', { nudgeStart: start, ceiling }: PartySizes): string | undefined {
   const past = 'tokens' in start && 'tokens' in ceiling ? start.tokens >= ceiling.tokens : 'percent' in start && 'percent' in ceiling ? start.percent >= ceiling.percent : false;
   if (!past) return undefined;
-  return `forward-compaction: env ${OPTION_ENV.nudgeStart} ${formatSize(start)} is not below ${OPTION_ENV.ceiling} ${formatSize(ceiling)}; no nudge goes out before the ceiling`;
+  return `forward-compaction: env ${OPTION_ENV[`${party}NudgeStart`]} ${formatSize(start)} is not below ${OPTION_ENV[`${party}Ceiling`]} ${formatSize(ceiling)}; no nudge goes out before the ceiling`;
 }
 
 /**
- * Resolves the options from the environment alone; a variable that is unset, empty or blank is absent, and every
+ * Resolves the options from the environment alone; a variable that is unset, empty or blank is absent (but an empty
+ * ignore list, which ignores no model), and every
  * invalid value falls back to the default and is named in `errors`.
  */
 export function resolveOptions(env: OptionEnvironment = {}): ResolvedOptions {
@@ -128,12 +144,29 @@ export function resolveOptions(env: OptionEnvironment = {}): ResolvedOptions {
     badEnv(option, parsed.error, String(fallback));
     return fallback;
   };
-  const ceiling = size('ceiling', DEFAULT_CEILING);
+  // A max context is a token count: a percentage has no window to be of.
+  const maxContext = (option: 'mainMaxContext' | 'subagentMaxContext', fallback: number | undefined): number | undefined => {
+    const raw = fromEnv(option);
+    if (raw === undefined) return fallback;
+    const parsed = parseSize(raw);
+    if (parsed.ok && 'tokens' in parsed.value) return parsed.value.tokens;
+    badEnv(option, parsed.ok ? `a max context is a token count, not a percentage: ${JSON.stringify(raw)}` : parsed.error, fallback === undefined ? "main's window" : String(fallback));
+    return fallback;
+  };
+  const sizes = (party: 'main' | 'subagent', fallback: PartySizes): PartySizes => ({
+    ceiling: size(`${party}Ceiling`, fallback.ceiling),
+    nudgeStart: size(`${party}NudgeStart`, fallback.nudgeStart),
+    nudgeEvery: size(`${party}NudgeEvery`, fallback.nudgeEvery),
+  });
+  const mainMax = maxContext('mainMaxContext', undefined);
+  const main = { ...sizes('main', DEFAULT_MAIN), ...(mainMax !== undefined ? { maxContext: mainMax } : {}) };
+  const subagent = { ...sizes('subagent', DEFAULT_SUBAGENT), maxContext: maxContext('subagentMaxContext', DEFAULT_SUBAGENT_MAX_CONTEXT)! };
   const ceilingNative = flag('ceilingNative', DEFAULT_CEILING_NATIVE);
-  const nudgeStart = size('nudgeStart', DEFAULT_NUDGE_START);
-  const nudgeEvery = size('nudgeEvery', DEFAULT_NUDGE_EVERY);
-  const late = nudgeAfterCeiling(nudgeStart, ceiling);
-  if (late !== undefined) errors.push(late);
+  const debug = flag('debug', DEFAULT_DEBUG);
+  // Unset is the default; set empty (or only commas) is a list of none: the one option whose empty value is a value.
+  const rawIgnore = env.vars?.[OPTION_ENV.ignoreModels];
+  const ignoreModels = rawIgnore === undefined ? [...DEFAULT_IGNORE_MODELS] : rawIgnore.split(',').map((entry) => entry.trim().toLowerCase()).filter((entry) => entry !== '');
+  for (const late of [nudgeAfterCeiling('main', main), nudgeAfterCeiling('subagent', subagent)]) if (late !== undefined) errors.push(late);
   // Unset or invalid → the default: the plugin's decisions folder under PLUGIN_LOG_DIR, else under HOME, else no decision log.
   const base = pluginLogDir(env.pluginLogDir, env.home, 'forward-compaction');
   const fallbackLog = base === undefined ? undefined : `${base}/decisions/.jsonl`;
@@ -143,5 +176,5 @@ export function resolveOptions(env: OptionEnvironment = {}): ResolvedOptions {
     if (envLog.startsWith('/')) logFile = envLog;
     else badEnv('logFile', `not an absolute path: ${JSON.stringify(envLog)}`, fallbackLog ?? '(no decision log)');
   }
-  return { ceiling, ceilingNative, nudgeStart, nudgeEvery, ...(logFile ? { logFile } : {}), errors };
+  return { main, subagent, ceilingNative, ...(logFile ? { logFile } : {}), ignoreModels, debug, errors };
 }
