@@ -2,7 +2,8 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { fakeEngine, usage, type Script } from './fakes/engine.ts';
 
 // The adapter's wiring of session-lifetime facts: a new turn ends the request-too-long inference (D8), the person's
-// messages outlive a plugin reload through the host's session state, and finished tool calls record the party's work.
+// messages outlive a plugin reload through the host's session state, finished tool calls record the party's work, and a
+// sub-agent past its gate mark hands off before anything else runs.
 
 type Fake = ReturnType<typeof fakeEngine>;
 const fakes: Fake[] = [];
@@ -105,5 +106,28 @@ describe("the party's work, from its finished tool calls", () => {
     expect(facts).toContain('## Files touched, newest first (R read, E edited, W written)\nE /w/edited.ts\nR /w/read.ts');
     expect(facts).toContain('## Tasks, as last set\n[~] ship');
     expect(facts).not.toContain('/w/denied.ts');
+  });
+});
+
+describe('the hand-off gate', () => {
+  const A = 'a1b2c3d4e5';
+  const FC = 'mcp__forward-compaction__forward_compaction';
+  const agentStep = (f: Fake, tokens: number) => f.dispatch('turn.step', { turnId: 't1', index: 0, model: 'claude-sonnet-4-5', messageCount: 4, agentId: A }, async () => ({ turnId: 't1', index: 0, answer: '', toolUses: [], stopReason: 'tool_use', ...usage(tokens) }));
+  const read = (f: Fake, agentId?: string) => f.dispatch('tool.call', { tool: 'Read', tool_use_id: 'r', file_path: '/w/a.ts', ...(agentId ? { agentId } : {}) }, async () => ({ result: {}, text: 'body' }));
+
+  it("refuses a sub-agent's calls past its gate mark until it stores a handoff, and never main's", async () => {
+    const f = await begin();
+    await f.dispatch('agent.spawn', { tool_use_id: 'tu-spawn', prompt: 'Brief', description: 'one', subagentType: 'general-purpose', provider: { kind: 'local' } }, async () => ({ model: 'sonnet', agentId: A }));
+    await agentStep(f, 85_000);
+    expect((await read(f, A)).context?.at(-1)).toContain('From 100k every other call is refused until you have handed off.');
+    await agentStep(f, 99_000);
+    expect(await read(f, A)).toMatchObject({ text: 'body' });
+    await agentStep(f, 104_000);
+    expect((await read(f, A)).deny).toMatch(/^forward-compaction: this call did not run\. Your context is 104k tokens/);
+    await step(f, 104_000);
+    expect(await read(f)).toMatchObject({ text: 'body' });
+    const stored = await f.dispatch('tool.call', { tool: FC, tool_use_id: 'tu-h', agentId: A, objective: 'o', done: 'd', remaining: 'r', next: 'n' }, async () => ({ result: 'not ours' }));
+    expect(stored.result).toContain('Handoff stored');
+    expect(await read(f, A)).toMatchObject({ text: 'body' });
   });
 });

@@ -1,5 +1,6 @@
 import type { Landing } from './wake.ts';
 import { ignoredBy, type RatioBase } from './window.ts';
+import { GATE_STEPS } from './nudge.ts';
 
 /** A file the model asked the wake to carry (the tool's `load_files` entry). */
 export type LoadFile = { path: string; lines?: string; why: string };
@@ -48,6 +49,8 @@ export type PartyState = {
   nudgeLevel: number;
   /** True from an install until the party's next reading, whose nudge level is then absorbed silently. */
   absorbNext: boolean;
+  /** The nudge level from which the party's calls wait for its handoff (nudge.ts `gated`): GATE_STEPS past its first nudge since the last install; absent until that nudge. */
+  gateLevel?: number;
   installs: number;
   /** An install happened in the party's current turn: the turn-end door (P1) does not fire again. */
   installedThisTurn: boolean;
@@ -192,6 +195,7 @@ export class Parties {
     const state = this.get(key);
     if (state.stored || state.absorbNext || level <= state.nudgeLevel) return false;
     state.nudgeLevel = level;
+    state.gateLevel ??= level + GATE_STEPS;
     return true;
   }
 
@@ -207,6 +211,7 @@ export class Parties {
       answeredSinceSkip: true,
       nudgeLevel: 0,
       absorbNext: true,
+      gateLevel: undefined,
       reading: undefined,
       base: undefined,
       landing,

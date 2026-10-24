@@ -402,15 +402,19 @@ describe('ignored models: FORWARD_COMPACTION_IGNORE_MODELS, Haiku by default', (
     expect(compacts).toEqual([['skip', 'ignored-model', 64_000, 160_000, 'haiku'], ['mechanical', 'ceiling', 160_000, 160_000, 'haiku']]);
   });
 
-  it("nudges a managed sub-agent at 80k, 100k, 120k and 140k of its 200k max context, and gives it the mechanical wake at 160k", async () => {
+  it("nudges a managed sub-agent at 80k of its 200k max context, refuses its calls from 100k until it hands off, and gives it the mechanical wake at 160k", async () => {
     const f = await begin({ env: defaults });
     await spawn(f);
     const levels: number[] = [];
+    const refused: number[] = [];
     for (const tokens of [79_000, 80_000, 99_000, 100_000, 120_000, 140_000, 150_000]) {
       await step(f, tokens, A1);
-      if (((await read(f, `tu-${tokens}`, A1)).context ?? []).length > 0) levels.push(tokens);
+      const r = await read(f, `tu-${tokens}`, A1);
+      if ((r.context ?? []).length > 0) levels.push(tokens);
+      if (r.deny !== undefined) refused.push(tokens);
     }
-    expect(levels).toEqual([80_000, 100_000, 120_000, 140_000]);
+    expect(levels).toEqual([80_000]);
+    expect(refused).toEqual([100_000, 120_000, 140_000, 150_000]);
     await step(f, 160_000, A1);
     expect((await f.dispatch('session.compact', { trigger: 'auto', agentId: A1, messages: transcript() }, async () => ({ skip: 'native ran' }))).messages[1].text).toMatch(/past the 160k ceiling/);
   });

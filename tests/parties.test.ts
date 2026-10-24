@@ -331,3 +331,16 @@ describe('the ratio base (window.ts charsPerToken)', () => {
     expect(parties.get('agent:gone').base).toBeUndefined();
   });
 });
+
+describe('gate level', () => {
+  it('is set one step past the first nudge since the last install, kept by later nudges, and cleared by an install', () => {
+    const parties = new Parties();
+    expect(parties.get('agent:a1').gateLevel).toBeUndefined();
+    parties.nudgeDue('agent:a1', 1);
+    expect(parties.get('agent:a1').gateLevel).toBe(2);
+    parties.nudgeDue('agent:a1', 3);
+    expect(parties.get('agent:a1').gateLevel).toBe(2);
+    parties.installed('agent:a1');
+    expect(parties.get('agent:a1').gateLevel).toBeUndefined();
+  });
+});

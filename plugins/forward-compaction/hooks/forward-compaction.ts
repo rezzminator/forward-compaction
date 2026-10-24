@@ -5,7 +5,7 @@ import { workOf, type CallAnswer } from '../src/work.ts';
 import { newLedger, markStart, addEntry, resolveSpawn, attributeSkill, shellsOf, factsFor, promptsKept, restorePrompts, skillsKept, restoreSkills, isPersonOrigin, keyOf, originKind, type Ledger, type PartyKey } from '../src/ledger.ts';
 import { splitAtCall, buildWake, mechanicalWake, landedLine, type WakeFile, type AgentRow, type Landing } from '../src/wake.ts';
 import { decide, turnEndDoor, readingTokens, knownTrigger } from '../src/decide.ts';
-import { k, nudgeLevel, nudgeText } from '../src/nudge.ts';
+import { k, nudgeLevel, nudgeText, gated, gateMark, gateText } from '../src/nudge.ts';
 import { Parties, type Judging } from '../src/parties.ts';
 import { askPointOf, charsPerToken, partyMarks, startWarnings, apiChars, type AskPoint, type Marks, type UsageBreakdown } from '../src/window.ts';
 import { unseenCompaction } from '../src/unseen.ts';
@@ -529,11 +529,22 @@ async function nudged(st: State, $: EngineInterface, key: string, result: ToolCa
     const withheld = tokens === undefined ? 'no-reading' : m === undefined ? 'window-unknown' : level === 0 ? 'below-start' : st.parties.ignored(key, st.config.ignoreModels) !== undefined ? 'ignored-model' : !st.parties.nudgeDue(key, level) ? 'not-due' : undefined;
     if (withheld !== undefined) return (dbg(st, $, 'nudge-withheld', { party: key, why: withheld, tokens: tokens ?? null, level, start: m?.start ?? null, every: m?.every ?? null }), result);
     record(st, $, { event: 'nudge', party: key, level, tokens, start: m!.start, every: m!.every });
-    return { ...result, context: [...(result.context ?? []), nudgeText({ tokens: tokens!, window: m!.maxContext, ceiling: m!.ceiling, tool: st.toolNames.forward_compaction })] };
+    return { ...result, context: [...(result.context ?? []), nudgeText({ tokens: tokens!, window: m!.maxContext, ceiling: m!.ceiling, tool: st.toolNames.forward_compaction, ...(key === 'main' || party.gateLevel === undefined ? {} : { gateAt: gateMark(m!.start, m!.every, party.gateLevel) }) })] };
   } catch (error) {
     say(st, $, `forward-compaction: nudging ${key} failed: ${message(error)}`, 'error', { event: 'nudge-error', party: key, error: message(error) });
     return result;
   }
+}
+
+/** The refusal for a call that waits on the party's handoff (src/nudge.ts `gated`), or undefined when it runs. */
+function gateRefusal(st: State, key: PartyKey, tool: string): string | undefined {
+  if (!key.startsWith('agent:') || !st.knownAgents.has(key.slice('agent:'.length))) return undefined; // main and Claude Code's own forks are never gated
+  const party = st.parties.get(key);
+  const m = marks(st, key);
+  const open = [st.toolNames.forward_compaction, st.toolNames.look_back, 'ToolSearch'].filter((t): t is string => t !== undefined);
+  const level = party.reading === undefined || m === undefined ? 0 : nudgeLevel(party.reading, m.start, m.every);
+  if (m === undefined || !gated({ party: 'subagent', level, gateLevel: party.gateLevel, stored: party.stored !== undefined, ignored: st.parties.ignored(key, st.config.ignoreModels) !== undefined, tool, open })) return undefined;
+  return gateText({ tokens: party.reading!, ceiling: m.ceiling, tool: st.toolNames.forward_compaction });
 }
 
 /** A sub-agent spawned here is ours; any other agent id the engine's own run, unless `$.agent.list` knows it. */
@@ -812,6 +823,8 @@ export const register: Register = (on: On, options: PluginOptions) => {
     if (st.toolNames.forward_compaction !== undefined && e.tool === st.toolNames.forward_compaction) return { result: experimental(await answerForward(st, $, e as Record<string, unknown>), st.pluginLogDir) };
     await unlessAborted(observeManualLookBack(st, $, e as Record<string, unknown>), next.signal);
     const key = keyOf(e.agentId);
+    const refused = gateRefusal(st, key, String(e.tool));
+    if (refused !== undefined) return (record(st, $, { event: 'gated', party: key, tool: e.tool, tokens: st.parties.get(key).reading ?? null }), { deny: refused });
     const id = e.tool_use_id;
     const tracked = typeof id === 'string' && (e.tool === 'Skill' || e.tool === 'Agent');
     if (tracked) st.inFlight.set(id, { party: key, tool: e.tool });

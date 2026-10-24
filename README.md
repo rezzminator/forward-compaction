@@ -5,9 +5,9 @@
 **Compaction for Claude Code where the model writes its own handoff: the main chat and every sub-agent hand off through one tool, and everything after the call stays verbatim.**
 
 [![Claude Code plugin](https://img.shields.io/badge/Claude%20Code-plugin-D97757)](https://docs.claude.com/en/docs/claude-code/plugins)
-[![Version](https://img.shields.io/badge/version-1.0.0--dev.3-blue)](./CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.0.0--dev.4-blue)](./CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
-[![Tests](https://img.shields.io/badge/tests-541%20passing-brightgreen)](#development)
+[![Tests](https://img.shields.io/badge/tests-547%20passing-brightgreen)](#development)
 [![Built with Professor](https://img.shields.io/badge/built%20with-Professor-8A2BE2)](https://github.com/rezzminator/professor)
 
 </div>
@@ -127,6 +127,13 @@ and no ceiling, and an automatic ask from it with nothing stored is held as
    prompt, tools and skills is already 55-60k), so the next nudge goes only
    when the context crosses the level above it. A model on the ignore list
    gets no nudge.
+   A sub-agent gets one step to pick its milestone: one nudge level past its
+   first nudge since its last install (100k with the defaults), its calls
+   wait for its handoff. Every call but `forward_compaction`, `look_back` and
+   `ToolSearch` is refused, unrun, with a line saying to hand off now with
+   what it has read and concluded, then repeat the call; the first nudge
+   names the point. Once the handoff is stored every call runs again. The
+   main chat is never held this way: its person steers it.
 2. **Handing off.** The model calls `forward_compaction` (the model sees
    `mcp__forward-compaction__forward_compaction`). The plugin checks the
    section arguments and files and stores the handoff in memory for that party, or

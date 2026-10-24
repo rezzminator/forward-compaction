@@ -4,6 +4,12 @@ Every release of forward-compaction, named sub-agent-compact before 1.0.0. Versi
 
 ## [Unreleased]
 
+## [1.0.0-dev.4] — 2026-10-24
+
+### Changed
+
+- **A sub-agent hands off before it runs past its milestones.** A live run showed a sub-agent reading whole files at 30–47k a request: nudged at 92k, 139k and 169k within 13 seconds, it never called `forward_compaction` and got the mechanical wake at the 160k ceiling, 47 messages dropped. Now, one nudge level past a sub-agent's first nudge since its last install (100k with the defaults), every call but `forward_compaction`, `look_back` and `ToolSearch` is refused unrun, with a line to hand off now and repeat the call; the first nudge names that point. The main chat is never gated.
+
 ## [1.0.0-dev.3] — 2026-10-24
 
 ### Added
