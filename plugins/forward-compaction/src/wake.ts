@@ -1,6 +1,6 @@
 // The wake: what a compaction installs. [facts] [handoff] [tail…] — the facts and the handoff are built here from typed values,
 // the tail is the engine's own messages returned untouched. Pure: files, agents and the clock arrive as inputs.
-import { DEFAULT_TOOL, k as kilo } from './nudge.ts';
+import { DEFAULT_TOOL, FREE, k as kilo } from './nudge.ts';
 import { loadFilesRoom } from './window.ts';
 import { PROMPTS_KEPT } from './ledger.ts';
 import { experimental, EXPERIMENTAL_OPENING } from './handoff.ts';
@@ -374,6 +374,7 @@ export function buildWake<M extends WakeMessage>(input: BuildWakeInput<M>): Wake
     if (kept > 0) lines.push(`The ${kept} messages after this one are what happened after you wrote it, kept verbatim. Continue from where they leave off.`);
     if (dropped > 0) lines.push(`${dropped} older messages after your handoff did not fit and are gone (look_back finds an exact detail); call ${input.tool ?? DEFAULT_TOOL} again at your next milestone.`);
     if (kept === 0) lines.push('Nothing happened after you wrote it. Continue from ## Next.');
+    lines.push(FREE); // a woken party budgets what still fits before the next handoff and cuts the task short: say it is free
     return experimental(lines.join('\n\n'), input.logDir);
   }, 'all');
 }
@@ -383,7 +384,7 @@ export function mechanicalWake<M extends WakeMessage>(input: MechanicalWakeInput
   const why = input.reason.kind === 'ceiling' ? `, past the ${kilo(input.reason.ceiling)} ceiling` : ', and Claude Code reported your request too long';
   const source = input.party === 'main' ? "the person's messages" : 'your brief';
   return assemble(input, input.messages, { siblings: [], files: [], fileRoom: 0 }, ({ kept, dropped }) => experimental(
-    `[forward-compaction: no frontier written by the model] Your context reached ${input.tokens === undefined ? 'a size not measured yet' : `${kilo(input.tokens)} tokens`}${why}, and you had not called forward_compaction, so the plugin compacted it mechanically: the facts above and your newest ${kept} messages below, kept verbatim; ${dropped} older messages are gone (look_back finds an exact detail). No objective or next step was written. Re-establish them from ${source} and the messages below, then continue; call ${input.tool ?? DEFAULT_TOOL} at your next milestone.`, input.logDir),
+    `[forward-compaction: no frontier written by the model] Your context reached ${input.tokens === undefined ? 'a size not measured yet' : `${kilo(input.tokens)} tokens`}${why}, and you had not called forward_compaction, so the plugin compacted it mechanically: the facts above and your newest ${kept} messages below, kept verbatim; ${dropped} older messages are gone (look_back finds an exact detail). No objective or next step was written. Re-establish them from ${source} and the messages below, then continue; call ${input.tool ?? DEFAULT_TOOL} at your next milestone. ${FREE}`, input.logDir),
   'none');
 }
 

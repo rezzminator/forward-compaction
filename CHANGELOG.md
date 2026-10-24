@@ -4,6 +4,12 @@ Every release of forward-compaction, named sub-agent-compact before 1.0.0. Versi
 
 ## [Unreleased]
 
+## [1.0.0-dev.6] — 2026-10-24
+
+### Changed
+
+- **The wake says the next handoff is free.** In a live run a sub-agent handed off by itself, woke at 39k, measured the files it had left and read 4 of the 49, cutting the task short with nothing pressing it. Every wake, handed off or mechanical, now carries the same line the nudges do: a handoff costs nothing, the model continues from it as many times as the work needs, and carries the task through to its end.
+
 ## [1.0.0-dev.5] — 2026-10-24
 
 ### Changed

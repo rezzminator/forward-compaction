@@ -3,6 +3,7 @@ import {
   buildWake, fitTail, landedLine, mechanicalWake, splitAtCall, wakeBudget,
   type BuiltMessage, type WakeFacts, type WakeMessage,
 } from '../plugins/forward-compaction/src/wake.ts';
+import { FREE } from '../plugins/forward-compaction/src/nudge.ts';
 
 type Msg = WakeMessage & { handle: string };
 const user = (text: string, handle = `h-${text.slice(0, 12)}`): Msg => ({ role: 'user', text, toolUses: [], handle });
@@ -143,6 +144,13 @@ describe('buildWake (R20)', () => {
     const w = mechanicalWake({ ...mainInput([user('a'), assistant('b')]), logDir: '/logs', reason: { kind: 'ceiling', ceiling: 120_000 } });
     const head = w.messages.find((m) => (m as BuiltMessage).text?.startsWith('[forward-compaction: no frontier')) as BuiltMessage;
     expect(head.text.split('\n').at(-1)).toMatch(/^forward-compaction is experimental\. .*\/logs\/issues\.md; it will be taken care of later\.$/);
+  });
+
+  it('tells a woken party, handed off or compacted, that the next handoff is free and the task is finished in full', () => {
+    const h = buildWake({ ...mainInput([call, res]), toolUseId: 't9', handoff }).messages[1] as BuiltMessage;
+    const w = mechanicalWake({ ...mainInput([user('a'), assistant('b')]), reason: { kind: 'ceiling', ceiling: 120_000 } });
+    const head = w.messages.find((m) => (m as BuiltMessage).text?.startsWith('[forward-compaction: no frontier')) as BuiltMessage;
+    for (const text of [h.text, head.text]) expect(text).toContain(FREE);
   });
 
   it('says nothing happened when the call was the last thing', () => {
