@@ -5,9 +5,9 @@
 **Compaction for Claude Code where the model writes its own handoff: the main chat and every sub-agent hand off through one tool, and everything after the call stays verbatim.**
 
 [![Claude Code plugin](https://img.shields.io/badge/Claude%20Code-plugin-D97757)](https://docs.claude.com/en/docs/claude-code/plugins)
-[![Version](https://img.shields.io/badge/version-1.0.0--dev.2-blue)](./CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.0.0--dev.3-blue)](./CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
-[![Tests](https://img.shields.io/badge/tests-518%20passing-brightgreen)](#development)
+[![Tests](https://img.shields.io/badge/tests-526%20passing-brightgreen)](#development)
 [![Built with Professor](https://img.shields.io/badge/built%20with-Professor-8A2BE2)](https://github.com/rezzminator/professor)
 
 </div>
@@ -40,6 +40,8 @@ as they happened.
   chat) or the brief (sub-agent), messages from the coordinator, the skills
   loaded, the agents and the background shells come from typed hook events as
   they happened. Nothing is grepped out of a transcript or re-read from disk.
+  The person's newest ten messages are also held in Claude Code's session
+  state, so a plugin reload (`/reload-plugins`) does not lose them.
 - ⏩ **Everything after the call is kept.** The model need not stop after it
   hands off: every message from the call on stays in the new context as it
   was, so no work done after the handoff is lost.
@@ -186,14 +188,14 @@ directory resolves).
 
 The installed context is, oldest first: one facts message, one handoff
 message, then the messages after the call, returned as Claude Code holds
-them. The handoff message ends with the call's own result verbatim, its
-receipt and the experimental line, since the install replaces the message
-that held it.
+them. The handoff message carries the call's own receipt, since the install
+replaces the message that held it, and, like a mechanical wake's message,
+ends with the experimental line and where to note any trouble.
 
 The facts message holds, each section only when it has content:
 
-- the brief (sub-agent), verbatim, or the person's messages (main chat),
-  oldest first;
+- the brief (sub-agent), verbatim, or the person's newest ten messages
+  (main chat), oldest first;
 - messages from the coordinator (sub-agent) or notifications delivered
   (main chat);
 - the results of the tool calls made in the same response as the handoff;
@@ -232,10 +234,12 @@ follow. A mechanical wake replaces it with a message saying no frontier was
 written, how many of the newest messages were kept and how many are gone,
 and to re-establish the objective from the person's messages or the brief.
 
-Each install prints one line, measured: it waits for the party's first
-reading after the install, such as
+Each install writes one line, measured: it waits for the party's first
+reading after the install. A handoff the model chose is routine, so its line
+is an info row in the logs, never on screen:
 `main handoff landed — 164k → 46k context, measured; frontier 4,812 characters, 3 facts, 5 messages kept verbatim.`
-or `Explore 3f2a9c had no handoff at 125k (ceiling 120k) — mechanical wake installed, 125k → 38k context, measured.`
+A mechanical wake lost the model's frontier, so its line is also printed:
+`Explore 3f2a9c had no handoff at 125k (ceiling 120k) — mechanical wake installed, 125k → 38k context, measured.`
 Before is the party's last reading before the install, after its first one
 since. A party that ends before a request measures it gets its line at its
 end, with after said as unknown, never guessed.

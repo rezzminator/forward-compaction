@@ -26,6 +26,8 @@ export type Script = {
   run?: (argv: string[]) => { exitCode: number; stdout: string; stderr: string } | undefined;
   /** `$` calls that never settle. */
   hang?: ('session.id' | 'tool.register')[];
+  /** The host's session state (`$.state`); pass one map to two fakes to model a plugin reload in one session. */
+  state?: Map<string, { value: unknown; version: number }>;
 };
 
 export function fakeEngine(script: Script = {}) {
@@ -38,6 +40,7 @@ export function fakeEngine(script: Script = {}) {
   let now = script.now ?? Date.UTC(2026, 9, 23, 12, 0, 0);
   const never = new Promise<never>(() => {});
   const hangs = (call: 'session.id' | 'tool.register') => script.hang?.includes(call) === true;
+  const state = script.state ?? new Map<string, { value: unknown; version: number }>();
 
   const enoent = (path: string) => Object.assign(new Error(`ENOENT: no such file, ${path}`), { code: 'ENOENT' });
   const base = {
@@ -81,6 +84,14 @@ export function fakeEngine(script: Script = {}) {
     clock: { now: async () => now, after: (ms: number, fn: () => void) => { const t = setTimeout(fn, ms); return { cancel: () => clearTimeout(t) }; } },
     ui: { log: (text: string, opts?: unknown) => void screen.push(opts === undefined ? { text } : { text, opts }) },
     agent: { list: async () => (script.agents ? script.agents() : []) },
+    state: {
+      get: async (ref: unknown) => state.get(JSON.stringify(ref)) ?? { value: undefined, version: 0 },
+      set: async (ref: unknown, value: unknown) => {
+        const version = (state.get(JSON.stringify(ref))?.version ?? 0) + 1;
+        state.set(JSON.stringify(ref), { value: JSON.parse(JSON.stringify(value)), version });
+        return { isSet: true, version };
+      },
+    },
     tool: { register: (spec: { name: string }) => (hangs('tool.register') ? never : Promise.resolve({ tool: `mcp__forward-compaction__${spec.name}` })) },
   };
 

@@ -1,7 +1,7 @@
 import type { EngineInterface, On, PluginOptions, Register, SessionCompactInput, SessionCompactResult, ToolCallResult, TurnStepInput, TurnStepResult, TurnCompleteInput, PromptSubmitInput, SessionReceiveInput, SkillPromptInput, AgentSpawnInput, AgentSpawnResult } from 'claude-code';
 import { bounded, unlessAborted } from '../src/bounded.ts';
 import { experimental, parseHandoff, loadFileRefusal, loadRoomRefusal, receipt, ignoredRefusal, parseLineRanges, sliceFile, toolInput, type FileCheck, type LoadFile } from '../src/handoff.ts';
-import { newLedger, markStart, addEntry, resolveSpawn, attributeSkill, shellsOf, factsFor, isPersonOrigin, keyOf, originKind, type Ledger, type PartyKey } from '../src/ledger.ts';
+import { newLedger, markStart, addEntry, resolveSpawn, attributeSkill, shellsOf, factsFor, personKept, restorePerson, isPersonOrigin, keyOf, originKind, type Ledger, type PartyKey } from '../src/ledger.ts';
 import { splitAtCall, buildWake, mechanicalWake, landedLine, type WakeFile, type AgentRow, type Landing } from '../src/wake.ts';
 import { decide, turnEndDoor, readingTokens, knownTrigger } from '../src/decide.ts';
 import { k, nudgeLevel, nudgeText } from '../src/nudge.ts';
@@ -470,6 +470,7 @@ async function conversationStartsOver(st: State, $: EngineInterface, reason: str
 /** session.start: the ledger starts, main's window and Claude Code's ask point are read, and a compaction window that holds a handoff back is named once (R33). */
 async function sessionBegins(st: State, $: EngineInterface): Promise<void> {
   st.ledger = markStart(st.ledger, await $.clock.now(), 'startup');
+  st.ledger = restorePerson(st.ledger, (await $.state.get({ plugin: 'forward-compaction', key: 'person', id: await (st.sessionId ??= $.session.id()) })).value);
   await readMainWindow(st, $);
   judge(st, $, 'main');
   for (const w of startWarnings(st.breakdown, st.apiAsk, marks(st, 'main'), marks(st, 'agent:')!)) if (!st.warned.has(w.key)) (st.warned.add(w.key), tell(st, $, w.line, w.row));
@@ -575,9 +576,9 @@ function installed(st: State, $: EngineInterface, key: string, landing: Landing 
   st.installedSince.add(key);
 }
 
-/** M2: an installed wake's landed line and `landed` row, at the party's first reading after it (`after`), or at its end with `after` unknown. */
+/** M2: an installed wake's landed line and `landed` row, at the party's first reading after it (`after`), or at its end with `after` unknown. A chosen handoff's line is a routine info row in the logs; a mechanical wake lost the model's frontier, so the person sees it. */
 function land(st: State, $: EngineInterface, key: string, landing: Landing | undefined, after?: number): void {
-  if (landing !== undefined) tell(st, $, landedLine(landing, after), { event: 'landed', party: key, kind: landing.kind, before: landing.before ?? null, after: after ?? null });
+  if (landing !== undefined) { const line = landedLine(landing, after), row = { event: 'landed', party: key, kind: landing.kind, before: landing.before ?? null, after: after ?? null, line: screenLine(line) }; if (landing.kind === 'handoff') say(st, $, line, 'info', row); else tell(st, $, line, row); }
 }
 
 /** One session.compact ask, rows C1-C10: decide, then pass, hold, or install the handoff or a mechanical wake. */
@@ -614,7 +615,7 @@ async function compactAsk(st: State, $: EngineInterface, e: SessionCompactInput,
     record(st, $, { ...row, reason: action.reason });
     return { skip: action.reason };
   }
-  const shared = { messages: e.messages, party: kind === 'main' ? ('main' as const) : ('subagent' as const), tokens, askPoint: m?.askPoint ?? 0, charsPerToken: ratioOf(st, $, key, 'compact', await partyChars(st, $, key, e.agentId), m), now: await $.clock.now(), facts: (kept: readonly string[]) => factsFor(st.ledger, key, { keptTexts: kept }), agents: await agentRows($), ...(e.agentId !== undefined ? { self: e.agentId } : {}) };
+  const shared = { messages: e.messages, party: kind === 'main' ? ('main' as const) : ('subagent' as const), tokens, askPoint: m?.askPoint ?? 0, charsPerToken: ratioOf(st, $, key, 'compact', await partyChars(st, $, key, e.agentId), m), now: await $.clock.now(), facts: (kept: readonly string[]) => factsFor(st.ledger, key, { keptTexts: kept }), agents: await agentRows($), logDir: st.pluginLogDir, ...(e.agentId !== undefined ? { self: e.agentId } : {}) };
   const wake = action.action === 'install'
     ? buildWake({ ...shared, toolUseId: held!.toolUseId, handoff: held!.text, maxContext: m?.maxContext, tool: st.toolNames.forward_compaction, files: await readLoadFiles($, held!.loadFiles) })
     : mechanicalWake({ ...shared, tool: st.toolNames.forward_compaction, reason: action.why === 'ceiling' ? { kind: 'ceiling', ceiling: m!.ceiling } : { kind: 'reactive' } });
@@ -644,7 +645,7 @@ async function compactFailed(st: State, $: EngineInterface, e: SessionCompactInp
   try {
     const tokens = party.reading;
     const m = marks(st, key);
-    const wake = mechanicalWake({ messages: e.messages, party: key === 'main' ? 'main' : 'subagent', tokens, askPoint: m?.askPoint ?? 0, charsPerToken: ratioOf(st, $, key, 'compact', await partyChars(st, $, key, e.agentId), m), now: Date.now(), facts: (kept) => factsFor(st.ledger, key, { keptTexts: kept }), tool: st.toolNames.forward_compaction, reason: m === undefined ? { kind: 'reactive' } : { kind: 'ceiling', ceiling: m.ceiling } });
+    const wake = mechanicalWake({ messages: e.messages, party: key === 'main' ? 'main' : 'subagent', tokens, askPoint: m?.askPoint ?? 0, charsPerToken: ratioOf(st, $, key, 'compact', await partyChars(st, $, key, e.agentId), m), now: Date.now(), facts: (kept) => factsFor(st.ledger, key, { keptTexts: kept }), tool: st.toolNames.forward_compaction, logDir: st.pluginLogDir, reason: m === undefined ? { kind: 'reactive' } : { kind: 'ceiling', ceiling: m.ceiling } });
     installed(st, $, key, undefined, signal); // the error line below is said now; no landing waits
     tell(st, $, `${said}; a mechanical wake was installed.`, { event: 'compact', party: key, decision: 'error', error: message(error), kept: wake.kept, dropped: wake.dropped });
     return { messages: wake.messages, ...(tokens !== undefined ? { tokensBefore: tokens } : {}) };
@@ -727,6 +728,12 @@ async function noteSubmit(st: State, $: EngineInterface, e: PromptSubmitInput): 
   st.ledger = isPersonOrigin(origin)
     ? addEntry(st.ledger, { kind: 'person', party: 'main', at, text: e.text, ...(e.command ? { command: e.command.name } : {}) })
     : addEntry(st.ledger, { kind: 'notice', party: 'main', at, origin, text: e.text });
+  if (isPersonOrigin(origin)) await keepPerson(st, $);
+}
+
+/** The person's newest messages, held by the host for the session, so a plugin reload does not lose them. */
+async function keepPerson(st: State, $: EngineInterface): Promise<void> {
+  await $.state.set({ plugin: 'forward-compaction', key: 'person', id: await (st.sessionId ??= $.session.id()) }, personKept(st.ledger));
 }
 
 async function noteReceived(st: State, $: EngineInterface, e: SessionReceiveInput): Promise<void> {
@@ -807,6 +814,11 @@ export const register: Register = (on: On, options: PluginOptions) => {
     const r = yield* next(e);
     await guard(st, $, 'turn.step', () => readStep(st, $, e, r), e);
     return r;
+  });
+
+  on('turn.start', async ($, e, next) => {
+    await guard(st, $, 'turn.start', () => st.parties.newTurn(keyOf(e.agentId)), e);
+    return next(e);
   });
 
   on('turn.complete', async ($, e, next) => {

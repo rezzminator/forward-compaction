@@ -167,9 +167,11 @@ export const INVARIANTS: Record<Name, (view: View, recorded: boolean) => Verdict
     const said = (wake: Invocation): boolean => {
       const label = party(wake.input) === 'main' ? 'main' : String(wake.input.agentId).slice(0, 6);
       const step = view.find((i) => i.hook === 'turn.step' && i.seq > wake.seq && party(i.input) === party(wake.input));
-      return view.some((i) => i.seq >= wake.seq && i.seq <= (step?.endSeq ?? Infinity) && i.calls.some((c) => c.path === 'ui.log' && /handoff landed — |mechanical wake (was )?installed/.test(String(c.args[0])) && String(c.args[0]).includes(label) && (c.args[1] as any)?.to !== 'debug'));
+      // Said on screen (a mechanical wake; a handoff too, in recordings made before 1.0.0-dev.3), or logged in a row the plugin writes through process.run.
+      const told = (c: { path: string; args: unknown[] }): boolean => c.path === 'ui.log' ? /handoff landed — |mechanical wake (was )?installed/.test(String(c.args[0])) && String(c.args[0]).includes(label) && (c.args[1] as any)?.to !== 'debug' : c.path === 'process.run' && JSON.stringify(c.args).includes('handoff landed') && JSON.stringify(c.args).includes(label);
+      return view.some((i) => i.seq >= wake.seq && i.seq <= (step?.endSeq ?? Infinity) && i.calls.some(told));
     };
-    return { subjects: subjects.length, failures: subjects.filter((i) => !said(i)).map((i) => `I10 ${at(i)}: the install said nothing on screen by the party's first reading after it`) };
+    return { subjects: subjects.length, failures: subjects.filter((i) => !said(i)).map((i) => `I10 ${at(i)}: the install's landed line was neither logged nor said by the party's first reading after it`) };
   },
   I11(view) {
     const failures: string[] = [];
@@ -352,7 +354,7 @@ describe('replay gate (D19)', { timeout: 60_000 }, () => {
 
   it('classifies every $ path the adapter calls, and the utility paths are the harness\'s', () => {
     expect(new Set(Object.keys(ANSWERS))).toEqual(new Set(PATHS));
-    expect(Object.entries(ANSWERS).filter(([, how]) => how.from === 'harness').map(([path]) => path).sort()).toEqual(['clock.after', 'clock.now', 'process.run', 'session.id', 'tool.register', 'ui.log']);
+    expect(Object.entries(ANSWERS).filter(([, how]) => how.from === 'harness').map(([path]) => path).sort()).toEqual(['clock.after', 'clock.now', 'process.run', 'session.id', 'state.get', 'state.set', 'tool.register', 'ui.log']);
   });
 
   it('replays concurrent parties on the recorded timeline: a step that starts inside another party\'s open step runs after the steps recorded before it', async () => {

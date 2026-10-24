@@ -91,7 +91,7 @@ const given = (...args: unknown[]): unknown[] => {
  * this list to the adapter's. Each call is answered by the engine and written with its path, arguments and outcome;
  * a path missing here is written as an error row and throws, so the recording shows it.
  */
-export const PATHS = ['agent.list', 'clock.after', 'clock.now', 'env.get', 'fs.read', 'fs.stat', 'process.run', 'session.compact', 'session.id', 'session.messages', 'session.usage', 'tool.register', 'ui.log'] as const;
+export const PATHS = ['agent.list', 'clock.after', 'clock.now', 'env.get', 'fs.read', 'fs.stat', 'process.run', 'session.compact', 'session.id', 'session.messages', 'session.usage', 'state.get', 'state.set', 'tool.register', 'ui.log'] as const;
 
 function engineFor($: EngineInterface, id: number): any {
   const call = (path: string, args: unknown[], run: () => unknown): unknown => {
@@ -132,6 +132,10 @@ function engineFor($: EngineInterface, id: number): any {
       id: () => call('session.id', [], () => $.session.id()),
       messages: (args?: any) => call('session.messages', given(args), () => (args === undefined ? $.session.messages() : $.session.messages(args))),
       usage: (args?: any) => call('session.usage', given(args), () => (args === undefined ? $.session.usage() : $.session.usage(args))),
+    },
+    state: {
+      get: (ref: any) => call('state.get', [ref], () => $.state.get(ref)),
+      set: (ref: any, value: unknown) => call('state.set', [ref, value], () => $.state.set(ref, value as never)),
     },
     tool: { register: (spec: any) => call('tool.register', [spec], () => $.tool.register(spec)) },
     ui: { log: (text: string, options?: any) => call('ui.log', given(text, options), () => (options === undefined ? $.ui.log(text) : $.ui.log(text, options))) },
@@ -211,7 +215,7 @@ async function* invokeSteps(hook: string, $: EngineInterface, e: unknown, next: 
 }
 
 /** Every event the plugin registers. Claude Code reads `on("<event>", hook)` statically, so each is written out; a hook the plugin adds and this list lacks is named in the version row, and sanitize refuses the recording. */
-export const RECORDED = ['session.start', 'tool.call', 'session.compact', 'turn.step', 'turn.complete', 'prompt.submit', 'session.receive', 'skill.prompt', 'agent.spawn', 'classic.Stop', 'classic.SubagentStop', 'session.end'] as const;
+export const RECORDED = ['session.start', 'tool.call', 'session.compact', 'turn.step', 'turn.start', 'turn.complete', 'prompt.submit', 'session.receive', 'skill.prompt', 'agent.spawn', 'classic.Stop', 'classic.SubagentStop', 'session.end'] as const;
 let unrecorded: string[] = [];
 
 export const register: Register = (on: On, options) => {
@@ -225,6 +229,7 @@ export const register: Register = (on: On, options) => {
   on('tool.call', async ($, e, next) => invoke('tool.call', $, e, next) as any);
   on('session.compact', async ($, e, next) => invoke('session.compact', $, e, next) as any);
   on('turn.step', async function* ($, e, next) { return (yield* invokeSteps('turn.step', $, e, next) as AsyncGenerator<any, any, any>) as any; });
+  on('turn.start', async ($, e, next) => invoke('turn.start', $, e, next) as any);
   on('turn.complete', async ($, e, next) => invoke('turn.complete', $, e, next) as any);
   on('prompt.submit', async ($, e, next) => invoke('prompt.submit', $, e, next) as any);
   on('session.receive', async ($, e, next) => invoke('session.receive', $, e, next) as any);

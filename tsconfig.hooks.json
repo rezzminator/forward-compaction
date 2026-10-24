@@ -16,5 +16,5 @@
       "claude-code": ["./types/claude-code.d.ts"]
     }
   },
-  "include": ["plugins/forward-compaction/hooks", "plugins/forward-compaction/src", "types"]
+  "include": ["plugins/forward-compaction/hooks", "plugins/forward-compaction/src", "plugins/forward-compaction/contract.d.ts", "types"]
 }

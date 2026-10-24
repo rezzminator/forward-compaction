@@ -192,6 +192,15 @@ describe('asked, answered and reactive (D8)', () => {
     parties.asked('main', 'skip');
     expect(parties.reactive('main')).toBe(true);
   });
+
+  it('is cleared by a new turn, so an ask after an idle gap is not a request too long', () => {
+    const parties = new Parties();
+    parties.asked('main', 'skip');
+    parties.newTurn('main');
+    expect(parties.reactive('main')).toBe(false);
+    parties.asked('main', 'skip');
+    expect(parties.reactive('main')).toBe(true); // a second skip inside the new turn, no step between
+  });
 });
 
 describe('installed', () => {

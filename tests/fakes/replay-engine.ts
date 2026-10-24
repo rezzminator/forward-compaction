@@ -49,6 +49,9 @@ export const ANSWERS: Record<(typeof PATHS)[number], { from: 'recorded'; subject
   'process.run': { from: 'harness' },
   'ui.log': { from: 'harness', sync: true },
   'tool.register': { from: 'harness' },
+  // the host's session state, held by the harness for the replay: what the plugin set is what it gets
+  'state.get': { from: 'harness' },
+  'state.set': { from: 'harness' },
 };
 
 export function loadFixture(path: string): Row[] {
@@ -114,6 +117,7 @@ async function drive(recorded: Invocation[], root: string): Promise<Replay> {
   const replayed: Invocation[] = [];
   const signal = new AbortController().signal;
   const world = recorded.flatMap((inv) => inv.calls).sort((a, b) => a.seq! - b.seq!);
+  const held = new Map<string, { value: unknown; version: number }>();
   const home = world.find((c) => c.path === 'env.get' && c.args[0] === 'HOME' && typeof c.result === 'string')?.result as string | undefined;
   /** The seq of the next timeline event: every call recorded before it happened by now. */
   let now = 0;
@@ -169,6 +173,12 @@ async function drive(recorded: Invocation[], root: string): Promise<Replay> {
               return new Error(line);
             });
           } else if (path === 'clock.after') result = { cancel: () => undefined }; // a timer never fires in replay
+          else if (path === 'state.get') result = held.get(JSON.stringify(args[0])) ?? { value: undefined, version: 0 };
+          else if (path === 'state.set') {
+            const version = (held.get(JSON.stringify(args[0]))?.version ?? 0) + 1;
+            held.set(JSON.stringify(args[0]), { value: args[1], version });
+            result = { isSet: true, version };
+          }
         } catch (error) {
           // missing() has written this call's row already; any other failure (a refused path, a spawn error) is written here
           if (out.calls.at(-1)?.args !== args) out.calls.push({ path, args, error: { message: error instanceof Error ? error.message : String(error) } });
@@ -321,6 +331,7 @@ export async function recordSynthetic(dir: string): Promise<string> {
       version: async () => ({ version: 'synthetic' }),
       compact: async () => ({ skip: 'synthetic' }),
     },
+    state: { get: async () => ({ value: undefined, version: 0 }), set: async () => ({ isSet: true, version: 1 }) },
     tool: { register: async (spec: { name: string }) => ({ tool: `mcp__forward-compaction__${spec.name}` }) },
     ui: { log: () => undefined },
   };

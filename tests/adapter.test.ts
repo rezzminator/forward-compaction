@@ -165,10 +165,10 @@ describe('session.compact', () => {
     expect(r.tokensBefore).toBe(64_000); // the last reading, never an estimate beside it
     expect(r.tokensAfter).toBeUndefined(); // no character count stands in for it: the next reading measures it (M2)
     await step(f, 12_000, A1);
-    const landed = f.screen.filter((c) => c.text.startsWith('general-purpose a1b2c3 handoff landed'));
+    expect(f.texts().filter((t) => t.includes('handoff landed'))).toEqual([]); // a chosen handoff is routine: logged, never on screen
+    const landed = (await rows(f)).filter((r) => r.event === 'landed');
     expect(landed).toHaveLength(1);
-    expect(landed[0]!.opts).toBeUndefined();
-    expect(landed[0]!.text).toContain('handoff landed — 64k → 12k context, measured;'); // both figures are readings: before the install and the first after
+    expect(landed[0]!.line).toContain('general-purpose a1b2c3 handoff landed — 64k → 12k context, measured;'); // both figures are readings: before the install and the first after
   });
 
   it('holds an auto ask with nothing stored below the ceiling (C9) and passes a manual one untouched (C1)', async () => {
@@ -546,6 +546,8 @@ describe('audit r4: readings only, measured landed lines, the milestone nudge, t
   const read = (f: Fake, id: string, chars = 4, agentId?: string) => f.dispatch('tool.call', { tool: 'Read', tool_use_id: id, file_path: '/x', ...(agentId ? { agentId } : {}) }, async () => ({ result: 'x'.repeat(chars) }));
   const ask = (f: Fake, messages: unknown[], agentId?: string) => f.dispatch('session.compact', { trigger: 'auto', messages, ...(agentId ? { agentId } : {}) }, async () => ({ skip: 'native ran' }));
   const landedLines = (f: Fake) => f.texts().filter((t) => t.includes('handoff landed') || t.includes('mechanical wake installed'));
+  // A chosen handoff's landed line is a logged row only; the screen never shows it.
+  const handoffLanded = async (f: Fake) => (expect(landedLines(f).filter((t) => t.includes('handoff landed'))).toEqual([]), (await rows(f)).filter((r) => r.event === 'landed').map((r) => r.line));
   const installAgent = async (f: Fake) => {
     await spawn(f);
     await step(f, 64_000, A1);
@@ -591,11 +593,10 @@ describe('audit r4: readings only, measured landed lines, the milestone nudge, t
   it('M2 writes the landed line at the first reading after the install, measured, beside a landed row', async () => {
     const f = await begin();
     expect(await installAgent(f)).toHaveProperty('messages');
-    expect(landedLines(f)).toEqual([]);
     await step(f, 41_000, A1);
-    expect(landedLines(f)).toEqual([expect.stringMatching(new RegExp(`^general-purpose a1b2c3 handoff landed — 64k → 41k context, measured; frontier ${HANDOFF.length} characters, \\d+ facts, 2 messages kept verbatim\\.$`))]);
     await step(f, 42_000, A1);
-    expect(landedLines(f)).toHaveLength(1);
+    // One line, at the first reading after the install (41k), never the second.
+    expect(await handoffLanded(f)).toEqual([expect.stringMatching(new RegExp(`^general-purpose a1b2c3 handoff landed — 64k → 41k context, measured; frontier ${HANDOFF.length} characters, \\d+ facts, 2 messages kept verbatim\\.$`))]);
     const all = await rows(f);
     expect(all.filter((r) => r.event === 'compact' && r.decision === 'install')).toHaveLength(1);
     expect(all.filter((r) => r.event === 'landed')).toEqual([expect.objectContaining({ party: `agent:${A1}`, kind: 'handoff', before: 64_000, after: 41_000 })]);
@@ -605,7 +606,7 @@ describe('audit r4: readings only, measured landed lines, the milestone nudge, t
     const f = await begin();
     await installAgent(f);
     await f.dispatch('turn.complete', { reason: 'answer', answer: 'done', durationMs: 1, isAborted: false, turnId: 't1', agentId: A1 }, async () => ({ text: 'done' }));
-    expect(landedLines(f)).toEqual([expect.stringMatching(/^general-purpose a1b2c3 handoff landed — 64k → unknown context \(it ended before a request after the install measured it\); frontier /)]);
+    expect(await handoffLanded(f)).toEqual([expect.stringMatching(/^general-purpose a1b2c3 handoff landed — 64k → unknown context \(it ended before a request after the install measured it\); frontier /)]);
     expect((await rows(f)).filter((r) => r.event === 'landed')).toEqual([expect.objectContaining({ before: 64_000, after: null })]);
   });
 

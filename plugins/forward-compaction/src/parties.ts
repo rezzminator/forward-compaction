@@ -167,6 +167,12 @@ export class Parties {
     if (state) state.base = base;
   }
 
+  /** A new turn of the party: an ask held before it ended with the old turn, so the next ask is a fresh one, never a request too long. */
+  newTurn(key: string): void {
+    const state = this.states.get(key);
+    if (state) state.answeredSinceSkip = true;
+  }
+
   /** A request completed (with or without a usage reading). */
   answered(key: string): void {
     this.get(key).answeredSinceSkip = true;

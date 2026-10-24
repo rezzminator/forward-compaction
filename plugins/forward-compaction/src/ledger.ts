@@ -57,6 +57,21 @@ export function addEntry(ledger: Ledger, entry: EntryInput): Ledger {
   return { ...ledger, nextSeq: ledger.nextSeq + 1, entries: [...kept, { ...entry, seq: ledger.nextSeq } as LedgerEntry] };
 }
 
+/** The most of the person's messages kept for a wake and across a plugin reload: the newest ten, the owner's ruling. */
+export const PERSON_KEPT = 10;
+
+/** The person's newest PERSON_KEPT messages, oldest first, as `$.state` keeps them. */
+export function personKept(ledger: Ledger): { at: number; text: string; command?: string }[] {
+  return ledger.entries.filter((e): e is PersonEntry => e.kind === 'person').slice(-PERSON_KEPT).map(({ at, text, command }) => ({ at, text, ...(command !== undefined ? { command } : {}) }));
+}
+
+/** The ledger with the person's messages kept before a plugin reload put back, when it has none of its own yet; anything not a message is left out. */
+export function restorePerson(ledger: Ledger, kept: unknown): Ledger {
+  if (!Array.isArray(kept) || ledger.entries.some((e) => e.kind === 'person')) return ledger;
+  const valid = kept.filter((p): p is { at: number; text: string; command?: unknown } => p !== null && typeof p === 'object' && typeof p.at === 'number' && typeof p.text === 'string');
+  return valid.slice(-PERSON_KEPT).reduce((l, p) => addEntry(l, { kind: 'person', party: 'main', at: p.at, text: p.text, ...(typeof p.command === 'string' ? { command: p.command } : {}) }), ledger);
+}
+
 /** A preload skill is first filed under `spawn:{tool_use_id}`; once the spawn returns, it belongs to the child. */
 export function resolveSpawn(ledger: Ledger, toolUseId: string, agentId: string): Ledger {
   const from = `spawn:${toolUseId}`;

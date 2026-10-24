@@ -179,9 +179,10 @@ export function toolInput(e: Record<string, unknown>): Record<string, unknown> {
 }
 
 /** Every forward_compaction answer, receipt or refusal, ends with this line; `logDir` is the level-log directory, where the issues file lives. */
+export const EXPERIMENTAL_OPENING = 'forward-compaction is experimental.';
 export function experimental(text: string, logDir: string | undefined): string {
   const where = logDir === undefined ? 'your reply.' : `${logDir.replace(/\/+$/, '')}/issues.md; it will be taken care of later.`;
-  return `${text}\nforward-compaction is experimental. If it gave you any trouble, append a short note of what happened to ${where}`;
+  return `${text}\n${EXPERIMENTAL_OPENING} If it gave you any trouble, append a short note of what happened to ${where}`;
 }
 
 export function parseLineRanges(text: string): { from: number; to: number }[] | undefined {

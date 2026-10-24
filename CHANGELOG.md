@@ -4,6 +4,19 @@ Every release of forward-compaction, named sub-agent-compact before 1.0.0. Versi
 
 ## [Unreleased]
 
+## [1.0.0-dev.3] — 2026-10-24
+
+### Changed
+
+- **A handoff's landed line is logged, not printed.** `… handoff landed — 160k → 41k context, measured; …` is an info row in the level log (`info.jsonl`) and a `landed` row in the decision log; the screen no longer shows it. A mechanical wake's line is still printed, since that party lost its frontier.
+
+- **The wake ends with the experimental line.** A handoff's wake and a mechanical wake both close with the line that says the plugin is experimental and where to note any trouble (`issues.md` in the level-log directory); the receipt it carries no longer holds a second copy.
+- **The person's newest ten messages survive a plugin reload.** The main chat's wake carries at most the newest ten of the person's messages; they are also kept in Claude Code's session state (`$.state`, declared in the shipped `contract.d.ts`), so a `/reload-plugins` before a compaction no longer drops the ones typed before it.
+
+### Fixed
+
+- **An ask after an idle gap is no longer read as a request too long.** A held ask followed by the next one with no completed request counted as too long even across turns, so a chat held overnight was compacted mechanically when its next prompt arrived (309k, no API error). Each new turn now clears that inference; inside a turn it stands as before.
+
 ## [1.0.0-dev.2] — 2026-10-24
 
 ### Changed

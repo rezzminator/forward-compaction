@@ -130,10 +130,19 @@ describe('buildWake (R20)', () => {
     expect(wake).toMatchObject({ kept: 2, dropped: 0 });
   });
 
-  it("carries the call's own result verbatim, so the receipt and the experimental line reach the model", () => {
-    const receipt = 'Handoff stored (40 characters). It installs before your next request.\nforward-compaction is experimental. If it gave you any trouble, append a short note to /logs/issues.md.';
-    const h = buildWake({ ...mainInput([call, results(['t9', receipt])]), toolUseId: 't9', handoff }).messages[1] as BuiltMessage;
-    expect(h.text).toContain(`Your forward_compaction call returned:\n${receipt}`);
+  it("carries the call's own receipt, and ends the wake with the experimental line, once", () => {
+    const stored = 'Handoff stored (40 characters). It installs before your next request.';
+    const receipt = `${stored}\nforward-compaction is experimental. If it gave you any trouble, append a short note to /logs/issues.md.`;
+    const h = buildWake({ ...mainInput([call, results(['t9', receipt])]), toolUseId: 't9', handoff, logDir: '/logs' }).messages[1] as BuiltMessage;
+    expect(h.text).toContain(`Your forward_compaction call returned:\n${stored}\n\n`);
+    expect(h.text.split('\n').at(-1)).toBe('forward-compaction is experimental. If it gave you any trouble, append a short note of what happened to /logs/issues.md; it will be taken care of later.');
+    expect(h.text.split('forward-compaction is experimental.').length).toBe(2);
+  });
+
+  it('ends a mechanical wake with the experimental line too', () => {
+    const w = mechanicalWake({ ...mainInput([user('a'), assistant('b')]), logDir: '/logs', reason: { kind: 'ceiling', ceiling: 120_000 } });
+    const head = w.messages.find((m) => (m as BuiltMessage).text?.startsWith('[forward-compaction: no frontier')) as BuiltMessage;
+    expect(head.text.split('\n').at(-1)).toMatch(/^forward-compaction is experimental\. .*\/logs\/issues\.md; it will be taken care of later\.$/);
   });
 
   it('says nothing happened when the call was the last thing', () => {
@@ -242,6 +251,15 @@ describe('F sections', () => {
     expect(f).toContain('p4 ');
     expect(f.indexOf('p3 ')).toBeLessThan(f.indexOf('p4 '));
     expect(f).not.toContain('p2 ');
+  });
+
+  it('carries at most the newest ten person messages, and counts the older ones left out', () => {
+    const person = Array.from({ length: 12 }, (_, i) => ({ at: T0 + i * 1000, text: `ask${i}.` }));
+    const { f } = wakeOf({ f: { person } });
+    expect(f).toContain("## The person's messages, oldest first (10 of 12; the 2 oldest are not carried: look_back finds them)");
+    expect(f).toContain('ask2.');
+    expect(f).toContain('ask11.');
+    expect(f).not.toContain('ask1.');
   });
 
   it('states no person message with the ledger start, and without one when there is no start', () => {

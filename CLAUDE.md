@@ -13,7 +13,7 @@ is the behavioural spec.
 - Each ask is skipped until a handoff is stored, and that ask installs it; or until the party reaches its ceiling, and it gets the mechanical wake: recorded facts, no frontier from the model. Main also installs a stored handoff at its own turn end, through `$.session.compact()`.
 - The exceptions to "the model chooses" are only these:
   - the ceiling: the mechanical wake, or Claude Code's own summary under `FORWARD_COMPACTION_CEILING_NATIVE`;
-  - a request too long (an ask following a held ask that no request completed): the mechanical wake at once, below the ceiling;
+  - a request too long (an ask following a held ask in the same turn that no request completed): the mechanical wake at once, below the ceiling;
   - an ignored model (`FORWARD_COMPACTION_IGNORE_MODELS`, Haiku by default): no nudges, its `forward_compaction` call refused, its asks held to its ceiling and then compacted mechanically, never at Claude Code's early ask;
   - an error, which never holds a compaction: the party gets the mechanical wake, and if that fails too, Claude Code's own summary runs; every failure is logged with context;
   - the person's own `/compact`: Claude Code's own summary, and the stored handoff is dropped;
@@ -26,6 +26,7 @@ is the behavioural spec.
 
 - `plugins/forward-compaction/`: everything that installs, and nothing else — the directory scans only this folder, so dev files never go in it.
 - `plugins/forward-compaction/hooks/forward-compaction.ts`: the adapter, the only file that touches `$`.
+- `plugins/forward-compaction/contract.d.ts`: the session state the host keeps for the plugin (`$.state`, the person's newest messages); `plugin.json` names it in `types`.
 - `plugins/forward-compaction/src/`: every decision, pure and unit-tested; `tests/` holds one vitest file per concern.
 - `types/claude-code.d.ts`: the plugin API (from `/plugin-types`), the truth for every hook's shape; grep it before using an event.
 - `plugins/forward-compaction/.claude-plugin/`: `plugin.json` (manifest, no `userConfig`) and `icon.svg`; the root `.claude-plugin/marketplace.json` makes the repo its own marketplace, with a `git-subdir` source at `plugins/forward-compaction`.

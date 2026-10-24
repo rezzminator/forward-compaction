@@ -2,6 +2,8 @@
 // the tail is the engine's own messages returned untouched. Pure: files, agents and the clock arrive as inputs.
 import { DEFAULT_TOOL, k as kilo } from './nudge.ts';
 import { loadFilesRoom } from './window.ts';
+import { PERSON_KEPT } from './ledger.ts';
+import { experimental, EXPERIMENTAL_OPENING } from './handoff.ts';
 
 /** A message in `session.compact`'s shape; a SessionMessage fits. */
 export type WakeMessage = {
@@ -140,6 +142,8 @@ type Shared<M> = {
   agents?: readonly AgentRow[] | { error: string };
   /** The registered `forward_compaction` name, DEFAULT_TOOL when absent. */
   tool?: string;
+  /** The level-log directory, where the issues file the wake's last line names lives. */
+  logDir?: string;
 };
 /** `maxContext`: the party's max context, whose `loadFilesRoom` the files are carried in. */
 export type BuildWakeInput<M> = Shared<M> & { toolUseId: string; handoff: string; files?: readonly WakeFile[]; maxContext?: number };
@@ -205,8 +209,9 @@ function renderFacts<M>(input: Shared<M>, facts: WakeFacts, { siblings, files, f
   } else if (facts.person.length === 0) {
     sections.push({ text: `## The person's messages\n(none recorded${facts.startedAt === undefined ? '' : ` since ${iso(facts.startedAt)}`})`, content: false });
   } else {
-    const { shown, left } = newestFitting(facts.person, (p) => `### ${iso(p.at)}\n${p.text}`, room(SHARE.people));
+    const { shown } = newestFitting(facts.person.slice(-PERSON_KEPT), (p) => `### ${iso(p.at)}\n${p.text}`, room(SHARE.people));
     const count = facts.person.length;
+    const left = count - shown.length;
     const heading = left === 0 ? `(${shown.length} of ${count})` : `(${shown.length} of ${count}; the ${left} oldest are not carried: look_back finds them)`;
     sections.push(section([`## The person's messages, oldest first ${heading}`, ...shown].join('\n')));
   }
@@ -348,11 +353,12 @@ export function buildWake<M extends WakeMessage>(input: BuildWakeInput<M>): Wake
       '[forward-compaction: handoff] Below is the handoff you wrote with forward_compaction. It is your frontier: continue from its ## Next.',
       `=== handoff ===\n${input.handoff}\n=== end of handoff ===`,
     ];
-    if (split.own !== undefined) lines.push(`Your forward_compaction call returned:\n${split.own}`);
+    // The receipt's own experimental line moves to the wake's end, where it is read last.
+    if (split.own !== undefined) lines.push(`Your forward_compaction call returned:\n${split.own.split(`\n${EXPERIMENTAL_OPENING}`)[0]}`);
     if (kept > 0) lines.push(`The ${kept} messages after this one are what happened after you wrote it, kept verbatim. Continue from where they leave off.`);
     if (dropped > 0) lines.push(`${dropped} older messages after your handoff did not fit and are gone (look_back finds an exact detail); call ${input.tool ?? DEFAULT_TOOL} again at your next milestone.`);
     if (kept === 0) lines.push('Nothing happened after you wrote it. Continue from ## Next.');
-    return lines.join('\n\n');
+    return experimental(lines.join('\n\n'), input.logDir);
   }, 'all');
 }
 
@@ -360,8 +366,8 @@ export function buildWake<M extends WakeMessage>(input: BuildWakeInput<M>): Wake
 export function mechanicalWake<M extends WakeMessage>(input: MechanicalWakeInput<M>): Wake<M> {
   const why = input.reason.kind === 'ceiling' ? `, past the ${kilo(input.reason.ceiling)} ceiling` : ', and Claude Code reported your request too long';
   const source = input.party === 'main' ? "the person's messages" : 'your brief';
-  return assemble(input, input.messages, { siblings: [], files: [], fileRoom: 0 }, ({ kept, dropped }) =>
-    `[forward-compaction: no frontier written by the model] Your context reached ${input.tokens === undefined ? 'a size not measured yet' : `${kilo(input.tokens)} tokens`}${why}, and you had not called forward_compaction, so the plugin compacted it mechanically: the facts above and your newest ${kept} messages below, kept verbatim; ${dropped} older messages are gone (look_back finds an exact detail). No objective or next step was written. Re-establish them from ${source} and the messages below, then continue; call ${input.tool ?? DEFAULT_TOOL} at your next milestone.`,
+  return assemble(input, input.messages, { siblings: [], files: [], fileRoom: 0 }, ({ kept, dropped }) => experimental(
+    `[forward-compaction: no frontier written by the model] Your context reached ${input.tokens === undefined ? 'a size not measured yet' : `${kilo(input.tokens)} tokens`}${why}, and you had not called forward_compaction, so the plugin compacted it mechanically: the facts above and your newest ${kept} messages below, kept verbatim; ${dropped} older messages are gone (look_back finds an exact detail). No objective or next step was written. Re-establish them from ${source} and the messages below, then continue; call ${input.tool ?? DEFAULT_TOOL} at your next milestone.`, input.logDir),
   'none');
 }
 

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  personKept, restorePerson, PERSON_KEPT,
   PERSON_ORIGINS, addEntry, attributeSkill, factsFor, isPersonOrigin, markStart, newLedger, resolveSpawn, shellsOf,
   type EntryInput, type Ledger, type PartyKey,
 } from '../plugins/forward-compaction/src/ledger.ts';
@@ -240,5 +241,27 @@ describe('shellsOf', () => {
       crons: [{ id: 'c1', schedule: '* * * * *', recurring: true, prompt: '' }],
     });
     expect(shellsOf({ background_tasks: 'x' })).toEqual({ tasks: [], crons: [] });
+  });
+});
+
+describe('the person messages kept across a plugin reload', () => {
+  const said = (n: number) => Array.from({ length: n }, (_, i) => i).reduce((l, i) => addEntry(l, { kind: 'person', party: 'main', at: i, text: `m${i}`, ...(i === 0 ? { command: 'god-speed' } : {}) }), newLedger());
+
+  it('keeps the newest ten, oldest first, with their command', () => {
+    expect(PERSON_KEPT).toBe(10);
+    expect(personKept(said(12)).map((p) => p.text)).toEqual(['m2', 'm3', 'm4', 'm5', 'm6', 'm7', 'm8', 'm9', 'm10', 'm11']);
+    expect(personKept(said(1))).toEqual([{ at: 0, text: 'm0', command: 'god-speed' }]);
+  });
+
+  it('puts them back into a ledger that has none, leaving out anything that is not a message', () => {
+    const back = restorePerson(newLedger(), [{ at: 1, text: 'a', command: 'x' }, { at: 'no', text: 'b' }, null, { at: 2, text: 'c' }]);
+    expect(back.entries.map((e) => [e.kind, (e as { text: string }).text, (e as { command?: string }).command])).toEqual([['person', 'a', 'x'], ['person', 'c', undefined]]);
+  });
+
+  it('leaves a ledger that recorded its own messages, or a value that is not a list, as it is', () => {
+    const own = said(2);
+    expect(restorePerson(own, [{ at: 9, text: 'old' }])).toBe(own);
+    expect(restorePerson(newLedger(), undefined).entries).toEqual([]);
+    expect(restorePerson(newLedger(), { at: 1 }).entries).toEqual([]);
   });
 });
