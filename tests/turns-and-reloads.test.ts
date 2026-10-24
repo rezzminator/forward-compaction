@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { fakeEngine, usage, type Script } from './fakes/engine.ts';
 
-// The adapter's wiring of two session-lifetime facts: a new turn ends the request-too-long inference (D8), and the
-// person's messages outlive a plugin reload through the host's session state.
+// The adapter's wiring of session-lifetime facts: a new turn ends the request-too-long inference (D8), the person's
+// messages outlive a plugin reload through the host's session state, and finished tool calls record the party's work.
 
 type Fake = ReturnType<typeof fakeEngine>;
 const fakes: Fake[] = [];
@@ -42,7 +42,7 @@ describe('a request too long (D8)', () => {
   });
 });
 
-describe("the person's messages across a plugin reload", () => {
+describe('the prompts across a plugin reload', () => {
   it('carries the messages typed before a reload into the wake after it', async () => {
     const state = new Map<string, { value: unknown; version: number }>();
     const before = await begin({ state });
@@ -52,5 +52,32 @@ describe("the person's messages across a plugin reload", () => {
     const r = await ask(after);
     expect(r.messages[0].text).toContain("## The person's messages, oldest first (1 of 1)\n### ");
     expect(r.messages[0].text).toContain('typed before the reload');
+  });
+
+  it("carries a sub-agent's brief and its coordinator's messages from before a reload into its wake", async () => {
+    const state = new Map<string, { value: unknown; version: number }>();
+    const before = await begin({ state });
+    await before.dispatch('agent.spawn', { tool_use_id: 'tu-spawn', prompt: 'Brief for agent one', description: 'one', subagentType: 'general-purpose', provider: { kind: 'local' } }, async () => ({ model: 'sonnet', agentId: 'a1b2c3d4e5' }));
+    await before.dispatch('session.receive', { agentId: 'a1b2c3d4e5', origin: { kind: 'coordinator' }, text: 'also check the docs' }, async () => ({}));
+    const after = await begin({ state, agents: () => [{ id: 'a1b2c3d4e5', type: 'general-purpose', status: 'running', description: 'one' }] });
+    await after.dispatch('turn.step', { turnId: 't1', index: 0, model: 'claude-sonnet-4-5', messageCount: 4, agentId: 'a1b2c3d4e5' }, async () => ({ turnId: 't1', index: 0, answer: '', toolUses: [], stopReason: 'tool_use', ...usage(170_000) }));
+    const r = await after.dispatch('session.compact', { trigger: 'auto', agentId: 'a1b2c3d4e5', messages }, async () => ({ skip: 'native ran' }));
+    expect(r.messages[0].text).toContain('## Your brief\nBrief for agent one');
+    expect(r.messages[0].text).toContain('also check the docs');
+  });
+});
+
+describe("the party's work, from its finished tool calls", () => {
+  it('lists the files and tasks of the calls that finished, never a denied one', async () => {
+    const f = await begin();
+    await f.dispatch('tool.call', { tool: 'Read', tool_use_id: 'r1', file_path: '/w/read.ts' }, async () => ({ result: {}, text: 'body' }));
+    await f.dispatch('tool.call', { tool: 'Edit', tool_use_id: 'e1', file_path: '/w/edited.ts' }, async () => ({ result: {}, text: 'ok' }));
+    await f.dispatch('tool.call', { tool: 'Write', tool_use_id: 'w1', file_path: '/w/denied.ts' }, async () => ({ deny: 'not allowed' }));
+    await f.dispatch('tool.call', { tool: 'TodoWrite', tool_use_id: 't1', todos: [{ content: 'ship', status: 'in_progress' }] }, async () => ({ result: {}, text: 'ok' }));
+    await step(f, 125_000);
+    const facts = (await ask(f)).messages[0].text;
+    expect(facts).toContain('## Files touched, newest first (R read, E edited, W written)\nE /w/edited.ts\nR /w/read.ts');
+    expect(facts).toContain('## Tasks, as last set\n[~] ship');
+    expect(facts).not.toContain('/w/denied.ts');
   });
 });

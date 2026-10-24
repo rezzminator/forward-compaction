@@ -6,12 +6,16 @@ Every release of forward-compaction, named sub-agent-compact before 1.0.0. Versi
 
 ## [1.0.0-dev.3] — 2026-10-24
 
+### Added
+
+- **Files touched.** The wake lists the files the party's finished calls read, edited or wrote, newest first, at most 15 paths, each with its strongest touch (R, E, W), as Claude Code's own compaction restores the recent files.
+- **Tasks.** The wake carries the task list as last set (`TodoWrite`, or `TaskCreate`/`TaskUpdate`), whole within 5% of the wake budget or named as not carried.
+
 ### Changed
 
 - **A handoff's landed line is logged, not printed.** `… handoff landed — 160k → 41k context, measured; …` is an info row in the level log (`info.jsonl`) and a `landed` row in the decision log; the screen no longer shows it. A mechanical wake's line is still printed, since that party lost its frontier.
-
 - **The wake ends with the experimental line.** A handoff's wake and a mechanical wake both close with the line that says the plugin is experimental and where to note any trouble (`issues.md` in the level-log directory); the receipt it carries no longer holds a second copy.
-- **The person's newest ten messages survive a plugin reload.** The main chat's wake carries at most the newest ten of the person's messages; they are also kept in Claude Code's session state (`$.state`, declared in the shipped `contract.d.ts`), so a `/reload-plugins` before a compaction no longer drops the ones typed before it.
+- **Each party's newest ten prompts survive a plugin reload.** The main chat's wake carries at most the person's newest ten messages, a sub-agent's its brief and its coordinator's newest ten; both are kept in Claude Code's session state (`$.state`, declared in the shipped `contract.d.ts`) and put back at the next compaction ask, so a `/reload-plugins` no longer drops what came before it.
 
 ### Fixed
 

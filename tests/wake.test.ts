@@ -262,6 +262,31 @@ describe('F sections', () => {
     expect(f).not.toContain('ask1.');
   });
 
+  it("carries at most a sub-agent's newest ten coordinator messages, and counts the older ones", () => {
+    const received = Array.from({ length: 12 }, (_, i) => ({ at: T0 + i * 1000, origin: 'coordinator', text: `note${i}.` }));
+    const w = mechanicalWake({ ...base, messages: [user('a'), assistant('b')], party: 'subagent', facts: facts({ brief: { text: 'brief' }, received }), reason: { kind: 'ceiling', ceiling: 120_000 } });
+    const f = (w.messages[0] as BuiltMessage).text;
+    expect(f).toContain('## Messages from your coordinator\n(2 older not carried)');
+    expect(f).toContain('note2.');
+    expect(f).toContain('note11.');
+    expect(f).not.toContain('note1.');
+  });
+
+  it('lists the files touched, newest first, at most 15, and counts the older ones', () => {
+    const files = Array.from({ length: 17 }, (_, i) => ({ path: `/w/f${i}.ts`, tag: (i === 0 ? 'E' : 'R') as 'E' | 'R' }));
+    const { f } = wakeOf({ f: { work: { files, tasks: [] } } });
+    expect(f).toContain('## Files touched, newest first (R read, E edited, W written)\nE /w/f0.ts\nR /w/f1.ts');
+    expect(f).toContain('R /w/f14.ts\n(2 older not listed)');
+    expect(f).not.toContain('/w/f15.ts');
+    expect(wakeOf({ f: { work: { files: [], tasks: [] } } }).f).not.toContain('## Files touched');
+  });
+
+  it('carries the task list as last set within 5% of B, and names it when over that room', () => {
+    expect(wakeOf({ f: { work: { files: [], tasks: ['[x] tests', '[ ] install'] } } }).f).toContain('## Tasks, as last set\n[x] tests\n[ ] install');
+    const big = wakeOf({ askPoint: 2000, f: { work: { files: [], tasks: ['[ ] ' + 'w'.repeat(2000)] } } }).f;
+    expect(big).toMatch(/## Tasks\n\(not carried: 2,026 characters, over the [\d,]+-character room; look_back finds them\)/);
+  });
+
   it('states no person message with the ledger start, and without one when there is no start', () => {
     expect(wakeOf({ f: { startedAt: T0 } }).f).toContain(`## The person's messages\n(none recorded since 2026-10-23T10:00:00.000Z)`);
     expect(wakeOf({}).f).toContain("## The person's messages\n(none recorded)");

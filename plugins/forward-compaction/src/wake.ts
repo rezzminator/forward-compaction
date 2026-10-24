@@ -2,7 +2,7 @@
 // the tail is the engine's own messages returned untouched. Pure: files, agents and the clock arrive as inputs.
 import { DEFAULT_TOOL, k as kilo } from './nudge.ts';
 import { loadFilesRoom } from './window.ts';
-import { PERSON_KEPT } from './ledger.ts';
+import { PROMPTS_KEPT } from './ledger.ts';
 import { experimental, EXPERIMENTAL_OPENING } from './handoff.ts';
 
 /** A message in `session.compact`'s shape; a SessionMessage fits. */
@@ -30,7 +30,9 @@ const iso = (at: number): string => new Date(at).toISOString();
  * skills in force are what a woken model most needs (a quarter each), sibling results a tenth, coordinator notices a
  * twentieth; the rest of B goes to the messages kept after the call. Load files have their own room, `loadFilesRoom`.
  */
-const SHARE = { people: 0.25, notices: 0.05, siblings: 0.1, skills: 0.25 } as const;
+const SHARE = { people: 0.25, notices: 0.05, siblings: 0.1, skills: 0.25, tasks: 0.05 } as const;
+/** The most files the Files section lists, newest touch first: a path list stays a glance, as the old carry's trail did. */
+export const FILES_MAX = 15;
 /** The agents section's row cap: a design budget, enough for a coordinator's fleet, never the size of one. */
 export const AGENTS_MAX_ROWS = 50;
 
@@ -115,6 +117,8 @@ export type WakeFacts = {
     tasks: readonly { id: string; type: string; status: string; description: string; command?: string }[];
     crons: readonly { id: string; schedule: string; recurring: boolean; prompt: string }[];
   };
+  /** The files the party's finished calls touched, newest first, and its task list as last set. */
+  work?: { files: readonly { path: string; tag: 'R' | 'E' | 'W' }[]; tasks: readonly string[] };
   startedAt?: number;
   startReason?: string;
 };
@@ -209,7 +213,7 @@ function renderFacts<M>(input: Shared<M>, facts: WakeFacts, { siblings, files, f
   } else if (facts.person.length === 0) {
     sections.push({ text: `## The person's messages\n(none recorded${facts.startedAt === undefined ? '' : ` since ${iso(facts.startedAt)}`})`, content: false });
   } else {
-    const { shown } = newestFitting(facts.person.slice(-PERSON_KEPT), (p) => `### ${iso(p.at)}\n${p.text}`, room(SHARE.people));
+    const { shown } = newestFitting(facts.person.slice(-PROMPTS_KEPT), (p) => `### ${iso(p.at)}\n${p.text}`, room(SHARE.people));
     const count = facts.person.length;
     const left = count - shown.length;
     const heading = left === 0 ? `(${shown.length} of ${count})` : `(${shown.length} of ${count}; the ${left} oldest are not carried: look_back finds them)`;
@@ -218,7 +222,8 @@ function renderFacts<M>(input: Shared<M>, facts: WakeFacts, { siblings, files, f
 
   const inbox = sub ? { entries: facts.received, title: 'Messages from your coordinator' } : { entries: facts.notices, title: 'Notifications delivered to you' };
   if (inbox.entries.length > 0) {
-    const { shown, left } = newestFitting(inbox.entries, (m) => `### ${iso(m.at)} (${m.origin})\n${m.text}`, room(SHARE.notices));
+    const { shown } = newestFitting(sub ? inbox.entries.slice(-PROMPTS_KEPT) : inbox.entries, (m) => `### ${iso(m.at)} (${m.origin})\n${m.text}`, room(SHARE.notices));
+    const left = inbox.entries.length - shown.length;
     sections.push(section([`## ${inbox.title}`, ...(left > 0 ? [`(${left} older not carried)`] : []), ...shown].join('\n')));
   }
 
@@ -247,6 +252,17 @@ function renderFacts<M>(input: Shared<M>, facts: WakeFacts, { siblings, files, f
   if (carriedSkills.length > 0) sections.push(section(['## Skills in force, as loaded', ...carriedSkills].join('\n')));
   for (const s of facts.unattributedSkills) notCarried.push(`- ${s.skill}: loaded in this session by an unidentified party; call Skill ${s.skill} if it applies to you.`);
   if (notCarried.length > 0) sections.push({ text: ['## Skills not carried', ...notCarried].join('\n'), content: false });
+
+  const work = facts.work;
+  if (work !== undefined && work.files.length > 0) {
+    const more = work.files.length - FILES_MAX;
+    sections.push(section(['## Files touched, newest first (R read, E edited, W written)', ...work.files.slice(0, FILES_MAX).map((f) => `${f.tag} ${f.path}`), ...(more > 0 ? [`(${more} older not listed)`] : [])].join('\n')));
+  }
+  if (work !== undefined && work.tasks.length > 0) {
+    const text = ['## Tasks, as last set', ...work.tasks].join('\n');
+    const cap = room(SHARE.tasks);
+    sections.push(text.length <= cap ? section(text) : { text: `## Tasks\n(not carried: ${num(text.length)} characters, over the ${num(cap)}-character room; look_back finds them)`, content: false });
+  }
 
   if (input.agents !== undefined) {
     if (!Array.isArray(input.agents)) sections.push({ text: `## Agents\n(could not be listed: ${(input.agents as { error: string }).error})`, content: false });

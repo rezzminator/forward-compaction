@@ -1,0 +1,51 @@
+import { describe, expect, it } from 'vitest';
+import { workOf, workSummary, type WorkFact } from '../plugins/forward-compaction/src/work.ts';
+
+const ok = { text: 'done' };
+
+describe('workOf: what a finished call records', () => {
+  it('records the file a Read, Edit, MultiEdit, Write or NotebookEdit touched', () => {
+    expect(workOf('Read', { file_path: '/w/a.ts' }, ok)).toEqual([{ kind: 'file', path: '/w/a.ts', tag: 'R' }]);
+    expect(workOf('Edit', { file_path: '/w/a.ts' }, ok)).toEqual([{ kind: 'file', path: '/w/a.ts', tag: 'E' }]);
+    expect(workOf('MultiEdit', { file_path: '/w/a.ts' }, ok)).toEqual([{ kind: 'file', path: '/w/a.ts', tag: 'E' }]);
+    expect(workOf('Write', { file_path: '/w/b.ts' }, ok)).toEqual([{ kind: 'file', path: '/w/b.ts', tag: 'W' }]);
+    expect(workOf('NotebookEdit', { notebook_path: '/w/n.ipynb' }, ok)).toEqual([{ kind: 'file', path: '/w/n.ipynb', tag: 'E' }]);
+  });
+
+  it('records nothing for a denied or errored call, a call with no path, or another tool', () => {
+    expect(workOf('Edit', { file_path: '/w/a.ts' }, { deny: 'no' })).toEqual([]);
+    expect(workOf('Write', { file_path: '/w/a.ts' }, { isError: true, text: 'EACCES' })).toEqual([]);
+    expect(workOf('Read', {}, ok)).toEqual([]);
+    expect(workOf('Bash', { command: 'ls' }, ok)).toEqual([]);
+  });
+
+  it('records the todo list as set, and task creates and updates with the id from the answer', () => {
+    expect(workOf('TodoWrite', { todos: [{ content: 'a', status: 'completed' }, { content: 'b', status: 'in_progress' }, { content: 'c', status: 'pending' }] }, ok))
+      .toEqual([{ kind: 'todos', lines: ['[x] a', '[~] b', '[ ] c'] }]);
+    expect(workOf('TaskCreate', { subject: 'ship it' }, { text: 'Task #4 created successfully' })).toEqual([{ kind: 'task-create', id: '4', subject: 'ship it' }]);
+    expect(workOf('TaskUpdate', { taskId: '4', status: 'completed' }, ok)).toEqual([{ kind: 'task-update', id: '4', status: 'completed' }]);
+    expect(workOf('TaskUpdate', { status: 'completed' }, ok)).toEqual([]);
+  });
+});
+
+describe("workSummary: a party's files and tasks", () => {
+  const file = (path: string, tag: 'R' | 'E' | 'W'): WorkFact => ({ kind: 'file', path, tag });
+
+  it('lists every file once, newest touch first, keeping its strongest touch', () => {
+    const s = workSummary([file('/a', 'W'), file('/b', 'R'), file('/a', 'R'), file('/c', 'E'), file('/b', 'E')]);
+    expect(s.files).toEqual([{ path: '/b', tag: 'E' }, { path: '/c', tag: 'E' }, { path: '/a', tag: 'W' }]);
+  });
+
+  it('gives the task list that moved last: the TaskCreate/TaskUpdate list, a deleted task gone, or the todo list', () => {
+    const tasks: WorkFact[] = [
+      { kind: 'todos', lines: ['[ ] old todo'] },
+      { kind: 'task-create', id: '1', subject: 'one' },
+      { kind: 'task-create', id: '2', subject: 'two' },
+      { kind: 'task-update', id: '1', status: 'in_progress', subject: 'one, renamed' },
+      { kind: 'task-update', id: '2', status: 'deleted' },
+    ];
+    expect(workSummary(tasks).tasks).toEqual(['[~] one, renamed']);
+    expect(workSummary([...tasks, { kind: 'todos', lines: ['[x] new todo'] }]).tasks).toEqual(['[x] new todo']);
+    expect(workSummary([]).tasks).toEqual([]);
+  });
+});

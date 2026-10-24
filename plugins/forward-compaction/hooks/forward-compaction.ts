@@ -1,7 +1,8 @@
 import type { EngineInterface, On, PluginOptions, Register, SessionCompactInput, SessionCompactResult, ToolCallResult, TurnStepInput, TurnStepResult, TurnCompleteInput, PromptSubmitInput, SessionReceiveInput, SkillPromptInput, AgentSpawnInput, AgentSpawnResult } from 'claude-code';
 import { bounded, unlessAborted } from '../src/bounded.ts';
 import { experimental, parseHandoff, loadFileRefusal, loadRoomRefusal, receipt, ignoredRefusal, parseLineRanges, sliceFile, toolInput, type FileCheck, type LoadFile } from '../src/handoff.ts';
-import { newLedger, markStart, addEntry, resolveSpawn, attributeSkill, shellsOf, factsFor, personKept, restorePerson, isPersonOrigin, keyOf, originKind, type Ledger, type PartyKey } from '../src/ledger.ts';
+import { workOf, type CallAnswer } from '../src/work.ts';
+import { newLedger, markStart, addEntry, resolveSpawn, attributeSkill, shellsOf, factsFor, promptsKept, restorePrompts, isPersonOrigin, keyOf, originKind, type Ledger, type PartyKey } from '../src/ledger.ts';
 import { splitAtCall, buildWake, mechanicalWake, landedLine, type WakeFile, type AgentRow, type Landing } from '../src/wake.ts';
 import { decide, turnEndDoor, readingTokens, knownTrigger } from '../src/decide.ts';
 import { k, nudgeLevel, nudgeText } from '../src/nudge.ts';
@@ -470,7 +471,6 @@ async function conversationStartsOver(st: State, $: EngineInterface, reason: str
 /** session.start: the ledger starts, main's window and Claude Code's ask point are read, and a compaction window that holds a handoff back is named once (R33). */
 async function sessionBegins(st: State, $: EngineInterface): Promise<void> {
   st.ledger = markStart(st.ledger, await $.clock.now(), 'startup');
-  st.ledger = restorePerson(st.ledger, (await $.state.get({ plugin: 'forward-compaction', key: 'person', id: await (st.sessionId ??= $.session.id()) })).value);
   await readMainWindow(st, $);
   judge(st, $, 'main');
   for (const w of startWarnings(st.breakdown, st.apiAsk, marks(st, 'main'), marks(st, 'agent:')!)) if (!st.warned.has(w.key)) (st.warned.add(w.key), tell(st, $, w.line, w.row));
@@ -584,6 +584,7 @@ function land(st: State, $: EngineInterface, key: string, landing: Landing | und
 /** One session.compact ask, rows C1-C10: decide, then pass, hold, or install the handoff or a mechanical wake. */
 async function compactAsk(st: State, $: EngineInterface, e: SessionCompactInput, key: PartyKey, pass: () => Promise<SessionCompactResult>, signal?: AbortSignal): Promise<SessionCompactResult> {
   await start(st, $);
+  await guard(st, $, 'prompts restore', () => restoreKept(st, $, key));
   let trigger = knownTrigger(e.trigger);
   if (trigger === undefined) {
     warnOnce(st, $, `trigger:${String(e.trigger)}`, `forward-compaction: session.compact trigger ${String(e.trigger)} is unknown; it is handled as an automatic ask`);
@@ -728,16 +729,28 @@ async function noteSubmit(st: State, $: EngineInterface, e: PromptSubmitInput): 
   st.ledger = isPersonOrigin(origin)
     ? addEntry(st.ledger, { kind: 'person', party: 'main', at, text: e.text, ...(e.command ? { command: e.command.name } : {}) })
     : addEntry(st.ledger, { kind: 'notice', party: 'main', at, origin, text: e.text });
-  if (isPersonOrigin(origin)) await keepPerson(st, $);
+  if (isPersonOrigin(origin)) await keepPrompts(st, $, 'main');
 }
 
-/** The person's newest messages, held by the host for the session, so a plugin reload does not lose them. */
-async function keepPerson(st: State, $: EngineInterface): Promise<void> {
-  await $.state.set({ plugin: 'forward-compaction', key: 'person', id: await (st.sessionId ??= $.session.id()) }, personKept(st.ledger));
+/** The files a finished call touched and the task list it set, as the party's work (src/work.ts). */
+async function noteWork(st: State, $: EngineInterface, party: PartyKey, e: Record<string, unknown>, answer: ToolCallResult): Promise<void> {
+  for (const fact of workOf(String(e.tool), toolInput(e), answer as CallAnswer)) st.ledger = addEntry(st.ledger, { kind: 'work', party, at: await $.clock.now(), fact });
+}
+
+/** A party's newest prompts, held by the host for the session (contract.d.ts), so a plugin reload does not lose them. */
+async function keepPrompts(st: State, $: EngineInterface, party: PartyKey): Promise<void> {
+  await $.state.set({ plugin: 'forward-compaction', key: 'prompts', id: `${await (st.sessionId ??= $.session.id())}/${party}` }, promptsKept(st.ledger, party));
+}
+
+/** The prompts a party kept before a plugin reload, put back before its wake is built. */
+async function restoreKept(st: State, $: EngineInterface, party: PartyKey): Promise<void> {
+  st.ledger = restorePrompts(st.ledger, party, (await $.state.get({ plugin: 'forward-compaction', key: 'prompts', id: `${await (st.sessionId ??= $.session.id())}/${party}` })).value);
 }
 
 async function noteReceived(st: State, $: EngineInterface, e: SessionReceiveInput): Promise<void> {
-  if (e.agentId !== undefined) st.ledger = addEntry(st.ledger, { kind: 'received', party: keyOf(e.agentId), at: await $.clock.now(), origin: originKind(e.origin), text: e.text });
+  if (e.agentId === undefined) return;
+  st.ledger = addEntry(st.ledger, { kind: 'received', party: keyOf(e.agentId), at: await $.clock.now(), origin: originKind(e.origin), text: e.text });
+  await keepPrompts(st, $, keyOf(e.agentId));
 }
 
 /** D5: the party a skill belongs to, from the calls in flight around it (the event names none). */
@@ -756,6 +769,7 @@ async function noteSpawn(st: State, $: EngineInterface, e: AgentSpawnInput, r: A
   st.ledger = resolveSpawn(addEntry(st.ledger, { kind: 'brief', party: key, at: await $.clock.now(), text: e.prompt, description: e.description, subagentType: e.subagentType, spawnedBy: st.inFlight.get(e.tool_use_id)?.party ?? 'unknown' }), e.tool_use_id, id);
   st.knownAgents.set(id, e.subagentType);
   st.parties.describe(key, { label: `${e.subagentType} ${id.slice(0, 6)}` }); judge(st, $, key);
+  await keepPrompts(st, $, key);
 }
 
 /** The shells and crons running at a stop: the latest snapshot is a fact of every wake. */
@@ -797,6 +811,7 @@ export const register: Register = (on: On, options: PluginOptions) => {
     } finally {
       if (tracked) st.inFlight.delete(id);
     }
+    await guard(st, $, 'tool.call work', () => noteWork(st, $, key, e, result));
     return nudged(st, $, key, result);
   });
 

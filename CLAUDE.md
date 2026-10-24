@@ -20,13 +20,13 @@ is the behavioural spec.
   - Claude Code's own fork, a party not ours: its ask passes.
 - A party with no reading yet is held until its next reading; one whose window is unknown never reaches its ceiling. A precompute ask is always skipped.
 - Parties: the main chat and each sub-agent by its agentId, each with its own state, max context, ceiling and nudge levels, set by `FORWARD_COMPACTION_MAIN_{MAX_CONTEXT|CEILING|NUDGE_START|NUDGE_EVERY}` and `FORWARD_COMPACTION_SUBAGENT_{…}`.
-- The install: the handoff, the recorded facts (the person's messages or the brief, skills, agents, shells), the `load_files`, and every message after the call kept verbatim.
+- The install: the handoff, the recorded facts (the person's messages or the brief and the coordinator's, skills, agents, shells, the files touched, the task list), the `load_files`, and every message after the call kept verbatim.
 
 ## Layout
 
 - `plugins/forward-compaction/`: everything that installs, and nothing else — the directory scans only this folder, so dev files never go in it.
 - `plugins/forward-compaction/hooks/forward-compaction.ts`: the adapter, the only file that touches `$`.
-- `plugins/forward-compaction/contract.d.ts`: the session state the host keeps for the plugin (`$.state`, the person's newest messages); `plugin.json` names it in `types`.
+- `plugins/forward-compaction/contract.d.ts`: the session state the host keeps for the plugin (`$.state`, each party's newest prompts); `plugin.json` names it in `types`.
 - `plugins/forward-compaction/src/`: every decision, pure and unit-tested; `tests/` holds one vitest file per concern.
 - `types/claude-code.d.ts`: the plugin API (from `/plugin-types`), the truth for every hook's shape; grep it before using an event.
 - `plugins/forward-compaction/.claude-plugin/`: `plugin.json` (manifest, no `userConfig`) and `icon.svg`; the root `.claude-plugin/marketplace.json` makes the repo its own marketplace, with a `git-subdir` source at `plugins/forward-compaction`.

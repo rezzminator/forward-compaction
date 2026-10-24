@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  personKept, restorePerson, PERSON_KEPT,
+  promptsKept, restorePrompts, PROMPTS_KEPT,
   PERSON_ORIGINS, addEntry, attributeSkill, factsFor, isPersonOrigin, markStart, newLedger, resolveSpawn, shellsOf,
   type EntryInput, type Ledger, type PartyKey,
 } from '../plugins/forward-compaction/src/ledger.ts';
@@ -244,24 +244,45 @@ describe('shellsOf', () => {
   });
 });
 
-describe('the person messages kept across a plugin reload', () => {
+describe('the prompts kept across a plugin reload', () => {
   const said = (n: number) => Array.from({ length: n }, (_, i) => i).reduce((l, i) => addEntry(l, { kind: 'person', party: 'main', at: i, text: `m${i}`, ...(i === 0 ? { command: 'god-speed' } : {}) }), newLedger());
+  const agent = (n: number) => Array.from({ length: n }, (_, i) => i).reduce(
+    (l, i) => addEntry(l, { kind: 'received', party: 'agent:a1', at: 100 + i, origin: 'coordinator', text: `r${i}` }),
+    addEntry(newLedger(), { kind: 'brief', party: 'agent:a1', at: 1, text: 'the brief', subagentType: 'general-purpose', spawnedBy: 'main' }),
+  );
 
-  it('keeps the newest ten, oldest first, with their command', () => {
-    expect(PERSON_KEPT).toBe(10);
-    expect(personKept(said(12)).map((p) => p.text)).toEqual(['m2', 'm3', 'm4', 'm5', 'm6', 'm7', 'm8', 'm9', 'm10', 'm11']);
-    expect(personKept(said(1))).toEqual([{ at: 0, text: 'm0', command: 'god-speed' }]);
+  it("keeps main's newest ten messages, oldest first, with their command", () => {
+    expect(PROMPTS_KEPT).toBe(10);
+    expect(promptsKept(said(12), 'main').map((p) => p.text)).toEqual(['m2', 'm3', 'm4', 'm5', 'm6', 'm7', 'm8', 'm9', 'm10', 'm11']);
+    expect(promptsKept(said(1), 'main')).toEqual([{ kind: 'person', at: 0, text: 'm0', command: 'god-speed' }]);
   });
 
-  it('puts them back into a ledger that has none, leaving out anything that is not a message', () => {
-    const back = restorePerson(newLedger(), [{ at: 1, text: 'a', command: 'x' }, { at: 'no', text: 'b' }, null, { at: 2, text: 'c' }]);
-    expect(back.entries.map((e) => [e.kind, (e as { text: string }).text, (e as { command?: string }).command])).toEqual([['person', 'a', 'x'], ['person', 'c', undefined]]);
+  it("keeps a sub-agent's brief and its coordinator's newest ten, and no other party's", () => {
+    const kept = promptsKept(agent(12), 'agent:a1');
+    expect(kept.map((p) => p.text)).toEqual(['the brief', 'r2', 'r3', 'r4', 'r5', 'r6', 'r7', 'r8', 'r9', 'r10', 'r11']);
+    expect(kept[0]).toEqual({ kind: 'brief', at: 1, text: 'the brief', subagentType: 'general-purpose', spawnedBy: 'main' });
+    expect(promptsKept(agent(2), 'main')).toEqual([]);
   });
 
-  it('leaves a ledger that recorded its own messages, or a value that is not a list, as it is', () => {
+  it('puts them back ahead of what was recorded since, each once, leaving out anything else', () => {
+    const since = addEntry(newLedger(), { kind: 'person', party: 'main', at: 50, text: 'after the reload' });
+    const back = restorePrompts(since, 'main', [{ kind: 'person', at: 1, text: 'a', command: 'x' }, { kind: 'person', at: 'no', text: 'b' }, null, { kind: 'received', at: 2, text: 'not main' }, { kind: 'person', at: 50, text: 'after the reload' }]);
+    expect(back.entries.map((e) => (e as { text: string }).text)).toEqual(['a', 'after the reload']);
+    expect(factsFor(back, 'main', { keptTexts: [] }).person.map((p) => p.text)).toEqual(['a', 'after the reload']);
+  });
+
+  it("puts a sub-agent's brief back only when it has none, and its coordinator's messages under it", () => {
+    const back = restorePrompts(newLedger(), 'agent:a1', promptsKept(agent(2), 'agent:a1'));
+    const facts = factsFor(back, 'agent:a1', { keptTexts: [] });
+    expect(facts.brief?.text).toBe('the brief');
+    expect(facts.received.map((r) => [r.text, r.origin])).toEqual([['r0', 'coordinator'], ['r1', 'coordinator']]);
+    const own = addEntry(newLedger(), { kind: 'brief', party: 'agent:a1', at: 5, text: 'its own brief', spawnedBy: 'main' });
+    expect(restorePrompts(own, 'agent:a1', [{ kind: 'brief', at: 1, text: 'the brief' }])).toBe(own);
+  });
+
+  it('leaves the ledger as it is for a value that is not a list', () => {
     const own = said(2);
-    expect(restorePerson(own, [{ at: 9, text: 'old' }])).toBe(own);
-    expect(restorePerson(newLedger(), undefined).entries).toEqual([]);
-    expect(restorePerson(newLedger(), { at: 1 }).entries).toEqual([]);
+    expect(restorePrompts(own, 'main', undefined)).toBe(own);
+    expect(restorePrompts(own, 'main', { at: 1 })).toBe(own);
   });
 });

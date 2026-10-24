@@ -7,7 +7,7 @@
 [![Claude Code plugin](https://img.shields.io/badge/Claude%20Code-plugin-D97757)](https://docs.claude.com/en/docs/claude-code/plugins)
 [![Version](https://img.shields.io/badge/version-1.0.0--dev.3-blue)](./CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
-[![Tests](https://img.shields.io/badge/tests-526%20passing-brightgreen)](#development)
+[![Tests](https://img.shields.io/badge/tests-538%20passing-brightgreen)](#development)
 [![Built with Professor](https://img.shields.io/badge/built%20with-Professor-8A2BE2)](https://github.com/rezzminator/professor)
 
 </div>
@@ -40,8 +40,10 @@ as they happened.
   chat) or the brief (sub-agent), messages from the coordinator, the skills
   loaded, the agents and the background shells come from typed hook events as
   they happened. Nothing is grepped out of a transcript or re-read from disk.
-  The person's newest ten messages are also held in Claude Code's session
-  state, so a plugin reload (`/reload-plugins`) does not lose them.
+  Each party's newest prompts (the person's ten newest messages, or a
+  sub-agent's brief and its coordinator's ten newest) are also held in Claude
+  Code's session state, so a plugin reload (`/reload-plugins`) does not lose
+  them. The files touched and the task list come from each finished tool call.
 - ⏩ **Everything after the call is kept.** The model need not stop after it
   hands off: every message from the call on stays in the new context as it
   was, so no work done after the handoff is lost.
@@ -196,8 +198,8 @@ The facts message holds, each section only when it has content:
 
 - the brief (sub-agent), verbatim, or the person's newest ten messages
   (main chat), oldest first;
-- messages from the coordinator (sub-agent) or notifications delivered
-  (main chat);
+- the newest ten messages from the coordinator (sub-agent) or the
+  notifications delivered (main chat);
 - the results of the tool calls made in the same response as the handoff;
 - the skills in force, as they were loaded. A skill Claude Code loaded
   without saying which party loaded it is named, not carried, in every
@@ -207,6 +209,13 @@ The facts message holds, each section only when it has content:
 - the background shells and crons, from the newest Stop event, with its age.
   The list is session-wide, not per agent; before any Stop event it says the
   running shells are unknown;
+- the files the party touched, newest first, at most 15 paths, each tagged R
+  read, E edited or W written (its strongest touch), from its finished `Read`,
+  `Edit`, `MultiEdit`, `Write` and `NotebookEdit` calls; a denied or failed
+  call touched nothing;
+- the task list as last set, from `TodoWrite` or `TaskCreate`/`TaskUpdate`,
+  whichever moved last, carried whole within 5% of the budget or named as not
+  carried;
 - the files the handoff asked to carry, and the ones not carried with why.
 
 Its size is held to a budget of half Claude Code's ask point (the

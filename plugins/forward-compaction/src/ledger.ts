@@ -1,5 +1,7 @@
 // The ledger: typed facts recorded as events happen, reduced by pure functions. Nothing is read from rendered text.
 
+import { workSummary, type WorkFact, type WorkSummary } from './work.ts';
+
 export type PartyKey = 'main' | 'unknown' | `agent:${string}` | `spawn:${string}`;
 
 /** The party an event's `agentId` names: main when there is none. */
@@ -22,7 +24,8 @@ export type SkillEntry = Base & {
   kind: 'skill'; party: PartyKey; skill: string; text: string; source?: string; path?: string; how: SkillHow;
 };
 export type ShellsEntry = Base & { kind: 'shells'; tasks: ShellTask[]; crons: CronJob[] };
-export type LedgerEntry = PersonEntry | NoticeEntry | ReceivedEntry | BriefEntry | SkillEntry | ShellsEntry;
+export type WorkEntry = Base & { kind: 'work'; party: PartyKey; fact: WorkFact };
+export type LedgerEntry = PersonEntry | NoticeEntry | ReceivedEntry | BriefEntry | SkillEntry | ShellsEntry | WorkEntry;
 type Without<T, K extends string> = T extends unknown ? Omit<T, K> : never;
 export type EntryInput = Without<LedgerEntry, 'seq'>;
 
@@ -57,19 +60,35 @@ export function addEntry(ledger: Ledger, entry: EntryInput): Ledger {
   return { ...ledger, nextSeq: ledger.nextSeq + 1, entries: [...kept, { ...entry, seq: ledger.nextSeq } as LedgerEntry] };
 }
 
-/** The most of the person's messages kept for a wake and across a plugin reload: the newest ten, the owner's ruling. */
-export const PERSON_KEPT = 10;
+/** The most prompts a party keeps, for its wake and across a plugin reload: the person's messages (main) or its coordinator's (a sub-agent, its brief besides), the newest ten, the owner's ruling. */
+export const PROMPTS_KEPT = 10;
 
-/** The person's newest PERSON_KEPT messages, oldest first, as `$.state` keeps them. */
-export function personKept(ledger: Ledger): { at: number; text: string; command?: string }[] {
-  return ledger.entries.filter((e): e is PersonEntry => e.kind === 'person').slice(-PERSON_KEPT).map(({ at, text, command }) => ({ at, text, ...(command !== undefined ? { command } : {}) }));
+/** A prompt as `$.state` keeps it: a ledger entry without its seq and party. */
+export type KeptPrompt = { kind: 'person' | 'received' | 'brief'; at: number; text: string; command?: string; origin?: string; description?: string; subagentType?: string; spawnedBy?: string };
+type PromptEntry = PersonEntry | ReceivedEntry | BriefEntry;
+const isPrompt = (e: LedgerEntry, party: PartyKey): e is PromptEntry => (e.kind === 'person' || e.kind === 'received' || e.kind === 'brief') && e.party === party;
+const promptKey = (p: { kind: string; at: number; text: string }): string => `${p.kind}\u0000${p.at}\u0000${p.text}`;
+
+/** A party's prompts to keep, oldest first: main's newest PROMPTS_KEPT messages; a sub-agent's brief and its coordinator's newest PROMPTS_KEPT. */
+export function promptsKept(ledger: Ledger, party: PartyKey): KeptPrompt[] {
+  const mine = ledger.entries.filter((e): e is PromptEntry => isPrompt(e, party));
+  const brief = mine.filter((e) => e.kind === 'brief').slice(-1);
+  const said = mine.filter((e) => e.kind !== 'brief').slice(-PROMPTS_KEPT);
+  return [...brief, ...said].map(({ seq: _seq, party: _party, ...kept }) => kept as KeptPrompt);
 }
 
-/** The ledger with the person's messages kept before a plugin reload put back, when it has none of its own yet; anything not a message is left out. */
-export function restorePerson(ledger: Ledger, kept: unknown): Ledger {
-  if (!Array.isArray(kept) || ledger.entries.some((e) => e.kind === 'person')) return ledger;
-  const valid = kept.filter((p): p is { at: number; text: string; command?: unknown } => p !== null && typeof p === 'object' && typeof p.at === 'number' && typeof p.text === 'string');
-  return valid.slice(-PERSON_KEPT).reduce((l, p) => addEntry(l, { kind: 'person', party: 'main', at: p.at, text: p.text, ...(typeof p.command === 'string' ? { command: p.command } : {}) }), ledger);
+/** The ledger with a party's kept prompts put back ahead of its own, each only once and a brief only when it has none; anything not a prompt of that party's kind is left out. */
+export function restorePrompts(ledger: Ledger, party: PartyKey, kept: unknown): Ledger {
+  if (!Array.isArray(kept)) return ledger;
+  const own = ledger.entries.filter((e): e is PromptEntry => isPrompt(e, party));
+  const seen = new Set(own.map(promptKey));
+  const kinds = party === 'main' ? ['person'] : ['brief', 'received'];
+  const hasBrief = own.some((e) => e.kind === 'brief');
+  const back = kept.filter((p): p is KeptPrompt => p !== null && typeof p === 'object' && kinds.includes(p.kind) && typeof p.at === 'number' && typeof p.text === 'string')
+    .filter((p) => !seen.has(promptKey(p)) && !(p.kind === 'brief' && hasBrief));
+  if (back.length === 0) return ledger;
+  const restored = back.map((p, i) => ({ ...p, party, seq: ledger.nextSeq + i, ...(p.kind === 'brief' ? { spawnedBy: (p.spawnedBy ?? 'unknown') as PartyKey } : {}), ...(p.kind === 'received' ? { origin: p.origin ?? 'unknown' } : {}) }) as LedgerEntry);
+  return { ...ledger, nextSeq: ledger.nextSeq + back.length, entries: [...restored, ...ledger.entries] };
 }
 
 /** A preload skill is first filed under `spawn:{tool_use_id}`; once the spawn returns, it belongs to the child. */
@@ -110,6 +129,8 @@ export type Facts = {
   skills: SkillEntry[];
   unattributedSkills: SkillEntry[];
   shells?: ShellsEntry;
+  /** The files the party's calls touched and its task list, from its finished tool calls. */
+  work: WorkSummary;
   startedAt?: number;
   startReason?: string;
 };
@@ -140,6 +161,7 @@ export function factsFor(ledger: Ledger, party: PartyKey, opts: { keptTexts: rea
     skills: newestFirst(party).filter(fresh),
     unattributedSkills: newestFirst('unknown').filter((s) => !carried.has(s.skill)).filter(fresh),
     shells: entries.find((e): e is ShellsEntry => e.kind === 'shells'),
+    work: workSummary(mine('work', party).map((e) => e.fact)),
     startedAt: ledger.startedAt,
     startReason: ledger.startReason,
   };
