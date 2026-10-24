@@ -344,3 +344,20 @@ describe('gate level', () => {
     expect(parties.get('agent:a1').gateLevel).toBeUndefined();
   });
 });
+
+describe('the gate answer', () => {
+  it('refuses every call of the request that met the gate, opens on a later request once, and closes again at an install', () => {
+    const parties = new Parties();
+    parties.read('agent:a1', 104_000);
+    expect(parties.gateAnswer('agent:a1')).toBe('refuse');
+    expect(parties.gateAnswer('agent:a1')).toBe('refuse'); // a parallel call of the same request
+    parties.read('agent:a1', 105_000);
+    expect(parties.gateAnswer('agent:a1')).toBe('opens');
+    expect(parties.gateAnswer('agent:a1')).toBe('open');
+    parties.read('agent:a1', 106_000);
+    expect(parties.gateAnswer('agent:a1')).toBe('open');
+    parties.installed('agent:a1');
+    parties.read('agent:a1', 40_000);
+    expect(parties.gateAnswer('agent:a1')).toBe('refuse');
+  });
+});

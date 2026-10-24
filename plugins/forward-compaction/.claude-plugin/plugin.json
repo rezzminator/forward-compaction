@@ -1,6 +1,6 @@
 {
   "name": "forward-compaction",
-  "version": "1.0.0-dev.6",
+  "version": "1.0.0-dev.7",
   "description": "The model writes its own handoff through one tool and the plugin installs it at Claude Code's compaction, with facts recorded from typed events and every later message kept verbatim.",
   "license": "MIT",
   "types": "./contract.d.ts",

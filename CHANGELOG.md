@@ -4,6 +4,12 @@ Every release of forward-compaction, named sub-agent-compact before 1.0.0. Versi
 
 ## [Unreleased]
 
+## [1.0.0-dev.7] — 2026-10-24
+
+### Fixed
+
+- **The gate never deadlocks a sub-agent that cannot hand off.** In live use an agent whose definition lists its tools without `forward_compaction` was gated at 101k and refused 8 calls in a row: it had no way to hand off and returned with nothing done. The gate now refuses only the calls of the request that reached it; when the agent's next request makes any other call, that call runs and the gate stays open until its next install, with nudges and the mechanical wake at its ceiling as before. The refusal says so: if the tool is not in its list, repeat the call. A `gate-opened` row logs it once.
+
 ## [1.0.0-dev.6] — 2026-10-24
 
 ### Changed

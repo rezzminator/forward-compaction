@@ -70,7 +70,7 @@ describe('the hand-off gate', () => {
   });
 
   it('says nothing ran, to hand off now with what was found, and to repeat the call', () => {
-    expect(gateText({ tokens: 104_000, ceiling: 160_000, tool: 'FC' })).toBe('forward-compaction: this call did not run. Your context is 104k tokens and you have not handed off; at 160k the plugin compacts you mechanically and your work so far is lost. Call FC now, with objective, done, remaining and next: what you have read and concluded so far goes in done and findings, what is left in remaining. Then repeat this call; every call runs again once the handoff is stored. A handoff costs you nothing: you continue from it with every message after it, as many times as the work needs, so carry the task through to its end; never cut it short to avoid one.');
+    expect(gateText({ tokens: 104_000, ceiling: 160_000, tool: 'FC' })).toBe('forward-compaction: this call did not run. Your context is 104k tokens and you have not handed off; at 160k the plugin compacts you mechanically and your work so far is lost. Call FC now, with objective, done, remaining and next: what you have read and concluded so far goes in done and findings, what is left in remaining. Then repeat this call; every call runs again once the handoff is stored. If FC is not in your tool list, repeat this call: it runs. A handoff costs you nothing: you continue from it with every message after it, as many times as the work needs, so carry the task through to its end; never cut it short to avoid one.');
   });
 
   it('is announced by the nudge before it, and not once it closed', () => {
@@ -85,7 +85,7 @@ describe('a handoff is said to cost nothing', () => {
   it('in every nudge, before and after the gate, and in the refusal', () => {
     expect(nudgeText({ tokens: 85_000, window: 200_000, ceiling: 160_000, gateAt: 100_000 })).toContain(FREE);
     expect(nudgeText({ tokens: 300_000, window: 1_000_000, ceiling: 600_000 })).toContain(FREE);
-    expect(gateText({ tokens: 104_000, ceiling: 160_000, tool: 'FC' })).toContain(`Then repeat this call; every call runs again once the handoff is stored. ${FREE}`);
+    expect(gateText({ tokens: 104_000, ceiling: 160_000, tool: 'FC' })).toContain(`If FC is not in your tool list, repeat this call: it runs. ${FREE}`);
   });
   it('and the gate is named as a wait, not a refusal', () => {
     expect(nudgeText({ tokens: 85_000, window: 200_000, ceiling: 160_000, gateAt: 100_000 })).toContain(' From 100k your other calls wait until you have handed off. ');

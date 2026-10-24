@@ -13,7 +13,7 @@ is the behavioural spec.
 - Each ask is skipped until a handoff is stored, and that ask installs it; or until the party reaches its ceiling, and it gets the mechanical wake: recorded facts, no frontier from the model. Main also installs a stored handoff at its own turn end, through `$.session.compact()`.
 - The exceptions to "the model chooses" are only these:
   - the ceiling: the mechanical wake, or Claude Code's own summary under `FORWARD_COMPACTION_CEILING_NATIVE`;
-  - a sub-agent's gate: one nudge level past its first nudge since its last install, every call but the handoff tools is refused until it hands off, so a fast reader cannot run past its milestones into the mechanical wake; main is never gated;
+  - a sub-agent's gate: one nudge level past its first nudge since its last install, every call of that request but the handoff tools is refused, so a fast reader cannot run past its milestones into the mechanical wake; a party that answers with another call instead (no API names its tools, so its list may lack the handoff tool) runs on until its next install, nudged, to its ceiling; main is never gated;
   - a request too long (an ask following a held ask in the same turn that no request completed): the mechanical wake at once, below the ceiling;
   - an ignored model (`FORWARD_COMPACTION_IGNORE_MODELS`, Haiku by default): no nudges, its `forward_compaction` call refused, its asks held to its ceiling and then compacted mechanically, never at Claude Code's early ask;
   - an error, which never holds a compaction: the party gets the mechanical wake, and if that fails too, Claude Code's own summary runs; every failure is logged with context;

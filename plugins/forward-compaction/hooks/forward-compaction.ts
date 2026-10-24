@@ -536,7 +536,7 @@ async function nudged(st: State, $: EngineInterface, key: string, result: ToolCa
   }
 }
 
-/** The refusal for a call that waits on the party's handoff (src/nudge.ts `gated`), or undefined when it runs. */
+/** The refusal for a call that waits on the party's handoff (src/nudge.ts `gated`); `opens` or `open` once the gate lets it run (Parties `gateAnswer`); undefined when not gated. */
 function gateRefusal(st: State, key: PartyKey, tool: string): string | undefined {
   if (!key.startsWith('agent:') || !st.knownAgents.has(key.slice('agent:'.length))) return undefined; // main and Claude Code's own forks are never gated
   const party = st.parties.get(key);
@@ -544,7 +544,8 @@ function gateRefusal(st: State, key: PartyKey, tool: string): string | undefined
   const open = [st.toolNames.forward_compaction, st.toolNames.look_back, 'ToolSearch'].filter((t): t is string => t !== undefined);
   const level = party.reading === undefined || m === undefined ? 0 : nudgeLevel(party.reading, m.start, m.every);
   if (m === undefined || !gated({ party: 'subagent', level, gateLevel: party.gateLevel, stored: party.stored !== undefined, ignored: st.parties.ignored(key, st.config.ignoreModels) !== undefined, tool, open })) return undefined;
-  return gateText({ tokens: party.reading!, ceiling: m.ceiling, tool: st.toolNames.forward_compaction });
+  const answer = st.parties.gateAnswer(key);
+  return answer === 'refuse' ? gateText({ tokens: party.reading!, ceiling: m.ceiling, tool: st.toolNames.forward_compaction }) : answer;
 }
 
 /** A sub-agent spawned here is ours; any other agent id the engine's own run, unless `$.agent.list` knows it. */
@@ -824,7 +825,8 @@ export const register: Register = (on: On, options: PluginOptions) => {
     await unlessAborted(observeManualLookBack(st, $, e as Record<string, unknown>), next.signal);
     const key = keyOf(e.agentId);
     const refused = gateRefusal(st, key, String(e.tool));
-    if (refused !== undefined) return (record(st, $, { event: 'gated', party: key, tool: e.tool, tokens: st.parties.get(key).reading ?? null }), { deny: refused });
+    if (refused === 'opens') record(st, $, { event: 'gate-opened', party: key, tool: e.tool, tokens: st.parties.get(key).reading ?? null });
+    else if (refused !== undefined && refused !== 'open') return (record(st, $, { event: 'gated', party: key, tool: e.tool, tokens: st.parties.get(key).reading ?? null }), { deny: refused });
     const id = e.tool_use_id;
     const tracked = typeof id === 'string' && (e.tool === 'Skill' || e.tool === 'Agent');
     if (tracked) st.inFlight.set(id, { party: key, tool: e.tool });

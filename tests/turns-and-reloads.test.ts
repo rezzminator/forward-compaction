@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
+import { readdirSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { fakeEngine, usage, type Script } from './fakes/engine.ts';
 
 // The adapter's wiring of session-lifetime facts: a new turn ends the request-too-long inference (D8), the person's
@@ -129,5 +131,22 @@ describe('the hand-off gate', () => {
     const stored = await f.dispatch('tool.call', { tool: FC, tool_use_id: 'tu-h', agentId: A, objective: 'o', done: 'd', remaining: 'r', next: 'n' }, async () => ({ result: 'not ours' }));
     expect(stored.result).toContain('Handoff stored');
     expect(await read(f, A)).toMatchObject({ text: 'body' });
+  });
+
+  it('lets a sub-agent with no handoff tool on after one refused request, logged once', async () => {
+    const f = await begin();
+    await f.dispatch('agent.spawn', { tool_use_id: 'tu-spawn', prompt: 'Brief', description: 'one', subagentType: 'pcm', provider: { kind: 'local' } }, async () => ({ model: 'sonnet', agentId: A }));
+    await agentStep(f, 85_000);
+    await read(f, A);
+    await agentStep(f, 104_000);
+    expect((await read(f, A)).deny).toContain('this call did not run');
+    expect((await read(f, A)).deny).toContain('this call did not run');
+    await agentStep(f, 105_000);
+    expect(await read(f, A)).toMatchObject({ text: 'body' });
+    expect(await read(f, A)).toMatchObject({ text: 'body' });
+    await f.dispatch('session.end', { reason: 'other' }, async () => ({}));
+    const dir = join(f.home, '.local/state/forward-compaction/logs/decisions');
+    const rows = readdirSync(dir).flatMap((n) => readFileSync(join(dir, n), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)));
+    expect(rows.filter((r) => r.event === 'gate-opened')).toEqual([expect.objectContaining({ party: `agent:${A}`, tool: 'Read', tokens: 105_000 })]);
   });
 });

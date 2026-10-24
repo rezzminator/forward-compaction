@@ -51,6 +51,12 @@ export type PartyState = {
   absorbNext: boolean;
   /** The nudge level from which the party's calls wait for its handoff (nudge.ts `gated`): GATE_STEPS past its first nudge since the last install; absent until that nudge. */
   gateLevel?: number;
+  /** The party's completed requests: a gated call's request is told from a later one by it. */
+  requests: number;
+  /** The request whose calls the gate refused since the last install (`gateAnswer`). */
+  gateRequest?: number;
+  /** The gate let the party's calls run since the last install: it answered a refused request with no handoff. */
+  gateOpen?: boolean;
   installs: number;
   /** An install happened in the party's current turn: the turn-end door (P1) does not fire again. */
   installedThisTurn: boolean;
@@ -67,7 +73,7 @@ export class Parties {
   get(key: string): PartyState {
     let state = this.states.get(key);
     if (!state) {
-      state = { key, label: key, answeredSinceSkip: true, nudgeLevel: 0, absorbNext: false, installs: 0, installedThisTurn: false };
+      state = { key, label: key, answeredSinceSkip: true, nudgeLevel: 0, absorbNext: false, requests: 0, installs: 0, installedThisTurn: false };
       this.states.set(key, state);
     }
     return state;
@@ -178,7 +184,23 @@ export class Parties {
 
   /** A request completed (with or without a usage reading). */
   answered(key: string): void {
-    this.get(key).answeredSinceSkip = true;
+    const state = this.get(key);
+    state.answeredSinceSkip = true;
+    state.requests += 1;
+  }
+
+  /**
+   * What a gated call gets: refused while it belongs to the request that met the gate (its parallel calls too), let
+   * run from any later one, `opens` the first time. No API names a sub-agent's tools: one whose list lacks the handoff
+   * tool answers the refusal with another call, and would otherwise wait forever; its ceiling's mechanical wake stays.
+   */
+  gateAnswer(key: string): 'refuse' | 'opens' | 'open' {
+    const state = this.get(key);
+    state.gateRequest ??= state.requests;
+    if (state.gateRequest === state.requests) return 'refuse';
+    if (state.gateOpen) return 'open';
+    state.gateOpen = true;
+    return 'opens';
   }
 
   /** The ask follows a skip with no completed request between: Claude Code reports the request too long, not a fresh ask (D8). */
@@ -212,6 +234,8 @@ export class Parties {
       nudgeLevel: 0,
       absorbNext: true,
       gateLevel: undefined,
+      gateRequest: undefined,
+      gateOpen: undefined,
       reading: undefined,
       base: undefined,
       landing,

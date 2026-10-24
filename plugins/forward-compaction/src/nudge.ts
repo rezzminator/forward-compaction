@@ -55,5 +55,5 @@ export function gated({ party, level, gateLevel, stored, ignored, tool, open }: 
 
 /** The refusal a gated call answers with: nothing ran, hand off now, then repeat the call. */
 export function gateText({ tokens, ceiling, tool = DEFAULT_TOOL }: { tokens: number; ceiling: number; tool?: string }): string {
-  return `forward-compaction: this call did not run. Your context is ${k(tokens)} tokens and you have not handed off; at ${k(ceiling)} the plugin compacts you mechanically and your work so far is lost. Call ${tool} now, with objective, done, remaining and next: what you have read and concluded so far goes in done and findings, what is left in remaining. Then repeat this call; every call runs again once the handoff is stored. ${FREE}`;
+  return `forward-compaction: this call did not run. Your context is ${k(tokens)} tokens and you have not handed off; at ${k(ceiling)} the plugin compacts you mechanically and your work so far is lost. Call ${tool} now, with objective, done, remaining and next: what you have read and concluded so far goes in done and findings, what is left in remaining. Then repeat this call; every call runs again once the handoff is stored. If ${tool} is not in your tool list, repeat this call: it runs. ${FREE}`;
 }
