@@ -7,7 +7,7 @@
 [![Claude Code plugin](https://img.shields.io/badge/Claude%20Code-plugin-D97757)](https://docs.claude.com/en/docs/claude-code/plugins)
 [![Version](https://img.shields.io/badge/version-1.0.0--dev.3-blue)](./CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
-[![Tests](https://img.shields.io/badge/tests-538%20passing-brightgreen)](#development)
+[![Tests](https://img.shields.io/badge/tests-541%20passing-brightgreen)](#development)
 [![Built with Professor](https://img.shields.io/badge/built%20with-Professor-8A2BE2)](https://github.com/rezzminator/professor)
 
 </div>
@@ -41,9 +41,9 @@ as they happened.
   loaded, the agents and the background shells come from typed hook events as
   they happened. Nothing is grepped out of a transcript or re-read from disk.
   Each party's newest prompts (the person's ten newest messages, or a
-  sub-agent's brief and its coordinator's ten newest) are also held in Claude
-  Code's session state, so a plugin reload (`/reload-plugins`) does not lose
-  them. The files touched and the task list come from each finished tool call.
+  sub-agent's brief and its coordinator's ten newest) and the skills it loaded
+  (the latest text of each) are also held in Claude Code's session state, so a
+  plugin reload (`/reload-plugins`) does not lose them. The files touched and the task list come from each finished tool call.
 - ⏩ **Everything after the call is kept.** The model need not stop after it
   hands off: every message from the call on stays in the new context as it
   was, so no work done after the handoff is lost.

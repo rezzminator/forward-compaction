@@ -48,10 +48,12 @@ describe('the prompts across a plugin reload', () => {
     const before = await begin({ state });
     await before.dispatch('prompt.submit', { text: 'typed before the reload', origin: { kind: 'composer' } }, async () => ({}));
     const after = await begin({ state });
+    await after.dispatch('prompt.submit', { text: 'typed after the reload', origin: { kind: 'composer' } }, async () => ({}));
     await step(after, 125_000);
     const r = await ask(after);
-    expect(r.messages[0].text).toContain("## The person's messages, oldest first (1 of 1)\n### ");
-    expect(r.messages[0].text).toContain('typed before the reload');
+    expect(r.messages[0].text).toContain("## The person's messages, oldest first (2 of 2)\n### ");
+    expect(r.messages[0].text.indexOf('typed before the reload')).toBeLessThan(r.messages[0].text.indexOf('typed after the reload'));
+    expect(r.messages[0].text.indexOf('typed before the reload')).toBeGreaterThan(-1);
   });
 
   it("carries a sub-agent's brief and its coordinator's messages from before a reload into its wake", async () => {
@@ -64,6 +66,30 @@ describe('the prompts across a plugin reload', () => {
     const r = await after.dispatch('session.compact', { trigger: 'auto', agentId: 'a1b2c3d4e5', messages }, async () => ({ skip: 'native ran' }));
     expect(r.messages[0].text).toContain('## Your brief\nBrief for agent one');
     expect(r.messages[0].text).toContain('also check the docs');
+  });
+});
+
+describe('the skills across a plugin reload', () => {
+  it("carries main's skills loaded before a reload into the wake after it, one loaded since winning", async () => {
+    const state = new Map<string, { value: unknown; version: number }>();
+    const before = await begin({ state });
+    for (const [skill, text] of [['god-speed', 'GOD SPEED BODY'], ['ponytail', 'OLD PONYTAIL']]) {
+      await before.dispatch('tool.call', { tool: 'Skill', tool_use_id: `tu-${skill}`, skill }, async () => {
+        await before.dispatch('skill.prompt', { skill, text, frontmatter: {} }, async () => ({ text }));
+        return { result: 'loaded' };
+      });
+    }
+    const after = await begin({ state });
+    await after.dispatch('tool.call', { tool: 'Skill', tool_use_id: 'tu-p2', skill: 'ponytail' }, async () => {
+      await after.dispatch('skill.prompt', { skill: 'ponytail', text: 'NEW PONYTAIL', frontmatter: {} }, async () => ({ text: 'NEW PONYTAIL' }));
+      return { result: 'loaded' };
+    });
+    await step(after, 125_000);
+    const facts = (await ask(after)).messages[0].text;
+    expect(facts).toContain('## Skills in force, as loaded');
+    expect(facts).toContain('GOD SPEED BODY');
+    expect(facts).toContain('NEW PONYTAIL');
+    expect(facts).not.toContain('OLD PONYTAIL');
   });
 });
 

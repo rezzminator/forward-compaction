@@ -91,6 +91,30 @@ export function restorePrompts(ledger: Ledger, party: PartyKey, kept: unknown): 
   return { ...ledger, nextSeq: ledger.nextSeq + back.length, entries: [...restored, ...ledger.entries] };
 }
 
+const latestPerSkill = (skills: SkillEntry[]): SkillEntry[] => {
+  const seen = new Set<string>();
+  return skills.filter((s) => (seen.has(s.skill) ? false : (seen.add(s.skill), true)));
+};
+
+/** A skill as `$.state` keeps it: a skill entry without its seq and party. */
+export type KeptSkill = { at: number; skill: string; text: string; how: SkillHow; source?: string; path?: string };
+
+/** A party's skills to keep: the latest text of each skill it loaded, oldest first. */
+export function skillsKept(ledger: Ledger, party: PartyKey): KeptSkill[] {
+  const mine = ledger.entries.filter((e): e is SkillEntry => e.kind === 'skill' && e.party === party);
+  return latestPerSkill(mine.reverse()).reverse().map(({ seq: _seq, party: _party, kind: _kind, ...kept }) => kept);
+}
+
+/** The ledger with a party's kept skills put back ahead of its own, each only when the party has not loaded it since; anything not a skill is left out. */
+export function restoreSkills(ledger: Ledger, party: PartyKey, kept: unknown): Ledger {
+  if (!Array.isArray(kept)) return ledger;
+  const own = new Set(ledger.entries.filter((e): e is SkillEntry => e.kind === 'skill' && e.party === party).map((e) => e.skill));
+  const back = kept.filter((s): s is KeptSkill => s !== null && typeof s === 'object' && typeof s.at === 'number' && typeof s.skill === 'string' && typeof s.text === 'string' && !own.has(s.skill));
+  if (back.length === 0) return ledger;
+  const restored = back.map((s, i) => ({ ...s, how: typeof s.how === 'string' ? s.how : 'ambiguous', kind: 'skill', party, seq: ledger.nextSeq + i }) as SkillEntry);
+  return { ...ledger, nextSeq: ledger.nextSeq + back.length, entries: [...restored, ...ledger.entries] };
+}
+
 /** A preload skill is first filed under `spawn:{tool_use_id}`; once the spawn returns, it belongs to the child. */
 export function resolveSpawn(ledger: Ledger, toolUseId: string, agentId: string): Ledger {
   const from = `spawn:${toolUseId}`;
@@ -133,11 +157,6 @@ export type Facts = {
   work: WorkSummary;
   startedAt?: number;
   startReason?: string;
-};
-
-const latestPerSkill = (skills: SkillEntry[]): SkillEntry[] => {
-  const seen = new Set<string>();
-  return skills.filter((s) => (seen.has(s.skill) ? false : (seen.add(s.skill), true)));
 };
 
 /** What the wake records for a party. Text already in a kept tail message (equal or contained) is left out. */

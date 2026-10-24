@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  promptsKept, restorePrompts, PROMPTS_KEPT,
+  promptsKept, restorePrompts, PROMPTS_KEPT, skillsKept, restoreSkills,
   PERSON_ORIGINS, addEntry, attributeSkill, factsFor, isPersonOrigin, markStart, newLedger, resolveSpawn, shellsOf,
   type EntryInput, type Ledger, type PartyKey,
 } from '../plugins/forward-compaction/src/ledger.ts';
@@ -284,5 +284,21 @@ describe('the prompts kept across a plugin reload', () => {
     const own = said(2);
     expect(restorePrompts(own, 'main', undefined)).toBe(own);
     expect(restorePrompts(own, 'main', { at: 1 })).toBe(own);
+  });
+});
+
+describe('the skills kept across a plugin reload', () => {
+  const loaded = [['a', 'A1'], ['b', 'B1'], ['a', 'A2']].reduce((l, [skill, text], i) => addEntry(l, { kind: 'skill', party: 'main', at: i, skill: skill!, text: text!, how: 'skill-tool' }), newLedger());
+
+  it('keeps the latest text of each skill a party loaded, oldest first, and no other party\'s', () => {
+    expect(skillsKept(loaded, 'main').map((s) => [s.skill, s.text])).toEqual([['b', 'B1'], ['a', 'A2']]);
+    expect(skillsKept(loaded, 'agent:a1')).toEqual([]);
+  });
+
+  it('puts back only the skills the party has not loaded since, leaving out anything else', () => {
+    const since = addEntry(newLedger(), { kind: 'skill', party: 'main', at: 9, skill: 'a', text: 'A3', how: 'typed-command' });
+    const back = restoreSkills(since, 'main', [...skillsKept(loaded, 'main'), { skill: 'x' }, null]);
+    expect(factsFor(back, 'main', { keptTexts: [] }).skills.map((s) => [s.skill, s.text])).toEqual([['a', 'A3'], ['b', 'B1']]);
+    expect(restoreSkills(since, 'main', undefined)).toBe(since);
   });
 });

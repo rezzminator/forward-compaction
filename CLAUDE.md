@@ -26,7 +26,7 @@ is the behavioural spec.
 
 - `plugins/forward-compaction/`: everything that installs, and nothing else — the directory scans only this folder, so dev files never go in it.
 - `plugins/forward-compaction/hooks/forward-compaction.ts`: the adapter, the only file that touches `$`.
-- `plugins/forward-compaction/contract.d.ts`: the session state the host keeps for the plugin (`$.state`, each party's newest prompts); `plugin.json` names it in `types`.
+- `plugins/forward-compaction/contract.d.ts`: the session state the host keeps for the plugin (`$.state`, each party's newest prompts and its skills); `plugin.json` names it in `types`.
 - `plugins/forward-compaction/src/`: every decision, pure and unit-tested; `tests/` holds one vitest file per concern.
 - `types/claude-code.d.ts`: the plugin API (from `/plugin-types`), the truth for every hook's shape; grep it before using an event.
 - `plugins/forward-compaction/.claude-plugin/`: `plugin.json` (manifest, no `userConfig`) and `icon.svg`; the root `.claude-plugin/marketplace.json` makes the repo its own marketplace, with a `git-subdir` source at `plugins/forward-compaction`.

@@ -15,7 +15,7 @@ Every release of forward-compaction, named sub-agent-compact before 1.0.0. Versi
 
 - **A handoff's landed line is logged, not printed.** `… handoff landed — 160k → 41k context, measured; …` is an info row in the level log (`info.jsonl`) and a `landed` row in the decision log; the screen no longer shows it. A mechanical wake's line is still printed, since that party lost its frontier.
 - **The wake ends with the experimental line.** A handoff's wake and a mechanical wake both close with the line that says the plugin is experimental and where to note any trouble (`issues.md` in the level-log directory); the receipt it carries no longer holds a second copy.
-- **Each party's newest ten prompts survive a plugin reload.** The main chat's wake carries at most the person's newest ten messages, a sub-agent's its brief and its coordinator's newest ten; both are kept in Claude Code's session state (`$.state`, declared in the shipped `contract.d.ts`) and put back at the next compaction ask, so a `/reload-plugins` no longer drops what came before it.
+- **Each party's newest ten prompts and its skills survive a plugin reload.** The main chat's wake carries at most the person's newest ten messages, a sub-agent's its brief and its coordinator's newest ten; these and the latest text of every skill the party loaded are kept in Claude Code's session state (`$.state` keys `prompts` and `skills`, declared in the shipped `contract.d.ts`) and put back once per process before the party's first write or wake, so a `/reload-plugins` no longer drops what came before it.
 
 ### Fixed
 

@@ -2,7 +2,7 @@ import type { EngineInterface, On, PluginOptions, Register, SessionCompactInput,
 import { bounded, unlessAborted } from '../src/bounded.ts';
 import { experimental, parseHandoff, loadFileRefusal, loadRoomRefusal, receipt, ignoredRefusal, parseLineRanges, sliceFile, toolInput, type FileCheck, type LoadFile } from '../src/handoff.ts';
 import { workOf, type CallAnswer } from '../src/work.ts';
-import { newLedger, markStart, addEntry, resolveSpawn, attributeSkill, shellsOf, factsFor, promptsKept, restorePrompts, isPersonOrigin, keyOf, originKind, type Ledger, type PartyKey } from '../src/ledger.ts';
+import { newLedger, markStart, addEntry, resolveSpawn, attributeSkill, shellsOf, factsFor, promptsKept, restorePrompts, skillsKept, restoreSkills, isPersonOrigin, keyOf, originKind, type Ledger, type PartyKey } from '../src/ledger.ts';
 import { splitAtCall, buildWake, mechanicalWake, landedLine, type WakeFile, type AgentRow, type Landing } from '../src/wake.ts';
 import { decide, turnEndDoor, readingTokens, knownTrigger } from '../src/decide.ts';
 import { k, nudgeLevel, nudgeText } from '../src/nudge.ts';
@@ -35,6 +35,7 @@ type State = {
   toolNames: Partial<Record<ToolKind, string>>; // Each tool's full name once registered.
   configDir?: string; // The Claude config directory, where transcripts are found.
   sessionId?: Promise<string>; // Cached session id for the transcript lookup; no process runs.
+  restored: Set<PartyKey>; // Parties whose kept prompts and skills were put back this process (restoreKept).
   toolTries: Record<ToolKind, number>; // How many times registering each tool was tried.
   registering?: Promise<void>; // The registration in progress: hooks that need a tool wait on it, so none registers twice.
   toolsAbandoned?: boolean; // Registering the tools has not finished within ENSURE_TOOLS_TIMEOUT_MS: no hook waits on it until it settles, and a late finish still names the tools.
@@ -465,6 +466,7 @@ async function conversationStartsOver(st: State, $: EngineInterface, reason: str
   st.inFlight.clear();
   st.pendingSpawns.clear();
   st.installedSince.clear();
+  st.restored.clear();
   st.pendingCommand = undefined;
 }
 
@@ -584,7 +586,7 @@ function land(st: State, $: EngineInterface, key: string, landing: Landing | und
 /** One session.compact ask, rows C1-C10: decide, then pass, hold, or install the handoff or a mechanical wake. */
 async function compactAsk(st: State, $: EngineInterface, e: SessionCompactInput, key: PartyKey, pass: () => Promise<SessionCompactResult>, signal?: AbortSignal): Promise<SessionCompactResult> {
   await start(st, $);
-  await guard(st, $, 'prompts restore', () => restoreKept(st, $, key));
+  for (const who of [key, 'unknown' as const]) await guard(st, $, 'kept restore', () => restoreKept(st, $, who));
   let trigger = knownTrigger(e.trigger);
   if (trigger === undefined) {
     warnOnce(st, $, `trigger:${String(e.trigger)}`, `forward-compaction: session.compact trigger ${String(e.trigger)} is unknown; it is handled as an automatic ask`);
@@ -729,7 +731,7 @@ async function noteSubmit(st: State, $: EngineInterface, e: PromptSubmitInput): 
   st.ledger = isPersonOrigin(origin)
     ? addEntry(st.ledger, { kind: 'person', party: 'main', at, text: e.text, ...(e.command ? { command: e.command.name } : {}) })
     : addEntry(st.ledger, { kind: 'notice', party: 'main', at, origin, text: e.text });
-  if (isPersonOrigin(origin)) await keepPrompts(st, $, 'main');
+  if (isPersonOrigin(origin)) await keepKept(st, $, 'main');
 }
 
 /** The files a finished call touched and the task list it set, as the party's work (src/work.ts). */
@@ -737,20 +739,27 @@ async function noteWork(st: State, $: EngineInterface, party: PartyKey, e: Recor
   for (const fact of workOf(String(e.tool), toolInput(e), answer as CallAnswer)) st.ledger = addEntry(st.ledger, { kind: 'work', party, at: await $.clock.now(), fact });
 }
 
-/** A party's newest prompts, held by the host for the session (contract.d.ts), so a plugin reload does not lose them. */
-async function keepPrompts(st: State, $: EngineInterface, party: PartyKey): Promise<void> {
-  await $.state.set({ plugin: 'forward-compaction', key: 'prompts', id: `${await (st.sessionId ??= $.session.id())}/${party}` }, promptsKept(st.ledger, party));
+/** A party's newest prompts and its loaded skills, held by the host for the session (contract.d.ts), so a plugin reload does not lose them. */
+async function keepKept(st: State, $: EngineInterface, party: PartyKey): Promise<void> {
+  await restoreKept(st, $, party);
+  const id = `${await (st.sessionId ??= $.session.id())}/${party}`;
+  await $.state.set({ plugin: 'forward-compaction', key: 'prompts', id }, promptsKept(st.ledger, party));
+  await $.state.set({ plugin: 'forward-compaction', key: 'skills', id }, skillsKept(st.ledger, party));
 }
 
-/** The prompts a party kept before a plugin reload, put back before its wake is built. */
+/** What a party kept before a plugin reload, put back once per process: before its first write, so a write never drops it, and before its wake. */
 async function restoreKept(st: State, $: EngineInterface, party: PartyKey): Promise<void> {
-  st.ledger = restorePrompts(st.ledger, party, (await $.state.get({ plugin: 'forward-compaction', key: 'prompts', id: `${await (st.sessionId ??= $.session.id())}/${party}` })).value);
+  if (st.restored.has(party)) return;
+  st.restored.add(party);
+  const id = `${await (st.sessionId ??= $.session.id())}/${party}`;
+  st.ledger = restorePrompts(st.ledger, party, (await $.state.get({ plugin: 'forward-compaction', key: 'prompts', id })).value);
+  st.ledger = restoreSkills(st.ledger, party, (await $.state.get({ plugin: 'forward-compaction', key: 'skills', id })).value);
 }
 
 async function noteReceived(st: State, $: EngineInterface, e: SessionReceiveInput): Promise<void> {
   if (e.agentId === undefined) return;
   st.ledger = addEntry(st.ledger, { kind: 'received', party: keyOf(e.agentId), at: await $.clock.now(), origin: originKind(e.origin), text: e.text });
-  await keepPrompts(st, $, keyOf(e.agentId));
+  await keepKept(st, $, keyOf(e.agentId));
 }
 
 /** D5: the party a skill belongs to, from the calls in flight around it (the event names none). */
@@ -759,6 +768,7 @@ async function noteSkill(st: State, $: EngineInterface, e: SkillPromptInput): Pr
   const { party, how } = attributeSkill({ inFlightSkills, pendingCommand: st.pendingCommand, pendingSpawns: st.pendingSpawns, skill: e.skill });
   st.ledger = addEntry(st.ledger, { kind: 'skill', party, at: await $.clock.now(), skill: e.skill, text: e.text, how, ...(e.source !== undefined ? { source: e.source } : {}), ...(e.path !== undefined ? { path: e.path } : {}) });
   record(st, $, { event: 'skill', party, skill: e.skill, how });
+  await keepKept(st, $, party);
 }
 
 /** A spawned agent's brief is its first fact, and the skills it preloaded become its own. */
@@ -769,7 +779,7 @@ async function noteSpawn(st: State, $: EngineInterface, e: AgentSpawnInput, r: A
   st.ledger = resolveSpawn(addEntry(st.ledger, { kind: 'brief', party: key, at: await $.clock.now(), text: e.prompt, description: e.description, subagentType: e.subagentType, spawnedBy: st.inFlight.get(e.tool_use_id)?.party ?? 'unknown' }), e.tool_use_id, id);
   st.knownAgents.set(id, e.subagentType);
   st.parties.describe(key, { label: `${e.subagentType} ${id.slice(0, 6)}` }); judge(st, $, key);
-  await keepPrompts(st, $, key);
+  await keepKept(st, $, key); // its brief, and its preloaded skills filed under the spawn until now
 }
 
 /** The shells and crons running at a stop: the latest snapshot is a fact of every wake. */
@@ -785,7 +795,7 @@ export const register: Register = (on: On, options: PluginOptions) => {
     toolNames: {}, toolTries: { forward_compaction: 0, look_back: 0 },
     warned: new Set(), logFailures: new Set(),
     pending: [], rowsWriting: 0, levelRowsWriting: 0, levelLinks: 0, levelBatched: 0, skips: new SkipFold(), levelSkips: new SkipFold(), writing: Promise.resolve(),
-    parties: new Parties(), ledger: newLedger(),
+    parties: new Parties(), ledger: newLedger(), restored: new Set(),
     inFlight: new Map(), pendingSpawns: new Set(), knownAgents: new Map(), installedSince: new Set(),
   };
 
