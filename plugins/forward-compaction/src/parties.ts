@@ -13,6 +13,8 @@ export type StoredHandoff = {
   toolUseId: string;
   /** The party's last reading when it stored the handoff; absent when it had none (none since an install). */
   storedAtTokens?: number;
+  /** The ledger's next seq when it was stored: what the ledger records for the party from it, the model never saw (ledger.ts `factsFor` `since`). */
+  since: number;
   /** Store order across all parties. */
   seq: number;
 };

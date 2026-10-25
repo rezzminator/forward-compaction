@@ -4,6 +4,16 @@ Every release of forward-compaction, named sub-agent-compact before 1.0.0. Versi
 
 ## [Unreleased]
 
+## [1.0.0-dev.8] — 2026-10-25
+
+### Fixed
+
+- **A sub-agent keeps its state across its runs.** A sub-agent that waits on its background children ends a turn, and each child's notification resumes it. The plugin took every turn end as the agent's finish and forgot it: in live use an `rr-pro` agent ran 31 times, lost its reading, nudge level and gate each time, was never gated, and finished at 156k, 4k under its ceiling. An agent whose every run was one request would never have been compacted. Its reading, nudges, gate and stored handoff now stay until it ends.
+
+### Added
+
+- **Nothing delivered between a handoff and its install is lost.** A party that calls `forward_compaction` keeps working until Claude Code's next compaction ask installs it. A notification (an agent or command finishing), the person's message or a coordinator's message delivered in that gap could miss the messages Claude Code compacts, and the model woke without it. Every such delivery the kept messages lack now opens the wake, verbatim, under "Arrived after you wrote your handoff: you have not read these yet". A sub-agent's resuming message is now recorded too, and the sub-agent's section of delivered messages is renamed "Messages delivered to you".
+
 ## [1.0.0-dev.7] — 2026-10-24
 
 ### Fixed

@@ -148,6 +148,8 @@ export type Facts = {
   /** Person messages left out because the kept tail already holds them. */
   personInTail: number;
   notices: NoticeEntry[];
+  /** Every delivery to the party recorded from seq `since` (its handoff stored) that the kept tail does not hold, oldest first: the model wrote its handoff without them. Left out of person, notices and received. */
+  arrived: { at: number; origin: string; text: string }[];
   brief?: BriefEntry;
   received: ReceivedEntry[];
   skills: SkillEntry[];
@@ -160,23 +162,27 @@ export type Facts = {
 };
 
 /** What the wake records for a party. Text already in a kept tail message (equal or contained) is left out. */
-export function factsFor(ledger: Ledger, party: PartyKey, opts: { keptTexts: readonly string[] }): Facts {
+export function factsFor(ledger: Ledger, party: PartyKey, opts: { keptTexts: readonly string[]; /** A ledger seq: deliveries from it on are `arrived`. */ since?: number }): Facts {
   const fresh = <T extends { text: string }>(e: T): boolean =>
     e.text === '' || !opts.keptTexts.some((kept) => kept.includes(e.text));
+  const before = (e: { seq: number }): boolean => opts.since === undefined || e.seq < opts.since;
   const entries = ledger.entries;
   const mine = <K extends LedgerEntry['kind']>(kind: K, who: PartyKey): Extract<LedgerEntry, { kind: K }>[] =>
     entries.filter((e): e is Extract<LedgerEntry, { kind: K }> => e.kind === kind && 'party' in e && e.party === who);
   // Latest text per skill name wins before the kept filter: an older version is stale, not "already there".
   const newestFirst = (who: PartyKey) => latestPerSkill(mine('skill', who).reverse());
   const carried = new Set(newestFirst(party).map((s) => s.skill));
-  const person = mine('person', party);
+  const delivered = entries.filter((e): e is PersonEntry | NoticeEntry | ReceivedEntry => (e.kind === 'person' || e.kind === 'notice' || e.kind === 'received') && e.party === party);
+  const arrived = delivered.filter((e) => !before(e) && e.text !== '' && fresh(e)).map((e) => ({ at: e.at, origin: e.kind === 'person' ? 'person' : e.origin, text: e.text }));
+  const person = mine('person', party).filter(before);
   const kept = person.filter(fresh);
   return {
     person: kept,
     personInTail: person.length - kept.length,
-    notices: mine('notice', party).filter(fresh),
+    notices: mine('notice', party).filter(before).filter(fresh),
+    arrived,
     brief: mine('brief', party).filter(fresh).at(-1),
-    received: mine('received', party).filter(fresh),
+    received: mine('received', party).filter(before).filter(fresh),
     skills: newestFirst(party).filter(fresh),
     unattributedSkills: newestFirst('unknown').filter((s) => !carried.has(s.skill)).filter(fresh),
     shells: entries.find((e): e is ShellsEntry => e.kind === 'shells'),

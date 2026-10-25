@@ -7,7 +7,7 @@
 [![Claude Code plugin](https://img.shields.io/badge/Claude%20Code-plugin-D97757)](https://docs.claude.com/en/docs/claude-code/plugins)
 [![Version](https://img.shields.io/badge/version-1.0.0--dev.7-blue)](./CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
-[![Tests](https://img.shields.io/badge/tests-553%20passing-brightgreen)](#development)
+[![Tests](https://img.shields.io/badge/tests-557%20passing-brightgreen)](#development)
 [![Built with Professor](https://img.shields.io/badge/built%20with-Professor-8A2BE2)](https://github.com/rezzminator/professor)
 
 </div>
@@ -37,16 +37,19 @@ as they happened.
   assembles them into one markdown handoff. It is stored, never summarized,
   and installed verbatim.
 - 🧾 **Facts are recorded, never reconstructed.** The person's messages (main
-  chat) or the brief (sub-agent), messages from the coordinator, the skills
+  chat) or the brief (sub-agent), the messages delivered to it, the skills
   loaded, the agents and the background shells come from typed hook events as
   they happened. Nothing is grepped out of a transcript or re-read from disk.
   Each party's newest prompts (the person's ten newest messages, or a
-  sub-agent's brief and its coordinator's ten newest) and the skills it loaded
+  sub-agent's brief and the ten newest delivered to it) and the skills it loaded
   (the latest text of each) are also held in Claude Code's session state, so a
   plugin reload (`/reload-plugins`) does not lose them. The files touched and the task list come from each finished tool call.
 - ⏩ **Everything after the call is kept.** The model need not stop after it
   hands off: every message from the call on stays in the new context as it
-  was, so no work done after the handoff is lost.
+  was, so no work done after the handoff is lost. Anything delivered between
+  the call and the install that those messages lack (a notification of an
+  agent or command finishing, the person's message, a coordinator's message)
+  is carried in the wake under its own heading, as the model has not read it.
 - 👥 **Every party.** The main chat and every sub-agent use the same tool;
   each has its own stored handoff, nudges, readings and ceiling. A model on
   the ignore list (Haiku by default) takes no handoff and is held to its
@@ -206,10 +209,14 @@ ends with the experimental line and where to note any trouble.
 
 The facts message holds, each section only when it has content:
 
+- what arrived after the handoff and the kept messages lack: every
+  notification, message from the person or the coordinator, and message that
+  resumed a sub-agent, verbatim, first;
 - the brief (sub-agent), verbatim, or the person's newest ten messages
   (main chat), oldest first;
-- the newest ten messages from the coordinator (sub-agent) or the
-  notifications delivered (main chat);
+- the newest ten messages delivered to the sub-agent (its coordinator's, and
+  the notifications that resumed it) or the notifications delivered (main
+  chat);
 - the results of the tool calls made in the same response as the handoff;
 - the skills in force, as they were loaded. A skill Claude Code loaded
   without saying which party loaded it is named, not carried, in every
@@ -240,7 +247,7 @@ counts cancel. It is unmeasured until the reading has grown 5,000
 tokens past the base, or outside 1 to 8 characters a token, and unmeasured
 nothing is fitted: a handoff's wake carries the facts, the files and every
 message after the call, and a mechanical wake keeps no earlier message. Each section has a share — brief or person's messages 25%,
-coordinator messages or notifications 5%, sibling results 10%, skills the
+what arrived after the handoff 25%, delivered messages or notifications 5%, sibling results 10%, skills the
 whole budget (every skill and command the party invoked is carried whole),
 and the files their own room above — and is carried whole or named as
 not carried, never cut; the person's messages and skills are carried newest

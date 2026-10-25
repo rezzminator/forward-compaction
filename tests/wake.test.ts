@@ -274,7 +274,7 @@ describe('F sections', () => {
     const received = Array.from({ length: 12 }, (_, i) => ({ at: T0 + i * 1000, origin: 'coordinator', text: `note${i}.` }));
     const w = mechanicalWake({ ...base, messages: [user('a'), assistant('b')], party: 'subagent', facts: facts({ brief: { text: 'brief' }, received }), reason: { kind: 'ceiling', ceiling: 120_000 } });
     const f = (w.messages[0] as BuiltMessage).text;
-    expect(f).toContain('## Messages from your coordinator\n(2 older not carried)');
+    expect(f).toContain('## Messages delivered to you\n(2 older not carried)');
     expect(f).toContain('note2.');
     expect(f).toContain('note11.');
     expect(f).not.toContain('note1.');
@@ -327,7 +327,7 @@ describe('F sections', () => {
   it("gives a sub-agent its coordinator's messages and main its notifications, newest first within 5% of B", () => {
     const entries = Array.from({ length: 4 }, (_, i) => ({ at: T0 + i * 1000, origin: 'coordinator', text: `c${i} ${'k'.repeat(100)}` }));
     const sub = wakeOf({ askPoint: 2000, f: { received: entries } }, 'subagent').f;
-    expect(sub).toContain('## Messages from your coordinator\n(3 older not carried)\n### 2026-10-23T10:00:03.000Z (coordinator)\nc3 ');
+    expect(sub).toContain('## Messages delivered to you\n(3 older not carried)\n### 2026-10-23T10:00:03.000Z (coordinator)\nc3 ');
     const main = wakeOf({ f: { notices: [{ at: T0, origin: 'task-notification', text: '<task-notification>done</task-notification>' }] } }).f;
     expect(main).toContain('## Notifications delivered to you\n### 2026-10-23T10:00:00.000Z (task-notification)\n<task-notification>done</task-notification>');
   });

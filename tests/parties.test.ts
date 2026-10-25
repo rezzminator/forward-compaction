@@ -7,6 +7,7 @@ const handoff = (toolUseId: string, storedAtTokens = 41_200): Omit<StoredHandoff
   loadFiles: [],
   toolUseId,
   storedAtTokens,
+  since: 0,
 });
 
 describe('Parties state', () => {

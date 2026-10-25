@@ -30,7 +30,7 @@ const iso = (at: number): string => new Date(at).toISOString();
  * skills in force are what a woken model most needs (a quarter each), sibling results a tenth, coordinator notices a
  * twentieth; the rest of B goes to the messages kept after the call. Load files have their own room, `loadFilesRoom`.
  */
-const SHARE = { people: 0.25, notices: 0.05, siblings: 0.1, skills: 1, tasks: 0.05 } as const;
+const SHARE = { people: 0.25, arrived: 0.25, notices: 0.05, siblings: 0.1, skills: 1, tasks: 0.05 } as const;
 /** The most files the Files section lists, newest touch first: a path list stays a glance, as the old carry's trail did. */
 export const FILES_MAX = 15;
 /** The agents section's row cap: a design budget, enough for a coordinator's fleet, never the size of one. */
@@ -106,6 +106,8 @@ export type WakeFacts = {
   /** Person messages the ledger left out because the tail holds them. */
   personInTail?: number;
   notices: readonly { at: number; origin: string; text: string }[];
+  /** What reached the party after it stored its handoff and the kept tail lacks (ledger.ts `Facts`); absent on a mechanical wake. */
+  arrived?: readonly { at: number; origin: string; text: string }[];
   /** The `agent.spawn` prompt; absent when the agent was spawned before the ledger started. */
   brief?: { text: string };
   received: readonly { at: number; origin: string; text: string }[];
@@ -203,6 +205,13 @@ function renderFacts<M>(input: Shared<M>, facts: WakeFacts, { siblings, files, f
   const sections: Section[] = [];
   const sub = input.party === 'subagent';
 
+  // First: what the model has not seen, which a notification-driven party would otherwise wait on forever.
+  const arrived = facts.arrived ?? [];
+  if (arrived.length > 0) {
+    const { shown, left } = newestFitting(arrived, (m) => `### ${iso(m.at)} (${m.origin})\n${m.text}`, room(SHARE.arrived));
+    sections.push(section(['## Arrived after you wrote your handoff: you have not read these yet', ...(left > 0 ? [`(${left} older not carried; look_back finds them)`] : []), ...shown].join('\n')));
+  }
+
   if (sub) {
     const cap = room(SHARE.people);
     if (facts.brief === undefined) sections.push({ text: '## Your brief\n(not recorded: this agent was spawned before forward-compaction started in this process)', content: false });
@@ -220,7 +229,7 @@ function renderFacts<M>(input: Shared<M>, facts: WakeFacts, { siblings, files, f
     sections.push(section([`## The person's messages, oldest first ${heading}`, ...shown].join('\n')));
   }
 
-  const inbox = sub ? { entries: facts.received, title: 'Messages from your coordinator' } : { entries: facts.notices, title: 'Notifications delivered to you' };
+  const inbox = sub ? { entries: facts.received, title: 'Messages delivered to you' } : { entries: facts.notices, title: 'Notifications delivered to you' };
   if (inbox.entries.length > 0) {
     const { shown } = newestFitting(sub ? inbox.entries.slice(-PROMPTS_KEPT) : inbox.entries, (m) => `### ${iso(m.at)} (${m.origin})\n${m.text}`, room(SHARE.notices));
     const left = inbox.entries.length - shown.length;

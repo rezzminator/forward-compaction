@@ -1,4 +1,4 @@
-import type { EngineInterface, On, PluginOptions, Register, SessionCompactInput, SessionCompactResult, ToolCallResult, TurnStepInput, TurnStepResult, TurnCompleteInput, PromptSubmitInput, SessionReceiveInput, SkillPromptInput, AgentSpawnInput, AgentSpawnResult } from 'claude-code';
+import type { EngineInterface, On, PluginOptions, Register, SessionCompactInput, SessionCompactResult, ToolCallResult, TurnStartInput, TurnStepInput, TurnStepResult, TurnCompleteInput, PromptSubmitInput, SessionReceiveInput, SkillPromptInput, AgentSpawnInput, AgentSpawnResult } from 'claude-code';
 import { bounded, unlessAborted } from '../src/bounded.ts';
 import { experimental, parseHandoff, loadFileRefusal, loadRoomRefusal, receipt, ignoredRefusal, parseLineRanges, sliceFile, toolInput, type FileCheck, type LoadFile } from '../src/handoff.ts';
 import { workOf, type CallAnswer } from '../src/work.ts';
@@ -507,7 +507,7 @@ async function answerForward(st: State, $: EngineInterface, e: Record<string, un
       return refusal!;
     }
     const tokens = st.parties.get(key).reading; // the last reading: the call's own context is measured only by the next request
-    const replaced = st.parties.store(key, { text: parsed.handoff, loadFiles: parsed.loadFiles, toolUseId: e.tool_use_id as string, storedAtTokens: tokens });
+    const replaced = st.parties.store(key, { text: parsed.handoff, loadFiles: parsed.loadFiles, toolUseId: e.tool_use_id as string, storedAtTokens: tokens, since: st.ledger.nextSeq });
     const files = parsed.loadFiles.length;
     record(st, $, { event: 'stored', party: key, chars: parsed.handoff.length, files, tokens: tokens ?? null, ...(replaced !== undefined ? { replaced: replaced.storedAtTokens ?? null } : {}) });
     return key === 'main' ? receipt({ party: 'main', chars: parsed.handoff.length, files, tokens, askPoint: m?.askPoint, replaced: replaced !== undefined }) : receipt({ party: 'subagent', chars: parsed.handoff.length, files, tokens, askPoint: m!.askPoint, replaced: replaced !== undefined });
@@ -630,7 +630,7 @@ async function compactAsk(st: State, $: EngineInterface, e: SessionCompactInput,
     record(st, $, { ...row, reason: action.reason });
     return { skip: action.reason };
   }
-  const shared = { messages: e.messages, party: kind === 'main' ? ('main' as const) : ('subagent' as const), tokens, askPoint: m?.askPoint ?? 0, charsPerToken: ratioOf(st, $, key, 'compact', await partyChars(st, $, key, e.agentId), m), now: await $.clock.now(), facts: (kept: readonly string[]) => factsFor(st.ledger, key, { keptTexts: kept }), agents: await agentRows($), logDir: st.pluginLogDir, ...(e.agentId !== undefined ? { self: e.agentId } : {}) };
+  const shared = { messages: e.messages, party: kind === 'main' ? ('main' as const) : ('subagent' as const), tokens, askPoint: m?.askPoint ?? 0, charsPerToken: ratioOf(st, $, key, 'compact', await partyChars(st, $, key, e.agentId), m), now: await $.clock.now(), facts: (kept: readonly string[]) => factsFor(st.ledger, key, { keptTexts: kept, ...(action.action === 'install' ? { since: held!.since } : {}) }), agents: await agentRows($), logDir: st.pluginLogDir, ...(e.agentId !== undefined ? { self: e.agentId } : {}) };
   const wake = action.action === 'install'
     ? buildWake({ ...shared, toolUseId: held!.toolUseId, handoff: held!.text, maxContext: m?.maxContext, tool: st.toolNames.forward_compaction, files: await readLoadFiles($, held!.loadFiles) })
     : mechanicalWake({ ...shared, tool: st.toolNames.forward_compaction, reason: action.why === 'ceiling' ? { kind: 'ceiling', ceiling: m!.ceiling } : { kind: 'reactive' } });
@@ -712,16 +712,10 @@ async function readStep(st: State, $: EngineInterface, e: TurnStepInput, r: Turn
   if (chars !== undefined) st.parties.rebase(key, { chars, tokens });
 }
 
-/** P1 (R32): main's answered turn with a handoff stored compacts once; a sub-agent's turn end is its finish, and its party goes. */
+/** P1 (R32): main's answered turn with a handoff stored compacts once. A sub-agent's turn end is one run, never its finish (a child's notification resumes it): its party stays, only a waiting landing is said. */
 async function turnEnds(st: State, $: EngineInterface, e: TurnCompleteInput): Promise<void> {
   const key = keyOf(e.agentId);
-  if (key !== 'main') {
-    if (st.parties.takeStored(key) !== undefined) record(st, $, { event: 'dropped', party: key, why: 'agent finished' });
-    land(st, $, key, st.parties.takeLanding(key));
-    st.parties.forget(key);
-    st.installedSince.delete(key);
-    return;
-  }
+  if (key !== 'main') return land(st, $, key, st.parties.takeLanding(key));
   const party = st.parties.get('main');
   const door = turnEndDoor({ main: true, reason: e.reason, stored: party.stored !== undefined, installedThisTurn: party.installedThisTurn });
   st.parties.turnEnded('main');
@@ -766,6 +760,18 @@ async function restoreKept(st: State, $: EngineInterface, party: PartyKey): Prom
   const id = `${await (st.sessionId ??= $.session.id())}/${party}`;
   st.ledger = restorePrompts(st.ledger, party, (await $.state.get({ plugin: 'forward-compaction', key: 'prompts', id })).value);
   st.ledger = restoreSkills(st.ledger, party, (await $.state.get({ plugin: 'forward-compaction', key: 'skills', id })).value);
+}
+
+/** A turn starts. A sub-agent's later run begins with what woke it (a background child's notification): recorded like a coordinator's message, once. */
+async function noteRun(st: State, $: EngineInterface, e: TurnStartInput): Promise<void> {
+  const key = keyOf(e.agentId);
+  const first = key !== 'main' && st.parties.get(key).requests === 0; // the first run begins with the brief, recorded at agent.spawn
+  st.parties.newTurn(key);
+  if (key === 'main' || first || e.text === '') return;
+  const last = [...st.ledger.entries].reverse().find((x) => (x.kind === 'brief' || x.kind === 'received') && x.party === key);
+  if (last !== undefined && 'text' in last && last.text === e.text) return; // session.receive recorded it already
+  st.ledger = addEntry(st.ledger, { kind: 'received', party: key, at: await $.clock.now(), origin: 'run-start', text: e.text });
+  await keepKept(st, $, key);
 }
 
 async function noteReceived(st: State, $: EngineInterface, e: SessionReceiveInput): Promise<void> {
@@ -857,7 +863,7 @@ export const register: Register = (on: On, options: PluginOptions) => {
   });
 
   on('turn.start', async ($, e, next) => {
-    await guard(st, $, 'turn.start', () => st.parties.newTurn(keyOf(e.agentId)), e);
+    await guard(st, $, 'turn.start', () => noteRun(st, $, e), e);
     return next(e);
   });
 
