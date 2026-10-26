@@ -9,6 +9,7 @@ Every release of forward-compaction, named sub-agent-compact before 1.0.0. Versi
 ### Added
 
 - **A party drops a skill or command it no longer needs.** Every wake carried every skill and command the party had loaded, whole, however long ago it stopped mattering. `forward_compaction` takes `drop_skills`, a list of names: a name the party's previous handoff named too is left out of this wake and every later one, until the party loads it again. One handoff naming it is not enough, so a passing guess drops nothing. A skill or command whose frontmatter sets `forward-compaction-keep: true` is never dropped, and its wake block says so. The receipt answers each name.
+- **`FORWARD_COMPACTION_KEEP_SKILLS` pins skills and commands by name.** A comma-separated list of names that are never dropped, as a file's `forward-compaction-keep: true` pins it: for a skill or command whose file you do not own. Unset, none is pinned by name.
 
 ## [1.0.0-dev.8] — 2026-10-25
 

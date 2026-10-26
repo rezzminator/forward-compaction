@@ -1,5 +1,5 @@
 // Dropping a skill or command from the wake: the model names it in drop_skills on two handoffs in a row, and the second
-// one's wake leaves it out. A file whose frontmatter sets FRONTMATTER_KEEP is never dropped, whoever asks.
+// one's wake leaves it out. A file whose frontmatter sets FRONTMATTER_KEEP, or a name FORWARD_COMPACTION_KEEP_SKILLS lists, is never dropped.
 
 import type { Ledger, PartyKey, SkillEntry } from './ledger.ts';
 
@@ -45,7 +45,7 @@ export function dropNote(outcome: DropOutcome): string {
   return [
     outcome.dropped.length > 0 ? `Dropped from your wake: ${list(outcome.dropped)}. Load one again with the Skill tool if you need it.` : '',
     outcome.pending.length > 0 ? `Not dropped yet: ${list(outcome.pending)}. Name it in drop_skills on your next handoff too, and that wake leaves it out.` : '',
-    outcome.pinned.length > 0 ? `Never dropped: ${list(outcome.pinned)}. Its file's frontmatter sets ${FRONTMATTER_KEEP}.` : '',
+    outcome.pinned.length > 0 ? `Never dropped: ${list(outcome.pinned)}. It is pinned: its file's frontmatter sets ${FRONTMATTER_KEEP}, or FORWARD_COMPACTION_KEEP_SKILLS names it.` : '',
     outcome.unknown.length > 0 ? `Not in your context, nothing to drop: ${list(outcome.unknown)}. Use the name the skill or command was loaded under.` : '',
   ].filter(Boolean).join(' ');
 }

@@ -35,7 +35,7 @@ describe('resolveOptions', () => {
     expect(resolveOptions()).toEqual({
       main: { ceiling: { percent: 60 }, nudgeStart: { percent: 15 }, nudgeEvery: { percent: 5 } },
       subagent: { ceiling: { percent: 80 }, nudgeStart: { percent: 40 }, nudgeEvery: { percent: 10 }, maxContext: 200_000 },
-      ceilingNative: false, ignoreModels: ['haiku'], debug: true, errors: [],
+      ceilingNative: false, ignoreModels: ['haiku'], keepSkills: [], debug: true, errors: [],
     });
   });
 
@@ -52,6 +52,7 @@ describe('resolveOptions', () => {
       ceilingNative: 'FORWARD_COMPACTION_CEILING_NATIVE',
       logFile: 'FORWARD_COMPACTION_LOG_FILE',
       ignoreModels: 'FORWARD_COMPACTION_IGNORE_MODELS',
+      keepSkills: 'FORWARD_COMPACTION_KEEP_SKILLS',
       debug: 'FORWARD_COMPACTION_DEBUG',
     });
   });
@@ -61,6 +62,7 @@ describe('resolveOptions', () => {
     expect(resolveOptions({ vars: {} }).ignoreModels).toEqual(['haiku']);
     expect(resolveOptions({ vars: { FORWARD_COMPACTION_IGNORE_MODELS: '' } }).ignoreModels).toEqual([]);
     expect(resolveOptions({ vars: { FORWARD_COMPACTION_IGNORE_MODELS: ' , ' } }).ignoreModels).toEqual([]);
+    expect(resolveOptions({ vars: { FORWARD_COMPACTION_KEEP_SKILLS: ' god-speed, pfm:Release ,,' } }).keepSkills).toEqual(['god-speed', 'pfm:Release']);
   });
 
   it('reads the debug flag, on by default, and names a bad value by its variable', () => {

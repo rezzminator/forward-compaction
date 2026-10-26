@@ -7,7 +7,7 @@
 [![Claude Code plugin](https://img.shields.io/badge/Claude%20Code-plugin-D97757)](https://docs.claude.com/en/docs/claude-code/plugins)
 [![Version](https://img.shields.io/badge/version-1.0.0--dev.9-blue)](./CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
-[![Tests](https://img.shields.io/badge/tests-565%20passing-brightgreen)](#development)
+[![Tests](https://img.shields.io/badge/tests-566%20passing-brightgreen)](#development)
 [![Built with Professor](https://img.shields.io/badge/built%20with-Professor-8A2BE2)](https://github.com/rezzminator/professor)
 
 </div>
@@ -186,7 +186,8 @@ needs no ToolSearch.
   row name it: the second one's wake leaves it out, and so does every later
   wake until the party loads it again. A handoff that does not name it starts
   the count again. A skill or command whose file's frontmatter sets
-  `forward-compaction-keep: true` is never dropped, whoever asks; the wake
+  `forward-compaction-keep: true`, or that `FORWARD_COMPACTION_KEEP_SKILLS`
+  names, is never dropped, whoever asks; the wake
   marks it `pinned: never dropped`. The receipt says, per name, whether it
   was dropped, waits for the next handoff, is pinned, or was never loaded.
 
@@ -340,6 +341,7 @@ set empty, it ignores no model (the one option whose empty value is a value).
 | `FORWARD_COMPACTION_SUBAGENT_NUDGE_EVERY` | size | `10%` | How much a sub-agent's context grows between nudges (20k on 200k). |
 | `FORWARD_COMPACTION_CEILING_NATIVE` | flag | `0` | `1`: at any party's ceiling with no handoff, Claude Code's own summary runs instead of the mechanical wake. |
 | `FORWARD_COMPACTION_IGNORE_MODELS` | model list | `haiku` | Models that take no handoff: no nudge, the tool refused, every ask held to the ceiling and then compacted mechanically ([Ignored models](#ignored-models)). |
+| `FORWARD_COMPACTION_KEEP_SKILLS` | name list | `none` | Skills and commands never dropped from a wake, comma-separated, as a file's `forward-compaction-keep: true` pins it ([The tool](#the-tool)). |
 | `FORWARD_COMPACTION_DEBUG` | flag | `1` | `0`: no `debug.jsonl`, the row the plugin writes at every step. |
 | `FORWARD_COMPACTION_LOG_FILE` | path | `~/.local/state/forward-compaction/logs/decisions/.jsonl` | Where decision rows go; each session writes `{session}.jsonl` beside it. With `PLUGIN_LOG_DIR` set the default is `$PLUGIN_LOG_DIR/forward-compaction/decisions/.jsonl`. A relative path is refused and the default applies. |
 

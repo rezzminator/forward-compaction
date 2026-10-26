@@ -14,6 +14,8 @@ export const DEFAULT_SUBAGENT_MAX_CONTEXT = 200_000;
 export const DEFAULT_CEILING_NATIVE = false;
 /** Models the plugin leaves to Claude Code's own compaction, matched as case-insensitive substrings of the model id a step reports. */
 export const DEFAULT_IGNORE_MODELS: readonly string[] = ['haiku'];
+/** Skills and commands pinned in every wake by name, as frontmatter's forward-compaction-keep pins one by its file: none. */
+export const DEFAULT_KEEP_SKILLS: readonly string[] = [];
 /** The debug log (`debug.jsonl`): a row at every step. */
 export const DEFAULT_DEBUG = true;
 
@@ -71,6 +73,7 @@ export const OPTION_ENV = {
   ceilingNative: 'FORWARD_COMPACTION_CEILING_NATIVE',
   logFile: 'FORWARD_COMPACTION_LOG_FILE',
   ignoreModels: 'FORWARD_COMPACTION_IGNORE_MODELS',
+  keepSkills: 'FORWARD_COMPACTION_KEEP_SKILLS',
   debug: 'FORWARD_COMPACTION_DEBUG',
 } as const;
 
@@ -93,6 +96,8 @@ export type ResolvedOptions = {
   logFile?: string;
   /** Lower-cased ignore-list entries; empty when the variable is set empty. */
   ignoreModels: string[];
+  /** Skill and command names never dropped from a wake, as given, trimmed. */
+  keepSkills: string[];
   debug: boolean;
   /** One line per option that was invalid and fell back; empty when all were valid. */
   errors: string[];
@@ -166,6 +171,7 @@ export function resolveOptions(env: OptionEnvironment = {}): ResolvedOptions {
   // Unset is the default; set empty (or only commas) is a list of none: the one option whose empty value is a value.
   const rawIgnore = env.vars?.[OPTION_ENV.ignoreModels];
   const ignoreModels = rawIgnore === undefined ? [...DEFAULT_IGNORE_MODELS] : rawIgnore.split(',').map((entry) => entry.trim().toLowerCase()).filter((entry) => entry !== '');
+  const keepSkills = (env.vars?.[OPTION_ENV.keepSkills] ?? DEFAULT_KEEP_SKILLS.join(',')).split(',').map((entry) => entry.trim()).filter((entry) => entry !== '');
   for (const late of [nudgeAfterCeiling('main', main), nudgeAfterCeiling('subagent', subagent)]) if (late !== undefined) errors.push(late);
   // Unset or invalid → the default: the plugin's decisions folder under PLUGIN_LOG_DIR, else under HOME, else no decision log.
   const base = pluginLogDir(env.pluginLogDir, env.home, 'forward-compaction');
@@ -176,5 +182,5 @@ export function resolveOptions(env: OptionEnvironment = {}): ResolvedOptions {
     if (envLog.startsWith('/')) logFile = envLog;
     else badEnv('logFile', `not an absolute path: ${JSON.stringify(envLog)}`, fallbackLog ?? '(no decision log)');
   }
-  return { main, subagent, ceilingNative, ...(logFile ? { logFile } : {}), ignoreModels, debug, errors };
+  return { main, subagent, ceilingNative, ...(logFile ? { logFile } : {}), ignoreModels, keepSkills, debug, errors };
 }

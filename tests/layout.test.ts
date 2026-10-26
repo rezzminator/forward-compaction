@@ -1,7 +1,7 @@
 import { readdirSync, readFileSync, existsSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_CEILING_NATIVE, DEFAULT_DEBUG, DEFAULT_IGNORE_MODELS, DEFAULT_MAIN, DEFAULT_SUBAGENT, DEFAULT_SUBAGENT_MAX_CONTEXT, OPTION_ENV, parseEnvFlag, parseSize, resolveOptions, type OptionName } from '../plugins/forward-compaction/src/options.ts';
+import { DEFAULT_CEILING_NATIVE, DEFAULT_DEBUG, DEFAULT_IGNORE_MODELS, DEFAULT_KEEP_SKILLS, DEFAULT_MAIN, DEFAULT_SUBAGENT, DEFAULT_SUBAGENT_MAX_CONTEXT, OPTION_ENV, parseEnvFlag, parseSize, resolveOptions, type OptionName } from '../plugins/forward-compaction/src/options.ts';
 
 const ROOT = join(import.meta.dirname, '..');
 const PLUGIN = 'plugins/forward-compaction';
@@ -55,7 +55,7 @@ function sameSet(a: ReadonlySet<string>, b: ReadonlySet<string>): string[] {
 const CODE_DEFAULT: Record<OptionName, unknown> = {
   mainMaxContext: 'window', mainCeiling: DEFAULT_MAIN.ceiling, mainNudgeStart: DEFAULT_MAIN.nudgeStart, mainNudgeEvery: DEFAULT_MAIN.nudgeEvery,
   subagentMaxContext: { tokens: DEFAULT_SUBAGENT_MAX_CONTEXT }, subagentCeiling: DEFAULT_SUBAGENT.ceiling, subagentNudgeStart: DEFAULT_SUBAGENT.nudgeStart, subagentNudgeEvery: DEFAULT_SUBAGENT.nudgeEvery,
-  ceilingNative: DEFAULT_CEILING_NATIVE, logFile: resolveOptions({ home: '~' }).logFile, ignoreModels: DEFAULT_IGNORE_MODELS.join(','), debug: DEFAULT_DEBUG,
+  ceilingNative: DEFAULT_CEILING_NATIVE, logFile: resolveOptions({ home: '~' }).logFile, ignoreModels: DEFAULT_IGNORE_MODELS.join(','), keepSkills: DEFAULT_KEEP_SKILLS.join(',') || 'none', debug: DEFAULT_DEBUG,
 };
 function optionTableFaults(readme: string): string[] {
   const rows = [...readme.matchAll(/^\|\s*`(FORWARD_COMPACTION_[A-Z_]+)`\s*\|[^|\n]*\|\s*`([^`\n]*)`[^|\n]*\|/gm)].map((m) => ({ name: m[1]!, cell: m[2]! }));
@@ -127,7 +127,7 @@ describe('layout gates (D22)', () => {
     const cells: [string, string][] = [
       ['MAIN_MAX_CONTEXT', 'window'], ['MAIN_CEILING', '70%'], ['MAIN_NUDGE_START', '15%'],
       ['SUBAGENT_MAX_CONTEXT', '200k'], ['SUBAGENT_CEILING', '80%'], ['SUBAGENT_NUDGE_START', '40%'], ['SUBAGENT_NUDGE_EVERY', '20%'],
-      ['CEILING_NATIVE', '0'], ['LOG_FILE', '~/.local/state/forward-compaction/logs/decisions/.jsonl'], ['IGNORE_MODELS', 'haiku'], ['DEBUG', '1'], ['EXTRA', '1'],
+      ['CEILING_NATIVE', '0'], ['LOG_FILE', '~/.local/state/forward-compaction/logs/decisions/.jsonl'], ['IGNORE_MODELS', 'haiku'], ['KEEP_SKILLS', 'none'], ['DEBUG', '1'], ['EXTRA', '1'],
     ];
     const table = cells.map(([name, def]) => row(`FORWARD_COMPACTION_${name}`, def)).join('\n');
     expect(optionTableFaults(table)).toEqual(['+FORWARD_COMPACTION_EXTRA', '-FORWARD_COMPACTION_MAIN_NUDGE_EVERY', 'FORWARD_COMPACTION_MAIN_CEILING default 70%', 'FORWARD_COMPACTION_SUBAGENT_NUDGE_EVERY default 20%']);

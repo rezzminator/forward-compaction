@@ -46,7 +46,7 @@ describe('applyDrops', () => {
     const note = dropNote({ dropped: ['a'], pending: ['b'], pinned: ['c'], unknown: ['d'] });
     expect(note).toContain('Dropped from your wake: a.');
     expect(note).toContain('Not dropped yet: b. Name it in drop_skills on your next handoff too');
-    expect(note).toContain(`Never dropped: c. Its file's frontmatter sets ${FRONTMATTER_KEEP}.`);
+    expect(note).toContain(`Never dropped: c. It is pinned: its file's frontmatter sets ${FRONTMATTER_KEEP}, or FORWARD_COMPACTION_KEEP_SKILLS names it.`);
     expect(note).toContain('Not in your context, nothing to drop: d.');
   });
 });
@@ -69,8 +69,8 @@ afterEach(() => {
 });
 
 describe('drop_skills through the hooks', () => {
-  async function begin(): Promise<Fake> {
-    const f = fakeEngine({ window: 1_000_000, env: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '100000' } });
+  async function begin(env: Record<string, string> = {}): Promise<Fake> {
+    const f = fakeEngine({ window: 1_000_000, env: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '100000', ...env } });
     fakes.push(f);
     await f.dispatch('session.start', { reason: 'startup' }, async () => ({}));
     await f.dispatch('agent.spawn', { tool_use_id: 'tu-spawn', prompt: 'Brief for agent one', description: 'one', subagentType: 'general-purpose', provider: { kind: 'local' } }, async () => ({ model: 'sonnet', agentId: A1 }));
@@ -119,6 +119,14 @@ describe('drop_skills through the hooks', () => {
     const third = await cycle(f, ['notes']);
     expect(third.receipt).toContain('Not dropped yet: notes.');
     expect(third.wake).toContain('NOTES SKILL BODY');
+  });
+
+  it('never drops a skill FORWARD_COMPACTION_KEEP_SKILLS names, though its file sets nothing', async () => {
+    const f = await begin({ FORWARD_COMPACTION_KEEP_SKILLS: 'notes' });
+    await cycle(f, ['notes']);
+    const second = await cycle(f, ['notes']);
+    expect(second.receipt).toContain('Never dropped: notes.');
+    expect(second.wake).toMatch(/### notes \([^)]*pinned: never dropped\)\nNOTES SKILL BODY/);
   });
 
   it('carries a dropped skill again once the agent loads it again', async () => {

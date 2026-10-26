@@ -40,9 +40,8 @@ type State = {
   registering?: Promise<void>; // The registration in progress: hooks that need a tool wait on it, so none registers twice.
   toolsAbandoned?: boolean; // Registering the tools has not finished within ENSURE_TOOLS_TIMEOUT_MS: no hook waits on it until it settles, and a late finish still names the tools.
   toolsSettled?: boolean; // Every tool is registered or out of tries: no hook registers or sets a timer again.
-  warned: Set<string>;
+  warned: Set<string>; pending: string[];
   logFailures: Set<string>; // The log-write failures already shown: a log that cannot be written fails every flush the same way, and the person hears each failure once.
-  pending: string[];
   rowsWriting: number; // Rows the decision append in flight carries; 0 when none is.
   levelRowsWriting: number; // Level-log rows queued or being written: what a cut end flush may lose from the level log.
   levelLinks: number; levelBatched: number; // Level-log rows whose write is chained, and rows queued for the burst's one append.
@@ -266,6 +265,7 @@ async function readOptionEnv($: EngineInterface): Promise<Pick<OptionEnvironment
     readOptionVar('FORWARD_COMPACTION_CEILING_NATIVE', () => $.env.get('FORWARD_COMPACTION_CEILING_NATIVE')),
     readOptionVar('FORWARD_COMPACTION_LOG_FILE', () => $.env.get('FORWARD_COMPACTION_LOG_FILE')),
     readOptionVar('FORWARD_COMPACTION_IGNORE_MODELS', () => $.env.get('FORWARD_COMPACTION_IGNORE_MODELS')),
+    readOptionVar('FORWARD_COMPACTION_KEEP_SKILLS', () => $.env.get('FORWARD_COMPACTION_KEEP_SKILLS')),
     readOptionVar('FORWARD_COMPACTION_DEBUG', () => $.env.get('FORWARD_COMPACTION_DEBUG')),
   ]);
   return { vars, readErrors };
@@ -786,7 +786,7 @@ async function noteReceived(st: State, $: EngineInterface, e: SessionReceiveInpu
 async function noteSkill(st: State, $: EngineInterface, e: SkillPromptInput): Promise<void> {
   const inFlightSkills = [...st.inFlight].filter(([, call]) => call.tool === 'Skill').map(([tool_use_id, call]) => ({ party: call.party, tool_use_id }));
   const { party, how } = attributeSkill({ inFlightSkills, pendingCommand: st.pendingCommand, pendingSpawns: st.pendingSpawns, skill: e.skill });
-  st.ledger = addEntry(st.ledger, { kind: 'skill', party, at: await $.clock.now(), skill: e.skill, text: e.text, how, ...(pinnedBy(e.frontmatter) ? { keep: true as const } : {}), ...(e.source !== undefined ? { source: e.source } : {}), ...(e.path !== undefined ? { path: e.path } : {}) });
+  st.ledger = addEntry(st.ledger, { kind: 'skill', party, at: await $.clock.now(), skill: e.skill, text: e.text, how, ...(pinnedBy(e.frontmatter) || st.config.keepSkills.includes(e.skill) ? { keep: true as const } : {}), ...(e.source !== undefined ? { source: e.source } : {}), ...(e.path !== undefined ? { path: e.path } : {}) });
   record(st, $, { event: 'skill', party, skill: e.skill, how });
   await keepKept(st, $, party);
 }
