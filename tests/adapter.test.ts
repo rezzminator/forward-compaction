@@ -122,6 +122,15 @@ describe('main turn-end door (R32, P1)', () => {
     await f.dispatch('turn.complete', { reason: 'answer', answer: 'done', durationMs: 1, isAborted: false, turnId: 't1' }, async () => ({ text: 'done' }));
     expect(f.texts()).toContain("main's handoff did not install at turn end: another plugin held it. It stays stored for the next turn end or ask.");
   });
+
+  it("installs at the next turn's first ask when a queued turn already runs at turn end, so the turn-end refusal loses nothing", async () => {
+    const f = await begin({ compact: () => Promise.reject(new Error('$.session.compact: a turn is running (t2)')) });
+    await step(f, 210_000);
+    await store(f);
+    await f.dispatch('turn.complete', { reason: 'answer', answer: 'done', durationMs: 1, isAborted: false, turnId: 't1' }, async () => ({ text: 'done' }));
+    expect(await f.dispatch('session.compact', { trigger: 'auto', messages: transcript() }, async () => ({ skip: 'native ran' }))).toHaveProperty('messages');
+    expect((await rows(f)).filter((r) => r.event === 'turn-end-rejected' || r.event === 'compact').map((r) => r.event + (r.decision ? `:${r.decision}` : ''))).toEqual(['turn-end-rejected', 'compact:install']);
+  });
 });
 
 describe('the compaction window warning (R33)', () => {
