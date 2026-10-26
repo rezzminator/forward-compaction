@@ -415,6 +415,20 @@ describe('decision log', () => {
     } finally { rmSync(parent, { recursive: true, force: true }); }
   });
 
+  it('breaks a lock whose claimer died holding its token, leaving the lock without one', async () => {
+    const parent = mkdtempSync(join(tmpdir(), 'decision-log-'));
+    const path = join(parent, 'decisions.s1.jsonl');
+    const dead = 999_999;
+    expect(() => process.kill(dead, 0)).toThrow();
+    try {
+      mkdirSync(`${path}.lock`); writeFileSync(join(`${path}.lock`, `pid.claim.${dead}`), `${dead} 0\n`);
+      const out = await append(path, ['{"a":1}']);
+      expect(out.code, out.stderr).toBe(0);
+      expect(lines(path)).toEqual(['{"a":1}']);
+      expect(existsSync(`${path}.lock`)).toBe(false);
+    } finally { rmSync(parent, { recursive: true, force: true }); }
+  }, 30_000);
+
   // A writer whose stdin stays open holds the lock between its first and second half of a row.
   const holding = (argv: string[], env: NodeJS.ProcessEnv = process.env) => {
     const child = spawn(argv[0]!, argv.slice(1), { env });

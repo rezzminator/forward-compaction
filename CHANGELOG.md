@@ -4,6 +4,10 @@ Every release of forward-compaction, named sub-agent-compact before 1.0.0. Versi
 
 ## [Unreleased]
 
+### Fixed
+
+- **A log lock no longer wedges when the writer breaking it dies.** A writer that took a stale lock's token to break it and was killed before finishing left the lock with no token, which no later writer would break: every row to that log directory was dropped with `lock held by another writer` until the lock was removed by hand. A waiter now puts back a claim whose writer is gone or older than a minute, and the lock is broken as any stale one.
+
 ## [1.0.0-dev.9] — 2026-10-26
 
 ### Added
