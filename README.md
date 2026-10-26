@@ -5,9 +5,9 @@
 **Compaction for Claude Code where the model writes its own handoff: the main chat and every sub-agent hand off through one tool, and everything after the call stays verbatim.**
 
 [![Claude Code plugin](https://img.shields.io/badge/Claude%20Code-plugin-D97757)](https://docs.claude.com/en/docs/claude-code/plugins)
-[![Version](https://img.shields.io/badge/version-1.0.0--dev.7-blue)](./CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.0.0--dev.9-blue)](./CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
-[![Tests](https://img.shields.io/badge/tests-557%20passing-brightgreen)](#development)
+[![Tests](https://img.shields.io/badge/tests-565%20passing-brightgreen)](#development)
 [![Built with Professor](https://img.shields.io/badge/built%20with-Professor-8A2BE2)](https://github.com/rezzminator/professor)
 
 </div>
@@ -156,7 +156,7 @@ and no ceiling, and an automatic ask from it with nothing stored is held as
 
 ### The tool
 
-`forward_compaction({objective, done, remaining, next, blocked, findings, load_files})`,
+`forward_compaction({objective, done, remaining, next, blocked, findings, load_files, drop_skills})`,
 with its schema in the prompt's tool list (not deferred), so a nudged model
 needs no ToolSearch.
 
@@ -181,6 +181,14 @@ needs no ToolSearch.
   `lines` range counts only its lines. With no ratio measured yet the files
   are accepted without a size check, and a warning row says so. A file that has grown past the room by install is named as not
   carried, never cut.
+- `drop_skills` (optional): at most 32 names of skills or commands the party
+  loaded and no longer needs. A name is dropped only when two handoffs in a
+  row name it: the second one's wake leaves it out, and so does every later
+  wake until the party loads it again. A handoff that does not name it starts
+  the count again. A skill or command whose file's frontmatter sets
+  `forward-compaction-keep: true` is never dropped, whoever asks; the wake
+  marks it `pinned: never dropped`. The receipt says, per name, whether it
+  was dropped, waits for the next handoff, is pinned, or was never loaded.
 
 The result is a receipt saying when the handoff installs — for the main chat
 at the end of this turn, for a sub-agent at Claude Code's next ask (with

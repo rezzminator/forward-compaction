@@ -112,7 +112,7 @@ export type WakeFacts = {
   brief?: { text: string };
   received: readonly { at: number; origin: string; text: string }[];
   /** Latest text per skill, newest first. */
-  skills: readonly { skill: string; text: string; source?: string; path?: string }[];
+  skills: readonly { skill: string; text: string; source?: string; path?: string; keep?: true }[];
   unattributedSkills: readonly { skill: string }[];
   shells?: {
     at: number;
@@ -251,14 +251,14 @@ function renderFacts<M>(input: Shared<M>, facts: WakeFacts, { siblings, files, f
   const carriedSkills: string[] = [];
   let skillRoom = room(SHARE.skills); // every skill the party invoked is carried whole: the whole budget, the tail fitted after it
   for (const s of facts.skills) {
-    const block = `### ${s.skill} (${s.source ?? 'unknown source'}${s.path === undefined ? '' : `, ${s.path}`})\n${s.text}`;
+    const block = `### ${s.skill} (${s.source ?? 'unknown source'}${s.path === undefined ? '' : `, ${s.path}`}${s.keep ? ', pinned: never dropped' : ''})\n${s.text}`;
     if (block.length + 1 > skillRoom) notCarried.push(`- ${s.skill}: over the skill room (${num(s.text.length)} characters); call Skill ${s.skill} to load it again.`);
     else {
       skillRoom -= block.length + 1;
       carriedSkills.push(block);
     }
   }
-  if (carriedSkills.length > 0) sections.push(section(['## Skills in force, as loaded', ...carriedSkills].join('\n')));
+  if (carriedSkills.length > 0) sections.push(section(['## Skills in force, as loaded (one you no longer need: name it in drop_skills on two handoffs in a row)', ...carriedSkills].join('\n')));
   for (const s of facts.unattributedSkills) notCarried.push(`- ${s.skill}: loaded in this session by an unidentified party; call Skill ${s.skill} if it applies to you.`);
   if (notCarried.length > 0) sections.push({ text: ['## Skills not carried', ...notCarried].join('\n'), content: false });
 

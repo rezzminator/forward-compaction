@@ -1,6 +1,6 @@
 import type { EngineInterface, On, PluginOptions, Register, SessionCompactInput, SessionCompactResult, ToolCallResult, TurnStartInput, TurnStepInput, TurnStepResult, TurnCompleteInput, PromptSubmitInput, SessionReceiveInput, SkillPromptInput, AgentSpawnInput, AgentSpawnResult } from 'claude-code';
 import { bounded, unlessAborted } from '../src/bounded.ts';
-import { experimental, parseHandoff, loadFileRefusal, loadRoomRefusal, receipt, ignoredRefusal, parseLineRanges, sliceFile, toolInput, type FileCheck, type LoadFile } from '../src/handoff.ts';
+import { applyDrops, dropNote, pinnedBy, experimental, parseHandoff, loadFileRefusal, loadRoomRefusal, receipt, ignoredRefusal, parseLineRanges, sliceFile, toolInput, type FileCheck, type LoadFile } from '../src/handoff.ts';
 import { workOf, type CallAnswer } from '../src/work.ts';
 import { newLedger, markStart, addEntry, resolveSpawn, attributeSkill, shellsOf, factsFor, promptsKept, restorePrompts, skillsKept, restoreSkills, isPersonOrigin, keyOf, originKind, type Ledger, type PartyKey } from '../src/ledger.ts';
 import { splitAtCall, buildWake, mechanicalWake, landedLine, type WakeFile, type AgentRow, type Landing } from '../src/wake.ts';
@@ -54,8 +54,7 @@ type State = {
   logPath?: Promise<string | undefined>;
   logOff?: boolean; // Reading the session id failed: no row is written this session, so a routine line goes to the screen.
   writing: Promise<void>;
-  parties: Parties;
-  ledger: Ledger;
+  parties: Parties; ledger: Ledger;
   inFlight: Map<string, { party: PartyKey; tool: string }>; // Skill and Agent calls running now, by tool_use_id: the party that made each, for skill attribution and a spawn's parent.
   pendingCommand?: string; // The command main typed, until its first step: a skill it expands is main's.
   pendingSpawns: Set<string>; // agent.spawn calls running now: a skill loaded meanwhile is a preload of the one spawn.
@@ -508,9 +507,12 @@ async function answerForward(st: State, $: EngineInterface, e: Record<string, un
     }
     const tokens = st.parties.get(key).reading; // the last reading: the call's own context is measured only by the next request
     const replaced = st.parties.store(key, { text: parsed.handoff, loadFiles: parsed.loadFiles, toolUseId: e.tool_use_id as string, storedAtTokens: tokens, since: st.ledger.nextSeq });
+    await restoreKept(st, $, key); // a skill kept across a plugin reload is in the ledger before a drop can take it out
+    const drop = applyDrops(st.ledger, key, parsed.dropSkills, st.parties.get(key).dropAsked); (st.ledger = drop.ledger), (st.parties.get(key).dropAsked = drop.outcome.pending); // a handoff naming nothing resets the count
+    if (parsed.dropSkills.length > 0) (record(st, $, { event: 'drop', party: key, ...drop.outcome }), await keepKept(st, $, key));
     const files = parsed.loadFiles.length;
     record(st, $, { event: 'stored', party: key, chars: parsed.handoff.length, files, tokens: tokens ?? null, ...(replaced !== undefined ? { replaced: replaced.storedAtTokens ?? null } : {}) });
-    return key === 'main' ? receipt({ party: 'main', chars: parsed.handoff.length, files, tokens, askPoint: m?.askPoint, replaced: replaced !== undefined }) : receipt({ party: 'subagent', chars: parsed.handoff.length, files, tokens, askPoint: m!.askPoint, replaced: replaced !== undefined });
+    return [key === 'main' ? receipt({ party: 'main', chars: parsed.handoff.length, files, tokens, askPoint: m?.askPoint, replaced: replaced !== undefined }) : receipt({ party: 'subagent', chars: parsed.handoff.length, files, tokens, askPoint: m!.askPoint, replaced: replaced !== undefined }), dropNote(drop.outcome)].filter(Boolean).join(' ');
   } catch (error) {
     say(st, $, `forward-compaction: storing ${key}'s handoff failed: ${message(error)}`, 'error', { event: 'store-error', party: key, error: message(error) });
     return `forward_compaction failed, nothing stored: ${message(error)}`;
@@ -784,7 +786,7 @@ async function noteReceived(st: State, $: EngineInterface, e: SessionReceiveInpu
 async function noteSkill(st: State, $: EngineInterface, e: SkillPromptInput): Promise<void> {
   const inFlightSkills = [...st.inFlight].filter(([, call]) => call.tool === 'Skill').map(([tool_use_id, call]) => ({ party: call.party, tool_use_id }));
   const { party, how } = attributeSkill({ inFlightSkills, pendingCommand: st.pendingCommand, pendingSpawns: st.pendingSpawns, skill: e.skill });
-  st.ledger = addEntry(st.ledger, { kind: 'skill', party, at: await $.clock.now(), skill: e.skill, text: e.text, how, ...(e.source !== undefined ? { source: e.source } : {}), ...(e.path !== undefined ? { path: e.path } : {}) });
+  st.ledger = addEntry(st.ledger, { kind: 'skill', party, at: await $.clock.now(), skill: e.skill, text: e.text, how, ...(pinnedBy(e.frontmatter) ? { keep: true as const } : {}), ...(e.source !== undefined ? { source: e.source } : {}), ...(e.path !== undefined ? { path: e.path } : {}) });
   record(st, $, { event: 'skill', party, skill: e.skill, how });
   await keepKept(st, $, party);
 }

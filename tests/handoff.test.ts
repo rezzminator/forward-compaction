@@ -43,7 +43,7 @@ describe('the forward_compaction tool as registered', () => {
 
   it('closes the schema: four required sections, two optional ones, at most 8 load_files with a path and a why', () => {
     expect(FORWARD_INPUT_SCHEMA).toMatchObject({ type: 'object', additionalProperties: false, required: ['objective', 'done', 'remaining', 'next'] });
-    expect(Object.keys(FORWARD_INPUT_SCHEMA.properties)).toEqual([...SECTIONS, 'load_files']);
+    expect(Object.keys(FORWARD_INPUT_SCHEMA.properties)).toEqual([...SECTIONS, 'load_files', 'drop_skills']);
     for (const name of SECTIONS) expect(FORWARD_INPUT_SCHEMA.properties[name as 'objective']).toMatchObject({ type: 'string', description: expect.any(String) });
     expect(FORWARD_INPUT_SCHEMA.properties.objective.description).toBe('What the work is for and what done means.');
     expect(FORWARD_INPUT_SCHEMA.properties.findings.description).toBe('Optional: decisions with why, errors verbatim.');
@@ -54,23 +54,23 @@ describe('the forward_compaction tool as registered', () => {
 
 describe('parseHandoff assembles the sections and keeps their text whole', () => {
   it('assembles the four required sections in order, and no load files when none are given', () => {
-    expect(parseHandoff(valid)).toEqual({ handoff: text, loadFiles: [] });
+    expect(parseHandoff(valid)).toEqual({ handoff: text, loadFiles: [], dropSkills: [] });
   });
 
   it('places the optional sections after them, Blocked before Findings, and leaves out an absent or blank one', () => {
-    expect(parseHandoff({ findings: 'f', ...valid, blocked: 'b' })).toEqual({ handoff: `${text}\n\n## Blocked\nb\n\n## Findings\nf`, loadFiles: [] });
-    expect(parseHandoff({ ...valid, findings: 'f' })).toEqual({ handoff: `${text}\n\n## Findings\nf`, loadFiles: [] });
-    expect(parseHandoff({ ...valid, blocked: '  ' })).toEqual({ handoff: text, loadFiles: [] });
+    expect(parseHandoff({ findings: 'f', ...valid, blocked: 'b' })).toEqual({ handoff: `${text}\n\n## Blocked\nb\n\n## Findings\nf`, loadFiles: [], dropSkills: [] });
+    expect(parseHandoff({ ...valid, findings: 'f' })).toEqual({ handoff: `${text}\n\n## Findings\nf`, loadFiles: [], dropSkills: [] });
+    expect(parseHandoff({ ...valid, blocked: '  ' })).toEqual({ handoff: text, loadFiles: [], dropSkills: [] });
   });
 
   it('keeps a section\'s own headings, blank lines, trailing space and Windows line ends untouched', () => {
     const own = 'x  \r\n\r\n### Goal\r\n## Notes\r\n';
-    expect(parseHandoff({ ...valid, objective: own })).toEqual({ handoff: text.replace('ship it', own), loadFiles: [] });
+    expect(parseHandoff({ ...valid, objective: own })).toEqual({ handoff: text.replace('ship it', own), loadFiles: [], dropSkills: [] });
   });
 
   it('keeps a load file as given, lines and why included', () => {
     const files = [{ path: '/a/b.ts', lines: '1-60,160-185', why: 'the parser' }, { path: 'C:\\a\\b.ts', why: 'win' }];
-    expect(parseHandoff({ ...valid, load_files: files })).toEqual({ handoff: text, loadFiles: files });
+    expect(parseHandoff({ ...valid, load_files: files })).toEqual({ handoff: text, loadFiles: files, dropSkills: [] });
   });
 
   it('takes a 20,000-character assembled handoff (R12) and exactly 8 files', () => {
@@ -85,7 +85,7 @@ describe('parseHandoff assembles the sections and keeps their text whole', () =>
 
 describe('parseHandoff refuses, naming what to fix', () => {
   it('V1 an unknown field, the old handoff argument included (R14)', () => {
-    expect(refusal({ ...valid, drop_skills: [] })).toBe(`${P}unknown field "drop_skills". The fields are objective, done, remaining, next, blocked, findings and load_files.`);
+    expect(refusal({ ...valid, drop: [] })).toBe(`${P}unknown field "drop". The fields are objective, done, remaining, next, blocked, findings, load_files and drop_skills.`);
     expect(refusal({ ...valid, handoff: text })).toContain('unknown field "handoff"');
   });
 
@@ -103,7 +103,7 @@ describe('parseHandoff refuses, naming what to fix', () => {
 
   it('V4 names every bad argument in one refusal, one line each', () => {
     expect(refusal({ done: 'd', extra: 1, findings: {} })).toBe([
-      `${P}unknown field "extra". The fields are objective, done, remaining, next, blocked, findings and load_files.`,
+      `${P}unknown field "extra". The fields are objective, done, remaining, next, blocked, findings, load_files and drop_skills.`,
       'objective must be a non-blank string; got undefined.',
       'remaining must be a non-blank string; got undefined.',
       'next must be a non-blank string; got undefined.',

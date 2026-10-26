@@ -358,7 +358,7 @@ describe('F sections', () => {
         unattributedSkills: [{ skill: 'mystery' }],
       },
     }).f;
-    expect(f).toContain('## Skills in force, as loaded\n### small (user, /s/SKILL.md)\ntiny');
+    expect(f).toContain('## Skills in force, as loaded (one you no longer need: name it in drop_skills on two handoffs in a row)\n### small (user, /s/SKILL.md)\ntiny');
     expect(f).toContain('## Skills not carried\n- huge: over the skill room (4,000 characters); call Skill huge to load it again.');
     expect(f).toContain('- mystery: loaded in this session by an unidentified party; call Skill mystery if it applies to you.');
     expect(f).not.toContain('hhhhhhhhhh');

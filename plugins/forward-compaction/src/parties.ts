@@ -62,6 +62,8 @@ export type PartyState = {
   installs: number;
   /** An install happened in the party's current turn: the turn-end door (P1) does not fire again. */
   installedThisTurn: boolean;
+  /** The loaded, unpinned names the last stored handoff's drop_skills asked once: the next handoff naming one again drops it. */
+  dropAsked: string[];
   /** The judgement last returned by `judged`. */
   judged?: Judgement;
 };
@@ -75,7 +77,7 @@ export class Parties {
   get(key: string): PartyState {
     let state = this.states.get(key);
     if (!state) {
-      state = { key, label: key, answeredSinceSkip: true, nudgeLevel: 0, absorbNext: false, requests: 0, installs: 0, installedThisTurn: false };
+      state = { key, label: key, answeredSinceSkip: true, nudgeLevel: 0, absorbNext: false, requests: 0, installs: 0, installedThisTurn: false, dropAsked: [] };
       this.states.set(key, state);
     }
     return state;

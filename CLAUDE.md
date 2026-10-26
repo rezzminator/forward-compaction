@@ -22,6 +22,7 @@ is the behavioural spec.
 - A party with no reading yet is held until its next reading; one whose window is unknown never reaches its ceiling. A precompute ask is always skipped.
 - Parties: the main chat and each sub-agent by its agentId, each with its own state, max context, ceiling and nudge levels, set by `FORWARD_COMPACTION_MAIN_{MAX_CONTEXT|CEILING|NUDGE_START|NUDGE_EVERY}` and `FORWARD_COMPACTION_SUBAGENT_{…}`.
 - The install: the handoff, the recorded facts (the person's messages or the brief and the messages delivered to it, skills, agents, shells, the files touched, the task list), the `load_files`, every message after the call kept verbatim, and every delivery recorded after the call that those messages lack.
+- A skill or command leaves the wake only when two handoffs in a row name it in `drop_skills`; one whose frontmatter sets `forward-compaction-keep: true` never does.
 - A sub-agent's party lives across its runs: one waiting on its background children ends a turn and is resumed by each child's notification, so a turn end is never its finish.
 
 ## Layout

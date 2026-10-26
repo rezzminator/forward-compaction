@@ -2,6 +2,8 @@
 
 import { k } from './nudge.ts';
 import { loadFilesRoom } from './window.ts';
+import { DROP_MAX } from './drop.ts';
+export { applyDrops, dropNote, pinnedBy } from './drop.ts';
 
 /** The tool's name as registered; the model sees `mcp__forward-compaction__forward_compaction`. */
 export const FORWARD_TOOL = 'forward_compaction';
@@ -45,6 +47,12 @@ export const FORWARD_INPUT_SCHEMA = {
         },
       },
     },
+    drop_skills: {
+      type: 'array',
+      maxItems: DROP_MAX,
+      items: { type: 'string' },
+      description: 'Optional: names of skills or commands in your context you no longer need. Name one on two handoffs in a row and the second wake leaves it out; one its file pins stays.',
+    },
   },
 } as const;
 
@@ -61,10 +69,10 @@ export const LOAD_FILE_MAX_BYTES = 1_048_576;
 /** One file the model asked to carry whole into the wake; every field is the model's own text, kept verbatim. */
 export type LoadFile = { path: string; lines?: string; why: string };
 
-export type ParsedHandoff = { handoff: string; loadFiles: LoadFile[] };
+export type ParsedHandoff = { handoff: string; loadFiles: LoadFile[]; dropSkills: string[] };
 export type Refusal = { refusal: string };
 
-const FIELDS = [...SECTIONS.map((section) => section.key), 'load_files'];
+const FIELDS = [...SECTIONS.map((section) => section.key), 'load_files', 'drop_skills'];
 const PREFIX = 'forward_compaction refused, nothing stored: ';
 const refuse = (text: string): Refusal => ({ refusal: PREFIX + text });
 const num = (n: number): string => n.toLocaleString('en-US');
@@ -74,7 +82,7 @@ const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'obj
 
 /** One line per bad argument: an unknown field, a required section missing, not a string or blank, an optional one given but not a string. */
 function argumentFaults(fields: Record<string, unknown>): string[] {
-  const unknown = Object.keys(fields).filter((key) => !FIELDS.includes(key)).map((key) => `unknown field "${key}". The fields are ${FIELDS.slice(0, -1).join(', ')} and load_files.`);
+  const unknown = Object.keys(fields).filter((key) => !FIELDS.includes(key)).map((key) => `unknown field "${key}". The fields are ${FIELDS.slice(0, -1).join(', ')} and drop_skills.`);
   const sections = SECTIONS.flatMap(({ key, required }) => {
     const value = fields[key];
     if (required && (typeof value !== 'string' || value.trim() === '')) return [`${key} must be a non-blank string; got ${typeof value === 'string' ? 'a blank string' : kind(value)}.`];
@@ -99,9 +107,12 @@ export function parseHandoff(input: unknown): ParsedHandoff | Refusal {
     return typeof text === 'string' && text.trim() !== '' ? [`## ${heading}\n${text}`] : [];
   }).join('\n\n');
   if (handoff.length > HANDOFF_MAX_CHARS) return refuse(`the handoff assembled from your sections is ${num(handoff.length)} characters, over the ${num(HANDOFF_MAX_CHARS)} cap. Shorten it (detail can go in load_files, or stay in the transcript for look_back) and call again.`);
+  const drops = fields.drop_skills;
+  if (drops !== undefined && (!Array.isArray(drops) || drops.length > DROP_MAX || drops.some((d) => typeof d !== 'string' || d.trim() === ''))) return refuse(`drop_skills must be an array of at most ${DROP_MAX} skill or command names, each a non-blank string.`);
+  const dropSkills = (drops ?? []) as string[];
   const files = fields.load_files;
 
-  if (files === undefined) return { handoff, loadFiles: [] };
+  if (files === undefined) return { handoff, loadFiles: [], dropSkills };
   if (!Array.isArray(files)) return refuse('load_files must be an array of {path, lines?, why}.');
   if (files.length > LOAD_FILES_MAX) return refuse(`load_files has ${files.length} entries, over the ${LOAD_FILES_MAX} cap.`);
   const loadFiles: LoadFile[] = [];
@@ -113,7 +124,7 @@ export function parseHandoff(input: unknown): ParsedHandoff | Refusal {
     if (ranges !== undefined && (typeof ranges !== 'string' || parseLineRanges(ranges) === undefined)) return refuse(`load_files[${i}].lines "${String(ranges)}" is not a range like "10-40" or "1-60,160-185".`);
     loadFiles.push({ path, why, ...(ranges !== undefined ? { lines: ranges as string } : {}) });
   }
-  return { handoff, loadFiles };
+  return { handoff, loadFiles, dropSkills };
 }
 
 /** What the adapter learned from `$.fs.stat(path)` on one load file: its stat, or `absent` (ENOENT), or the error text of any other throw. */
