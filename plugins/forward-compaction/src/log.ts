@@ -39,7 +39,9 @@ export const DECISION_LOG_RETENTION = { days: 14, keep: 200 } as const;
 /**
  * A directory lock born with its holder's token (`pid epoch`) in `$lock/pid`: staged under a private name and
  * renamed into place, so the lock never exists without its token. A lock whose holder is gone, or whose token is
- * older than a minute (no append takes that long), is broken; a live one is waited on for about five seconds.
+ * older than a minute (no append takes that long), is broken; a live one is waited on for `LOCK_WAIT_SECONDS`. A stage
+ * or a broken lock (`$lock.{pid}`, `$lock.dead.{pid}`) whose writer is dead is cleared: a writer killed between its
+ * mkdir and its rename leaves one behind.
  * Breaking and releasing first claim the token by renaming `$lock/pid` to a private name: only one mover wins that
  * rename, and the claimer removes the lock only when the token it took is the one it saw stale (or its own), so no
  * waiter removes a lock another has since broken and taken, and a holder outlived by an age break never removes its
@@ -48,6 +50,8 @@ export const DECISION_LOG_RETENTION = { days: 14, keep: 200 } as const;
  * has its claim put back by a waiter, so the lock is broken by the same rules; the claim's name carries its own
  * start time (`pid.claim.{epoch}.{pid}`), since the renamed token keeps the token's age, not the claim's.
  */
+/** A live holder is waited on this long: under the 15 s process bound, and past the few seconds contention reaches at a load around 80. */
+export const LOCK_WAIT_SECONDS = 10;
 const LOCK_FN = `lk_claim() {
   lk_c="$lk_lock/pid.claim.$(date +%s).$$"
   mv "$lk_lock/pid" "$lk_c" 2>/dev/null || return 1
@@ -62,9 +66,15 @@ const LOCK_FN = `lk_claim() {
   return 1
 }
 lock() {
-  lk_lock=$1; tries=0
+  lk_lock=$1
   lk_token="$$ $(date +%s)"
+  lk_until=$((\${lk_token#* } + ${LOCK_WAIT_SECONDS}))
   lk_stage="$lk_lock.$$"
+  for lk_s in "$lk_lock".[0-9]* "$lk_lock".dead.[0-9]*; do
+    lk_p=\${lk_s##*.}
+    case $lk_p in ''|*[!0-9]*) continue ;; esac
+    if [ -d "$lk_s" ] && [ "$lk_p" != "$$" ] && ! kill -0 "$lk_p" 2>/dev/null; then rm -rf "$lk_s" 2>/dev/null || :; fi
+  done
   while :; do
     rm -rf "$lk_stage"
     mkdir "$lk_stage" || fail "$lk_stage" 'cannot create the lock directory'
@@ -72,8 +82,7 @@ lock() {
     if [ ! -e "$lk_lock" ] && mv "$lk_stage" "$lk_lock" 2>/dev/null && [ "$(cat "$lk_lock/pid" 2>/dev/null)" = "$lk_token" ]; then break; fi
     # mv onto a lock that appeared meanwhile moves the stage into it.
     rm -rf "$lk_stage" "$lk_lock/\${lk_stage##*/}"
-    tries=$((tries + 1))
-    [ "$tries" -le 100 ] || fail "$lk_lock" 'lock held by another writer'
+    [ "$(date +%s)" -le "$lk_until" ] || fail "$lk_lock" 'lock held by another writer'
     holder=$(cat "$lk_lock/pid" 2>/dev/null) || holder=
     # Our own token: our stage became the lock, and the check above read it while a claimer had it renamed aside.
     if [ "$holder" = "$lk_token" ]; then break; fi
@@ -138,6 +147,16 @@ export function keptRowsText(rows: number, dropped: number, last: boolean, hold:
   const kept = last ? '' : `; its ${rows} ${rows === 1 ? 'row is' : 'rows are'} kept and written with the next`;
   const gone = dropped > 0 ? `${last ? ';' : ', and'} the ${dropped} oldest held ${dropped === 1 ? 'row was' : 'rows were'} dropped past the ${hold}-row hold` : '';
   return `${kept}${gone}`;
+}
+
+/**
+ * A failed decision-log write's line, and its once-per-failure key: numbers dropped, so a failure whose text carries a varying
+ * size is said once; the first drop past the hold is told even when its failure already was (the session-end line counts all).
+ */
+export function decisionFailure(named: string, error: unknown, last: boolean): { line: string; key: string } {
+  const failed = `forward-compaction: writing the decision log for ${named} failed: ${error instanceof Error ? error.message : String(error)}`;
+  const kept = error instanceof DecisionWriteError ? keptRowsText(error.rows, error.dropped, last) : '';
+  return { line: `${failed}${kept}`, key: `${failed}${error instanceof DecisionWriteError && error.dropped > 0 ? ' (hold)' : ''}`.replace(/\d+/g, '#') };
 }
 
 /** The session-end line for the decision rows no append wrote: those still held, and those the hold dropped. */
@@ -265,12 +284,10 @@ function summary(streak: SkipStreak): DecisionRow {
 
 export type PluginLogLevel = 'error' | 'warning' | 'info' | 'debug';
 
-/** Errors always show; warnings and info show only when logging is unavailable or failing. */
-export function noticeOnScreen({ level, decisionLog, pluginLog, logOff }: { level: PluginLogLevel; decisionLog: boolean; pluginLog: boolean; logOff?: boolean }): boolean {
-  return level === 'error' || logOff === true || (!decisionLog && !pluginLog);
-}
 export type PluginLogFields = { plugin: string; level: PluginLogLevel; event: string; msg: string; where: string; session?: string; detail?: Record<string, unknown>; /** The row's own time, when it is not the writing time: a folded `skips` row is stamped with its streak's. */ ts?: string };
 export const PLUGIN_LOG_CAP_BYTES = 20971520;
+/** Rotated generations each level log keeps (`.1` newest … `.5`): at the debug log's pace, about a day of step rows. */
+export const PLUGIN_LOG_KEEP = 5;
 export const ROW_MAX_BYTES = 4096;
 
 /** Resolve the level directory without changing the decision-log option. */
@@ -344,7 +361,10 @@ cap() {
   if [ -f "$1" ]; then
     bytes=$(wc -c < "$1") || exit 1
     bytes=$((bytes))
-    if [ "$bytes" -gt ${PLUGIN_LOG_CAP_BYTES} ]; then mv -f "$1" "$1.1" || exit 1; return 0; fi
+    if [ "$bytes" -gt ${PLUGIN_LOG_CAP_BYTES} ]; then
+      n=${PLUGIN_LOG_KEEP}; while [ "$n" -gt 1 ]; do n=$((n - 1)); if [ -e "$1.$n" ]; then mv -f "$1.$n" "$1.$((n + 1))" || exit 1; fi; done
+      mv -f "$1" "$1.1" || exit 1; return 0
+    fi
   fi
   return 1
 }
@@ -397,19 +417,26 @@ export function appendArgv(dir: string, plugin: string, rows: readonly string[])
 }
 
 type PluginLogRun = (argv: string[]) => Promise<{ exitCode: number; stdout: string; stderr: string }>;
-export type FlushResult = { dropped: number; error?: string };
+/** `held`: rows still queued after a failed write; `lost`: rows the hold let go, reported once, by the first flush that writes. */
+export type FlushResult = { held: number; lost: number; error?: string };
+/** At most this many unwritten level rows are held for the next flush; past it the oldest go, counted. */
+export const PLUGIN_LOG_HOLD_ROWS = 2_000;
 
-/** Serialized append batches; a success rearms the once-per-failing-streak notice. */
+/**
+ * Serialized append batches; a success rearms the once-per-failing-streak notice. A batch that fails (or is killed
+ * after writing part of it) goes back to the front of the queue whole, so a row may be written twice, never lost.
+ */
 export class PluginLogQueue {
   private rows: string[] = [];
   private writing: Promise<unknown> = Promise.resolve();
   private failing = false;
+  private lost = 0;
   constructor(private readonly dir: string, private readonly plugin: string) {}
   add(row: string): void { this.rows.push(row); }
   flush(run: PluginLogRun): Promise<FlushResult> {
-    const rows = this.rows.splice(0);
     const pending = this.writing.then(async (): Promise<FlushResult> => {
-      if (rows.length === 0) return { dropped: 0 };
+      const rows = this.rows.splice(0);
+      if (rows.length === 0) return { held: 0, lost: 0 };
       let written = 0;
       try {
         for (const argv of appendArgv(this.dir, this.plugin, rows)) {
@@ -418,11 +445,14 @@ export class PluginLogQueue {
           written += (argv.length - 6) / 2;
           this.failing = false;
         }
-        return { dropped: 0 };
+        const lost = this.lost;
+        this.lost = 0;
+        return { held: 0, lost };
       } catch (error) {
         const report = !this.failing;
         this.failing = true;
-        return { dropped: rows.length - written, ...(report ? { error: error instanceof Error ? error.message : String(error) } : {}) };
+        this.lost += requeueRows(this.rows, rows.slice(written), PLUGIN_LOG_HOLD_ROWS);
+        return { held: this.rows.length, lost: 0, ...(report ? { error: error instanceof Error ? error.message : String(error) } : {}) };
       }
     });
     this.writing = pending;
@@ -439,8 +469,8 @@ export function pluginLogEvent(row: Record<string, unknown>): Omit<PluginLogFiel
   let event = String(row.event);
   if (NO_LEVEL_ROW.includes(event)) return undefined;
   if (event === 'compact' && row.decision === 'error') event = 'compact-error';
-  const errors = ['error', 'option-error', 'tool-register-failed', 'look-back-manual-error', 'compact-error'];
-  const warnings = ['warning', 'decision-retention-failed', 'unseen-compaction'];
+  const errors = ['option-error', 'tool-register-failed', 'look-back-manual-error', 'compact-error', 'turn-end-rejected'];
+  const warnings = ['decision-retention-failed', 'unseen-compaction', 'compact-window', 'ceiling-below-ask'];
   const level = errors.includes(event) ? 'error' : warnings.includes(event) ? 'warning' : 'info';
   const detail: Record<string, unknown> = {};
   for (const key of ['party', 'type', 'tool', 'tries', 'seq', 'why', 'tokens', 'chars', 'files', 'before', 'after', 'held', 'error', 'problem', 'dir', 'level', 'decision', 'trigger', 'count', 'from', 'to', 'firstTokens', 'lastTokens', 'label', 'model', 'judged', 'matched']) {
@@ -449,7 +479,7 @@ export function pluginLogEvent(row: Record<string, unknown>): Omit<PluginLogFiel
   }
   const skips = event === 'skips' && typeof row.count === 'number' ? `${row.count} more held compaction asks folded` : undefined;
   const msg = [row.line, row.error, row.problem, row.detail, row.refusal, skips, row.reason, row.why].find((value) => typeof value === 'string');
-  return { level, event, msg: typeof msg === 'string' ? msg : event.replace(/-/g, ' '), where: 'hooks/forward-compaction.ts#record', detail, ...(event === 'skips' && typeof row.ts === 'string' ? { ts: row.ts } : {}) };
+  return { level, event, msg: typeof msg === 'string' ? msg : event.replace(/-/g, ' '), where: `hooks/forward-compaction.ts#${typeof row.where === 'string' ? row.where : 'record'}`, detail, ...(event === 'skips' && typeof row.ts === 'string' ? { ts: row.ts } : {}) };
 }
 
 /** The debug row of a hook entry: the hook, the party its `agentId` names, and the trigger, model and tool the event carries (null where none). */

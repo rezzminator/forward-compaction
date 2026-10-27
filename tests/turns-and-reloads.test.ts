@@ -5,7 +5,7 @@ import { fakeEngine, usage, type Script } from './fakes/engine.ts';
 
 // The adapter's wiring of session-lifetime facts: a new turn ends the request-too-long inference (D8), the person's
 // messages outlive a plugin reload through the host's session state, finished tool calls record the party's work, and a
-// sub-agent past its gate mark hands off before anything else runs.
+// sub-agent past its gate mark compacts before anything else runs.
 
 type Fake = ReturnType<typeof fakeEngine>;
 const fakes: Fake[] = [];
@@ -31,7 +31,7 @@ const messages = [
   { role: 'assistant', text: 'working', toolUses: [], handle: 'h1' },
 ];
 const ask = (f: Fake) => f.dispatch('session.compact', { trigger: 'auto', messages }, async () => ({ skip: 'native ran' }));
-const WAITING = { skip: "forward-compaction: holding Claude Code's compaction for main until its handoff is stored or the ceiling is reached" };
+const WAITING = { skip: "forward-compaction: holding Claude Code's compaction for main until its frontier is stored or the ceiling is reached" };
 
 describe('a request too long (D8)', () => {
   it('reads a second held ask with no step between as too long inside a turn, but not across a new turn', async () => {
@@ -111,29 +111,29 @@ describe("the party's work, from its finished tool calls", () => {
   });
 });
 
-describe('the hand-off gate', () => {
+describe('the compaction gate', () => {
   const A = 'a1b2c3d4e5';
   const FC = 'mcp__forward-compaction__forward_compaction';
   const agentStep = (f: Fake, tokens: number) => f.dispatch('turn.step', { turnId: 't1', index: 0, model: 'claude-sonnet-4-5', messageCount: 4, agentId: A }, async () => ({ turnId: 't1', index: 0, answer: '', toolUses: [], stopReason: 'tool_use', ...usage(tokens) }));
   const read = (f: Fake, agentId?: string) => f.dispatch('tool.call', { tool: 'Read', tool_use_id: 'r', file_path: '/w/a.ts', ...(agentId ? { agentId } : {}) }, async () => ({ result: {}, text: 'body' }));
 
-  it("refuses a sub-agent's calls past its gate mark until it stores a handoff, and never main's", async () => {
+  it("refuses a sub-agent's calls past its gate mark until it stores a frontier, and never main's", async () => {
     const f = await begin();
     await f.dispatch('agent.spawn', { tool_use_id: 'tu-spawn', prompt: 'Brief', description: 'one', subagentType: 'general-purpose', provider: { kind: 'local' } }, async () => ({ model: 'sonnet', agentId: A }));
     await agentStep(f, 85_000);
-    expect((await read(f, A)).context?.at(-1)).toContain('From 100k your other calls wait until you have handed off.');
+    expect((await read(f, A)).context?.at(-1)).toContain('From 100k your other calls wait for it.');
     await agentStep(f, 99_000);
     expect(await read(f, A)).toMatchObject({ text: 'body' });
     await agentStep(f, 104_000);
-    expect((await read(f, A)).deny).toMatch(/^forward-compaction: this call did not run\. Your context is 104k tokens/);
+    expect((await read(f, A)).deny).toMatch(/^forward-compaction: this call did not run — at 104k you compact first\./);
     await step(f, 104_000);
     expect(await read(f)).toMatchObject({ text: 'body' });
     const stored = await f.dispatch('tool.call', { tool: FC, tool_use_id: 'tu-h', agentId: A, objective: 'o', done: 'd', remaining: 'r', next: 'n' }, async () => ({ result: 'not ours' }));
-    expect(stored.result).toContain('Handoff stored');
+    expect(stored.result).toContain('Frontier stored');
     expect(await read(f, A)).toMatchObject({ text: 'body' });
   });
 
-  it('lets a sub-agent with no handoff tool on after one refused request, logged once', async () => {
+  it('lets a sub-agent with no frontier tool on after one refused request, logged once', async () => {
     const f = await begin();
     await f.dispatch('agent.spawn', { tool_use_id: 'tu-spawn', prompt: 'Brief', description: 'one', subagentType: 'pcm', provider: { kind: 'local' } }, async () => ({ model: 'sonnet', agentId: A }));
     await agentStep(f, 85_000);

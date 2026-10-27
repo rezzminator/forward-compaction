@@ -4,24 +4,22 @@ import {
   FORWARD_TOOL,
   FORWARD_TOOL_DESCRIPTION,
   LOAD_FILES_MAX,
-  LOAD_FILE_MAX_BYTES,
   WHY_MAX_CHARS,
   loadFileRefusal,
-  loadRoomRefusal,
-  parseHandoff,
+  parseFrontier,
   parseLineRanges,
   experimental,
   receipt,
   sliceFile,
   ignoredRefusal,
   toolInput,
-} from '../plugins/forward-compaction/src/handoff.ts';
+} from '../plugins/forward-compaction/src/frontier.ts';
 
 const valid = { objective: 'ship it', done: 'parser, tested', remaining: 'the adapter', next: 'wire the hook' };
 const text = '## Objective\nship it\n\n## Done\nparser, tested\n\n## Remaining\nthe adapter\n\n## Next\nwire the hook';
 const P = 'forward_compaction refused, nothing stored: ';
 const refusal = (input: unknown): string | undefined => {
-  const out = parseHandoff(input);
+  const out = parseFrontier(input);
   return 'refusal' in out ? out.refusal : undefined;
 };
 const SECTIONS = ['objective', 'done', 'remaining', 'next', 'blocked', 'findings'];
@@ -31,12 +29,13 @@ describe('the forward_compaction tool as registered', () => {
     expect(FORWARD_TOOL).toBe('forward_compaction');
     expect(FORWARD_TOOL_DESCRIPTION.length).toBeLessThanOrEqual(600);
     expect(FORWARD_TOOL_DESCRIPTION).toContain('forward_compaction({"objective": "…", "done": "…", "remaining": "…", "next": "…", "load_files": []})');
-    expect(FORWARD_TOOL_DESCRIPTION).not.toContain('"handoff"');
+    expect(FORWARD_TOOL_DESCRIPTION).not.toContain('"frontier"');
     expect(FORWARD_TOOL_DESCRIPTION).toContain('standing_orders');
+    expect(FORWARD_TOOL_DESCRIPTION).toContain('the newest later messages that fit stay verbatim, the rest named as not carried');
   });
 
   it('names its caps once, and the schema agrees with them', () => {
-    expect([LOAD_FILES_MAX, WHY_MAX_CHARS, LOAD_FILE_MAX_BYTES]).toEqual([8, 200, 1_048_576]);
+    expect([LOAD_FILES_MAX, WHY_MAX_CHARS]).toEqual([8, 200]);
     expect(FORWARD_INPUT_SCHEMA.properties.load_files.maxItems).toBe(LOAD_FILES_MAX);
     expect(FORWARD_INPUT_SCHEMA.properties.load_files.items.properties.why.maxLength).toBe(WHY_MAX_CHARS);
   });
@@ -46,47 +45,48 @@ describe('the forward_compaction tool as registered', () => {
     expect(Object.keys(FORWARD_INPUT_SCHEMA.properties)).toEqual([...SECTIONS, 'load_files', 'drop_skills', 'standing_orders', 'lifted']);
     for (const name of SECTIONS) expect(FORWARD_INPUT_SCHEMA.properties[name as 'objective']).toMatchObject({ type: 'string', description: expect.any(String) });
     expect(FORWARD_INPUT_SCHEMA.properties.objective.description).toBe('What the work is for and what done means.');
-    expect(FORWARD_INPUT_SCHEMA.properties.findings.description).toBe('Optional: decisions with why, errors verbatim.');
+    expect(FORWARD_INPUT_SCHEMA.properties.findings.description).toBe('Optional: decisions with why, errors verbatim, the commands and recipes you will need again.');
+    expect(FORWARD_INPUT_SCHEMA.properties.done.description).toBe('Finished pieces, each with how it was verified; every figure with the command that produced it.');
     const files = FORWARD_INPUT_SCHEMA.properties.load_files;
     expect(files).toMatchObject({ type: 'array', maxItems: 8, items: { additionalProperties: false, required: ['path', 'why'], properties: { why: { maxLength: 200 } } } });
   });
 });
 
-describe('parseHandoff assembles the sections and keeps their text whole', () => {
+describe('parseFrontier assembles the sections and keeps their text whole', () => {
   it('assembles the four required sections in order, and no load files when none are given', () => {
-    expect(parseHandoff(valid)).toEqual({ handoff: text, loadFiles: [], dropSkills: [], standingOrders: [], lifted: [] });
+    expect(parseFrontier(valid)).toEqual({ frontier: text, loadFiles: [], dropSkills: [], standingOrders: [], lifted: [] });
   });
 
   it('places the optional sections after them, Blocked before Findings, and leaves out an absent or blank one', () => {
-    expect(parseHandoff({ findings: 'f', ...valid, blocked: 'b' })).toEqual({ handoff: `${text}\n\n## Blocked\nb\n\n## Findings\nf`, loadFiles: [], dropSkills: [], standingOrders: [], lifted: [] });
-    expect(parseHandoff({ ...valid, findings: 'f' })).toEqual({ handoff: `${text}\n\n## Findings\nf`, loadFiles: [], dropSkills: [], standingOrders: [], lifted: [] });
-    expect(parseHandoff({ ...valid, blocked: '  ' })).toEqual({ handoff: text, loadFiles: [], dropSkills: [], standingOrders: [], lifted: [] });
+    expect(parseFrontier({ findings: 'f', ...valid, blocked: 'b' })).toEqual({ frontier: `${text}\n\n## Blocked\nb\n\n## Findings\nf`, loadFiles: [], dropSkills: [], standingOrders: [], lifted: [] });
+    expect(parseFrontier({ ...valid, findings: 'f' })).toEqual({ frontier: `${text}\n\n## Findings\nf`, loadFiles: [], dropSkills: [], standingOrders: [], lifted: [] });
+    expect(parseFrontier({ ...valid, blocked: '  ' })).toEqual({ frontier: text, loadFiles: [], dropSkills: [], standingOrders: [], lifted: [] });
   });
 
   it('keeps a section\'s own headings, blank lines, trailing space and Windows line ends untouched', () => {
     const own = 'x  \r\n\r\n### Goal\r\n## Notes\r\n';
-    expect(parseHandoff({ ...valid, objective: own })).toEqual({ handoff: text.replace('ship it', own), loadFiles: [], dropSkills: [], standingOrders: [], lifted: [] });
+    expect(parseFrontier({ ...valid, objective: own })).toEqual({ frontier: text.replace('ship it', own), loadFiles: [], dropSkills: [], standingOrders: [], lifted: [] });
   });
 
   it('keeps a load file as given, lines and why included', () => {
     const files = [{ path: '/a/b.ts', lines: '1-60,160-185', why: 'the parser' }, { path: 'C:\\a\\b.ts', why: 'win' }];
-    expect(parseHandoff({ ...valid, load_files: files })).toEqual({ handoff: text, loadFiles: files, dropSkills: [], standingOrders: [], lifted: [] });
+    expect(parseFrontier({ ...valid, load_files: files })).toEqual({ frontier: text, loadFiles: files, dropSkills: [], standingOrders: [], lifted: [] });
   });
 
-  it('takes a handoff of any length whole, never refused or trimmed for size, and exactly 8 files', () => {
+  it('takes a frontier of any length whole, never refused or trimmed for size, and exactly 8 files', () => {
     const next = valid.next + 'x'.repeat(200_000 - text.length);
-    const out = parseHandoff({ ...valid, next });
-    expect('handoff' in out && out.handoff.length).toBe(200_000);
+    const out = parseFrontier({ ...valid, next });
+    expect('frontier' in out && out.frontier.length).toBe(200_000);
     const eight = Array.from({ length: 8 }, (_, i) => ({ path: `/f${i}`, why: 'w' }));
-    expect(parseHandoff({ ...valid, load_files: eight })).toMatchObject({ loadFiles: eight });
-    expect(parseHandoff({ ...valid, load_files: [{ path: '/f', why: 'w'.repeat(200) }] })).not.toHaveProperty('refusal');
+    expect(parseFrontier({ ...valid, load_files: eight })).toMatchObject({ loadFiles: eight });
+    expect(parseFrontier({ ...valid, load_files: [{ path: '/f', why: 'w'.repeat(200) }] })).not.toHaveProperty('refusal');
   });
 });
 
-describe('parseHandoff refuses, naming what to fix', () => {
-  it('V1 an unknown field, the old handoff argument included (R14)', () => {
+describe('parseFrontier refuses, naming what to fix', () => {
+  it('V1 an unknown field, the old frontier argument included (R14)', () => {
     expect(refusal({ ...valid, drop: [] })).toBe(`${P}unknown field "drop". The fields are objective, done, remaining, next, blocked, findings, load_files, drop_skills, standing_orders and lifted.`);
-    expect(refusal({ ...valid, handoff: text })).toContain('unknown field "handoff"');
+    expect(refusal({ ...valid, frontier: text })).toContain('unknown field "frontier"');
   });
 
   it('V2 a required section that is missing, not a string or blank, by name', () => {
@@ -148,9 +148,9 @@ describe('parseHandoff refuses, naming what to fix', () => {
 });
 
 describe('loadFileRefusal judges what $.fs.stat found', () => {
-  it('accepts a regular file at or under 1 MiB', () => {
+  it('accepts a regular file', () => {
     expect(loadFileRefusal(0, '/a', { kind: 'file', size: 0 })).toBeUndefined();
-    expect(loadFileRefusal(0, '/a', { kind: 'file', size: LOAD_FILE_MAX_BYTES })).toBeUndefined();
+    expect(loadFileRefusal(0, '/a', { kind: 'file', size: 1_048_576 })).toBeUndefined();
   });
 
   it('V12 absent', () => {
@@ -162,8 +162,8 @@ describe('loadFileRefusal judges what $.fs.stat found', () => {
     expect(loadFileRefusal(1, '/a', { kind: 'other', size: 0 })).toBe(`${P}load_files[1] /a is not a regular file.`);
   });
 
-  it('V14 over 1 MiB', () => {
-    expect(loadFileRefusal(0, '/big', { kind: 'file', size: 1_048_577 })).toBe(`${P}load_files[0] /big is 1,048,577 bytes, over the 1,048,576 cap for a carried file.`);
+  it('L6 never refuses a file for its size: the wake fits it or names it', () => {
+    expect(loadFileRefusal(0, '/big', { kind: 'file', size: 50_000_000 })).toBeUndefined();
   });
 
   it('V15 a stat that threw is "could not be checked", never "no such file"', () => {
@@ -173,47 +173,33 @@ describe('loadFileRefusal judges what $.fs.stat found', () => {
   });
 });
 
-describe('receipt says when the handoff installs, per party (R16)', () => {
+describe('receipt says when the frontier installs, per party (R16)', () => {
   it('sub-agent below its ask point: the spec example, word for word', () => {
     expect(receipt({ party: 'subagent', chars: 4812, files: 0, tokens: 41_200, askPoint: 67_000 })).toBe(
-      "Handoff stored (4,812 characters, 0 files). Claude Code has not asked to compact you yet: it installs at Claude Code's next ask, from about 67k context. Everything after this call is kept verbatim behind it. Carry on with your work.",
+      "Frontier stored (4,812 characters, 0 files). Claude Code has not asked to compact you yet: it installs at Claude Code's next ask, from about 67k context. The newest messages after this call that fit are kept verbatim behind it, the rest named as not carried. Carry on with your work.",
     );
   });
 
   it('sub-agent at or above its ask point', () => {
-    const text = "Handoff stored (900 characters, 2 files). It installs at Claude Code's next compaction ask, before your next request. Everything after this call is kept verbatim behind it.";
+    const text = "Frontier stored (900 characters, 2 files). It installs at Claude Code's next compaction ask, before your next request. The newest messages after this call that fit are kept verbatim behind it, the rest named as not carried.";
     expect(receipt({ party: 'subagent', chars: 900, files: 2, tokens: 67_000, askPoint: 67_000 })).toBe(text);
     expect(receipt({ party: 'subagent', chars: 900, files: 2, tokens: 90_000, askPoint: 67_000 })).toBe(text);
   });
 
   it('main', () => {
-    const text = "Handoff stored (4,812 characters, 3 files). It installs at the end of this turn, or at Claude Code's next compaction ask if one comes first. Everything after this call is kept verbatim behind it, so finish the step in hand; you need not stop.";
+    const text = "Frontier stored (4,812 characters, 3 files). It installs at the end of this turn, or at Claude Code's next compaction ask if one comes first. The newest messages after this call that fit are kept verbatim behind it, the rest named as not carried, so finish the step in hand; you need not stop.";
     expect(receipt({ party: 'main', chars: 4812, files: 3 })).toBe(text);
     expect(receipt({ party: 'main', chars: 4812, files: 3, tokens: 80_000, askPoint: 67_000 })).toBe(text);
   });
 
   it('says it replaced one, printing no size for either call', () => {
-    expect(receipt({ party: 'main', chars: 10, files: 0, replaced: true })).toMatch(/ It replaces the handoff you stored before\.$/);
-    expect(receipt({ party: 'subagent', chars: 10, files: 0, tokens: 90_000, askPoint: 67_000, replaced: true })).toMatch(/ It replaces the handoff you stored before\.$/);
+    expect(receipt({ party: 'main', chars: 10, files: 0, replaced: true })).toMatch(/ It replaces the frontier you stored before\.$/);
+    expect(receipt({ party: 'subagent', chars: 10, files: 0, tokens: 90_000, askPoint: 67_000, replaced: true })).toMatch(/ It replaces the frontier you stored before\.$/);
     expect(receipt({ party: 'main', chars: 10, files: 0 })).not.toContain('replaces');
   });
 
   it('takes a sub-agent with no reading (none since an install) as below its ask point', () => {
     expect(receipt({ party: 'subagent', chars: 10, files: 0, askPoint: 67_000 })).toContain('Claude Code has not asked to compact you yet');
-  });
-});
-
-describe("loadRoomRefusal (M4): load files past 5% of the max context, at the party's measured characters per token", () => {
-  it('passes files that come to the room, and refuses one character past it, naming each file, its size and the room', () => {
-    expect(loadRoomRefusal([{ path: '/a', chars: 50_000 }], 400_000, 2.5)).toBeUndefined();
-    expect(loadRoomRefusal([], 1_000_000, 2.5)).toBeUndefined();
-    expect(loadRoomRefusal([{ path: '/a', chars: 9_000_000 }], 200_000, undefined)).toBeUndefined(); // no reading: nothing measured, accepted
-    expect(loadRoomRefusal([{ path: '/a', chars: 30_000 }, { path: '/b', chars: 20_001 }], 400_000, 2.5)).toBe([
-      'forward_compaction refused, nothing stored: load_files come to 50,001 characters, over the 50,000-character room for carried files (5% of your 400k max context):',
-      '- /a: 30,000 characters',
-      '- /b: 20,001 characters',
-      'Pass lines ranges (like "10-40" or "1-60,160-185") to carry only what you need, or fewer files, and call again.',
-    ].join('\n'));
   });
 });
 
@@ -259,15 +245,15 @@ describe('parseLineRanges and sliceFile (copied from the old carry module)', () 
 
 describe('ignoredRefusal (Ignored models)', () => {
   it('names the ignore-list entry and the ceiling it is compacted mechanically at, in one line', () => {
-    expect(ignoredRefusal('haiku', 160_000)).toBe('forward_compaction refused, nothing stored: your model is on forward-compaction\'s ignore list ("haiku"), so it takes no handoff from you; carry on with your work, and at 160k the plugin compacts you mechanically.');
+    expect(ignoredRefusal('haiku', 160_000)).toBe('forward_compaction refused, nothing stored: your model is on forward-compaction\'s ignore list ("haiku"), so it takes no frontier from you; carry on with your work, and at 160k the plugin compacts you mechanically.');
     expect(ignoredRefusal(undefined, 160_000)).toBeUndefined();
   });
 });
 
 describe('every answer ends with the experimental line', () => {
   it('names the issues file in the level-log directory', () => {
-    expect(experimental('Handoff stored (1 characters, 0 files).', '/logs/forward-compaction')).toBe(
-      'Handoff stored (1 characters, 0 files).\nforward-compaction is experimental. If it gave you any trouble, append a short note of what happened to /logs/forward-compaction/issues.md; it will be taken care of later.',
+    expect(experimental('Frontier stored (1 characters, 0 files).', '/logs/forward-compaction')).toBe(
+      'Frontier stored (1 characters, 0 files).\nforward-compaction is experimental. If it gave you any trouble, append a short note of what happened to /logs/forward-compaction/issues.md; it will be taken care of later.',
     );
     expect(experimental('x', '/logs/forward-compaction/')).toContain('to /logs/forward-compaction/issues.md;');
   });

@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
-  buildWake, fitTail, landedLine, mechanicalWake, splitAtCall, wakeBudget,
+  buildWake, COMMANDS_KEPT, fitTail, landedLine, mechanicalWake, splitAtCall, wakeBudget,
   type BuiltMessage, type WakeFacts, type WakeMessage,
 } from '../plugins/forward-compaction/src/wake.ts';
-import { FREE } from '../plugins/forward-compaction/src/nudge.ts';
+import { PLUGIN_VERSION } from '../plugins/forward-compaction/src/wake.ts';
 
 type Msg = WakeMessage & { handle: string };
 const user = (text: string, handle = `h-${text.slice(0, 12)}`): Msg => ({ role: 'user', text, toolUses: [], handle });
@@ -23,7 +23,7 @@ const mainInput = (messages: Msg[], f: Partial<WakeFacts> = {}) => ({ ...base, m
 describe('splitAtCall (R18)', () => {
   const u0 = user('start');
   const a1 = assistant('calling', [{ id: 't9', tool: 'mcp__forward-compaction__forward_compaction' }, { id: 't10', tool: 'Read', input: { file_path: '/a' } }]);
-  const u2 = results(['t9', 'Handoff stored'], ['t10', 'file body']);
+  const u2 = results(['t9', 'Frontier stored'], ['t10', 'file body']);
   const a3 = assistant('after');
   const u4 = user('next');
 
@@ -109,17 +109,17 @@ describe('fitTail (R19)', () => {
 });
 
 describe('buildWake (R20)', () => {
-  const call = assistant('writing the handoff', [{ id: 't9', tool: 'mcp__forward-compaction__forward_compaction' }]);
-  const res = results(['t9', 'Handoff stored']);
-  const handoff = '## Objective\nship\n## Done\nx\n## Remaining\ny\n## Next\nz';
+  const call = assistant('writing the frontier', [{ id: 't9', tool: 'mcp__forward-compaction__forward_compaction' }]);
+  const res = results(['t9', 'Frontier stored']);
+  const frontier = '## Objective\nship\n## Done\nx\n## Remaining\ny\n## Next\nz';
 
-  it('returns [F, H, ...tail]: H is the last built message, carries the handoff verbatim, the tail is the input objects', () => {
+  it('returns [F, H, ...tail]: H is the last built message, carries the frontier verbatim, the tail is the input objects', () => {
     const t1 = assistant('step one', [], 'engine-1');
     const t2 = user('thanks', 'engine-2');
-    const wake = buildWake({ ...mainInput([user('hello'), call, res, t1, t2]), toolUseId: 't9', handoff });
+    const wake = buildWake({ ...mainInput([user('hello'), call, res, t1, t2]), toolUseId: 't9', frontier });
     const [f, h, ...tail] = wake.messages as [BuiltMessage, BuiltMessage, ...Msg[]];
     expect(f.text.startsWith('[forward-compaction: facts]')).toBe(true);
-    expect(h.text).toContain(`=== handoff ===\n${handoff}\n=== end of handoff ===`);
+    expect(h.text).toContain(`=== frontier ===\n${frontier}\n=== end of frontier ===`);
     expect(h.text).not.toMatch(/\d+k tokens/); // no size for the call: none is measured at that moment
     expect(h.text).toContain('The 2 messages after this one are what happened after you wrote it, kept verbatim.');
     expect(h.text).not.toContain('did not fit');
@@ -132,9 +132,9 @@ describe('buildWake (R20)', () => {
   });
 
   it("carries the call's own receipt, and ends the wake with the experimental line, once", () => {
-    const stored = 'Handoff stored (40 characters). It installs before your next request.';
+    const stored = 'Frontier stored (40 characters). It installs before your next request.';
     const receipt = `${stored}\nforward-compaction is experimental. If it gave you any trouble, append a short note to /logs/issues.md.`;
-    const h = buildWake({ ...mainInput([call, results(['t9', receipt])]), toolUseId: 't9', handoff, logDir: '/logs' }).messages[1] as BuiltMessage;
+    const h = buildWake({ ...mainInput([call, results(['t9', receipt])]), toolUseId: 't9', frontier, logDir: '/logs' }).messages[1] as BuiltMessage;
     expect(h.text).toContain(`Your forward_compaction call returned:\n${stored}\n\n`);
     expect(h.text.split('\n').at(-1)).toBe('forward-compaction is experimental. If it gave you any trouble, append a short note of what happened to /logs/issues.md; it will be taken care of later.');
     expect(h.text.split('forward-compaction is experimental.').length).toBe(2);
@@ -146,41 +146,41 @@ describe('buildWake (R20)', () => {
     expect(head.text.split('\n').at(-1)).toMatch(/^forward-compaction is experimental\. .*\/logs\/issues\.md; it will be taken care of later\.$/);
   });
 
-  it('tells a woken party, handed off or compacted, that the next handoff is free and the task is finished in full', () => {
-    const h = buildWake({ ...mainInput([call, res]), toolUseId: 't9', handoff }).messages[1] as BuiltMessage;
+  it('promises a woken party nothing about what the next compaction keeps', () => {
+    const h = buildWake({ ...mainInput([call, res]), toolUseId: 't9', frontier }).messages[1] as BuiltMessage;
     const w = mechanicalWake({ ...mainInput([user('a'), assistant('b')]), reason: { kind: 'ceiling', ceiling: 120_000 } });
     const head = w.messages.find((m) => (m as BuiltMessage).text?.startsWith('[forward-compaction: no frontier')) as BuiltMessage;
-    for (const text of [h.text, head.text]) expect(text).toContain(FREE);
+    for (const text of [h.text, head.text]) expect(text).not.toMatch(/costs you nothing|every message after it/);
   });
 
   it('says nothing happened when the call was the last thing', () => {
-    const h = buildWake({ ...mainInput([call, res]), toolUseId: 't9', handoff }).messages[1] as BuiltMessage;
+    const h = buildWake({ ...mainInput([call, res]), toolUseId: 't9', frontier }).messages[1] as BuiltMessage;
     expect(h.text).toContain('Nothing happened after you wrote it. Continue from ## Next.');
     expect(h.text).not.toContain('messages after this one');
   });
 
   it('throws when the call is not in the transcript, naming it', () => {
-    expect(() => buildWake({ ...mainInput([user('a')]), toolUseId: 't9', handoff })).toThrow('t9');
+    expect(() => buildWake({ ...mainInput([user('a')]), toolUseId: 't9', frontier })).toThrow('t9');
   });
 
   it('drops the oldest tail messages that do not fit, states how many in H, and keeps the whole output within the budget', () => {
     const filler = Array.from({ length: 10 }, (_, i) => assistant(`${i}`.repeat(1000), [], `e${i}`));
-    const input = { ...mainInput([call, res, ...filler]), askPoint: 4000, toolUseId: 't9', handoff };
+    const input = { ...mainInput([call, res, ...filler]), askPoint: 4000, toolUseId: 't9', frontier };
     const wake = buildWake(input);
     expect(wake.kept).toBeGreaterThan(0);
     expect(wake.kept).toBeLessThan(10);
     expect(wake.dropped).toBe(10 - wake.kept);
     const h = wake.messages[1] as BuiltMessage;
-    expect(h.text).toContain(`${wake.dropped} older messages after your handoff did not fit and are gone (look_back finds an exact detail)`);
+    expect(h.text).toContain(`${wake.dropped} older messages after your frontier did not fit and are gone (look_back finds an exact detail)`);
     expect(wake.messages.slice(2)).toEqual(filler.slice(wake.dropped));
     const chars = wake.messages.reduce((n, m) => n + m.text.length, 0);
     expect(Math.ceil(chars / 3.5)).toBeLessThanOrEqual(wakeBudget(4000));
   });
 
-  it('names the tool as registered when it asks for the next handoff', () => {
+  it('names the tool as registered when it asks for the next frontier', () => {
     const filler = Array.from({ length: 10 }, (_, i) => assistant(`${i}`.repeat(1000), [], `e${i}`));
     const tool = 'mcp__forward-compaction-dev__forward_compaction';
-    const h = buildWake({ ...mainInput([call, res, ...filler]), askPoint: 4000, toolUseId: 't9', handoff, tool }).messages[1] as BuiltMessage;
+    const h = buildWake({ ...mainInput([call, res, ...filler]), askPoint: 4000, toolUseId: 't9', frontier, tool }).messages[1] as BuiltMessage;
     expect(h.text).toContain(`call ${tool} again at your next milestone`);
   });
 
@@ -188,7 +188,7 @@ describe('buildWake (R20)', () => {
     const useA = assistant('x'.repeat(2800), [{ id: 'r1', tool: 'Read' }]);
     const answer = results(['r1', 'y'.repeat(100)]);
     const last = assistant('z'.repeat(300));
-    const wake = buildWake({ ...mainInput([call, res, useA, answer, last]), askPoint: 2000, toolUseId: 't9', handoff });
+    const wake = buildWake({ ...mainInput([call, res, useA, answer, last]), askPoint: 2000, toolUseId: 't9', frontier });
     expect((wake.messages[2] as Msg | undefined)?.toolResults).toBeUndefined();
     expect(wake.messages.slice(2)).toEqual([last]);
   });
@@ -198,7 +198,7 @@ describe('buildWake (R20)', () => {
     const filler = Array.from({ length: 6 }, (_, i) => user(`m${i} ${'x'.repeat(900)}`, `e${i}`));
     // the person's words in a message already kept are left out; each dropped message puts its words back in the facts
     const input = {
-      ...mainInput([call, res, ...filler]), askPoint: 3000, toolUseId: 't9', handoff,
+      ...mainInput([call, res, ...filler]), askPoint: 3000, toolUseId: 't9', frontier,
       facts: (kept: readonly string[]): WakeFacts => {
         seen.push([...kept]);
         const person = filler.filter((m) => !kept.includes(m.text)).map((m, i) => ({ at: T0 + i, text: m.text }));
@@ -218,19 +218,19 @@ describe('buildWake (R20)', () => {
   it("hands the facts a kept tool call's own text, so a fact the tail shows there is left out", () => {
     const seen: string[][] = [];
     const later: Msg = { role: 'assistant', text: '', handle: 'h-later', toolUses: [{ tool_use_id: 't20', tool: 'Skill', input: {}, text: 'SKILL-BODY' }] };
-    buildWake({ ...mainInput([call, res, later]), toolUseId: 't9', handoff, facts: (kept) => (seen.push([...kept]), noFacts) });
+    buildWake({ ...mainInput([call, res, later]), toolUseId: 't9', frontier, facts: (kept) => (seen.push([...kept]), noFacts) });
     expect(seen[0]).toContain('SKILL-BODY');
   });
 
   it('prints no size for the call: the plugin measures none at that moment', () => {
-    const wake = buildWake({ ...mainInput([call, res]), toolUseId: 't9', handoff, tokens: 64_000 });
-    expect((wake.messages[1] as BuiltMessage).text.split('\n')[0]).toBe('[forward-compaction: handoff] Below is the handoff you wrote with forward_compaction. It is your frontier: continue from its ## Next.');
+    const wake = buildWake({ ...mainInput([call, res]), toolUseId: 't9', frontier, tokens: 64_000 });
+    expect((wake.messages[1] as BuiltMessage).text.split('\n')[0]).toBe('[forward-compaction: frontier] Below is the frontier you wrote with forward_compaction: continue from its ## Next.');
   });
 
   it('counts the F sections that hold content', () => {
     const wake = buildWake({
       ...mainInput([call, res], { person: [{ at: T0, text: 'fix it' }], skills: [{ skill: 'god-speed', text: 'rules', source: 'user' }] }),
-      toolUseId: 't9', handoff,
+      toolUseId: 't9', frontier,
     });
     expect(wake.facts).toBe(2);
   });
@@ -241,7 +241,7 @@ describe('F sections', () => {
   const res = results(['t9', 'stored'], ['t10', 'SIBLING-RESULT']);
   const wakeOf = (input: Partial<Parameters<typeof buildWake<Msg>>[0]> & { f?: Partial<WakeFacts> }, party: 'main' | 'subagent' = 'main') => {
     const { f, ...rest } = input;
-    const wake = buildWake({ ...mainInput([call, res], f), party, toolUseId: 't9', handoff: '## Next\nx', ...rest });
+    const wake = buildWake({ ...mainInput([call, res], f), party, toolUseId: 't9', frontier: '## Next\nx', ...rest });
     return { wake, f: (wake.messages[0] as BuiltMessage).text };
   };
 
@@ -294,6 +294,27 @@ describe('F sections', () => {
     expect(big).toMatch(/## Tasks\n\(not carried: 2,026 characters, over the [\d,]+-character room; look_back finds them\)/);
   });
 
+  it('M2 + M4: carries the commands run, newest first, at most COMMANDS_KEPT, within their share, naming those not carried', () => {
+    const commands = Array.from({ length: COMMANDS_KEPT + 3 }, (_, i) => ({ command: `make step${i}`, ...(i === 0 ? { description: 'Build the newest' } : {}) }));
+    const { f } = wakeOf({ f: { work: { files: [], tasks: [], commands } } });
+    expect(f).toContain(`## Commands you ran, newest first (3 older not carried; look_back finds them)\n### Build the newest\nmake step0\n### (no description)\nmake step1`);
+    expect(f).toContain(`make step${COMMANDS_KEPT - 1}`);
+    expect(f).not.toContain(`make step${COMMANDS_KEPT}`);
+    const tight = wakeOf({ askPoint: 2000, f: { work: { files: [], tasks: [], commands: [{ command: 'a' }, { command: 'b'.repeat(2000) }] } } }).f;
+    expect(tight).toContain('## Commands you ran, newest first (1 older not carried; look_back finds them)\n### (no description)\na');
+    expect(wakeOf({ f: { work: { files: [], tasks: [], commands: [] } } }).f).not.toContain('## Commands');
+  });
+
+  it('M6: the facts header names the plugin version that built the wake', () => {
+    expect(wakeOf({}).f).toMatch(new RegExp(`^\\[forward-compaction: facts\\] Your context was compacted by forward-compaction ${PLUGIN_VERSION.replace(/\./g, '\\.')}\\. `));
+    expect(mechanicalWake({ ...mainInput([call, res]), reason: { kind: 'reactive' } }).messages[0]!.text).toContain(`compacted by forward-compaction ${PLUGIN_VERSION}.`);
+  });
+
+  it("M3: names each image of the person's kept messages as not carried, never a silent placeholder", () => {
+    const { f } = wakeOf({ f: { person: [{ at: T0, text: 'this screen [Image #1] and [Image #12]' }] } });
+    expect(f).toContain('this screen [Image #1] (image not carried: the wake cannot hold images) and [Image #12] (image not carried: the wake cannot hold images)');
+  });
+
   it('states no person message with the ledger start, and without one when there is no start', () => {
     expect(wakeOf({ f: { startedAt: T0 } }).f).toContain(`## The person's messages\n(none recorded since 2026-10-23T10:00:00.000Z)`);
     expect(wakeOf({}).f).toContain("## The person's messages\n(none recorded)");
@@ -331,9 +352,9 @@ describe('F sections', () => {
   });
 
   it('carries the sibling calls with their input and result, or says a result is not carried', () => {
-    expect(wakeOf({}).f).toContain('## Results of the calls you made beside the handoff\n### Read {"file_path":"/a.ts"}\nSIBLING-RESULT');
+    expect(wakeOf({}).f).toContain('## Results of the calls you made beside the frontier\n### Read {"file_path":"/a.ts"}\nSIBLING-RESULT');
     const big = results(['t9', 'stored'], ['t10', 's'.repeat(5000)]);
-    const wake = buildWake({ ...mainInput([call, big]), askPoint: 2000, toolUseId: 't9', handoff: '## Next\nx' });
+    const wake = buildWake({ ...mainInput([call, big]), askPoint: 2000, toolUseId: 't9', frontier: '## Next\nx' });
     expect((wake.messages[0] as BuiltMessage).text).toContain('- Read: result not carried (5,000 characters)');
   });
 
@@ -356,7 +377,7 @@ describe('F sections', () => {
         unattributedSkills: [{ skill: 'mystery' }],
       },
     }).f;
-    expect(f).toContain('## Skills in force, as loaded (one you no longer need: name it in drop_skills on two handoffs in a row)\n### small (user, /s/SKILL.md)\ntiny');
+    expect(f).toContain('## Skills in force, as loaded (one you no longer need: name it in drop_skills on two frontiers in a row)\n### small (user, /s/SKILL.md)\ntiny');
     expect(f).toContain('### huge (plugin)\n' + 'h'.repeat(40_000));
     expect(f).toContain('## Skills not carried\n- mystery: loaded in this session by an unidentified party; call Skill mystery if it applies to you.');
   });
@@ -436,7 +457,7 @@ describe('F sections', () => {
       ],
     });
     expect(f).toContain('## Files you asked to carry\n### /abs/a.ts lines 1-3 — the bug\nline1\nline2\nline3');
-    expect(f).toContain('## Files not carried\n- /abs/f.ts: 50,000 characters, over the room left'); // 50,000 + the 17 before it, past 400k × 5% × 2.5
+    expect(f).toContain('## Files not carried\n- /abs/f.ts: 50,000 characters, over the 49,983 characters left of the 50,000-character room for carried files (5% of the 400k max context)'); // 50,000 + the 17 before it, past 400k × 5% × 2.5
     expect(f).toContain('- /abs/gone.ts: lines 10-40 out of range (5 lines)');
     expect(f).toContain('- /abs/err.ts: EACCES: permission denied');
     expect(f).not.toContain('xxxxxxxxxx');
@@ -450,17 +471,17 @@ describe('F sections', () => {
     ];
     const { f } = wakeOf({ maxContext: 400_000, charsPerToken: 2.5, files }); // room 50,000 characters
     expect(f).toContain('### /abs/1.ts');
-    expect(f).toContain('- /abs/2.ts: 20,001 characters, over the room left');
+    expect(f).toContain('- /abs/2.ts: 20,001 characters, over the 20,000 characters left of the 50,000-character room');
     expect(f).toContain('### /abs/3.ts');
     const big = wakeOf({ maxContext: 1_000_000, charsPerToken: 2.5, files: [{ path: '/abs/big.ts', why: 'big', content: 'z'.repeat(60_000) }] }).f; // inside 125,000
     expect(big).toContain('### /abs/big.ts — big\nzzz');
-    expect(wakeOf({ files: [{ path: '/abs/x.ts', why: 'x', content: 'x' }] }).f).toContain('- /abs/x.ts: 1 characters, over the room left'); // no max context, no room
+    expect(wakeOf({ files: [{ path: '/abs/x.ts', why: 'x', content: 'x' }] }).f).toContain('- /abs/x.ts: 1 characters, not carried: the max context is not known, so there is no room for carried files'); // no max context, no room
   });
 
   it('with no measured ratio carries every file and every message after the call, unfitted, and reports each section size', () => {
     const files = [{ path: '/abs/huge.ts', why: 'h', content: 'h'.repeat(500_000) }, { path: '/abs/gone.ts', why: 'g', problem: 'ENOENT' }];
     const tail = Array.from({ length: 40 }, (_, i) => user(`after ${i} ${'y'.repeat(5_000)}`, `t${i}`));
-    const wake = buildWake({ ...mainInput([call, res, ...tail], { person: [{ at: T0, text: 'p'.repeat(100_000) }] }), charsPerToken: undefined, askPoint: 2000, maxContext: 200_000, files, toolUseId: 't9', handoff: '## Next\nx' });
+    const wake = buildWake({ ...mainInput([call, res, ...tail], { person: [{ at: T0, text: 'p'.repeat(100_000) }] }), charsPerToken: undefined, askPoint: 2000, maxContext: 200_000, files, toolUseId: 't9', frontier: '## Next\nx' });
     expect(wake).toMatchObject({ kept: 40, dropped: 0, carried: ['/abs/huge.ts'], notCarried: ['/abs/gone.ts'] });
     expect((wake.messages[0] as BuiltMessage).text).toContain('p'.repeat(100_000));
     expect(wake.sizes.map((s) => s.section)).toEqual(expect.arrayContaining(["## The person's messages, oldest first (1 of 1)", '## Files you asked to carry', '## Files not carried']));
@@ -499,11 +520,11 @@ describe('mechanicalWake (R23)', () => {
     expect(h.text).toContain('0 older messages are gone');
   });
 
-  it('has the same facts as the handoff wake, and no load files or siblings', () => {
+  it('has the same facts as the frontier wake, and no load files or siblings', () => {
     const wake = mechanicalWake({ ...mainInput(msgs, { person: [{ at: T0, text: 'fix it' }] }), reason: { kind: 'reactive' } });
     const f = (wake.messages[0] as BuiltMessage).text;
     expect(f).toContain('fix it');
-    expect(f).not.toContain('beside the handoff');
+    expect(f).not.toContain('beside the frontier');
     expect(wake.facts).toBe(1);
   });
 
@@ -539,23 +560,23 @@ describe('mechanicalWake (R23)', () => {
 });
 
 describe('screen lines', () => {
-  const handoffLanding = { kind: 'handoff' as const, label: 'main', before: 164_000, chars: 4812, facts: 3, kept: 5, dropped: 0 };
+  const frontierLanding = { kind: 'frontier' as const, label: 'main', before: 164_000, chars: 4812, facts: 3, kept: 5, dropped: 0 };
   const mechanical = { kind: 'mechanical' as const, label: 'main', before: 125_000, tokens: 125_000, ceiling: 120_000 };
 
   it('says what landed, in the readings before the install and after it', () => {
-    expect(landedLine(handoffLanding, 46_000))
-      .toBe('forward-compaction: main handoff landed — 164k → 46k context, measured; frontier 4,812 characters, 3 facts, 5 messages kept verbatim.');
-    expect(landedLine({ ...handoffLanding, label: 'general-purpose a1b2c3', kept: 2, dropped: 4 }, 30_000)).toContain('2 messages kept verbatim, 4 dropped.');
+    expect(landedLine(frontierLanding, 46_000))
+      .toBe('forward-compaction: main frontier landed — 164k → 46k context, measured; 4,812 characters, 3 facts, 5 messages kept verbatim.');
+    expect(landedLine({ ...frontierLanding, label: 'general-purpose a1b2c3', kept: 2, dropped: 4 }, 30_000)).toContain('2 messages kept verbatim, 4 dropped.');
   });
 
   it('says an unmeasured size as unknown, never guessed', () => {
-    expect(landedLine(handoffLanding)).toBe('forward-compaction: main handoff landed — 164k → unknown context (it ended before a request after the install measured it); frontier 4,812 characters, 3 facts, 5 messages kept verbatim.');
-    expect(landedLine({ ...handoffLanding, before: undefined }, 46_000)).toContain('— unknown → 46k context (no reading before the install), measured after;');
+    expect(landedLine(frontierLanding)).toBe('forward-compaction: main frontier landed — 164k → unknown context (it ended before a request after the install measured it); 4,812 characters, 3 facts, 5 messages kept verbatim.');
+    expect(landedLine({ ...frontierLanding, before: undefined }, 46_000)).toContain('— unknown → 46k context (no reading before the install), measured after;');
   });
 
   it('says what a mechanical wake did, measured the same way', () => {
-    expect(landedLine(mechanical, 38_000)).toBe('forward-compaction: main had no handoff at 125k (ceiling 120k) — mechanical wake installed, 125k → 38k context, measured.');
-    expect(landedLine({ ...mechanical, before: undefined, tokens: undefined }, 38_000)).toBe('forward-compaction: main had no handoff at an unmeasured size (no reading yet) (ceiling 120k) — mechanical wake installed, unknown → 38k context (no reading before the install), measured after.');
+    expect(landedLine(mechanical, 38_000)).toBe('forward-compaction: main had no frontier at 125k (ceiling 120k) — mechanical wake installed, 125k → 38k context, measured.');
+    expect(landedLine({ ...mechanical, before: undefined, tokens: undefined }, 38_000)).toBe('forward-compaction: main had no frontier at an unmeasured size (no reading yet) (ceiling 120k) — mechanical wake installed, unknown → 38k context (no reading before the install), measured after.');
   });
 
   it('sets the budget at half the ask point', () => {

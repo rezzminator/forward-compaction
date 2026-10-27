@@ -117,9 +117,9 @@ export function restoreSkills(ledger: Ledger, party: PartyKey, kept: unknown): L
 
 /** A preload skill is first filed under `spawn:{tool_use_id}`; once the spawn returns, it belongs to the child. */
 /** The texts a standing order's lift may quote (orders.ts): main's messages from the person; a sub-agent's brief and the messages delivered to it. */
-export function liftSources(ledger: Ledger, party: PartyKey): string[] {
+export function liftSources(ledger: Ledger, party: PartyKey): { text: string; at: number }[] {
   const kinds = party === 'main' ? ['person'] : ['brief', 'received'];
-  return ledger.entries.filter((e) => kinds.includes(e.kind) && 'party' in e && e.party === party).map((e) => (e as { text: string }).text);
+  return ledger.entries.filter((e) => kinds.includes(e.kind) && 'party' in e && e.party === party).map((e) => ({ text: (e as { text: string }).text, at: e.at }));
 }
 
 export function resolveSpawn(ledger: Ledger, toolUseId: string, agentId: string): Ledger {
@@ -154,7 +154,7 @@ export type Facts = {
   /** Person messages left out because the kept tail already holds them. */
   personInTail: number;
   notices: NoticeEntry[];
-  /** Every delivery to the party recorded from seq `since` (its handoff stored) that the kept tail does not hold, oldest first: the model wrote its handoff without them. Left out of person, notices and received. */
+  /** Every delivery to the party recorded from seq `since` (its frontier stored) that the kept tail does not hold, oldest first: the model wrote its frontier without them. Left out of person, notices and received. */
   arrived: { at: number; origin: string; text: string }[];
   brief?: BriefEntry;
   received: ReceivedEntry[];

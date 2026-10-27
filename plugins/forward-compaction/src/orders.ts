@@ -1,14 +1,16 @@
-// Standing orders: the person's orders that bind the rest of the work, carried verbatim by every handoff in
-// `standing_orders` and remembered per party, so a handoff that leaves one out is refused unless the person lifted it.
+// Standing orders: the person's orders that bind the rest of the work, carried verbatim by every frontier in
+// `standing_orders` and remembered per party, so a frontier that leaves one out is refused unless the person lifted it.
 // The plugin never guesses an order from the person's wording: the model names it, the plugin holds it.
 
-/** One standing order as the handoff carries it: the person's words verbatim and the ISO time of their message. */
+/** One standing order as the frontier carries it: the person's words verbatim and the ISO time of their message. */
 export type StandingOrder = { order: string; at: string };
-/** An order the person lifted: its text as a previous handoff carried it, its time when known, and the person's lifting words. */
+/** An order the person lifted: its text as a previous frontier carried it, its time when known, and the person's lifting words. */
 export type LiftedOrder = { order: string; at?: string; by: string };
 
-/** What the drop check holds a handoff to: the party's remembered orders and the texts a lift may quote. */
-export type OrderMemory = { remembered: readonly StandingOrder[]; said: readonly string[]; party: 'main' | 'subagent' };
+/** A text a lift may quote, with the time (ms) it was sent. */
+export type SaidText = { text: string; at: number };
+/** What the drop check holds a frontier to: the party's remembered orders and the texts a lift may quote. */
+export type OrderMemory = { remembered: readonly StandingOrder[]; said: readonly SaidText[]; party: 'main' | 'subagent' };
 
 export const ORDERS_HEADING = '## Standing orders — binding until the person lifts them';
 
@@ -28,7 +30,7 @@ export function orderShapeFaults(standing: unknown, lifted: unknown): string[] {
   if (lifted !== undefined && !Array.isArray(lifted)) faults.push('lifted must be an array of {order, by}.');
   else for (const [i, l] of (lifted ?? []).entries()) {
     const { order, by } = isObject(l) ? l : ({} as Record<string, unknown>);
-    if (blank(order)) faults.push(`lifted[${i}].order must be a non-blank string: the order's text as your last handoff carried it.`);
+    if (blank(order)) faults.push(`lifted[${i}].order must be a non-blank string: the order's text as your last frontier carried it.`);
     if (blank(by)) faults.push(`lifted[${i}].by must be a non-blank string: the person's words that lifted the order, verbatim.`);
   }
   return faults;
@@ -36,8 +38,9 @@ export function orderShapeFaults(standing: unknown, lifted: unknown): string[] {
 
 /**
  * The drop check: every remembered order is carried again (the same `order` text) or lifted in words the party was
- * sent (`by` contained in one of `said`). Returns one fault line per order dropped, lift unheard, lift of an order no
- * handoff carried, or order both carried and lifted; and the lifts, each with its remembered time.
+ * sent after the order was given (`by`, trimmed, contained in one of `said` whose time is past the order's `at`): words
+ * said before an order cannot lift it. Returns one fault line per order dropped, lift unheard, lift of an order no
+ * frontier carried, or order both carried and lifted; and the lifts, each with its remembered time.
  */
 export function orderFaults(memory: OrderMemory, standing: readonly StandingOrder[], lifted: readonly { order: string; by: string }[]): { faults: string[]; lifted: LiftedOrder[] } {
   const carried = new Set(standing.map((o) => o.order));
@@ -46,12 +49,15 @@ export function orderFaults(memory: OrderMemory, standing: readonly StandingOrde
   const faults: string[] = [];
   for (const o of memory.remembered) {
     if (carried.has(o.order) || lifted.some((l) => l.order === o.order)) continue;
-    faults.push(`standing order dropped: "${o.order}" (given ${o.at}) was in your last handoff and is not in this one. Carry it in standing_orders as it was, or, if the person lifted it, list it in lifted with the person's words that lifted it, verbatim: {"order": <its text>, "by": <their words>}.`);
+    faults.push(`standing order dropped: "${o.order}" (given ${o.at}) was in your last frontier and is not in this one. Carry it in standing_orders as it was, or, if the person lifted it, list it in lifted with the person's words that lifted it, verbatim: {"order": <its text>, "by": <their words>}.`);
   }
   for (const l of lifted) {
-    if (!remembered.has(l.order)) faults.push(`lifted "${l.order}" is no standing order your last handoff carried: name one by its exact text, or leave it out.`);
+    if (!remembered.has(l.order)) faults.push(`lifted "${l.order}" is no standing order your last frontier carried: name one by its exact text, or leave it out.`);
     else if (carried.has(l.order)) faults.push(`"${l.order}" is both in standing_orders and in lifted: carry it, or lift it.`);
-    else if (!memory.said.some((text) => text.includes(l.by.trim()))) faults.push(`lifted "${l.order}": its by text is in ${sources}, so it lifts nothing. Quote the person's lifting words exactly as they came, or carry the order in standing_orders.`);
+    else {
+      const given = remembered.get(l.order)!.at;
+      if (!memory.said.some((m) => m.at > Date.parse(given) && m.text.includes(l.by.trim()))) faults.push(`lifted "${l.order}": its by text is in ${sources} sent after the order was given (${given}), so it lifts nothing. Quote the person's lifting words exactly as they came, or carry the order in standing_orders.`);
+    }
   }
   return { faults, lifted: lifted.map((l) => ({ order: l.order, ...(remembered.has(l.order) ? { at: remembered.get(l.order)!.at } : {}), by: l.by })) };
 }

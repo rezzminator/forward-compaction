@@ -5,8 +5,8 @@ import { fakeEngine, usage, type Script } from './fakes/engine.ts';
 
 const FORWARD = 'mcp__forward-compaction__forward_compaction';
 const SECTIONS = { objective: 'Ship U5.', done: 'The fake.', remaining: 'The adapter.', next: 'Wire session.compact.' };
-/** The handoff the plugin assembles from SECTIONS. */
-const HANDOFF = '## Objective\nShip U5.\n\n## Done\nThe fake.\n\n## Remaining\nThe adapter.\n\n## Next\nWire session.compact.';
+/** The frontier the plugin assembles from SECTIONS. */
+const FRONTIER = '## Objective\nShip U5.\n\n## Done\nThe fake.\n\n## Remaining\nThe adapter.\n\n## Next\nWire session.compact.';
 const A1 = 'a1b2c3d4e5';
 
 type Fake = ReturnType<typeof fakeEngine>;
@@ -45,8 +45,8 @@ function transcript(id = 'tu-h') {
   return [
     { role: 'user', text: 'Brief for agent one', toolUses: [], handle: 'h0' },
     { role: 'assistant', text: `storing ${PAD}`, toolUses: [{ tool_use_id: id, tool: FORWARD, input: SECTIONS }], handle: 'h1' },
-    { role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: id, text: 'Handoff stored' }], handle: 'h2' },
-    { role: 'assistant', text: 'reading on after the handoff', toolUses: [], handle: 'h3' },
+    { role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: id, text: 'Frontier stored' }], handle: 'h2' },
+    { role: 'assistant', text: 'reading on after the frontier', toolUses: [], handle: 'h3' },
     { role: 'user', text: 'a later note', toolUses: [], handle: 'h4' },
   ];
 }
@@ -58,14 +58,24 @@ async function rows(f: Fake): Promise<Record<string, unknown>[]> {
   return readdirSync(dir).filter((n) => n.endsWith('.jsonl')).flatMap((n) => readFileSync(join(dir, n), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)));
 }
 
+/** The level file `name` (errors, warnings, info) of this session, once session.end has flushed it. */
+async function level(f: Fake, name: string): Promise<Record<string, unknown>[]> {
+  await rows(f);
+  const path = join(f.home, `.local/state/forward-compaction/logs/${name}.jsonl`);
+  for (let i = 0; i < 50 && !existsSync(path); i++) await new Promise((resolve) => setTimeout(resolve, 10));
+  return existsSync(path) ? readFileSync(path, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)) : [];
+}
+/** The msg of each `event` row in the level file `name`. */
+const logged = async (f: Fake, name: string, event: string): Promise<unknown[]> => (await level(f, name)).filter((r) => r.event === event).map((r) => r.msg);
+
 describe('forward_compaction tool answers (R31)', () => {
-  it('stores a sub-agent handoff below its ask point with the sub-agent receipt and a stored row', async () => {
+  it('stores a sub-agent frontier below its ask point with the sub-agent receipt and a stored row', async () => {
     const f = await begin();
     await spawn(f);
     await step(f, 41_200, A1);
     const r = await store(f, A1);
-    expect(r.result).toContain('Handoff stored');
-    expect(r.result).toContain('from about 63k context. Everything after this call');
+    expect(r.result).toContain('Frontier stored');
+    expect(r.result).toContain('from about 63k context. The newest messages after this call that fit are kept verbatim behind it');
     expect((await rows(f)).some((row) => row.event === 'stored' && row.party === `agent:${A1}`)).toBe(true);
   });
 
@@ -86,7 +96,7 @@ describe('forward_compaction tool answers (R31)', () => {
     expect(refused.result.split('\n').filter((l: string) => l === line)).toHaveLength(1);
   });
 
-  it('refuses a handoff missing a section and stores nothing', async () => {
+  it('refuses a frontier missing a section and stores nothing', async () => {
     const f = await begin();
     const r = await f.dispatch('tool.call', { tool: FORWARD, tool_use_id: 'tu-x', objective: 'x' }, async () => ({ result: 'not ours' }));
     expect(r.result).toMatch(/^forward_compaction refused, nothing stored: done must be a non-blank string/);
@@ -100,14 +110,14 @@ describe('forward_compaction tool answers (R31)', () => {
 });
 
 describe('main turn-end door (R32, P1)', () => {
-  it('compacts once with no argument when main answered with a handoff stored', async () => {
+  it('compacts once with no argument when main answered with a frontier stored', async () => {
     const f = await begin();
     await store(f);
     await f.dispatch('turn.complete', { reason: 'answer', answer: 'done', durationMs: 1, isAborted: false, turnId: 't1' }, async () => ({ text: 'done' }));
     expect(f.compactCalls).toEqual([[]]);
   });
 
-  it('does not compact an aborted turn, and the handoff stays stored for the next answer', async () => {
+  it('does not compact an aborted turn, and the frontier stays stored for the next answer', async () => {
     const f = await begin();
     await store(f);
     await f.dispatch('turn.complete', { reason: 'aborted', answer: '', durationMs: 1, isAborted: true, turnId: 't1' }, async () => ({ text: '' }));
@@ -116,11 +126,12 @@ describe('main turn-end door (R32, P1)', () => {
     expect(f.compactCalls).toEqual([[]]);
   });
 
-  it('says on screen when the turn-end compaction is skipped', async () => {
+  it('files a skipped turn-end compaction as a warning, off the screen', async () => {
     const f = await begin({ compact: () => ({ skip: 'another plugin held it' }) });
     await store(f);
     await f.dispatch('turn.complete', { reason: 'answer', answer: 'done', durationMs: 1, isAborted: false, turnId: 't1' }, async () => ({ text: 'done' }));
-    expect(f.texts()).toContain("main's handoff did not install at turn end: another plugin held it. It stays stored for the next turn end or ask.");
+    expect(f.texts().filter((t) => t.includes('did not install at turn end'))).toEqual([]);
+    expect(await logged(f, 'warnings', 'turn-end-skipped')).toEqual(["main's frontier did not install at turn end: another plugin held it. It stays stored for the next turn end or ask."]);
   });
 
   it("installs at the next turn's first ask when a queued turn already runs at turn end, so the turn-end refusal loses nothing", async () => {
@@ -138,7 +149,8 @@ describe('the compaction window warning (R33)', () => {
     const f = fakeEngine({ window: 1_000_000, breakdown: { rawMaxTokens: 1_000_000, autocompactSource: 'model-default', autoCompactThreshold: 967_000, isAutoCompactEnabled: true, model: 'claude-opus-5-5' } });
     fakes.push(f);
     await f.dispatch('session.start', { reason: 'startup' }, async () => ({}));
-    expect(f.texts()).toContain('Claude Code compacts against a 1M window (model-default) and asks to compact from about 967k, so a handoff installs no earlier. Set CLAUDE_CODE_AUTO_COMPACT_WINDOW to 100000 in your settings env.');
+    expect(f.texts().filter((t) => t.includes('CLAUDE_CODE_AUTO_COMPACT_WINDOW'))).toEqual([]);
+    expect(await logged(f, 'warnings', 'compact-window')).toEqual(['Claude Code compacts against a 1M window (model-default) and asks to compact from about 967k, so a frontier installs no earlier. Set CLAUDE_CODE_AUTO_COMPACT_WINDOW to 100000 in your settings env.']);
   });
 
   it("names a breakdown or threshold Claude Code did not report, and the ask point taken instead", async () => {
@@ -146,7 +158,7 @@ describe('the compaction window warning (R33)', () => {
     const off = fakeEngine({ window: 1_000_000, breakdown: { rawMaxTokens: 400_000, autocompactSource: 'settings', isAutoCompactEnabled: false, model: 'claude-opus-5-5' } });
     fakes.push(none, off);
     for (const f of [none, off]) await f.dispatch('session.start', { reason: 'startup' }, async () => ({}));
-    const warned = async (f: Fake) => (await rows(f)).filter((r) => r.event === 'warning').map((r) => r.line);
+    const warned = async (f: Fake) => (await rows(f)).filter((r) => r.event === 'ask-point-missing').map((r) => r.line);
     expect(await warned(none)).toContain("forward-compaction: $.session.usage reported no context breakdown; Claude Code's ask point is taken as its window 1M");
     expect(await warned(off)).toContain("forward-compaction: $.session.usage reported no autoCompactThreshold (auto-compaction is off); Claude Code's ask point is taken as its rawMaxTokens 400k");
   });
@@ -158,7 +170,7 @@ describe('the compaction window warning (R33)', () => {
 });
 
 describe('session.compact', () => {
-  it('installs a sub-agent handoff at an auto ask: [F, H, ...tail] with the tail objects unchanged, and the landed line (R34, R36)', async () => {
+  it('installs a sub-agent frontier at an auto ask: [F, H, ...tail] with the tail objects unchanged, and the landed line (R34, R36)', async () => {
     const f = await begin();
     await spawn(f);
     await step(f, 64_000, A1);
@@ -168,46 +180,47 @@ describe('session.compact', () => {
     expect(r.messages).toHaveLength(4);
     expect(r.messages[0].text).toMatch(/^\[forward-compaction: facts\]/);
     expect(r.messages[0].text).toContain('Brief for agent one');
-    expect(r.messages[1].text).toContain(`=== handoff ===\n${HANDOFF}\n=== end of handoff ===`);
+    expect(r.messages[1].text).toContain(`=== frontier ===\n${FRONTIER}\n=== end of frontier ===`);
     expect(r.messages.slice(2)).toEqual([messages[3], messages[4]]);
     expect(r.messages[2]).toBe(messages[3]);
     expect(r.tokensBefore).toBe(64_000); // the last reading, never an estimate beside it
     expect(r.tokensAfter).toBeUndefined(); // no character count stands in for it: the next reading measures it (M2)
     await step(f, 12_000, A1);
-    expect(f.texts().filter((t) => t.includes('handoff landed'))).toEqual([]); // a chosen handoff is routine: logged, never on screen
+    expect(f.texts().filter((t) => t.includes('frontier landed'))).toEqual([]); // a chosen frontier is routine: logged, never on screen
     const landed = (await rows(f)).filter((r) => r.event === 'landed');
     expect(landed).toHaveLength(1);
-    expect(landed[0]!.line).toContain('general-purpose a1b2c3 handoff landed — 64k → 12k context, measured;'); // both figures are readings: before the install and the first after
+    expect(landed[0]!.line).toContain('general-purpose a1b2c3 frontier landed — 64k → 12k context, measured;'); // both figures are readings: before the install and the first after
   });
 
   it('holds an auto ask with nothing stored below the ceiling (C9) and passes a manual one untouched (C1)', async () => {
     const f = await begin();
     await step(f, 64_000);
     const held = await f.dispatch('session.compact', { trigger: 'auto', messages: transcript() }, async () => ({ skip: 'native ran' }));
-    expect(held).toEqual({ skip: "forward-compaction: holding Claude Code's compaction for main until its handoff is stored or the ceiling is reached" });
+    expect(held).toEqual({ skip: "forward-compaction: holding Claude Code's compaction for main until its frontier is stored or the ceiling is reached" });
     await store(f);
     const manual = await f.dispatch('session.compact', { trigger: 'manual', messages: transcript() }, async () => ({ skip: 'native ran' }));
     expect(manual).toEqual({ skip: 'native ran' });
-    expect(f.texts()).toContain("/compact ran Claude Code's own summary; main's stored handoff was dropped.");
+    expect(f.texts()).toContain("/compact ran Claude Code's own summary; main's stored frontier was dropped.");
   });
 
-  it('drops a stored handoff whose call left the transcript (C8)', async () => {
+  it('drops a stored frontier whose call left the transcript (C8)', async () => {
     const f = await begin();
     await step(f, 64_000);
     await store(f, undefined, 'tu-old');
     const r = await f.dispatch('session.compact', { trigger: 'auto', messages: transcript('tu-other') }, async () => ({ skip: 'native ran' }));
-    expect(r).toEqual({ skip: "forward-compaction: holding Claude Code's compaction for main until its handoff is stored or the ceiling is reached" });
-    expect(f.texts()).toContain("main's stored handoff is no longer in its transcript (compacted by something else); it was dropped.");
+    expect(r).toEqual({ skip: "forward-compaction: holding Claude Code's compaction for main until its frontier is stored or the ceiling is reached" });
+    expect(f.texts()).toContain("main's stored frontier is no longer in its transcript (compacted by something else); it was dropped.");
   });
 
-  it('installs a mechanical wake at the ceiling with no handoff (C10)', async () => {
+  it('installs a mechanical wake at the ceiling with no frontier (C10)', async () => {
     const f = await begin();
     await step(f, 125_000);
     const r = await f.dispatch('session.compact', { trigger: 'auto', messages: transcript() }, async () => ({ skip: 'native ran' }));
     expect(r).toHaveProperty('messages');
     expect(r.messages[1].text).toMatch(/^\[forward-compaction: no frontier written by the model\]/);
     await step(f, 30_000);
-    expect(f.texts().some((t) => t.startsWith('main had no handoff at 125k (ceiling 120k) — mechanical wake installed'))).toBe(true);
+    expect(f.texts().filter((t) => t.includes('mechanical wake installed'))).toEqual([]);
+    expect(await logged(f, 'info', 'landed')).toEqual([expect.stringMatching(/^main had no frontier at 125k \(ceiling 120k\) — mechanical wake installed/)]);
   });
 
   it("re-reads main's window after /model: the ceiling follows the new model's window", async () => {
@@ -221,7 +234,7 @@ describe('session.compact', () => {
     const r = await f.dispatch('session.compact', { trigger: 'auto', messages: transcript() }, async () => ({ skip: 'native ran' }));
     expect(r).toHaveProperty('messages');
     await mainStep(30_000, 'claude-opus-5');
-    expect(f.texts().some((t) => /^main had no handoff at 245k \(ceiling 240k\)/.test(t))).toBe(true);
+    expect(await logged(f, 'info', 'landed')).toEqual([expect.stringMatching(/^main had no frontier at 245k \(ceiling 240k\)/)]);
   });
 
   it('passes a foreign party to Claude Code (C6)', async () => {
@@ -257,7 +270,7 @@ describe('nudges (R37)', () => {
     const f = await begin();
     await step(f, 51_000);
     const first = await f.dispatch('tool.call', { tool: 'Read', tool_use_id: 'tu-1', file_path: '/x' }, async () => ({ result: 'file', context: ['other'] }));
-    expect(first.context.at(-1)).toMatch(/^forward-compaction: your context is 51k tokens \(5% of your 1M max context\), and every call re-sends all of it\. Hand off at your next clean milestone: once the step in hand is finished/);
+    expect(first.context.at(-1)).toMatch(/^forward-compaction: context 51k \(5% of 1M\)\. Once your current step is done — never in the middle of one — call /);
     expect(first.context[0]).toBe('other');
     await step(f, 52_000);
     const second = await f.dispatch('tool.call', { tool: 'Read', tool_use_id: 'tu-2', file_path: '/x' }, async () => ({ result: 'file' }));
@@ -270,24 +283,24 @@ describe('nudges (R37)', () => {
     await step(f, 59_000);
     expect((await read('tu-1')).context ?? []).toEqual([]);
     await step(f, 60_000);
-    expect((await read('tu-2')).context?.at(-1)).toContain('your context is 60k tokens (15% of your 400k max context)');
+    expect((await read('tu-2')).context?.at(-1)).toContain('context 60k (15% of 400k)');
     await step(f, 79_000);
     expect((await read('tu-3')).context ?? []).toEqual([]);
     await step(f, 80_000);
-    expect((await read('tu-4')).context?.at(-1)).toContain('your context is 80k tokens (20% of your 400k max context)');
+    expect((await read('tu-4')).context?.at(-1)).toContain('context 80k (20% of 400k)');
   });
 
   it('a held ask adds no nudge of its own: the level already delivered is not repeated', async () => {
     const f = await begin();
     const read = (id: string) => f.dispatch('tool.call', { tool: 'Read', tool_use_id: id, file_path: '/x' }, async () => ({ result: 'file' }));
     await step(f, 64_000);
-    expect((await read('tu-1')).context?.at(-1)).toContain('your context is 64k tokens');
+    expect((await read('tu-1')).context?.at(-1)).toContain('context 64k (');
     await f.dispatch('session.compact', { trigger: 'auto', messages: transcript('tu-none') }, async () => ({ skip: 'native ran' }));
     await step(f, 65_000);
     expect((await read('tu-2')).context ?? []).toEqual([]);
   });
 
-  it('absorbs the first reading after an install: an agent installed, read at 61k, is nudged next at 70k', async () => {
+  it('absorbs the first reading after an install: an agent installed, read at 61k, is nudged next once it grew by every (10k) past it, at 71k', async () => {
     const f = await begin();
     const read = (id: string) => f.dispatch('tool.call', { tool: 'Read', tool_use_id: id, agentId: A1, file_path: '/x' }, async () => ({ result: 'file' }));
     await spawn(f);
@@ -300,7 +313,9 @@ describe('nudges (R37)', () => {
     await step(f, 66_000, A1);
     expect((await read('tu-2')).context ?? []).toEqual([]);
     await step(f, 70_000, A1);
-    expect((await read('tu-3')).context?.at(-1)).toContain('your context is 70k tokens');
+    expect((await read('tu-3')).context ?? []).toEqual([]);
+    await step(f, 71_000, A1);
+    expect((await read('tu-4')).context?.at(-1)).toContain('context 71k (');
   });
 });
 
@@ -323,13 +338,6 @@ describe('skill attribution (R38)', () => {
 });
 
 describe('the log rows the hook writes reach their folds and levels', () => {
-  /** The level file `name` (errors, warnings) of this session, once session.end has flushed it. */
-  async function level(f: Fake, name: string): Promise<Record<string, unknown>[]> {
-    await rows(f);
-    const path = join(f.home, `.local/state/forward-compaction/logs/${name}.jsonl`);
-    for (let i = 0; i < 50 && !existsSync(path); i++) await new Promise((resolve) => setTimeout(resolve, 10));
-    return existsSync(path) ? readFileSync(path, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)) : [];
-  }
 
   it("folds main's held asks (C9) into the first skip row and one skips row", async () => {
     const f = await begin();
@@ -373,12 +381,13 @@ describe('the log rows the hook writes reach their folds and levels', () => {
 });
 
 describe('an unseen compaction (R39)', () => {
-  it('warns on screen naming the party when its reading falls from 120,000 to 30,000 with no install', async () => {
+  it('files a warning naming the party, off the screen, when its reading falls from 120,000 to 30,000 with no install', async () => {
     const f = await begin();
     await spawn(f);
     await step(f, 120_000, A1);
     await step(f, 30_000, A1);
-    expect(f.texts().some((t) => t.startsWith("general-purpose a1b2c3's context fell from 120k to 30k"))).toBe(true);
+    expect(f.texts().filter((t) => t.includes('context fell from'))).toEqual([]);
+    expect(await logged(f, 'warnings', 'unseen-compaction')).toEqual([expect.stringMatching(/^general-purpose a1b2c3's context fell from 120k to 30k/)]);
   });
 
   it('does not call a compaction it passed to Claude Code unseen: the fall after a /compact draws no warning', async () => {
@@ -411,7 +420,7 @@ describe('ignored models: FORWARD_COMPACTION_IGNORE_MODELS, Haiku by default', (
     expect(compacts).toEqual([['skip', 'ignored-model', 64_000, 160_000, 'haiku'], ['mechanical', 'ceiling', 160_000, 160_000, 'haiku']]);
   });
 
-  it("nudges a managed sub-agent at 80k of its 200k max context, refuses its calls at 100k, lets the next request run when it does not hand off, and gives it the mechanical wake at 160k", async () => {
+  it("nudges a managed sub-agent at 80k of its 200k max context, refuses its calls at 100k, lets the next request run when it does not compact, and gives it the mechanical wake at 160k", async () => {
     const f = await begin({ env: defaults });
     await spawn(f);
     const levels: number[] = [];
@@ -433,14 +442,14 @@ describe('ignored models: FORWARD_COMPACTION_IGNORE_MODELS, Haiku by default', (
     await spawn(f);
     await haikuStep(f, 30_000);
     const r = await store(f, A1);
-    expect(r.result).toMatch(/^forward_compaction refused, nothing stored: your model is on forward-compaction's ignore list \("haiku"\), so it takes no handoff from you; carry on with your work, and at 160k the plugin compacts you mechanically\.\nforward-compaction is experimental\./);
+    expect(r.result).toMatch(/^forward_compaction refused, nothing stored: your model is on forward-compaction's ignore list \("haiku"\), so it takes no frontier from you; carry on with your work, and at 160k the plugin compacts you mechanically\.\nforward-compaction is experimental\./);
     const all = await rows(f);
     expect(all.filter((row) => row.event === 'stored')).toEqual([]);
     expect(all.find((row) => row.event === 'refused')).toMatchObject({ party: `agent:${A1}`, matched: 'haiku' });
     const none = await begin({ env: { ...defaults, FORWARD_COMPACTION_IGNORE_MODELS: '' } });
     await spawn(none);
     await haikuStep(none, 30_000);
-    expect((await store(none, A1)).result).toContain('Handoff stored');
+    expect((await store(none, A1)).result).toContain('Frontier stored');
   });
 
   it("gives main no nudge and no ceiling until its window is read, and manages it against FORWARD_COMPACTION_MAIN_MAX_CONTEXT when that is set", async () => {
@@ -451,7 +460,7 @@ describe('ignored models: FORWARD_COMPACTION_IGNORE_MODELS, Haiku by default', (
     expect(await unread.dispatch('session.compact', { trigger: 'auto', messages: transcript() }, async () => ({ skip: 'native ran' }))).toMatchObject({ skip: expect.stringContaining('holding') });
     const set = await begin({ window: () => { throw new Error('usage unavailable'); }, env: { FORWARD_COMPACTION_MAIN_MAX_CONTEXT: '400k' } });
     await step(set, 51_000);
-    expect((await read(set, 'tu-1')).context?.at(-1)).toContain('your context is 51k tokens (13% of your 400k max context)');
+    expect((await read(set, 'tu-1')).context?.at(-1)).toContain('context 51k (13% of 400k)');
   });
 });
 
@@ -463,9 +472,9 @@ describe('a resumed sub-agent with no reading yet', () => {
     expect(await f.dispatch('session.compact', { trigger: 'auto', agentId: A1, messages: big }, async () => ({ skip: 'native ran' }))).toEqual({ skip: "forward-compaction: holding Claude Code's compaction for flights-foreman-sonnet a1b2c3: it has no reading yet, and its next reading decides" });
     expect((await read('tu-1')).context ?? []).toEqual([]);
     await f.dispatch('turn.step', { turnId: 't1', index: 0, model: 'claude-sonnet-5-5', messageCount: 4, agentId: A1 }, async () => ({ turnId: 't1', index: 0, answer: '', toolUses: [], stopReason: 'tool_use', ...usage(189_000) }));
-    expect((await read('tu-2')).context?.at(-1)).toContain('your context is 189k tokens (19% of your 1M max context)');
+    expect((await read('tu-2')).context?.at(-1)).toContain('context 189k (19% of 1M)');
     expect((await read('tu-2')).context ?? []).toEqual([]);
-    expect(await f.dispatch('session.compact', { trigger: 'auto', agentId: A1, messages: big }, async () => ({ skip: 'native ran' }))).toMatchObject({ skip: expect.stringContaining('until its handoff is stored') });
+    expect(await f.dispatch('session.compact', { trigger: 'auto', agentId: A1, messages: big }, async () => ({ skip: 'native ran' }))).toMatchObject({ skip: expect.stringContaining('until its frontier is stored') });
     const compacts = (await rows(f)).filter((row) => row.event === 'compact');
     expect(compacts.map((row) => [row.decision, row.why, row.tokens])).toEqual([['skip', 'no-reading', null]]); // the second held ask folds into the streak
     expect(f.texts().some((t) => /mechanical wake/.test(t))).toBe(false);
@@ -477,7 +486,7 @@ describe("a reading includes the response's own output (H1)", () => {
     const f = await begin({ env: { FORWARD_COMPACTION_MAIN_NUDGE_START: '150000', FORWARD_COMPACTION_MAIN_NUDGE_EVERY: '50000', FORWARD_COMPACTION_MAIN_CEILING: '600000' } });
     await step(f, 147_000, undefined, 12_878);
     const nudged = await f.dispatch('tool.call', { tool: 'Read', tool_use_id: 'tu-1', file_path: '/x' }, async () => ({ result: 'ok' }));
-    expect(nudged.context?.at(-1)).toContain('your context is 160k tokens');
+    expect(nudged.context?.at(-1)).toContain('context 160k (');
     await store(f);
     await f.dispatch('session.compact', { trigger: 'auto', messages: transcript('tu-none') }, async () => ({ skip: 'native ran' }));
     const logged = await rows(f);
@@ -489,13 +498,13 @@ describe("a reading includes the response's own output (H1)", () => {
 describe('an ignore row records each judgement once (H3)', () => {
   const judged = async (f: Fake) => (await rows(f)).filter((r) => r.event === 'ignore').map((r) => [r.party, r.model ?? null, r.judged, r.matched]);
 
-  it('records main managed at session start, a sub-agent unknown at its spawn and managed once its step names its model, and nothing again while that holds', async () => {
+  it('records main and a sub-agent unknown until a step names its model, managed once one does, and nothing again while that holds', async () => {
     const f = await begin();
     await spawn(f);
     await step(f, 20_000, A1, undefined, 'claude-sonnet-5-5');
     await step(f, 21_000, A1, undefined, 'claude-sonnet-5-5');
     await step(f, 22_000);
-    expect(await judged(f)).toEqual([['main', null, 'managed', null], ['agent:a1b2c3d4e5', null, 'unknown', null], ['agent:a1b2c3d4e5', 'claude-sonnet-5-5', 'managed', null]]);
+    expect(await judged(f)).toEqual([['main', null, 'unknown', null], ['agent:a1b2c3d4e5', null, 'unknown', null], ['agent:a1b2c3d4e5', 'claude-sonnet-5-5', 'managed', null], ['main', 'claude-sonnet-4-5', 'managed', null]]);
   });
 
   it('records an agent resumed with no spawn as unknown, then ignored with the entry its Haiku model matched, never managed between', async () => {
@@ -511,9 +520,9 @@ describe('an ignore row records each judgement once (H3)', () => {
     const dir = join(f.home, '.local/state/forward-compaction/logs');
     for (let i = 0; i < 50 && !existsSync(join(dir, 'debug.jsonl')); i++) await new Promise((resolve) => setTimeout(resolve, 10));
     const level = (file: string) => readFileSync(join(dir, file), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
-    expect(level('info.jsonl').filter((r) => r.event === 'ignore')).toEqual([expect.objectContaining({ level: 'info', detail: expect.objectContaining({ party: 'main', judged: 'managed', matched: null }) })]);
+    expect(level('info.jsonl').filter((r) => r.event === 'ignore')).toEqual([expect.objectContaining({ level: 'info', detail: expect.objectContaining({ party: 'main', judged: 'unknown', matched: null }) })]);
     const debug = level('debug.jsonl');
-    expect(debug.find((r) => r.event === 'row:ignore')).toMatchObject({ level: 'debug', detail: { event: 'ignore', party: 'main', judged: 'managed' } });
+    expect(debug.find((r) => r.event === 'row:ignore')).toMatchObject({ level: 'debug', detail: { event: 'ignore', party: 'main', judged: 'unknown' } });
     expect(debug.find((r) => r.event === 'session.usage')).toMatchObject({ detail: { window: 1_000_000, autoCompactThreshold: 63_000, rawMaxTokens: 100_000, autocompactSource: 'env' } });
     expect(debug.find((r) => r.event === 'options')?.detail).toMatchObject({ ignoreModels: ['haiku'], debug: true, subagent: { maxContext: 1_000_000 } });
     expect(debug.find((r) => r.event === 'hook')).toMatchObject({ detail: { hook: 'session.start', party: 'main' } });
@@ -558,9 +567,9 @@ describe('a folded skips row is stamped once (H2)', () => {
 describe('audit r4: readings only, measured landed lines, the milestone nudge, the load_files room, own agents', () => {
   const read = (f: Fake, id: string, chars = 4, agentId?: string) => f.dispatch('tool.call', { tool: 'Read', tool_use_id: id, file_path: '/x', ...(agentId ? { agentId } : {}) }, async () => ({ result: 'x'.repeat(chars) }));
   const ask = (f: Fake, messages: unknown[], agentId?: string) => f.dispatch('session.compact', { trigger: 'auto', messages, ...(agentId ? { agentId } : {}) }, async () => ({ skip: 'native ran' }));
-  const landedLines = (f: Fake) => f.texts().filter((t) => t.includes('handoff landed') || t.includes('mechanical wake installed'));
-  // A chosen handoff's landed line is a logged row only; the screen never shows it.
-  const handoffLanded = async (f: Fake) => (expect(landedLines(f).filter((t) => t.includes('handoff landed'))).toEqual([]), (await rows(f)).filter((r) => r.event === 'landed').map((r) => r.line));
+  // A landed line, chosen frontier or mechanical wake, is a logged row only; the screen never shows it.
+  const landedLines = (f: Fake) => f.texts().filter((t) => t.includes('frontier landed') || t.includes('mechanical wake installed'));
+  const frontierLanded = async (f: Fake) => (expect(landedLines(f)).toEqual([]), (await rows(f)).filter((r) => r.event === 'landed').map((r) => r.line));
   const installAgent = async (f: Fake) => {
     await spawn(f);
     await step(f, 64_000, A1);
@@ -574,20 +583,20 @@ describe('audit r4: readings only, measured landed lines, the milestone nudge, t
     expect((await read(f, 'tu-1', 70_000)).context ?? []).toEqual([]);
     expect((await read(f, 'tu-2', 77_000)).context ?? []).toEqual([]);
     await step(f, 173_100);
-    expect((await read(f, 'tu-3')).context?.at(-1)).toContain('your context is 173k tokens (17% of your 1M max context)');
+    expect((await read(f, 'tu-3')).context?.at(-1)).toContain('context 173k (17% of 1M)');
     expect((await rows(f)).filter((r) => r.event === 'nudge')).toEqual([expect.objectContaining({ level: 1, tokens: 173_100 })]);
   });
 
-  it('M1 stores the handoff at the last reading, and neither the receipt nor the wake prints a size for the call', async () => {
+  it('M1 stores the frontier at the last reading, and neither the receipt nor the wake prints a size for the call', async () => {
     const f = await begin();
     await spawn(f);
     await step(f, 41_200, A1);
     await read(f, 'tu-1', 70_000, A1);
     const r = await store(f, A1);
-    expect(r.result).toContain("it installs at Claude Code's next ask, from about 63k context. Everything after this call");
+    expect(r.result).toContain("it installs at Claude Code's next ask, from about 63k context. The newest messages after this call that fit are kept verbatim behind it");
     expect(r.result).not.toContain('you are at');
     const wake = await ask(f, transcript(), A1);
-    expect(wake.messages[1].text.startsWith('[forward-compaction: handoff] Below is the handoff you wrote with forward_compaction. It is your frontier: continue from its ## Next.')).toBe(true);
+    expect(wake.messages[1].text.startsWith('[forward-compaction: frontier] Below is the frontier you wrote with forward_compaction: continue from its ## Next.')).toBe(true);
     expect((await rows(f)).filter((row) => row.event === 'stored')).toEqual([expect.objectContaining({ tokens: 41_200 })]);
   });
 
@@ -596,7 +605,7 @@ describe('audit r4: readings only, measured landed lines, the milestone nudge, t
     await step(f, 110_000);
     const jumped = [...transcript(), { role: 'assistant', text: 'reading', toolUses: [{ tool_use_id: 'r1', tool: 'Read', input: {} }], handle: 'h5' },
       { role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: 'r1', text: 'z'.repeat(175_000) }], handle: 'h6' }];
-    expect(await ask(f, jumped)).toEqual({ skip: "forward-compaction: holding Claude Code's compaction for main until its handoff is stored or the ceiling is reached" });
+    expect(await ask(f, jumped)).toEqual({ skip: "forward-compaction: holding Claude Code's compaction for main until its frontier is stored or the ceiling is reached" });
     await spawn(f);
     expect(await ask(f, jumped, A1)).toMatchObject({ skip: expect.stringContaining('it has no reading yet') });
     const compacts = (await rows(f)).filter((r) => r.event === 'compact');
@@ -609,17 +618,17 @@ describe('audit r4: readings only, measured landed lines, the milestone nudge, t
     await step(f, 41_000, A1);
     await step(f, 42_000, A1);
     // One line, at the first reading after the install (41k), never the second.
-    expect(await handoffLanded(f)).toEqual([expect.stringMatching(new RegExp(`^general-purpose a1b2c3 handoff landed — 64k → 41k context, measured; frontier ${HANDOFF.length} characters, \\d+ facts, 2 messages kept verbatim\\.$`))]);
+    expect(await frontierLanded(f)).toEqual([expect.stringMatching(new RegExp(`^general-purpose a1b2c3 frontier landed — 64k → 41k context, measured; ${FRONTIER.length} characters, \\d+ facts, 2 messages kept verbatim\\.$`))]);
     const all = await rows(f);
     expect(all.filter((r) => r.event === 'compact' && r.decision === 'install')).toHaveLength(1);
-    expect(all.filter((r) => r.event === 'landed')).toEqual([expect.objectContaining({ party: `agent:${A1}`, kind: 'handoff', before: 64_000, after: 41_000 })]);
+    expect(all.filter((r) => r.event === 'landed')).toEqual([expect.objectContaining({ party: `agent:${A1}`, kind: 'frontier', before: 64_000, after: 41_000 })]);
   });
 
   it('M2 says at an agent end with no reading after its install that the size after was never measured', async () => {
     const f = await begin();
     await installAgent(f);
     await f.dispatch('turn.complete', { reason: 'answer', answer: 'done', durationMs: 1, isAborted: false, turnId: 't1', agentId: A1 }, async () => ({ text: 'done' }));
-    expect(await handoffLanded(f)).toEqual([expect.stringMatching(/^general-purpose a1b2c3 handoff landed — 64k → unknown context \(it ended before a request after the install measured it\); frontier /)]);
+    expect(await frontierLanded(f)).toEqual([expect.stringMatching(/^general-purpose a1b2c3 frontier landed — 64k → unknown context \(it ended before a request after the install measured it\); /)]);
     expect((await rows(f)).filter((r) => r.event === 'landed')).toEqual([expect.objectContaining({ before: 64_000, after: null })]);
   });
 
@@ -627,55 +636,36 @@ describe('audit r4: readings only, measured landed lines, the milestone nudge, t
     const f = await begin();
     await step(f, 125_000);
     expect(await ask(f, transcript())).toHaveProperty('messages');
-    expect(landedLines(f)).toEqual([]);
     await step(f, 30_000);
-    expect(landedLines(f)).toEqual(['main had no handoff at 125k (ceiling 120k) — mechanical wake installed, 125k → 30k context, measured.']);
     await step(f, 125_000);
     await ask(f, transcript());
-    await rows(f);
-    expect(landedLines(f).at(-1)).toBe('main had no handoff at 125k (ceiling 120k) — mechanical wake installed, 125k → unknown context (it ended before a request after the install measured it).');
+    expect(await frontierLanded(f)).toEqual([
+      'main had no frontier at 125k (ceiling 120k) — mechanical wake installed, 125k → 30k context, measured.',
+      'main had no frontier at 125k (ceiling 120k) — mechanical wake installed, 125k → unknown context (it ended before a request after the install measured it).',
+    ]);
   });
 
   it('M3 nudges with the milestone wording, verbatim', async () => {
     const f = await begin();
     await step(f, 51_000);
-    expect((await read(f, 'tu-1')).context?.at(-1)).toBe('forward-compaction: your context is 51k tokens (5% of your 1M max context), and every call re-sends all of it. Hand off at your next clean milestone: once the step in hand is finished and its results are written down, and before you start the next step, call mcp__forward-compaction__forward_compaction with objective, done, remaining and next. You pick the milestone, not whether: skip it only if nothing is left but writing your result and your final answer. At 120k the plugin compacts you mechanically, with no frontier from you. A handoff costs you nothing: you continue from it with every message after it, as many times as the work needs, so carry the task through to its end; never cut it short to avoid one. If this tool is not in your tool list, carry on.');
+    expect((await read(f, 'tu-1')).context?.at(-1)).toBe('forward-compaction: context 51k (5% of 1M). Once your current step is done — never in the middle of one — call mcp__forward-compaction__forward_compaction with objective, done, remaining and next; skip it if only your final answer is left. At 120k you are compacted mechanically. No such tool? Carry on.');
   });
 
-  it("M4 refuses load files past 5% of the max context at the party's measured ratio, and carries one that fits", async () => {
+  it("L6 stores load files past 5% of the max context, never refusing the frontier, and the wake fits them, naming each left out with its size and the room", async () => {
     const [big, mid, rest] = ['/work/big.md', '/work/mid.md', '/work/rest.md'];
     // 100,000 characters grown over 40,000 tokens since the base: 2.5 characters a token, measured
     let chars = 60_000;
     const messages = () => [{ role: 'user', content: [{ type: 'text', text: 'x'.repeat(chars) }] }];
-    const f = await begin({ messages, files: { [big]: { content: 'b'.repeat(125_001) }, [mid]: { content: 'm'.repeat(70_000) }, [rest]: { content: 'r'.repeat(60_000) } } });
+    const f = await begin({ messages, files: { [big]: { content: 'b'.repeat(2_000_000) }, [mid]: { content: 'm'.repeat(70_000) }, [rest]: { content: 'r'.repeat(60_000) } } });
     await spawn(f);
     await step(f, 24_000, A1);
     chars = 160_000;
     await step(f, 64_000, A1);
-    const call = (paths: string[], id: string) => f.dispatch('tool.call', { tool: FORWARD, tool_use_id: id, agentId: A1, ...SECTIONS, load_files: paths.map((path) => ({ path, why: 'needed' })) }, async () => ({ result: 'not ours' }));
-    expect((await call([big], 'tu-1')).result.split('\n').slice(0, 3)).toEqual([
-      'forward_compaction refused, nothing stored: load_files come to 125,001 characters, over the 125,000-character room for carried files (5% of your 1M max context):',
-      '- /work/big.md: 125,001 characters',
-      'Pass lines ranges (like "10-40" or "1-60,160-185") to carry only what you need, or fewer files, and call again.',
-    ]);
-    const both = (await call([mid, rest], 'tu-2')).result;
-    expect(both).toContain('load_files come to 130,000 characters, over the 125,000-character room');
-    expect(both).toContain('- /work/mid.md: 70,000 characters\n- /work/rest.md: 60,000 characters');
-    expect((await call([mid], 'tu-h')).result).toContain('Handoff stored (');
-    const wake = await ask(f, transcript(), A1);
-    expect(wake.messages[0].text).toContain('## Files you asked to carry\n### /work/mid.md — needed\nmmm');
-    expect(wake.messages[0].text).not.toContain('## Files not carried');
-  });
-
-  it('M4 accepts load files with no size check, and says so, while the party has no reading to measure them by', async () => {
-    const big = '/work/big.md';
-    const f = await begin({ files: { [big]: { content: 'b'.repeat(900_000) } } });
-    await spawn(f);
-    const r = await f.dispatch('tool.call', { tool: FORWARD, tool_use_id: 'tu-1', agentId: A1, ...SECTIONS, load_files: [{ path: big, why: 'needed' }] }, async () => ({ result: 'not ours' }));
-    expect(r.result).toContain('Handoff stored (');
-    const all = await rows(f);
-    expect(all.find((row) => row.event === 'warning' && row.key === 'load-files-unchecked')).toMatchObject({ party: `agent:${A1}`, files: 1 });
-    expect(all.some((row) => row.event === 'said' && String(row.line).includes("agent:a1b2c3d4e5's load_files were accepted without a size check: its characters per token are not measured yet"))).toBe(true);
+    const r = await f.dispatch('tool.call', { tool: FORWARD, tool_use_id: 'tu-h', agentId: A1, ...SECTIONS, load_files: [mid, big, rest].map((path) => ({ path, why: 'needed' })) }, async () => ({ result: 'not ours' }));
+    expect(r.result).toContain('Frontier stored (');
+    const wake = (await ask(f, transcript(), A1)).messages[0].text;
+    expect(wake).toContain('## Files you asked to carry\n### /work/mid.md — needed\nmmm');
+    expect(wake).toContain('## Files not carried\n- /work/big.md: 2,000,000 characters, over the 55,000 characters left of the 125,000-character room for carried files (5% of the 1M max context)\n- /work/rest.md: 60,000 characters, over the 55,000 characters left');
   });
 
   it("M5 lists only a sub-agent's own children in its wake, and every agent in main's", async () => {
@@ -700,8 +690,8 @@ describe('the ratio is measured on the growth since the base, so the fixed overh
   const work = (grown: number, id = 'tu-h') => [
     { role: 'user', text: BRIEF, toolUses: [], handle: 'h0' },
     { role: 'assistant', text: 'w'.repeat(grown), toolUses: [{ tool_use_id: id, tool: FORWARD, input: SECTIONS }], handle: 'h1' },
-    { role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: id, text: 'Handoff stored' }], handle: 'h2' },
-    { role: 'assistant', text: 'reading on after the handoff', toolUses: [], handle: 'h3' },
+    { role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: id, text: 'Frontier stored' }], handle: 'h2' },
+    { role: 'assistant', text: 'reading on after the frontier', toolUses: [], handle: 'h3' },
     { role: 'user', text: 'a later note', toolUses: [], handle: 'h4' },
   ];
   /** A live window of `n` characters in Messages API form, as `$.session.messages({ as: 'api' })` answers. */

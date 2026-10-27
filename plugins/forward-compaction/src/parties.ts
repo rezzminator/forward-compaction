@@ -6,19 +6,19 @@ import { keptOrders, type LiftedOrder, type StandingOrder } from './orders.ts';
 /** A file the model asked the wake to carry (the tool's `load_files` entry). */
 export type LoadFile = { path: string; lines?: string; why: string };
 
-/** A handoff the model wrote, held in memory until a door installs it. */
-export type StoredHandoff = {
+/** A frontier the model wrote, held in memory until a door installs it. */
+export type StoredFrontier = {
   text: string;
   loadFiles: LoadFile[];
   /** The `forward_compaction` call that stored it: the anchor `splitAtCall` finds in the messages. */
   toolUseId: string;
-  /** The party's last reading when it stored the handoff; absent when it had none (none since an install). */
+  /** The party's last reading when it stored the frontier; absent when it had none (none since an install). */
   storedAtTokens?: number;
   /** The ledger's next seq when it was stored: what the ledger records for the party from it, the model never saw (ledger.ts `factsFor` `since`). */
   since: number;
   /** The standing orders it carried (the tool's `standing_orders`). */
   standingOrders?: StandingOrder[];
-  /** The orders lifted since the last install: its own `lifted`, plus a replaced handoff's still unshown, each shown once in its wake. */
+  /** The orders lifted since the last install: its own `lifted`, plus a replaced frontier's still unshown, each shown once in its wake. */
   lifted?: LiftedOrder[];
   /** Store order across all parties. */
   seq: number;
@@ -51,8 +51,8 @@ export type PartyState = {
   baseRetryAt?: number;
   /** An installed wake whose landed line waits for the party's first reading after it. */
   landing?: Landing;
-  stored?: StoredHandoff;
-  /** The standing orders of the party's last stored handoff: the next handoff carries or lifts each; an install or a dropped handoff keeps them. */
+  stored?: StoredFrontier;
+  /** The standing orders of the party's last stored frontier: the next frontier carries or lifts each; an install or a dropped frontier keeps them. */
   orders?: StandingOrder[];
   lastDecision?: AskDecision;
   /** False from a skip until a request completes: the next ask is then a prompt too long (D8). */
@@ -61,18 +61,20 @@ export type PartyState = {
   nudgeLevel: number;
   /** True from an install until the party's next reading, whose nudge level is then absorbed silently. */
   absorbNext: boolean;
-  /** The nudge level from which the party's calls wait for its handoff (nudge.ts `gated`): GATE_STEPS past its first nudge since the last install; absent until that nudge. */
+  /** The party's first reading after its last install: its next nudge waits until the context has grown by `every` past it. */
+  wokeAt?: number;
+  /** The nudge level from which the party's calls wait for its frontier (nudge.ts `gated`): GATE_STEPS past its first nudge since the last install; absent until that nudge. */
   gateLevel?: number;
   /** The party's completed requests: a gated call's request is told from a later one by it. */
   requests: number;
   /** The request whose calls the gate refused since the last install (`gateAnswer`). */
   gateRequest?: number;
-  /** The gate let the party's calls run since the last install: it answered a refused request with no handoff. */
+  /** The gate let the party's calls run since the last install: it answered a refused request with no frontier. */
   gateOpen?: boolean;
   installs: number;
   /** An install happened in the party's current turn: the turn-end door (P1) does not fire again. */
   installedThisTurn: boolean;
-  /** The loaded, unpinned names the last stored handoff's drop_skills asked once: the next handoff naming one again drops it. */
+  /** The loaded, unpinned names the last stored frontier's drop_skills asked once: the next frontier naming one again drops it. */
   dropAsked: string[];
   /** The judgement last returned by `judged`. */
   judged?: Judgement;
@@ -93,8 +95,9 @@ export class Parties {
     return state;
   }
 
+  /** Sets what is named; a step that names no model keeps the one known, so its judgement never falls back to unknown. */
   describe(key: string, patch: { label?: string; model?: string }): void {
-    Object.assign(this.get(key), patch);
+    Object.assign(this.get(key), Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== undefined)));
   }
 
   /** The ignore-list entry the party's model matches: the plugin leaves it to Claude Code. Undefined while its model is not known. */
@@ -104,16 +107,16 @@ export class Parties {
 
   /**
    * Main's max context is not known: `FORWARD_COMPACTION_MAIN_MAX_CONTEXT` is unset and Claude Code has not reported its
-   * window yet. Main then gets no nudge and no ceiling. A sub-agent's is always known: `FORWARD_COMPACTION_SUBAGENT_MAX_CONTEXT`.
+   * window yet. Main then gets no nudge and no ceiling. A sub-agent's is always known: `FORWARD_COMPACTION_SUBAGENT_MAX_CONTEXT`, else its model's (`subagentMaxContext`).
    */
   windowUnknown(key: string, mainKnown: boolean): boolean {
     return key === 'main' && !mainKnown;
   }
 
-  /** The party's judgement as known now: `ignored`, a sub-agent whose model no step has named, and `windowUnknown`, in one word. */
+  /** The party's judgement as known now: `ignored`, a party whose model no step has named, and `windowUnknown`, in one word. */
   judgement(key: string, { mainKnown, ignore }: Judging): Judgement {
     if (this.ignored(key, ignore) !== undefined) return 'ignored';
-    if (key !== 'main' && this.get(key).model === undefined) return 'unknown'; // no step has named its model: the list cannot judge it yet
+    if (this.get(key).model === undefined) return 'unknown'; // no step has named its model: the list cannot judge it yet
     return this.windowUnknown(key, mainKnown) ? 'unknown' : 'managed';
   }
 
@@ -126,25 +129,35 @@ export class Parties {
     return { event: 'ignore', party: key, label: state.label, model: state.model ?? null, judged, matched: this.ignored(key, judging.ignore) ?? null };
   }
 
-  /** Stores the party's handoff, the latest winning; returns the one it replaced. */
-  store(key: string, handoff: Omit<StoredHandoff, 'seq'>): StoredHandoff | undefined {
+  /** Stores the party's frontier, the latest winning; returns the one it replaced. */
+  store(key: string, frontier: Omit<StoredFrontier, 'seq'>): StoredFrontier | undefined {
     const state = this.get(key);
     const replaced = state.stored;
-    const standing = handoff.standingOrders ?? [];
+    const standing = frontier.standingOrders ?? [];
     const unshown = (replaced?.lifted ?? []).filter((l) => !standing.some((o) => o.order === l.order)); // an order carried again is no longer lifted
-    state.stored = { ...handoff, lifted: [...unshown, ...(handoff.lifted ?? [])], seq: ++this.seq };
+    state.stored = { ...frontier, lifted: [...unshown, ...(frontier.lifted ?? [])], seq: ++this.seq };
     state.orders = [...standing];
     return replaced;
   }
 
-  /** The orders `$.state` kept for the party before a plugin reload, when usable; a handoff stored in this process wins, and nothing kept adds no party. */
+  /** The orders `$.state` kept for the party before a plugin reload, when usable; a frontier stored in this process wins, and nothing kept adds no party. */
   restoreOrders(key: string, kept: unknown): void {
     const orders = keptOrders(kept);
     if (orders !== undefined) this.get(key).orders ??= orders;
   }
 
-  /** Removes the party's stored handoff and returns it; a party never seen gains no state. */
-  takeStored(key: string): StoredHandoff | undefined {
+  /** The judgement and model `$.state` kept for the party before a plugin reload, when usable; what this process already knows wins. */
+  restoreJudged(key: string, kept: unknown): void {
+    if (typeof kept !== 'object' || kept === null) return;
+    const { judged, model } = kept as Record<string, unknown>;
+    if (judged !== 'managed' && judged !== 'ignored' && judged !== 'unknown') return;
+    const state = this.get(key);
+    state.judged ??= judged;
+    if (typeof model === 'string') state.model ??= model;
+  }
+
+  /** Removes the party's stored frontier and returns it; a party never seen gains no state. */
+  takeStored(key: string): StoredFrontier | undefined {
     const state = this.states.get(key);
     const stored = state?.stored;
     if (state) state.stored = undefined;
@@ -164,6 +177,7 @@ export class Parties {
     if (state.absorbNext) {
       state.absorbNext = false;
       state.nudgeLevel = Math.max(state.nudgeLevel, level);
+      state.wokeAt = tokens;
     }
     this.answered(key);
     return landing;
@@ -220,7 +234,7 @@ export class Parties {
 
   /**
    * What a gated call gets: refused while it belongs to the request that met the gate (its parallel calls too), let
-   * run from any later one, `opens` the first time. No API names a sub-agent's tools: one whose list lacks the handoff
+   * run from any later one, `opens` the first time. No API names a sub-agent's tools: one whose list lacks the frontier
    * tool answers the refusal with another call, and would otherwise wait forever; its ceiling's mechanical wake stays.
    */
   gateAnswer(key: string): 'refuse' | 'opens' | 'open' {
@@ -240,18 +254,21 @@ export class Parties {
 
   /**
    * Whether a nudge goes out now, recorded as sent: once per level while nothing is stored. None goes between an
-   * install and the party's next reading: until then no size is measured.
+   * install and the party's next reading: until then no size is measured. After a wake none goes until the reading
+   * (`tokens`) has grown by `every` past the first one after it: a first reading just under a level boundary would
+   * otherwise be nudged again a few thousand tokens later.
    */
-  nudgeDue(key: string, level: number): boolean {
+  nudgeDue(key: string, level: number, tokens?: number, every?: number): boolean {
     const state = this.get(key);
     if (state.stored || state.absorbNext || level <= state.nudgeLevel) return false;
+    if (state.wokeAt !== undefined && tokens !== undefined && every !== undefined && tokens < state.wokeAt + every) return false;
     state.nudgeLevel = level;
     state.gateLevel ??= level + GATE_STEPS;
     return true;
   }
 
   /**
-   * A compaction installed: the handoff goes, the nudges start over from the next reading's level, and no reading
+   * A compaction installed: the frontier goes, the nudges start over from the next reading's level, and no reading
    * stands until the next request measures one, whose landing line then goes out. Returns a landing still waiting from an earlier install.
    */
   installed(key: string, landing?: Landing): Landing | undefined {
@@ -262,6 +279,7 @@ export class Parties {
       answeredSinceSkip: true,
       nudgeLevel: 0,
       absorbNext: true,
+      wokeAt: undefined,
       gateLevel: undefined,
       gateRequest: undefined,
       gateOpen: undefined,

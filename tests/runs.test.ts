@@ -41,8 +41,8 @@ function transcript() {
   return [
     { role: 'user', text: 'Brief for agent one', toolUses: [], handle: 'h0' },
     { role: 'assistant', text: `storing ${'p'.repeat(200_000)}`, toolUses: [{ tool_use_id: 'tu-h', tool: FORWARD, input: SECTIONS }], handle: 'h1' },
-    { role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: 'tu-h', text: 'Handoff stored' }], handle: 'h2' },
-    { role: 'assistant', text: 'reading on after the handoff', toolUses: [], handle: 'h3' },
+    { role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: 'tu-h', text: 'Frontier stored' }], handle: 'h2' },
+    { role: 'assistant', text: 'reading on after the frontier', toolUses: [], handle: 'h3' },
     { role: 'user', text: 'a later note', toolUses: [], handle: 'h4' },
   ];
 }
@@ -54,7 +54,7 @@ async function rows(f: Fake): Promise<Record<string, unknown>[]> {
   return readdirSync(dir).filter((n) => n.endsWith('.jsonl')).flatMap((n) => readFileSync(join(dir, n), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)));
 }
 
-describe("a sub-agent's runs, and what arrives between a handoff and its install", () => {
+describe("a sub-agent's runs, and what arrives between a frontier and its install", () => {
   // A sub-agent waiting on its background children ends a run and is resumed by each child's notification: one request a run.
   const run = async (f: Fake, body: () => Promise<unknown>) => {
     await f.dispatch('turn.start', { text: '', turnId: 't1', agentId: A1 }, async () => ({}));
@@ -80,7 +80,7 @@ describe("a sub-agent's runs, and what arrives between a handoff and its install
     expect(((await run(f, () => ask(f))) as { messages: { text: string }[] }).messages[1]?.text).toMatch(/past the 160k ceiling/);
   });
 
-  it("installs a sub-agent's handoff stored in one run at an ask in its next run", async () => {
+  it("installs a sub-agent's frontier stored in one run at an ask in its next run", async () => {
     const f = await begin();
     await spawn(f);
     await run(f, async () => (await step(f, 90_000, A1), store(f, A1)));
@@ -88,10 +88,10 @@ describe("a sub-agent's runs, and what arrives between a handoff and its install
     expect((await rows(f)).filter((row) => row.event === 'compact').map((row) => row.decision)).toEqual(['install']);
   });
 
-  const ARRIVED = '## Arrived after you wrote your handoff: you have not read these yet';
+  const ARRIVED = '## Arrived after you wrote your frontier: you have not read these yet';
   const wakeText = (r: unknown): string => ((r as { messages: { text: string }[] }).messages ?? []).map((m) => m.text).join('\n');
 
-  it('carries what woke a sub-agent between its handoff and the install, which the compacted messages lack, into its wake', async () => {
+  it('carries what woke a sub-agent between its frontier and the install, which the compacted messages lack, into its wake', async () => {
     const f = await begin();
     await spawn(f);
     await run(f, async () => (await step(f, 90_000, A1), store(f, A1)));
@@ -101,7 +101,7 @@ describe("a sub-agent's runs, and what arrives between a handoff and its install
     expect(text).toMatch(/\(run-start\)\n<task-notification>digger 7 done: 42 offices<\/task-notification>/);
   });
 
-  it("carries main's notification and the person's message that arrived between its handoff and the install, and only those, into the wake", async () => {
+  it("carries main's notification and the person's message that arrived between its frontier and the install, and only those, into the wake", async () => {
     const f = await begin();
     await f.dispatch('prompt.submit', { text: '<task-notification>old agent done</task-notification>', origin: { kind: 'task-notification' } }, async () => ({}));
     await step(f, 30_000);

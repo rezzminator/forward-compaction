@@ -17,9 +17,9 @@ describe('nudgeLevel (R29)', () => {
 });
 
 describe('nudgeText (R29)', () => {
-  it('asks for a handoff at the next clean milestone, leaving the model the moment and not the choice, with the exact text', () => {
+  it('asks to compact once the current step is done, never in the middle of one, with the exact text', () => {
     expect(nudgeText({ tokens: 55_400, window: 200_000, ceiling: 120_000 })).toBe(
-      'forward-compaction: your context is 55k tokens (28% of your 200k max context), and every call re-sends all of it. Hand off at your next clean milestone: once the step in hand is finished and its results are written down, and before you start the next step, call mcp__forward-compaction__forward_compaction with objective, done, remaining and next. You pick the milestone, not whether: skip it only if nothing is left but writing your result and your final answer. At 120k the plugin compacts you mechanically, with no frontier from you. A handoff costs you nothing: you continue from it with every message after it, as many times as the work needs, so carry the task through to its end; never cut it short to avoid one. If this tool is not in your tool list, carry on.',
+      'forward-compaction: context 55k (28% of 200k). Once your current step is done — never in the middle of one — call mcp__forward-compaction__forward_compaction with objective, done, remaining and next; skip it if only your final answer is left. At 120k you are compacted mechanically. No such tool? Carry on.',
     );
   });
 
@@ -27,7 +27,7 @@ describe('nudgeText (R29)', () => {
     for (const tokens of [30_000, 67_000, 90_000, 119_000]) {
       const text = nudgeText({ tokens, window: 200_000, ceiling: 120_000 });
       expect(text).not.toMatch(/\bnow\b|\bsoon\b|asking to compact/);
-      expect(text).toContain(`your context is ${Math.round(tokens / 1000)}k tokens (${Math.round((tokens / 200_000) * 100)}% of your 200k max context)`);
+      expect(text).toContain(`context ${Math.round(tokens / 1000)}k (${Math.round((tokens / 200_000) * 100)}% of 200k)`);
     }
   });
 });
@@ -46,11 +46,11 @@ describe('k', () => {
   });
 
   it('names a 1M window "1M" in the nudge, never "1000k"', () => {
-    expect(nudgeText({ tokens: 213_000, window: 1_000_000, ceiling: 600_000 })).toContain('(21% of your 1M max context)');
+    expect(nudgeText({ tokens: 213_000, window: 1_000_000, ceiling: 600_000 })).toContain('(21% of 1M)');
   });
 });
 
-describe('the hand-off gate', () => {
+describe('the compaction gate', () => {
   const at = (over: Partial<Parameters<typeof gated>[0]> = {}) => gated({ party: 'subagent', level: 2, gateLevel: 2, stored: false, ignored: false, tool: 'Read', open: ['FC', 'LB', 'ToolSearch'], ...over });
 
   it('closes at its gate level, one step past the first nudge, at that level\'s nudge point', () => {
@@ -61,7 +61,7 @@ describe('the hand-off gate', () => {
     expect(at({ level: 1 })).toBe(false);
   });
 
-  it('never gates main, an ignored model, a party with a handoff stored or not yet nudged, or the tools that lead to the handoff', () => {
+  it('never gates main, an ignored model, a party with a frontier stored or not yet nudged, or the tools that lead to the frontier', () => {
     expect(at({ party: 'main' })).toBe(false);
     expect(at({ ignored: true })).toBe(false);
     expect(at({ stored: true })).toBe(false);
@@ -69,25 +69,22 @@ describe('the hand-off gate', () => {
     for (const tool of ['FC', 'LB', 'ToolSearch']) expect(at({ tool })).toBe(false);
   });
 
-  it('says nothing ran, to hand off now with what was found, and to repeat the call', () => {
-    expect(gateText({ tokens: 104_000, ceiling: 160_000, tool: 'FC' })).toBe('forward-compaction: this call did not run. Your context is 104k tokens and you have not handed off; at 160k the plugin compacts you mechanically and your work so far is lost. Call FC now, with objective, done, remaining and next: what you have read and concluded so far goes in done and findings, what is left in remaining. Then repeat this call; every call runs again once the handoff is stored. If FC is not in your tool list, repeat this call: it runs. A handoff costs you nothing: you continue from it with every message after it, as many times as the work needs, so carry the task through to its end; never cut it short to avoid one.');
+  it('says nothing ran, to compact first, and to repeat the call', () => {
+    expect(gateText({ tokens: 104_000, tool: 'FC' })).toBe('forward-compaction: this call did not run — at 104k you compact first. Call FC (objective, done, remaining, next), then repeat this call. Only your result and final answer left, or no such tool? Repeat this call: it runs.');
   });
 
   it('is announced by the nudge before it, and not once it closed', () => {
-    expect(nudgeText({ tokens: 85_000, window: 200_000, ceiling: 160_000, gateAt: 100_000 })).toContain(' From 100k your other calls wait until you have handed off. ');
+    expect(nudgeText({ tokens: 85_000, window: 200_000, ceiling: 160_000, gateAt: 100_000 })).toContain(' From 100k your other calls wait for it. ');
     expect(nudgeText({ tokens: 105_000, window: 200_000, ceiling: 160_000, gateAt: 100_000 })).not.toContain('your other calls wait');
     expect(nudgeText({ tokens: 85_000, window: 200_000, ceiling: 160_000 })).not.toContain('your other calls wait');
   });
 });
 
-describe('a handoff is said to cost nothing', () => {
-  const FREE = 'A handoff costs you nothing: you continue from it with every message after it, as many times as the work needs, so carry the task through to its end; never cut it short to avoid one.';
-  it('in every nudge, before and after the gate, and in the refusal', () => {
-    expect(nudgeText({ tokens: 85_000, window: 200_000, ceiling: 160_000, gateAt: 100_000 })).toContain(FREE);
-    expect(nudgeText({ tokens: 300_000, window: 1_000_000, ceiling: 600_000 })).toContain(FREE);
-    expect(gateText({ tokens: 104_000, ceiling: 160_000, tool: 'FC' })).toContain(`If FC is not in your tool list, repeat this call: it runs. ${FREE}`);
-  });
-  it('and the gate is named as a wait, not a refusal', () => {
-    expect(nudgeText({ tokens: 85_000, window: 200_000, ceiling: 160_000, gateAt: 100_000 })).toContain(' From 100k your other calls wait until you have handed off. ');
+describe('the nudge and the refusal stay short', () => {
+  it('make no promise about what a compaction keeps, and never say "lost"', () => {
+    for (const text of [gateText({ tokens: 104_000 }), nudgeText({ tokens: 85_000, window: 200_000, ceiling: 160_000, gateAt: 100_000 })]) {
+      expect(text).not.toMatch(/costs you nothing|every message after it|lost/);
+      expect(text.length).toBeLessThan(400);
+    }
   });
 });

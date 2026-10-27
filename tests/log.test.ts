@@ -216,28 +216,30 @@ exec /bin/chmod "$@"
     const notices: unknown[] = [];
     const run = async () => { throw new Error('permission denied'); };
     for (let n = 0; n < 2; n++) { queue?.add(JSON.stringify({ ...fields }) + '\n'); notices.push(await queue?.flush(run)); }
-    expect(notices).toEqual([{ dropped: 1, error: 'permission denied' }, { dropped: 1 }]);
+    expect(notices).toEqual([{ held: 1, lost: 0, error: 'permission denied' }, { held: 2, lost: 0 }]);
     queue?.add(JSON.stringify({ ...fields }) + '\n');
-    expect(await queue?.flush(async () => ({ exitCode: 0, stderr: '', stdout: '' }))).toEqual({ dropped: 0 });
+    expect(await queue?.flush(async () => ({ exitCode: 0, stderr: '', stdout: '' }))).toEqual({ held: 0, lost: 0 });
     queue?.add(JSON.stringify({ ...fields }) + '\n');
-    expect(await queue?.flush(async () => ({ exitCode: 2, stderr: 'disk full\ncontext', stdout: '' }))).toEqual({ dropped: 1, error: 'disk full' });
+    expect(await queue?.flush(async () => ({ exitCode: 2, stderr: 'disk full\ncontext', stdout: '' }))).toEqual({ held: 1, lost: 0, error: 'disk full' });
+    expect(await queue?.flush(async () => ({ exitCode: 0, stderr: '', stdout: '' }))).toEqual({ held: 0, lost: 0 });
     const starts: string[] = []; let release!: () => void;
     const held = new Promise<void>((resolve) => { release = resolve; });
     queue?.add(JSON.stringify({ ...fields, msg: 'first' }) + '\n');
     const first = queue?.flush(async (argv: string[]) => { starts.push(JSON.parse(argv[7]!).msg); await held; return { exitCode: 0, stderr: '', stdout: '' }; });
+    await Promise.resolve(); await Promise.resolve();
     queue?.add(JSON.stringify({ ...fields, msg: 'second' }) + '\n');
     const second = queue?.flush(async (argv: string[]) => { starts.push(JSON.parse(argv[7]!).msg); return { exitCode: 0, stderr: '', stdout: '' }; });
     await Promise.resolve(); await Promise.resolve();
     expect(starts).toEqual(['first']); release(); await first; await second;
     expect(starts).toEqual(['first', 'second']);
-    expect(await queue?.flush(async () => { throw new Error('empty queue executed'); })).toEqual({ dropped: 0 });
+    expect(await queue?.flush(async () => { throw new Error('empty queue executed'); })).toEqual({ held: 0, lost: 0 });
   });
   it.each([
-    ...['error', 'tool-register-failed', 'look-back-manual-error', 'option-error'].map((event) => [event, 'error', event, {}] as [string, string, string, Record<string, unknown>]),
-    ...['warning', 'decision-retention-failed', 'unseen-compaction'].map((event) => [event, 'warning', event, {}] as [string, string, string, Record<string, unknown>]),
+    ...['turn-end-rejected', 'tool-register-failed', 'look-back-manual-error', 'option-error'].map((event) => [event, 'error', event, {}] as [string, string, string, Record<string, unknown>]),
+    ...['compact-window', 'ceiling-below-ask', 'decision-retention-failed', 'unseen-compaction'].map((event) => [event, 'warning', event, {}] as [string, string, string, Record<string, unknown>]),
     ['compact', 'error', 'compact-error', { decision: 'error', error: 'bad reading' }],
   ])('routes %s as %s without carrying tool bodies', (event, level, output, extra) => {
-    const routed = future.pluginLogEvent?.({ event, ...extra as object, line: 'diagnostic', party: 'main', error: 'diagnostic failure', focus: 'private prompt', text: 'private handoff', query: 'private query', input: { body: 'private input' } });
+    const routed = future.pluginLogEvent?.({ event, ...extra as object, line: 'diagnostic', party: 'main', error: 'diagnostic failure', focus: 'private prompt', text: 'private frontier', query: 'private query', input: { body: 'private input' } });
     expect(routed).toMatchObject({ level, event: output, where: 'hooks/forward-compaction.ts#record' });
     expect(routed.detail).toEqual({ party: 'main', error: 'diagnostic failure', ...('why' in (extra as object) ? { why: (extra as any).why } : {}), ...('decision' in (extra as object) ? { decision: (extra as any).decision } : {}) });
   });
@@ -245,9 +247,9 @@ exec /bin/chmod "$@"
     expect(future.pluginLogEvent?.({ event: 'decision-retention-failed', problem: 'transcript: unreadable ({"body":"private transcript"})' })).toMatchObject({ level: 'warning', event: 'decision-retention-failed', msg: 'transcript: unreadable (unexpected API shape)', detail: { problem: 'transcript: unreadable (unexpected API shape)' } });
   });
   it('files routine hook traffic at info, keeping errors and warnings at their levels', () => {
-    const traffic = [{ event: 'nudge', party: 'main', tokens: 51_000, focus: 'private' }, { event: 'option-error', error: 'seating failed' }, { event: 'stored', party: 'main', chars: 40, line: 'stored 40 characters' }, { event: 'compact', party: 'main', decision: 'install', why: 'stored', line: 'main handoff landed' }];
+    const traffic = [{ event: 'nudge', party: 'main', tokens: 51_000, focus: 'private' }, { event: 'option-error', error: 'seating failed' }, { event: 'stored', party: 'main', chars: 40, line: 'stored 40 characters' }, { event: 'compact', party: 'main', decision: 'install', why: 'stored', line: 'main frontier landed' }];
     expect(traffic.flatMap((row) => future.pluginLogEvent?.(row) ?? []).map((row: any) => [row.level, row.event, row.msg])).toEqual([
-      ['info', 'nudge', 'nudge'], ['error', 'option-error', 'seating failed'], ['info', 'stored', 'stored 40 characters'], ['info', 'compact', 'main handoff landed'],
+      ['info', 'nudge', 'nudge'], ['error', 'option-error', 'seating failed'], ['info', 'stored', 'stored 40 characters'], ['info', 'compact', 'main frontier landed'],
     ]);
     expect(future.pluginLogEvent?.({ event: 'nudge', party: 'main', tokens: 51_000, focus: 'private' }).detail).toEqual({ party: 'main', tokens: 51_000 });
     expect(future.pluginLogEvent?.({ event: 'stored', party: 'main', chars: 40, files: 2, tokens: 9 }).detail).toEqual({ party: 'main', chars: 40, files: 2, tokens: 9 });

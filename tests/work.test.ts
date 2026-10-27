@@ -16,7 +16,14 @@ describe('workOf: what a finished call records', () => {
     expect(workOf('Edit', { file_path: '/w/a.ts' }, { deny: 'no' })).toEqual([]);
     expect(workOf('Write', { file_path: '/w/a.ts' }, { isError: true, text: 'EACCES' })).toEqual([]);
     expect(workOf('Read', {}, ok)).toEqual([]);
-    expect(workOf('Bash', { command: 'ls' }, ok)).toEqual([]);
+    expect(workOf('Grep', { pattern: 'x' }, ok)).toEqual([]);
+  });
+
+  it('M2 + M4: records a Bash call\'s command verbatim with its description, an errored one too (the command to rerun), never a denied one or its output', () => {
+    expect(workOf('Bash', { command: 'npm test -- a.test.ts', description: 'Run the a tests' }, { text: 'output never kept' })).toEqual([{ kind: 'command', command: 'npm test -- a.test.ts', description: 'Run the a tests' }]);
+    expect(workOf('Bash', { command: 'false' }, { isError: true, text: 'exit 1' })).toEqual([{ kind: 'command', command: 'false' }]);
+    expect(workOf('Bash', { command: 'rm x' }, { deny: 'no' })).toEqual([]);
+    expect(workOf('Bash', {}, ok)).toEqual([]);
   });
 
   it('records the todo list as set, and task creates and updates with the id from the answer', () => {
@@ -47,5 +54,11 @@ describe("workSummary: a party's files and tasks", () => {
     expect(workSummary(tasks).tasks).toEqual(['[~] one, renamed']);
     expect(workSummary([...tasks, { kind: 'todos', lines: ['[x] new todo'] }]).tasks).toEqual(['[x] new todo']);
     expect(workSummary([]).tasks).toEqual([]);
+  });
+
+  it('lists the commands newest first, each once at its newest run', () => {
+    const run = (command: string, description?: string): WorkFact => ({ kind: 'command', command, ...(description !== undefined ? { description } : {}) });
+    expect(workSummary([run('make', 'Build'), run('ls'), run('make', 'Build again')]).commands).toEqual([{ command: 'make', description: 'Build again' }, { command: 'ls' }]);
+    expect(workSummary([]).commands).toEqual([]);
   });
 });

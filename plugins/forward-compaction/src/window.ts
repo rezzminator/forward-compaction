@@ -29,8 +29,8 @@ export function ignoredBy(model: string | undefined, list: readonly string[]): s
 }
 
 /**
- * The context at which a party with no handoff stored is compacted mechanically: the size against the party's max context.
- * A party past it is still asked to compact before every request, so the ceiling is where the plugin gives up waiting for a handoff.
+ * The context at which a party with no frontier stored is compacted mechanically: the size against the party's max context.
+ * A party past it is still asked to compact before every request, so the ceiling is where the plugin gives up waiting for a frontier.
  */
 export function ceilingTokens(size: Size, maxContext: number): number {
   return sizeTokens(size, maxContext);
@@ -96,7 +96,7 @@ export function loadFilesRoom(maxContext: number, ratio: number | undefined): nu
 
 /**
  * The `CLAUDE_CODE_AUTO_COMPACT_WINDOW` the README asks for: Claude Code then asks about every request from about 63k, early
- * enough for a stored handoff to install (CLAUDE.md, Spine). A recommendation named to the owner, never a measured size.
+ * enough for a stored frontier to install (CLAUDE.md, Spine). A recommendation named to the owner, never a measured size.
  */
 export const RECOMMENDED_COMPACT_WINDOW = 100_000;
 
@@ -104,7 +104,7 @@ export type StartWarning = { key: string; line: string; row: Record<string, unkn
 
 /**
  * What session.start names once, from Claude Code's own numbers: a compaction window (`rawMaxTokens`) past
- * RECOMMENDED_COMPACT_WINDOW, which holds every handoff back to Claude Code's late ask, and a party whose ceiling is below
+ * RECOMMENDED_COMPACT_WINDOW, which holds every frontier back to Claude Code's late ask, and a party whose ceiling is below
  * its ask point. Nothing it cannot read is named.
  */
 export function startWarnings(breakdown: UsageBreakdown | undefined, apiAsk: AskPoint | undefined, main: Marks | undefined, subagent: Marks): StartWarning[] {
@@ -114,16 +114,16 @@ export function startWarnings(breakdown: UsageBreakdown | undefined, apiAsk: Ask
     const source = breakdown?.autocompactSource ?? 'unknown';
     out.push({
       key: 'compact-window',
-      line: `forward-compaction: Claude Code compacts against a ${k(raw)} window (${source}) and asks to compact from about ${k(apiAsk.tokens)}, so a handoff installs no earlier. Set CLAUDE_CODE_AUTO_COMPACT_WINDOW to ${RECOMMENDED_COMPACT_WINDOW} in your settings env.`,
-      row: { event: 'warning', key: 'compact-window', rawMaxTokens: raw, autocompactSource: source, askPoint: apiAsk.tokens },
+      line: `forward-compaction: Claude Code compacts against a ${k(raw)} window (${source}) and asks to compact from about ${k(apiAsk.tokens)}, so a frontier installs no earlier. Set CLAUDE_CODE_AUTO_COMPACT_WINDOW to ${RECOMMENDED_COMPACT_WINDOW} in your settings env.`,
+      row: { event: 'compact-window', key: 'compact-window', rawMaxTokens: raw, autocompactSource: source, askPoint: apiAsk.tokens },
     });
   }
   for (const [kind, key, m] of [['main', 'ceiling-below-ask', main], ['sub-agent', 'ceiling-below-ask:subagent', subagent]] as const) {
     if (m === undefined || m.ceiling >= m.askPoint) continue;
     out.push({
       key,
-      line: `forward-compaction: the ${kind} ceiling ${k(m.ceiling)} is below Claude Code's ask point ${k(m.askPoint)}; a ${kind} with no handoff is compacted mechanically at its first ask.`,
-      row: { event: 'warning', key, ceiling: m.ceiling, askPoint: m.askPoint },
+      line: `forward-compaction: the ${kind} ceiling ${k(m.ceiling)} is below Claude Code's ask point ${k(m.askPoint)}; a ${kind} with no frontier is compacted mechanically at its first ask.`,
+      row: { event: 'ceiling-below-ask', key, ceiling: m.ceiling, askPoint: m.askPoint },
     });
   }
   return out;

@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { Parties, type StoredHandoff } from '../plugins/forward-compaction/src/parties.ts';
+import { Parties, type StoredFrontier } from '../plugins/forward-compaction/src/parties.ts';
+import { nudgeLevel } from '../plugins/forward-compaction/src/nudge.ts';
 
-const LANDING = { kind: 'handoff' as const, label: 'main', before: 70_000, chars: 10, facts: 1, kept: 0, dropped: 0 };
-const handoff = (toolUseId: string, storedAtTokens = 41_200): Omit<StoredHandoff, 'seq'> => ({
+const LANDING = { kind: 'frontier' as const, label: 'main', before: 70_000, chars: 10, facts: 1, kept: 0, dropped: 0 };
+const frontier = (toolUseId: string, storedAtTokens = 41_200): Omit<StoredFrontier, 'seq'> => ({
   text: '## Objective\nx\n## Done\ny\n## Remaining\nz\n## Next\nw',
   loadFiles: [],
   toolUseId,
@@ -61,18 +62,18 @@ describe('ignored and windowUnknown (Ignored models)', () => {
 });
 
 describe('store and takeStored', () => {
-  it('stores a handoff with a rising seq and returns the one it replaced', () => {
+  it('stores a frontier with a rising seq and returns the one it replaced', () => {
     const parties = new Parties();
-    expect(parties.store('main', handoff('t1', 30_500))).toBeUndefined();
+    expect(parties.store('main', frontier('t1', 30_500))).toBeUndefined();
     expect(parties.get('main').stored).toMatchObject({ toolUseId: 't1', storedAtTokens: 30_500, seq: 1 });
-    const replaced = parties.store('main', handoff('t2'));
+    const replaced = parties.store('main', frontier('t2'));
     expect(replaced).toMatchObject({ toolUseId: 't1', storedAtTokens: 30_500 });
     expect(parties.get('main').stored).toMatchObject({ toolUseId: 't2', seq: 2 });
   });
 
   it('takeStored hands it back once and clears it', () => {
     const parties = new Parties();
-    parties.store('agent:a1', handoff('t1'));
+    parties.store('agent:a1', frontier('t1'));
     expect(parties.takeStored('agent:a1')?.toolUseId).toBe('t1');
     expect(parties.takeStored('agent:a1')).toBeUndefined();
     expect(parties.get('agent:a1').stored).toBeUndefined();
@@ -98,10 +99,10 @@ describe('nudgeDue (R30)', () => {
     expect(parties.nudgeDue('main', 1)).toBe(false);
   });
 
-  it('owes nothing at level 0 and nothing while a handoff is stored', () => {
+  it('owes nothing at level 0 and nothing while a frontier is stored', () => {
     const parties = new Parties();
     expect(parties.nudgeDue('main', 0)).toBe(false);
-    parties.store('main', handoff('t1'));
+    parties.store('main', frontier('t1'));
     expect(parties.nudgeDue('main', 5)).toBe(false);
   });
 
@@ -150,6 +151,19 @@ describe('the first reading after an install (no re-nudge)', () => {
     parties.read('main', 72_000, 5);
     expect(parties.get('main').nudgeLevel).toBe(4);
     expect(parties.nudgeDue('main', 5)).toBe(true);
+  });
+
+  it('sends no nudge loop after a wake (S2, decisions 0f3e8b92 rows 20-25): the next one only once the context grew by every past the first reading', () => {
+    // start 40k, every 20k: woken, the first reading 66,560 is level 2, just under the 80k boundary.
+    const parties = new Parties();
+    const at = (tokens: number) => nudgeLevel(tokens, 40_000, 20_000);
+    parties.nudgeDue('agent:a1', at(85_000), 85_000, 20_000);
+    parties.installed('agent:a1');
+    parties.read('agent:a1', 66_560, at(66_560));
+    const due = (tokens: number) => (parties.read('agent:a1', tokens, at(tokens)), parties.nudgeDue('agent:a1', at(tokens), tokens, 20_000));
+    expect([72_000, 79_000, 81_000, 86_559].map(due)).toEqual([false, false, false, false]); // 81k crossed a level boundary 14k after the wake
+    expect(due(86_560)).toBe(true);
+    expect(parties.get('agent:a1').gateLevel).toBe(at(86_560) + 1);
   });
 
   it('absorbs nothing for a party never installed', () => {
@@ -205,12 +219,12 @@ describe('asked, answered and reactive (D8)', () => {
 });
 
 describe('installed', () => {
-  it('clears the handoff, the nudges and the reading, counts the install, sets the turn mark and holds the landing', () => {
+  it('clears the frontier, the nudges and the reading, counts the install, sets the turn mark and holds the landing', () => {
     const parties = new Parties();
     parties.read('main', 70_000);
     parties.nudgeDue('main', 3);
     parties.asked('main', 'skip');
-    parties.store('main', handoff('t1'));
+    parties.store('main', frontier('t1'));
     expect(parties.installed('main', LANDING)).toBeUndefined();
     expect(parties.get('main')).toMatchObject({ nudgeLevel: 0, absorbNext: true, installs: 1, installedThisTurn: true, lastDecision: 'install', landing: LANDING });
     expect(parties.get('main').reading).toBeUndefined(); // no estimate stands in for a reading
@@ -250,7 +264,7 @@ describe('forget', () => {
     const parties = new Parties();
     parties.describe('agent:a1', { label: 'x', model: 'claude-opus-5-5' });
     parties.read('agent:a1', 5_000);
-    parties.store('agent:a1', handoff('t1'));
+    parties.store('agent:a1', frontier('t1'));
     parties.forget('agent:a1');
     expect(parties.get('agent:a1')).toMatchObject({ label: 'agent:a1', installs: 0 });
     expect(parties.get('agent:a1').model).toBeUndefined();
@@ -265,7 +279,10 @@ describe('Parties ignore judgement', () => {
   it("judges main unknown until its window is read, then managed, or ignored once its model is on the list", () => {
     const parties = new Parties();
     expect(parties.judgement('main', { ...read, mainKnown: false })).toBe('unknown');
+    expect(parties.judgement('main', read)).toBe('unknown'); // no step has named its model yet, as for a sub-agent
+    parties.describe('main', { model: 'claude-sonnet-5-5' });
     expect(parties.judgement('main', read)).toBe('managed');
+    expect(parties.judgement('main', { ...read, mainKnown: false })).toBe('unknown');
     parties.describe('main', { model: 'claude-haiku-4-5' });
     expect(parties.judgement('main', read)).toBe('ignored');
     expect(parties.judgement('main', { ...read, mainKnown: false })).toBe('ignored'); // the list needs no window
@@ -299,9 +316,31 @@ describe('Parties ignore judgement', () => {
 
   it('a party that starts over is judged afresh', () => {
     const parties = new Parties();
+    parties.describe('main', { model: 'claude-sonnet-5-5' });
     expect(parties.judged('main', read)?.judged).toBe('managed');
     parties.forget('main');
-    expect(parties.judged('main', read)?.judged).toBe('managed');
+    expect(parties.judged('main', read)?.judged).toBe('unknown');
+  });
+
+  it('keeps a known model when a step names none: no judgement falls back to unknown', () => {
+    const parties = new Parties();
+    parties.describe('agent:a1', { model: 'claude-sonnet-5-5' });
+    expect(parties.judged('agent:a1', read)?.judged).toBe('managed');
+    parties.describe('agent:a1', { model: undefined });
+    expect(parties.get('agent:a1').model).toBe('claude-sonnet-5-5');
+    expect(parties.judged('agent:a1', read)).toBeUndefined();
+  });
+
+  it('takes back the judgement and model $.state kept across a plugin reload, so an unchanged judgement writes no row', () => {
+    const parties = new Parties();
+    parties.restoreJudged('main', 'junk');
+    expect(parties.get('main').judged).toBeUndefined();
+    parties.restoreJudged('main', { judged: 'managed', model: 'claude-sonnet-5-5' });
+    expect(parties.get('main')).toMatchObject({ judged: 'managed', model: 'claude-sonnet-5-5' });
+    expect(parties.judged('main', read)).toBeUndefined();
+    parties.describe('agent:a1', { model: 'claude-haiku-4-5' });
+    parties.restoreJudged('agent:a1', { judged: 'managed', model: 'claude-sonnet-5-5' });
+    expect(parties.get('agent:a1').model).toBe('claude-haiku-4-5'); // a model named in this process wins
   });
 });
 

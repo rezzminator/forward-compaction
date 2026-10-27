@@ -185,7 +185,7 @@ describe('look_back readable transcript entries (R4)', () => {
     const found = entries([
       row(3, [text('the needle as the user said it')]),
       row(5, [{ type: 'tool_use', id: 'f1', name: 'mcp__forward-compaction__forward_compaction', input: { next: 'needle' } }], 'assistant'),
-      row(6, [{ type: 'tool_result', tool_use_id: 'f1', content: 'Handoff stored: needle' }]),
+      row(6, [{ type: 'tool_result', tool_use_id: 'f1', content: 'Frontier stored: needle' }]),
     ].join('\n'));
     const out = api('searchResults')(found, ['needle'], 9, api('toolNames')(found), 'mcp__forward-compaction__forward_compaction');
     expect(out.text.split('\n\n').map((hit: string) => hit.split('  ')[0])).toEqual(['#3', '#6', '#5']);

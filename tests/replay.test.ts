@@ -9,8 +9,8 @@ import { describe, expect, it, vi } from 'vitest';
 import { ANSWERS, loadFixture, invocations, replay, recordSynthetic, type Invocation } from './fakes/replay-engine.ts';
 import { ENV_NAMES, PATHS, PART_CHARS, RECORDED, rowFiles, type Row } from '../scripts/replay/recorder.ts';
 import { contextTokens } from '../plugins/forward-compaction/src/decide.ts';
-import { parseHandoff } from '../plugins/forward-compaction/src/handoff.ts';
-import { resolveOptions } from '../plugins/forward-compaction/src/options.ts';
+import { parseFrontier } from '../plugins/forward-compaction/src/frontier.ts';
+import { resolveOptions, subagentMaxContext } from '../plugins/forward-compaction/src/options.ts';
 import { askPointOf, partyMarks } from '../plugins/forward-compaction/src/window.ts';
 
 const ROOT = join(import.meta.dirname, '..');
@@ -29,12 +29,12 @@ const isForward = (tool: unknown): boolean => typeof tool === 'string' && tool.e
 const wakeOf = (inv: Invocation): any[] | undefined => (inv.hook === 'session.compact' && inv.next === undefined && Array.isArray(inv.end?.result?.messages) ? inv.end!.result.messages : undefined);
 const texts = (messages: readonly any[]): string => messages.map((m) => [m.text ?? '', ...(m.toolResults ?? []).map((r: any) => r.text ?? '')].join('\n')).join('\n');
 const nextWake = (view: View, key: string, after: number): Invocation | undefined => view.find((c) => c.seq > after && party(c.input) === key && wakeOf(c) !== undefined);
-/** The handoff the plugin assembled from the call's section arguments, or undefined when it refused them. */
+/** The frontier the plugin assembled from the call's section arguments, or undefined when it refused them. */
 const SECTION_KEYS = ['objective', 'done', 'remaining', 'next', 'blocked', 'findings'];
-const handoffOf = (call: Invocation): string | undefined => {
+const frontierOf = (call: Invocation): string | undefined => {
   const args = call.input?.objective !== undefined ? call.input : call.input?.input ?? {};
-  const out = parseHandoff(Object.fromEntries(SECTION_KEYS.filter((key) => key in args).map((key) => [key, args[key]])));
-  return 'handoff' in out ? out.handoff : undefined;
+  const out = parseFrontier(Object.fromEntries(SECTION_KEYS.filter((key) => key in args).map((key) => [key, args[key]])));
+  return 'frontier' in out ? out.frontier : undefined;
 };
 const count = (hay: string, needle: string): number => (needle === '' ? 0 : hay.split(needle).length - 1);
 const knownAgents = (view: View): Set<string> => new Set(view.filter((i) => i.hook === 'agent.spawn').map((i) => i.nextResult?.result?.agentId).filter((id): id is string => typeof id === 'string'));
@@ -45,7 +45,7 @@ function askPointAt(view: View, key: string): number {
   const vars = Object.fromEntries(view.flatMap((i) => i.calls).filter((c) => c.path === 'env.get' && typeof c.result === 'string').map((c) => [c.args[0] as string, c.result as string]));
   const config = resolveOptions({ vars });
   const api = askPointOf(usage?.breakdown, usage?.window)?.tokens;
-  const m = key === 'main' ? partyMarks(config.main, config.main.maxContext ?? usage?.window, api) : partyMarks(config.subagent, config.subagent.maxContext, api);
+  const m = key === 'main' ? partyMarks(config.main, config.main.maxContext ?? usage?.window, api) : partyMarks(config.subagent, subagentMaxContext(config.subagent.maxContext, view.find((i) => i.hook === 'turn.step' && party(i.input) === key)?.input?.model), api);
   return m?.askPoint ?? Number.POSITIVE_INFINITY;
 }
 /** The party's reading the plugin held at `seq`: the last of its steps that had ended by then (a step still open, its tools running, is not read yet). */
@@ -54,7 +54,7 @@ function readingAt(view: View, key: string, seq: number): number | undefined {
   return last ? contextTokens(last.end?.result?.usage) : undefined;
 }
 
-/** The I3 tail rule: the handoff verbatim in the last hook-built message, then only handle-carrying messages, a suffix of the ask's messages after the anchor's results. */
+/** The I3 tail rule: the frontier verbatim in the last hook-built message, then only handle-carrying messages, a suffix of the ask's messages after the anchor's results. */
 function tailAfterAnchor(messages: readonly any[], id: string): string[] | undefined {
   const anchor = messages.findIndex((m) => m.toolUses?.some((u: any) => u.tool_use_id === id));
   const results = messages.findIndex((m, i) => i > anchor && m.toolResults?.some((r: any) => r.tool_use_id === id));
@@ -78,13 +78,13 @@ export const INVARIANTS: Record<Name, (view: View, recorded: boolean) => Verdict
     let subjects = 0;
     for (const c of view) {
       const wake = wakeOf(c);
-      if (!wake || !wake.some((m) => typeof m.text === 'string' && m.text.includes('=== handoff ==='))) continue;
+      if (!wake || !wake.some((m) => typeof m.text === 'string' && m.text.includes('=== frontier ==='))) continue;
       subjects++;
       const ask: any[] = c.input?.messages ?? [];
       const call = [...view].reverse().find((t) => t.seq < c.seq && t.hook === 'tool.call' && isForward(t.input?.tool) && party(t.input) === party(c.input) && tailAfterAnchor(ask, t.input.tool_use_id) !== undefined);
       if (!call) { failures.push(`I3 ${at(c)}: no forward_compaction call of this party is in the ask's messages`); continue; }
       const h = wake.findLastIndex((m) => m.handle === undefined);
-      if (h < 0 || !String(wake[h].text).includes(`=== handoff ===\n${handoffOf(call)}\n=== end of handoff ===`)) failures.push(`I3 ${at(c)}: the last hook-built message lacks the handoff of tool.call #${call.id} verbatim`);
+      if (h < 0 || !String(wake[h].text).includes(`=== frontier ===\n${frontierOf(call)}\n=== end of frontier ===`)) failures.push(`I3 ${at(c)}: the last hook-built message lacks the frontier of tool.call #${call.id} verbatim`);
       const tail = wake.slice(h + 1).map((m) => m.handle);
       const after = tailAfterAnchor(ask, call.input.tool_use_id)!;
       if (tail.some((x) => typeof x !== 'string')) failures.push(`I3 ${at(c)}: a tail message carries no handle`);
@@ -167,8 +167,9 @@ export const INVARIANTS: Record<Name, (view: View, recorded: boolean) => Verdict
     const said = (wake: Invocation): boolean => {
       const label = party(wake.input) === 'main' ? 'main' : String(wake.input.agentId).slice(0, 6);
       const step = view.find((i) => i.hook === 'turn.step' && i.seq > wake.seq && party(i.input) === party(wake.input));
-      // Said on screen (a mechanical wake; a handoff too, in recordings made before 1.0.0-dev.3), or logged in a row the plugin writes through process.run.
-      const told = (c: { path: string; args: unknown[] }): boolean => c.path === 'ui.log' ? /handoff landed — |mechanical wake (was )?installed/.test(String(c.args[0])) && String(c.args[0]).includes(label) && (c.args[1] as any)?.to !== 'debug' : c.path === 'process.run' && JSON.stringify(c.args).includes('handoff landed') && JSON.stringify(c.args).includes(label);
+      // Logged in a row the plugin writes through process.run, or said on screen in recordings of older builds (a mechanical wake; a frontier too before 1.0.0-dev.3).
+      const landed = /frontier landed — |mechanical wake (was )?installed/;
+      const told = (c: { path: string; args: unknown[] }): boolean => c.path === 'ui.log' ? landed.test(String(c.args[0])) && String(c.args[0]).includes(label) && (c.args[1] as any)?.to !== 'debug' : c.path === 'process.run' && landed.test(JSON.stringify(c.args)) && JSON.stringify(c.args).includes(label);
       return view.some((i) => i.seq >= wake.seq && i.seq <= (step?.endSeq ?? Infinity) && i.calls.some(told));
     };
     return { subjects: subjects.length, failures: subjects.filter((i) => !said(i)).map((i) => `I10 ${at(i)}: the install's landed line was neither logged nor said by the party's first reading after it`) };
@@ -176,7 +177,7 @@ export const INVARIANTS: Record<Name, (view: View, recorded: boolean) => Verdict
   I11(view) {
     const failures: string[] = [];
     let subjects = 0;
-    const installs = view.filter((i) => wakeOf(i)?.some((m) => String(m.text).includes('=== handoff ===')));
+    const installs = view.filter((i) => wakeOf(i)?.some((m) => String(m.text).includes('=== frontier ===')));
     for (const [n, second] of installs.entries()) {
       const first = installs.slice(0, n).reverse().find((i) => party(i.input) === party(second.input));
       if (!first) continue;
@@ -206,7 +207,7 @@ export const INVARIANTS: Record<Name, (view: View, recorded: boolean) => Verdict
     let subjects = 0;
     for (const t of view.filter((i) => i.hook === 'tool.call' && isForward(i.input?.tool) && party(i.input) !== 'main')) {
       const reading = readingAt(view, party(t.input), t.seq);
-      if (reading === undefined || reading >= askPointAt(view, party(t.input)) || !/Handoff stored/.test(String(t.end?.result?.result))) continue;
+      if (reading === undefined || reading >= askPointAt(view, party(t.input)) || !/Frontier stored/.test(String(t.end?.result?.result))) continue;
       subjects++;
       if (!String(t.end?.result?.result).includes('from about')) failures.push(`I13 ${at(t)}: a sub-agent's receipt below its ask point lacks "from about"`);
     }

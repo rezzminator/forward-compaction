@@ -5,7 +5,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import { register } from '../plugins/forward-compaction/hooks/forward-compaction.ts';
-import { FORWARD_INPUT_SCHEMA, FORWARD_TOOL_DESCRIPTION } from '../plugins/forward-compaction/src/handoff.ts';
+import { FORWARD_INPUT_SCHEMA, FORWARD_TOOL_DESCRIPTION } from '../plugins/forward-compaction/src/frontier.ts';
 import { LOOK_BACK_DESCRIPTION, LOOK_BACK_INPUT_SCHEMA } from '../plugins/forward-compaction/src/look-back.ts';
 import { OPTION_ENV } from '../plugins/forward-compaction/src/options.ts';
 import { toolsToRegister } from '../plugins/forward-compaction/src/register.ts';
@@ -73,6 +73,7 @@ describe('the plugin as loaded', () => {
     await dispatch('session.start', { reason: 'startup' });
     expect(registered.map((spec) => spec.name).sort()).toEqual(['forward_compaction', 'look_back']);
     expect(registered.find((spec) => spec.name === 'forward_compaction')).toMatchObject({ description: FORWARD_TOOL_DESCRIPTION, inputSchema: FORWARD_INPUT_SCHEMA, isDeferred: false });
+    expect(registered.find((spec) => spec.name === 'look_back')).toMatchObject({ isDeferred: false }); // its schema loads with the prompt, so a woken party can call it at once
     expect(registered.find((spec) => spec.name === 'look_back')).toMatchObject({ description: LOOK_BACK_DESCRIPTION, inputSchema: LOOK_BACK_INPUT_SCHEMA });
   });
 

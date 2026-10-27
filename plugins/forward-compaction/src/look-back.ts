@@ -1,7 +1,7 @@
 // Recovery is bounded to one party's pre-compaction prefix. Only the adapter does I/O.
 export const LOOK_BACK_TOOL = 'look_back';
 export const LOOK_BACK_DESCRIPTION = 'Recover an exact detail — when you need an error text, code snippet, value, or what the user said from before your latest compaction. Searches only your own transcript’s part you no longer hold. Each call tells the person what you looked up. Returns numbered snippets or a whole entry; failures say why, no matches suggests other words. Example: {query:"connection refused"}.';
-export const LOOK_BACK_HINT = 'Need an exact detail from before this handoff? look_back finds it.';
+export const LOOK_BACK_HINT = 'Need an exact detail from before this frontier? look_back finds it.';
 export const LOOK_BACK_INPUT_SCHEMA = {
   type: 'object',
   properties: {

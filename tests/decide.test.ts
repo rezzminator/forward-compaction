@@ -5,7 +5,7 @@ const base: DecideInput = { trigger: 'auto', party: 'main', stored: false, token
 const ask = (patch: Partial<DecideInput>) => decide({ ...base, ...patch });
 
 describe('decide: manual and precompute (C1, C2, R25)', () => {
-  it('C1 leaves a manual /compact to Claude Code and drops the stored handoff, for every party and state', () => {
+  it('C1 leaves a manual /compact to Claude Code and drops the stored frontier, for every party and state', () => {
     for (const party of ['main', 'subagent', 'foreign'] as const) {
       for (const stored of [true, false]) {
         expect(ask({ trigger: 'manual', party, stored })).toMatchObject({ action: 'next', decision: 'native', why: 'manual', dropStored: true });
@@ -22,7 +22,7 @@ describe('decide: manual and precompute (C1, C2, R25)', () => {
 });
 
 describe('decide: plugin trigger (C3-C5, R28)', () => {
-  it('C3 installs a stored handoff for main', () => {
+  it('C3 installs a stored frontier for main', () => {
     expect(ask({ trigger: 'plugin', party: 'main', stored: true })).toMatchObject({ action: 'install', decision: 'install' });
   });
 
@@ -30,7 +30,7 @@ describe('decide: plugin trigger (C3-C5, R28)', () => {
     expect(ask({ trigger: 'plugin', party: 'main', stored: false })).toMatchObject({ action: 'next', decision: 'pass' });
   });
 
-  it('C4 drops a stored handoff whose call left the transcript', () => {
+  it('C4 drops a stored frontier whose call left the transcript', () => {
     expect(ask({ trigger: 'plugin', party: 'main', stored: false, storedMissing: true })).toMatchObject({ action: 'next', decision: 'pass', dropStored: true });
   });
 
@@ -47,7 +47,7 @@ describe('decide: automatic ask (C6-C10, R26-R28)', () => {
     expect(ask({ party: 'foreign', stored: true, tokens: 500_000 })).toMatchObject({ action: 'next', why: 'foreign' });
   });
 
-  it('C7 installs a stored handoff for main and a sub-agent, at any size', () => {
+  it('C7 installs a stored frontier for main and a sub-agent, at any size', () => {
     for (const party of ['main', 'subagent'] as const) {
       for (const tokens of [10_000, 80_000, 150_000]) expect(ask({ party, stored: true, tokens })).toMatchObject({ action: 'install', decision: 'install', why: 'stored' });
     }
@@ -57,7 +57,7 @@ describe('decide: automatic ask (C6-C10, R26-R28)', () => {
     expect(ask({ stored: true, reactive: true })).toMatchObject({ action: 'install' });
   });
 
-  it('C8 drops a stored handoff whose call is not in the messages, then goes on as if none were stored (skip)', () => {
+  it('C8 drops a stored frontier whose call is not in the messages, then goes on as if none were stored (skip)', () => {
     expect(ask({ stored: false, storedMissing: true, tokens: 80_000 })).toMatchObject({ action: 'skip', dropStored: true });
   });
 
@@ -71,14 +71,14 @@ describe('decide: automatic ask (C6-C10, R26-R28)', () => {
       action: 'skip',
       decision: 'skip',
       why: 'waiting',
-      reason: "forward-compaction: holding Claude Code's compaction for main until its handoff is stored or the ceiling is reached",
+      reason: "forward-compaction: holding Claude Code's compaction for main until its frontier is stored or the ceiling is reached",
     });
     expect(skip).not.toHaveProperty('nudge');
-    expect(ask({ party: 'subagent', label: 'general-purpose a1b2c3', tokens: 70_000 })).toMatchObject({ reason: "forward-compaction: holding Claude Code's compaction for general-purpose a1b2c3 until its handoff is stored or the ceiling is reached" });
+    expect(ask({ party: 'subagent', label: 'general-purpose a1b2c3', tokens: 70_000 })).toMatchObject({ reason: "forward-compaction: holding Claude Code's compaction for general-purpose a1b2c3 until its frontier is stored or the ceiling is reached" });
     expect(ask({ tokens: 99_999 }).action).toBe('skip');
   });
 
-  it('C9 drops nothing when no handoff was stored', () => {
+  it('C9 drops nothing when no frontier was stored', () => {
     expect(ask({ tokens: 80_000 })).not.toHaveProperty('dropStored');
   });
 
@@ -93,7 +93,7 @@ describe('decide: automatic ask (C6-C10, R26-R28)', () => {
 
   it('C9 holds a sub-agent whose window is not known past the ceiling, as waiting; a request too long stays mechanical', () => {
     expect(ask({ party: 'subagent', tokens: 189_000, ceiling: 120_000, windowUnknown: true, label: 'flights-foreman-sonnet a55986' })).toEqual({
-      action: 'skip', decision: 'skip', why: 'waiting', reason: "forward-compaction: holding Claude Code's compaction for flights-foreman-sonnet a55986 until its handoff is stored or the ceiling is reached",
+      action: 'skip', decision: 'skip', why: 'waiting', reason: "forward-compaction: holding Claude Code's compaction for flights-foreman-sonnet a55986 until its frontier is stored or the ceiling is reached",
     });
     expect(ask({ party: 'subagent', tokens: 189_000, ceiling: 120_000, windowUnknown: true, reactive: true })).toMatchObject({ action: 'mechanical', why: 'reactive' });
     expect(ask({ party: 'subagent', tokens: 189_000, ceiling: 120_000, windowUnknown: true, stored: true })).toMatchObject({ action: 'install' });
@@ -122,11 +122,11 @@ describe('decide: automatic ask (C6-C10, R26-R28)', () => {
 describe('turnEndDoor (P1)', () => {
   const door = { main: true, reason: 'answer', stored: true, installedThisTurn: false } as const;
 
-  it('compacts main at the end of an answered turn with a handoff stored and no install yet this turn', () => {
+  it('compacts main at the end of an answered turn with a frontier stored and no install yet this turn', () => {
     expect(turnEndDoor(door)).toEqual({ compact: true });
   });
 
-  it('keeps the handoff, with the reason, for a sub-agent, a turn that did not answer, nothing stored, or an install already made', () => {
+  it('keeps the frontier, with the reason, for a sub-agent, a turn that did not answer, nothing stored, or an install already made', () => {
     expect(turnEndDoor({ ...door, main: false })).toEqual({ compact: false, why: 'not-main' });
     for (const reason of ['aborted', 'refusal', 'error'] as const) expect(turnEndDoor({ ...door, reason })).toEqual({ compact: false, why: 'not-answered' });
     expect(turnEndDoor({ ...door, stored: false })).toEqual({ compact: false, why: 'nothing-stored' });
@@ -197,7 +197,7 @@ describe('decide: no reading', () => {
     }
   });
 
-  it('still installs a stored handoff and still goes mechanical on a reactive ask with no reading', () => {
+  it('still installs a stored frontier and still goes mechanical on a reactive ask with no reading', () => {
     expect(decide({ trigger: 'auto', party: 'subagent', stored: true })).toMatchObject({ action: 'install' });
     expect(decide({ trigger: 'auto', party: 'main', ceiling: 120_000, reactive: true })).toMatchObject({ action: 'mechanical', why: 'reactive' });
     expect(decide({ trigger: 'auto', party: 'main', ceiling: 120_000, storedMissing: true })).toMatchObject({ why: 'no-reading', dropStored: true });
