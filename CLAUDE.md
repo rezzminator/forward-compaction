@@ -21,9 +21,20 @@ is the behavioural spec.
   - Claude Code's own fork, a party not ours: its ask passes.
 - A party with no reading yet is held until its next reading; one whose window is unknown never reaches its ceiling. A precompute ask is always skipped.
 - Parties: the main chat and each sub-agent by its agentId, each with its own state, max context, ceiling and nudge levels, set by `FORWARD_COMPACTION_MAIN_{MAX_CONTEXT|CEILING|NUDGE_START|NUDGE_EVERY}` and `FORWARD_COMPACTION_SUBAGENT_{…}`.
-- The install: the handoff, the recorded facts (the person's messages or the brief and the messages delivered to it, skills, agents, shells, the files touched, the task list), the `load_files`, every message after the call kept verbatim, and every delivery recorded after the call that those messages lack.
-- A skill or command leaves the wake only when two handoffs in a row name it in `drop_skills`; one whose frontmatter sets `forward-compaction-keep: true` never does.
+- The install: everything `## What the wake must carry` holds, the handoff, the recorded facts (the messages delivered to the party, agents, shells, the files touched, the task list), the `load_files`, the newest messages after the call that fit, kept verbatim, and every delivery recorded after the call that those messages lack.
 - A sub-agent's party lives across its runs: one waiting on its background children ends a turn and is resumed by each child's notification, so a turn end is never its finish.
+
+## What the wake must carry
+
+- The wake exists to carry content: a woken party continues with everything it needs, and no size budget outranks a rule in this section.
+- The handoff the model writes has no length cap: it is stored and installed whole, never refused, trimmed or summarized for its size.
+- Every skill and command the party loaded is carried whole into every wake, whatever its size, and never dropped for room: one leaves only when two handoffs in a row name it in `drop_skills`, and one whose frontmatter sets `forward-compaction-keep: true` never does.
+- The person's ten newest messages (`PROMPTS_KEPT`, main) or the brief (sub-agent) are carried whole into every wake, whatever their size.
+- A standing order is the person's order that binds the rest of the work (a prohibition, a limit, a rule); it survives every wake, the mechanical one included, until the person lifts it.
+- The handoff carries each standing order verbatim, with the time of the person's message, in its own `standing_orders` argument.
+- `forward_compaction` refuses a handoff that leaves out a standing order the previous handoff carried, unless it names the person's message that lifted it.
+- The wake renders the standing orders above the handoff, marked binding.
+- Only what the model can find again is fitted to a budget: the kept tail, the notifications and delivered messages, sibling results, the task list, the files and agents lists and the `load_files`; each one left out is named as not carried, never silently gone.
 
 ## Layout
 
@@ -44,7 +55,7 @@ Refresh the installed copy with `claude plugin marketplace update` as written, n
 
 - Every number the plugin decides on or reports comes from Claude Code's plugin API, as far as it reaches: `$.session.usage()` (window, auto-compact threshold), `turn.step` usage (each party's reading), `session.compact`'s `tokensBefore`/`tokensAfter`, `$.agent.list()`, `$.session.messages()`.
 - No guessed, estimated or invented number: no character-count token estimates, no hard-coded model-window tables.
-- Where the API gives nothing, a value a user tunes (a max context, ceiling or nudge level) is a named option with its default; a design budget (the wake's section shares, the `load_files` share, a format cap such as `HANDOFF_MAX_CHARS`) is a named constant whose one-line comment says why, and is never reported as a measured size.
+- Where the API gives nothing, a value a user tunes (a max context, ceiling or nudge level) is a named option with its default; a design budget (the wake's section shares, the `load_files` share, a format cap such as `WHY_MAX_CHARS`) is a named constant whose one-line comment says why, and is never reported as a measured size.
 - A number with no source is unknown and is said as unknown.
 - Every step writes a debug row (`debug.jsonl`), so any decision traces back to its inputs.
 - A new behaviour lands in `plugins/forward-compaction/src/` as a pure function with a test watched failing first; the adapter only wires it.
