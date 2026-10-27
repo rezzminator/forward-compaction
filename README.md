@@ -7,7 +7,7 @@
 [![Claude Code plugin](https://img.shields.io/badge/Claude%20Code-plugin-D97757)](https://docs.claude.com/en/docs/claude-code/plugins)
 [![Version](https://img.shields.io/badge/version-1.0.0-blue)](./CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
-[![Tests](https://img.shields.io/badge/tests-572%20passing-brightgreen)](#development)
+[![Tests](https://img.shields.io/badge/tests-590%20passing-brightgreen)](#development)
 [![Built with Professor](https://img.shields.io/badge/built%20with-Professor-8A2BE2)](https://github.com/rezzminator/professor)
 
 </div>
@@ -42,7 +42,8 @@ as they happened.
   they happened. Nothing is grepped out of a transcript or re-read from disk.
   Each party's newest prompts (the person's ten newest messages, or a
   sub-agent's brief and the ten newest delivered to it) and the skills it loaded
-  (the latest text of each) are also held in Claude Code's session state, so a
+  (the latest text of each), and the standing orders of its last stored
+  handoff, are also held in Claude Code's session state, so a
   plugin reload (`/reload-plugins`) does not lose them. The files touched and the task list come from each finished tool call.
 - ⏩ **Everything after the call is kept.** The model need not stop after it
   hands off: every message from the call on stays in the new context as it
@@ -156,7 +157,7 @@ and no ceiling, and an automatic ask from it with nothing stored is held as
 
 ### The tool
 
-`forward_compaction({objective, done, remaining, next, blocked, findings, load_files, drop_skills})`,
+`forward_compaction({objective, done, remaining, next, blocked, findings, load_files, drop_skills, standing_orders, lifted})`,
 with its schema in the prompt's tool list (not deferred), so a nudged model
 needs no ToolSearch.
 
@@ -190,14 +191,32 @@ needs no ToolSearch.
   names, is never dropped, whoever asks; the wake
   marks it `pinned: never dropped`. The receipt says, per name, whether it
   was dropped, waits for the next handoff, is pinned, or was never loaded.
+- `standing_orders` (optional): the person's orders that bind the rest of the
+  work (a prohibition, a limit, a rule), each `{order, at}`: `order` the
+  person's words verbatim, `at` the ISO time of the message that gave it. The
+  model names them; the plugin never guesses one from the person's wording.
+  The plugin remembers the standing orders of each party's last stored
+  handoff, across installs, the mechanical wake, the person's own `/compact`
+  and a plugin reload, and the party's next handoff must carry each one again,
+  with the same `order` text, or lift it.
+- `lifted` (optional): the orders the person has lifted, each `{order, by}`:
+  `order` exactly the text the last handoff carried, `by` the person's words
+  that lifted it, verbatim. A lift counts only when `by` is found in a message
+  the plugin recorded for the party: the person's messages for the main chat,
+  its brief or a message delivered to it for a sub-agent. Only a lift clears a
+  remembered order.
 
 The result is a receipt saying when the handoff installs — for the main chat
 at the end of this turn, for a sub-agent at Claude Code's next ask (with
 where that ask comes) — and, when it replaced one, that it did. It prints no
 context size: the plugin measures none for that moment. A refusal starts
 `forward_compaction refused, nothing stored:` and names what to fix: every
-unknown field and every bad section argument, one line each, in one refusal;
-then a bad
+unknown field and every bad section or order argument, one line each, in one
+refusal; then a bad `drop_skills`; then every standing order the last handoff
+carried that this one neither carries nor lifts, named with its time, every
+`lifted` entry whose `by` text no recorded message holds, that names no
+remembered order, or whose order is also carried, one line each, in one
+refusal; then a bad
 `load_files` entry, or a file that is absent, not a regular file, too large
 or could not be checked; then load files over the room, each named with its
 size, with the room, and asking for `lines` ranges or fewer files. A refusal is a tool answer, not an error, so the
@@ -218,6 +237,13 @@ ends with the experimental line and where to note any trouble.
 
 The facts message holds, each section only when it has content:
 
+- the standing orders, first, under `## Standing orders — binding until the
+  person lifts them`: each order the handoff carried with its time, carried
+  whole, outside the budget; then each order lifted since the last install,
+  once, with the person's lifting words, and never again. A mechanical wake
+  carries the party's remembered orders the same way, and the handoff
+  message and the mechanical wake's message both say to continue within
+  them;
 - what arrived after the handoff and the kept messages lack: every
   notification, message from the person or the coordinator, and message that
   resumed a sub-agent, verbatim, first;
@@ -256,7 +282,7 @@ was last compacted, so the system prompt, tools and skills every reading
 counts cancel. It is unmeasured until the reading has grown 5,000
 tokens past the base, or outside 1 to 8 characters a token, and unmeasured
 nothing is fitted: a handoff's wake carries the facts, the files and every
-message after the call, and a mechanical wake keeps no earlier message. The brief or the person's newest ten messages
+message after the call, and a mechanical wake keeps no earlier message. The standing orders, the brief or the person's newest ten messages
 and every skill and command the party invoked are carried whole, outside the
 budget. Every other section has a share — what arrived after the handoff 25%,
 delivered messages or notifications 5%, sibling results 10%, the task list
@@ -431,7 +457,7 @@ With the defaults, on the 200k sub-agent max context:
 
 | Path | What | Retention |
 | --- | --- | --- |
-| `~/.local/state/forward-compaction/logs/decisions/{session}.jsonl` (`$PLUGIN_LOG_DIR/forward-compaction/decisions/` when set) | decision rows: every handoff stored or refused, every nudge, every compaction decision, every `landed` row (`{party, kind, before, after, line}`, `kind` being `handoff` or `mechanical`, `before` and `after` the measured readings or `null`, written with the landed line), every `ignore` row (`{party, label, model, judged, matched}`, `judged` being `managed`, `ignored` or `unknown`, `matched` the ignore-list entry or `null`, written when a party's judgement is first made or changes); a held-ask streak is one folded `skips` row, written when the streak closes and stamped with its last ask's time, so it can follow later rows | a file over 8 MiB moves to `.1`; other sessions' files older than 14 days, then all but the newest 200, are deleted |
+| `~/.local/state/forward-compaction/logs/decisions/{session}.jsonl` (`$PLUGIN_LOG_DIR/forward-compaction/decisions/` when set) | decision rows: every handoff stored (with `orders` and `lifted`, its counts of standing orders carried and lifted) or refused (one refused for a dropped standing order has `reason: standing-orders` and its count of `faults`, never the order's words), every nudge, every compaction decision, every `landed` row (`{party, kind, before, after, line}`, `kind` being `handoff` or `mechanical`, `before` and `after` the measured readings or `null`, written with the landed line), every `ignore` row (`{party, label, model, judged, matched}`, `judged` being `managed`, `ignored` or `unknown`, `matched` the ignore-list entry or `null`, written when a party's judgement is first made or changes); a held-ask streak is one folded `skips` row, written when the streak closes and stamped with its last ask's time, so it can follow later rows | a file over 8 MiB moves to `.1`; other sessions' files older than 14 days, then all but the newest 200, are deleted |
 | `~/.local/state/forward-compaction/logs/{errors,warnings,info}.jsonl` (`$PLUGIN_LOG_DIR/forward-compaction/` when set) | the plugin's errors, warnings and info: every decision event lands at its level — errors and warnings in their files, every other operational event (nudge, stored, refused, each compaction decision, party, skill, tool-registered, look-back, the lines said) in `info.jsonl`, a held-ask streak folded into its first row and one `skips` row | a level file over 20 MiB moves to `.1` |
 | `debug.jsonl` in the same directory (with `FORWARD_COMPACTION_DEBUG` on) | a row at every step: each hook entry (hook, party, trigger, model), each `$` answer the plugin decides on (`session.usage` figures, the `agent.list` count, each `turn.step` reading with its four counts and model, `fs.stat` results), the options and variables resolved, each ratio base and each ratio, measured or not and why, with the base's characters and tokens and the characters and reading now, each wake's section sizes and files, each nudge sent or withheld and why, and every decision row whole; numbers as the API gave them | a level file over 20 MiB moves to `.1` |
 | `issues.md` in the same directory | notes a model appends when the plugin gave it trouble, as each tool answer asks | not managed by the plugin |

@@ -3,13 +3,14 @@
 import { k } from './nudge.ts';
 import { loadFilesRoom } from './window.ts';
 import { DROP_MAX } from './drop.ts';
+import { orderFaults, orderShapeFaults, type LiftedOrder, type OrderMemory, type StandingOrder } from './orders.ts';
 export { applyDrops, dropNote, pinnedBy } from './drop.ts';
 
 /** The tool's name as registered; the model sees `mcp__forward-compaction__forward_compaction`. */
 export const FORWARD_TOOL = 'forward_compaction';
 
 export const FORWARD_TOOL_DESCRIPTION =
-  'Hands off your context — at a clean milestone once context is large. Stores your handoff, one argument per section, any length, written for yourself after a reset; at your next compaction everything before this call is replaced by it plus recorded facts (the person\'s messages or your brief, your skills), and every later message stays verbatim. Returns a receipt of when it installs; a refusal names what to fix and stores nothing. Example: forward_compaction({"objective": "…", "done": "…", "remaining": "…", "next": "…", "load_files": []}). Exact old detail later → look_back.';
+  'Hands off your context — at a clean milestone once context is large. Stores your handoff, one argument per section, any length, written for yourself after a reset; at your next compaction everything before this call is replaced by it plus recorded facts, and every later message stays verbatim. The person\'s binding orders go in standing_orders, verbatim. Returns a receipt of when it installs; a refusal names what to fix and stores nothing. Example: forward_compaction({"objective": "…", "done": "…", "remaining": "…", "next": "…", "load_files": []}). Exact old detail later → look_back.';
 
 /** The handoff's sections in the order they are assembled: the argument, its heading, whether it is required, and what it holds. */
 const SECTIONS = [
@@ -53,6 +54,32 @@ export const FORWARD_INPUT_SCHEMA = {
       items: { type: 'string' },
       description: 'Optional: names of skills or commands in your context you no longer need. Name one on two handoffs in a row and the second wake leaves it out; one its file pins stays.',
     },
+    standing_orders: {
+      type: 'array',
+      description: "Every order of the person's that binds the rest of the work (a prohibition, a limit, a rule), each in every handoff until the person lifts it.",
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['order', 'at'],
+        properties: {
+          order: { type: 'string', description: "The person's words, verbatim." },
+          at: { type: 'string', description: "The ISO time of the person's message." },
+        },
+      },
+    },
+    lifted: {
+      type: 'array',
+      description: 'Orders your last handoff carried that the person has since lifted.',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['order', 'by'],
+        properties: {
+          order: { type: 'string', description: 'The order, exactly as your last handoff carried it.' },
+          by: { type: 'string', description: "The person's words that lifted it, verbatim." },
+        },
+      },
+    },
   },
 } as const;
 
@@ -67,10 +94,16 @@ export const LOAD_FILE_MAX_BYTES = 1_048_576;
 /** One file the model asked to carry whole into the wake; every field is the model's own text, kept verbatim. */
 export type LoadFile = { path: string; lines?: string; why: string };
 
-export type ParsedHandoff = { handoff: string; loadFiles: LoadFile[]; dropSkills: string[] };
-export type Refusal = { refusal: string };
+export type ParsedHandoff = { handoff: string; loadFiles: LoadFile[]; dropSkills: string[]; standingOrders: StandingOrder[]; lifted: LiftedOrder[] };
+/** `orderFaults`: set when the drop check refused, the count of its faults; the refusal then quotes orders, so its row carries the count, never the text. */
+export type Refusal = { refusal: string; orderFaults?: number };
 
-const FIELDS = [...SECTIONS.map((section) => section.key), 'load_files', 'drop_skills'];
+/** The refused row's fields for `refusal`: a dropped order's refusal names the reason and its count, never the person's words; any other carries its text. */
+export function refusedFields(parsed: ParsedHandoff | Refusal, refusal: string): { reason: 'standing-orders'; faults: number } | { refusal: string } {
+  return 'refusal' in parsed && parsed.orderFaults !== undefined && refusal === parsed.refusal ? { reason: 'standing-orders', faults: parsed.orderFaults } : { refusal };
+}
+
+const FIELDS = [...SECTIONS.map((section) => section.key), 'load_files', 'drop_skills', 'standing_orders', 'lifted'];
 const PREFIX = 'forward_compaction refused, nothing stored: ';
 const refuse = (text: string): Refusal => ({ refusal: PREFIX + text });
 const num = (n: number): string => n.toLocaleString('en-US');
@@ -80,23 +113,25 @@ const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'obj
 
 /** One line per bad argument: an unknown field, a required section missing, not a string or blank, an optional one given but not a string. */
 function argumentFaults(fields: Record<string, unknown>): string[] {
-  const unknown = Object.keys(fields).filter((key) => !FIELDS.includes(key)).map((key) => `unknown field "${key}". The fields are ${FIELDS.slice(0, -1).join(', ')} and drop_skills.`);
+  const unknown = Object.keys(fields).filter((key) => !FIELDS.includes(key)).map((key) => `unknown field "${key}". The fields are ${FIELDS.slice(0, -1).join(', ')} and ${FIELDS.at(-1)}.`);
   const sections = SECTIONS.flatMap(({ key, required }) => {
     const value = fields[key];
     if (required && (typeof value !== 'string' || value.trim() === '')) return [`${key} must be a non-blank string; got ${typeof value === 'string' ? 'a blank string' : kind(value)}.`];
     if (!required && value !== undefined && typeof value !== 'string') return [`${key} must be a string when given; got ${kind(value)}.`];
     return [];
   });
-  return [...unknown, ...sections];
+  return [...unknown, ...sections, ...orderShapeFaults(fields.standing_orders, fields.lifted)];
 }
 
 /**
  * Validates the model's tool input before anything is stored (V1-V11 of the spec table), every bad argument named in
  * one refusal, then assembles the handoff from its sections in order, an absent or blank optional one left out. Each
  * section's text and the files come back exactly as sent: nothing is trimmed, a fault is refused for the model to fix.
+ * With `memory`, the party's remembered standing orders, a handoff that drops one unlifted is refused after drop_skills
+ * and before load_files, every fault in one refusal (orders.ts `orderFaults`).
  * `$.fs.stat` checks (V12-V15) are the adapter's, through `loadFileRefusal`.
  */
-export function parseHandoff(input: unknown): ParsedHandoff | Refusal {
+export function parseHandoff(input: unknown, memory?: OrderMemory): ParsedHandoff | Refusal {
   const fields = isObject(input) ? input : {};
   const faults = argumentFaults(fields);
   if (faults.length > 0) return refuse(faults.join('\n'));
@@ -107,9 +142,14 @@ export function parseHandoff(input: unknown): ParsedHandoff | Refusal {
   const drops = fields.drop_skills;
   if (drops !== undefined && (!Array.isArray(drops) || drops.length > DROP_MAX || drops.some((d) => typeof d !== 'string' || d.trim() === ''))) return refuse(`drop_skills must be an array of at most ${DROP_MAX} skill or command names, each a non-blank string.`);
   const dropSkills = (drops ?? []) as string[];
+  const standingOrders = ((fields.standing_orders ?? []) as StandingOrder[]).map(({ order, at }) => ({ order, at }));
+  const asked = ((fields.lifted ?? []) as { order: string; by: string }[]).map(({ order, by }) => ({ order, by }));
+  const orders = orderFaults(memory ?? { remembered: [], said: [], party: 'main' }, standingOrders, asked);
+  if (orders.faults.length > 0) return { ...refuse(orders.faults.join('\n')), orderFaults: orders.faults.length };
+  const parsed = { handoff, dropSkills, standingOrders, lifted: orders.lifted };
   const files = fields.load_files;
 
-  if (files === undefined) return { handoff, loadFiles: [], dropSkills };
+  if (files === undefined) return { ...parsed, loadFiles: [] };
   if (!Array.isArray(files)) return refuse('load_files must be an array of {path, lines?, why}.');
   if (files.length > LOAD_FILES_MAX) return refuse(`load_files has ${files.length} entries, over the ${LOAD_FILES_MAX} cap.`);
   const loadFiles: LoadFile[] = [];
@@ -121,7 +161,7 @@ export function parseHandoff(input: unknown): ParsedHandoff | Refusal {
     if (ranges !== undefined && (typeof ranges !== 'string' || parseLineRanges(ranges) === undefined)) return refuse(`load_files[${i}].lines "${String(ranges)}" is not a range like "10-40" or "1-60,160-185".`);
     loadFiles.push({ path, why, ...(ranges !== undefined ? { lines: ranges as string } : {}) });
   }
-  return { handoff, loadFiles, dropSkills };
+  return { ...parsed, loadFiles };
 }
 
 /** What the adapter learned from `$.fs.stat(path)` on one load file: its stat, or `absent` (ENOENT), or the error text of any other throw. */

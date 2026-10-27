@@ -1,6 +1,7 @@
 import type { Landing } from './wake.ts';
 import { ignoredBy, type RatioBase } from './window.ts';
 import { GATE_STEPS } from './nudge.ts';
+import { keptOrders, type LiftedOrder, type StandingOrder } from './orders.ts';
 
 /** A file the model asked the wake to carry (the tool's `load_files` entry). */
 export type LoadFile = { path: string; lines?: string; why: string };
@@ -15,6 +16,10 @@ export type StoredHandoff = {
   storedAtTokens?: number;
   /** The ledger's next seq when it was stored: what the ledger records for the party from it, the model never saw (ledger.ts `factsFor` `since`). */
   since: number;
+  /** The standing orders it carried (the tool's `standing_orders`). */
+  standingOrders?: StandingOrder[];
+  /** The orders lifted since the last install: its own `lifted`, plus a replaced handoff's still unshown, each shown once in its wake. */
+  lifted?: LiftedOrder[];
   /** Store order across all parties. */
   seq: number;
 };
@@ -47,6 +52,8 @@ export type PartyState = {
   /** An installed wake whose landed line waits for the party's first reading after it. */
   landing?: Landing;
   stored?: StoredHandoff;
+  /** The standing orders of the party's last stored handoff: the next handoff carries or lifts each; an install or a dropped handoff keeps them. */
+  orders?: StandingOrder[];
   lastDecision?: AskDecision;
   /** False from a skip until a request completes: the next ask is then a prompt too long (D8). */
   answeredSinceSkip: boolean;
@@ -123,8 +130,17 @@ export class Parties {
   store(key: string, handoff: Omit<StoredHandoff, 'seq'>): StoredHandoff | undefined {
     const state = this.get(key);
     const replaced = state.stored;
-    state.stored = { ...handoff, seq: ++this.seq };
+    const standing = handoff.standingOrders ?? [];
+    const unshown = (replaced?.lifted ?? []).filter((l) => !standing.some((o) => o.order === l.order)); // an order carried again is no longer lifted
+    state.stored = { ...handoff, lifted: [...unshown, ...(handoff.lifted ?? [])], seq: ++this.seq };
+    state.orders = [...standing];
     return replaced;
+  }
+
+  /** The orders `$.state` kept for the party before a plugin reload, when usable; a handoff stored in this process wins, and nothing kept adds no party. */
+  restoreOrders(key: string, kept: unknown): void {
+    const orders = keptOrders(kept);
+    if (orders !== undefined) this.get(key).orders ??= orders;
   }
 
   /** Removes the party's stored handoff and returns it; a party never seen gains no state. */

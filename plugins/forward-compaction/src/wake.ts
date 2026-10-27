@@ -4,6 +4,7 @@ import { DEFAULT_TOOL, FREE, k as kilo } from './nudge.ts';
 import { loadFilesRoom } from './window.ts';
 import { PROMPTS_KEPT } from './ledger.ts';
 import { experimental, EXPERIMENTAL_OPENING } from './handoff.ts';
+import { ordersSection, type LiftedOrder, type StandingOrder } from './orders.ts';
 
 /** A message in `session.compact`'s shape; a SessionMessage fits. */
 export type WakeMessage = {
@@ -155,6 +156,8 @@ type Shared<M> = {
   tool?: string;
   /** The level-log directory, where the issues file the wake's last line names lives. */
   logDir?: string;
+  /** The party's standing orders, and the orders lifted since its last install, shown once; absent or empty, no section. */
+  orders?: { standing: readonly StandingOrder[]; lifted?: readonly LiftedOrder[] };
 };
 /** `maxContext`: the party's max context, whose `loadFilesRoom` the files are carried in. */
 export type BuildWakeInput<M> = Shared<M> & { toolUseId: string; handoff: string; files?: readonly WakeFile[]; maxContext?: number };
@@ -210,7 +213,11 @@ function renderFacts<M>(input: Shared<M>, facts: WakeFacts, { siblings, files, f
   const sections: Section[] = [];
   const sub = input.party === 'subagent';
 
-  // First: what the model has not seen, which a notification-driven party would otherwise wait on forever.
+  // Above all: the person's standing orders, binding and carried whole, outside every budget.
+  const orders = ordersSection(input.orders?.standing ?? [], input.orders?.lifted ?? []);
+  if (orders !== undefined) sections.push(section(orders));
+
+  // Then: what the model has not seen, which a notification-driven party would otherwise wait on forever.
   const arrived = facts.arrived ?? [];
   if (arrived.length > 0) {
     const { shown, left } = newestFitting(arrived, (m) => `### ${iso(m.at)} (${m.origin})\n${m.text}`, room(SHARE.arrived));
@@ -365,13 +372,16 @@ function assemble<M extends WakeMessage>(
   }
 }
 
+/** The head's clause when standing orders bind: the next step is taken within them. */
+const within = (orders: Shared<never>['orders']): string => ((orders?.standing.length ?? 0) > 0 ? ', within the standing orders above' : '');
+
 /** The wake for a stored handoff: facts, the handoff verbatim, then every message after the `forward_compaction` call. Throws when the call is not in `messages`. */
 export function buildWake<M extends WakeMessage>(input: BuildWakeInput<M>): Wake<M> {
   const split = splitAtCall(input.messages, input.toolUseId);
   if (split === undefined) throw new Error(`forward-compaction: call ${input.toolUseId} is not in the transcript to compact`);
   return assemble(input, split.tail, { siblings: split.siblings, files: input.files ?? [], fileRoom: loadFilesRoom(input.maxContext ?? 0, input.charsPerToken) }, ({ kept, dropped }) => {
     const lines = [
-      '[forward-compaction: handoff] Below is the handoff you wrote with forward_compaction. It is your frontier: continue from its ## Next.',
+      `[forward-compaction: handoff] Below is the handoff you wrote with forward_compaction. It is your frontier: continue from its ## Next${within(input.orders)}.`,
       `=== handoff ===\n${input.handoff}\n=== end of handoff ===`,
     ];
     // The receipt's own experimental line moves to the wake's end, where it is read last.
@@ -389,7 +399,7 @@ export function mechanicalWake<M extends WakeMessage>(input: MechanicalWakeInput
   const why = input.reason.kind === 'ceiling' ? `, past the ${kilo(input.reason.ceiling)} ceiling` : ', and Claude Code reported your request too long';
   const source = input.party === 'main' ? "the person's messages" : 'your brief';
   return assemble(input, input.messages, { siblings: [], files: [], fileRoom: 0 }, ({ kept, dropped }) => experimental(
-    `[forward-compaction: no frontier written by the model] Your context reached ${input.tokens === undefined ? 'a size not measured yet' : `${kilo(input.tokens)} tokens`}${why}, and you had not called forward_compaction, so the plugin compacted it mechanically: the facts above and your newest ${kept} messages below, kept verbatim; ${dropped} older messages are gone (look_back finds an exact detail). No objective or next step was written. Re-establish them from ${source} and the messages below, then continue; call ${input.tool ?? DEFAULT_TOOL} at your next milestone. ${FREE}`, input.logDir),
+    `[forward-compaction: no frontier written by the model] Your context reached ${input.tokens === undefined ? 'a size not measured yet' : `${kilo(input.tokens)} tokens`}${why}, and you had not called forward_compaction, so the plugin compacted it mechanically: the facts above and your newest ${kept} messages below, kept verbatim; ${dropped} older messages are gone (look_back finds an exact detail). No objective or next step was written. Re-establish them from ${source} and the messages below, then continue${within(input.orders)}; call ${input.tool ?? DEFAULT_TOOL} at your next milestone. ${FREE}`, input.logDir),
   'none');
 }
 

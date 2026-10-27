@@ -116,6 +116,12 @@ export function restoreSkills(ledger: Ledger, party: PartyKey, kept: unknown): L
 }
 
 /** A preload skill is first filed under `spawn:{tool_use_id}`; once the spawn returns, it belongs to the child. */
+/** The texts a standing order's lift may quote (orders.ts): main's messages from the person; a sub-agent's brief and the messages delivered to it. */
+export function liftSources(ledger: Ledger, party: PartyKey): string[] {
+  const kinds = party === 'main' ? ['person'] : ['brief', 'received'];
+  return ledger.entries.filter((e) => kinds.includes(e.kind) && 'party' in e && e.party === party).map((e) => (e as { text: string }).text);
+}
+
 export function resolveSpawn(ledger: Ledger, toolUseId: string, agentId: string): Ledger {
   const from = `spawn:${toolUseId}`;
   const entries = ledger.entries.map((e) => (e.kind === 'skill' && e.party === from ? { ...e, party: `agent:${agentId}` as const } : e));

@@ -4,10 +4,14 @@ export type ForwardCompactionPrompt = { kind: 'person' | 'received' | 'brief'; a
 /** One skill a party loaded, as the plugin keeps it for a session: its latest text. */
 export type ForwardCompactionSkill = { at: number; skill: string; text: string; how: 'skill-tool' | 'typed-command' | 'preload' | 'ambiguous'; source?: string; path?: string };
 
+/** One standing order a party's last stored handoff carried: the person's words verbatim and the ISO time of their message. */
+export type ForwardCompactionOrder = { order: string; at: string };
+
 declare module 'claude-code' {
   interface PluginState {
     /** Each party's newest prompts, by `{session id}/{party}`, so a plugin reload does not lose them. */
     /** Each party's loaded skills, latest text per skill, by the same id. */
-    'forward-compaction': { prompts: StateFamily<ForwardCompactionPrompt[]>; skills: StateFamily<ForwardCompactionSkill[]> };
+    /** The standing orders of each party's last stored handoff, by the same id, so the next handoff is still held to them. */
+    'forward-compaction': { prompts: StateFamily<ForwardCompactionPrompt[]>; skills: StateFamily<ForwardCompactionSkill[]>; orders: StateFamily<ForwardCompactionOrder[]> };
   }
 }

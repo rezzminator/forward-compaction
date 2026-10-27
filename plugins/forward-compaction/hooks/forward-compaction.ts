@@ -1,8 +1,8 @@
 import type { EngineInterface, On, PluginOptions, Register, SessionCompactInput, SessionCompactResult, ToolCallResult, TurnStartInput, TurnStepInput, TurnStepResult, TurnCompleteInput, PromptSubmitInput, SessionReceiveInput, SkillPromptInput, AgentSpawnInput, AgentSpawnResult } from 'claude-code';
 import { bounded, unlessAborted } from '../src/bounded.ts';
-import { applyDrops, dropNote, pinnedBy, experimental, parseHandoff, loadFileRefusal, loadRoomRefusal, receipt, ignoredRefusal, parseLineRanges, sliceFile, toolInput, type FileCheck, type LoadFile } from '../src/handoff.ts';
+import { applyDrops, refusedFields, dropNote, pinnedBy, experimental, parseHandoff, loadFileRefusal, loadRoomRefusal, receipt, ignoredRefusal, parseLineRanges, sliceFile, toolInput, type FileCheck, type LoadFile } from '../src/handoff.ts';
 import { workOf, type CallAnswer } from '../src/work.ts';
-import { newLedger, markStart, addEntry, resolveSpawn, attributeSkill, shellsOf, factsFor, promptsKept, restorePrompts, skillsKept, restoreSkills, isPersonOrigin, keyOf, originKind, type Ledger, type PartyKey } from '../src/ledger.ts';
+import { newLedger, markStart, addEntry, resolveSpawn, attributeSkill, shellsOf, factsFor, promptsKept, restorePrompts, skillsKept, restoreSkills, liftSources, isPersonOrigin, keyOf, originKind, type Ledger, type PartyKey } from '../src/ledger.ts';
 import { splitAtCall, buildWake, mechanicalWake, landedLine, type WakeFile, type AgentRow, type Landing } from '../src/wake.ts';
 import { decide, turnEndDoor, readingTokens, knownTrigger } from '../src/decide.ts';
 import { k, nudgeLevel, nudgeText, gated, gateMark, gateText } from '../src/nudge.ts';
@@ -489,7 +489,8 @@ async function answerForward(st: State, $: EngineInterface, e: Record<string, un
   const key = keyOf(e.agentId);
   try {
     await start(st, $);
-    const parsed = parseHandoff(toolInput(e));
+    await restoreKept(st, $, key); // a skill and the orders kept across a plugin reload are back before the drop check and any drop
+    const parsed = parseHandoff(toolInput(e), { remembered: st.parties.get(key).orders ?? [], said: liftSources(st.ledger, key), party: key === 'main' ? 'main' : 'subagent' });
     const m = marks(st, key);
     const matched = st.parties.ignored(key, st.config.ignoreModels);
     let refusal = ignoredRefusal(matched, m?.ceiling) ?? ('refusal' in parsed ? parsed.refusal : undefined);
@@ -501,17 +502,14 @@ async function answerForward(st: State, $: EngineInterface, e: Record<string, un
       else refusal = loadRoomRefusal(files, m.maxContext, ratio);
     }
     if (refusal === undefined && typeof e.tool_use_id !== 'string') refusal = 'forward_compaction refused, nothing stored: the call has no tool_use_id, so the wake cannot find it.';
-    if (refusal !== undefined || 'refusal' in parsed) {
-      record(st, $, { event: 'refused', party: key, refusal, ...(matched !== undefined ? { matched } : {}) }); // the refusal names the field that failed
-      return refusal!;
-    }
+    if (refusal !== undefined || 'refusal' in parsed) return (record(st, $, { event: 'refused', party: key, ...refusedFields(parsed, refusal!), ...(matched !== undefined ? { matched } : {}) }), refusal!); // the row names the field that failed, never the person's words
     const tokens = st.parties.get(key).reading; // the last reading: the call's own context is measured only by the next request
-    const replaced = st.parties.store(key, { text: parsed.handoff, loadFiles: parsed.loadFiles, toolUseId: e.tool_use_id as string, storedAtTokens: tokens, since: st.ledger.nextSeq });
-    await restoreKept(st, $, key); // a skill kept across a plugin reload is in the ledger before a drop can take it out
+    await $.state.set({ plugin: 'forward-compaction', key: 'orders', id: `${await (st.sessionId ??= $.session.id())}/${key}` }, parsed.standingOrders); // kept before the store: a failed write stores nothing
+    const replaced = st.parties.store(key, { text: parsed.handoff, loadFiles: parsed.loadFiles, toolUseId: e.tool_use_id as string, storedAtTokens: tokens, since: st.ledger.nextSeq, standingOrders: parsed.standingOrders, lifted: parsed.lifted });
     const drop = applyDrops(st.ledger, key, parsed.dropSkills, st.parties.get(key).dropAsked); (st.ledger = drop.ledger), (st.parties.get(key).dropAsked = drop.outcome.pending); // a handoff naming nothing resets the count
     if (parsed.dropSkills.length > 0) (record(st, $, { event: 'drop', party: key, ...drop.outcome }), await keepKept(st, $, key));
     const files = parsed.loadFiles.length;
-    record(st, $, { event: 'stored', party: key, chars: parsed.handoff.length, files, tokens: tokens ?? null, ...(replaced !== undefined ? { replaced: replaced.storedAtTokens ?? null } : {}) });
+    record(st, $, { event: 'stored', party: key, chars: parsed.handoff.length, files, orders: parsed.standingOrders.length, lifted: parsed.lifted.length, tokens: tokens ?? null, ...(replaced !== undefined ? { replaced: replaced.storedAtTokens ?? null } : {}) });
     return [key === 'main' ? receipt({ party: 'main', chars: parsed.handoff.length, files, tokens, askPoint: m?.askPoint, replaced: replaced !== undefined }) : receipt({ party: 'subagent', chars: parsed.handoff.length, files, tokens, askPoint: m!.askPoint, replaced: replaced !== undefined }), dropNote(drop.outcome)].filter(Boolean).join(' ');
   } catch (error) {
     say(st, $, `forward-compaction: storing ${key}'s handoff failed: ${message(error)}`, 'error', { event: 'store-error', party: key, error: message(error) });
@@ -632,7 +630,7 @@ async function compactAsk(st: State, $: EngineInterface, e: SessionCompactInput,
     record(st, $, { ...row, reason: action.reason });
     return { skip: action.reason };
   }
-  const shared = { messages: e.messages, party: kind === 'main' ? ('main' as const) : ('subagent' as const), tokens, askPoint: m?.askPoint ?? 0, charsPerToken: ratioOf(st, $, key, 'compact', await partyChars(st, $, key, e.agentId), m), now: await $.clock.now(), facts: (kept: readonly string[]) => factsFor(st.ledger, key, { keptTexts: kept, ...(action.action === 'install' ? { since: held!.since } : {}) }), agents: await agentRows($), logDir: st.pluginLogDir, ...(e.agentId !== undefined ? { self: e.agentId } : {}) };
+  const shared = { messages: e.messages, party: kind === 'main' ? ('main' as const) : ('subagent' as const), tokens, askPoint: m?.askPoint ?? 0, charsPerToken: ratioOf(st, $, key, 'compact', await partyChars(st, $, key, e.agentId), m), now: await $.clock.now(), facts: (kept: readonly string[]) => factsFor(st.ledger, key, { keptTexts: kept, ...(action.action === 'install' ? { since: held!.since } : {}) }), agents: await agentRows($), logDir: st.pluginLogDir, orders: action.action === 'install' ? { standing: held!.standingOrders ?? [], lifted: held!.lifted ?? [] } : { standing: party.orders ?? [] }, ...(e.agentId !== undefined ? { self: e.agentId } : {}) };
   const wake = action.action === 'install'
     ? buildWake({ ...shared, toolUseId: held!.toolUseId, handoff: held!.text, maxContext: m?.maxContext, tool: st.toolNames.forward_compaction, files: await readLoadFiles($, held!.loadFiles) })
     : mechanicalWake({ ...shared, tool: st.toolNames.forward_compaction, reason: action.why === 'ceiling' ? { kind: 'ceiling', ceiling: m!.ceiling } : { kind: 'reactive' } });
@@ -662,7 +660,7 @@ async function compactFailed(st: State, $: EngineInterface, e: SessionCompactInp
   try {
     const tokens = party.reading;
     const m = marks(st, key);
-    const wake = mechanicalWake({ messages: e.messages, party: key === 'main' ? 'main' : 'subagent', tokens, askPoint: m?.askPoint ?? 0, charsPerToken: ratioOf(st, $, key, 'compact', await partyChars(st, $, key, e.agentId), m), now: Date.now(), facts: (kept) => factsFor(st.ledger, key, { keptTexts: kept }), tool: st.toolNames.forward_compaction, logDir: st.pluginLogDir, reason: m === undefined ? { kind: 'reactive' } : { kind: 'ceiling', ceiling: m.ceiling } });
+    const wake = mechanicalWake({ messages: e.messages, party: key === 'main' ? 'main' : 'subagent', tokens, askPoint: m?.askPoint ?? 0, charsPerToken: ratioOf(st, $, key, 'compact', await partyChars(st, $, key, e.agentId), m), now: Date.now(), facts: (kept) => factsFor(st.ledger, key, { keptTexts: kept }), orders: { standing: party.orders ?? [] }, tool: st.toolNames.forward_compaction, logDir: st.pluginLogDir, reason: m === undefined ? { kind: 'reactive' } : { kind: 'ceiling', ceiling: m.ceiling } });
     installed(st, $, key, undefined, signal); // the error line below is said now; no landing waits
     tell(st, $, `${said}; a mechanical wake was installed.`, { event: 'compact', party: key, decision: 'error', error: message(error), kept: wake.kept, dropped: wake.dropped });
     return { messages: wake.messages, ...(tokens !== undefined ? { tokensBefore: tokens } : {}) };
@@ -747,7 +745,7 @@ async function noteWork(st: State, $: EngineInterface, party: PartyKey, e: Recor
   for (const fact of workOf(String(e.tool), toolInput(e), answer as CallAnswer)) st.ledger = addEntry(st.ledger, { kind: 'work', party, at: await $.clock.now(), fact });
 }
 
-/** A party's newest prompts and its loaded skills, held by the host for the session (contract.d.ts), so a plugin reload does not lose them. */
+/** A party's newest prompts and its loaded skills, held by the host for the session (contract.d.ts), so a plugin reload does not lose them; its standing orders are kept as its handoff is stored. */
 async function keepKept(st: State, $: EngineInterface, party: PartyKey): Promise<void> {
   await restoreKept(st, $, party);
   const id = `${await (st.sessionId ??= $.session.id())}/${party}`;
@@ -755,13 +753,14 @@ async function keepKept(st: State, $: EngineInterface, party: PartyKey): Promise
   await $.state.set({ plugin: 'forward-compaction', key: 'skills', id }, skillsKept(st.ledger, party));
 }
 
-/** What a party kept before a plugin reload, put back once per process: before its first write, so a write never drops it, and before its wake. */
+/** What a party kept before a plugin reload, its standing orders included, put back once per process: before its first write, so a write never drops it, before its drop check, and before its wake. */
 async function restoreKept(st: State, $: EngineInterface, party: PartyKey): Promise<void> {
   if (st.restored.has(party)) return;
   st.restored.add(party);
   const id = `${await (st.sessionId ??= $.session.id())}/${party}`;
   st.ledger = restorePrompts(st.ledger, party, (await $.state.get({ plugin: 'forward-compaction', key: 'prompts', id })).value);
   st.ledger = restoreSkills(st.ledger, party, (await $.state.get({ plugin: 'forward-compaction', key: 'skills', id })).value);
+  st.parties.restoreOrders(party, (await $.state.get({ plugin: 'forward-compaction', key: 'orders', id })).value);
 }
 
 /** A turn starts. A sub-agent's later run begins with what woke it (a background child's notification): recorded like a coordinator's message, once. */
