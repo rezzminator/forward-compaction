@@ -4,6 +4,8 @@ Every release of forward-compaction, named sub-agent-compact before 1.0.0. Versi
 
 ## [Unreleased]
 
+- Installs as `forward-compaction@professor` from the professor marketplace; the repo's own marketplace file is gone.
+
 ### Added
 
 - **Standing orders survive every wake.** `forward_compaction` takes `standing_orders` (`{order, at}`: the person's binding order verbatim, with the time of their message) and `lifted` (`{order, by}`: an order the person lifted, with their lifting words verbatim). The plugin remembers each party's orders across installs, the mechanical wake, the person's own `/compact` and a plugin reload, and refuses a frontier that leaves one out unless it is lifted in words a message recorded for the party holds. Every wake opens with `## Standing orders — binding until the person lifts them`, carried whole outside the budget; a lifted order is shown once.

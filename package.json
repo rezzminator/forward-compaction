@@ -11,7 +11,7 @@
   "scripts": {
     "test": "vitest run --dir tests",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.hooks.json",
-    "validate:plugin": "claude plugin validate --strict . && claude plugin validate --strict plugins/forward-compaction",
+    "validate:plugin": "claude plugin validate --strict plugins/forward-compaction",
     "release:check": "scripts/release-check.sh",
     "replay:record": "scripts/replay/record.sh"
   },
