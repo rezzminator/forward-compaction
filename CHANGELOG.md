@@ -2,6 +2,13 @@
 
 Every release of forward-compaction, named sub-agent-compact before 1.0.0. Versions follow [semantic versioning](https://semver.org); each release is the `main` commit tagged `forward-compaction--v<version>` (`sub-agent-compact--v<version>` before 1.0.0), with a GitHub release carrying the section below.
 
+## [Unreleased]
+
+### Changed
+
+- **The handoff has no length cap.** `forward_compaction` no longer refuses a handoff over 20,000 characters; it is stored and installed whole.
+- **The person's words and the skills are never dropped from a wake.** The person's newest ten messages (main chat) or the brief (sub-agent), and every skill and command the party loaded, are carried whole, outside the wake budget; before, they shared a quarter of it and the whole of it, and the overflow was named as not carried.
+
 ## [1.0.0] — 2026-10-27
 
 A breaking major: sub-agent-compact is rewritten and renamed forward-compaction, in the same repository, `github.com/rezzminator/sub-agent-compact`. The model writes its own handoff through one tool, `forward_compaction`; the plugin installs it at Claude Code's compaction with facts recorded from typed hook events, and every message after the call is kept verbatim. No summarizer request runs. The 1.0.0-dev sections below record how it got here; this section is what a 0.8.0 user needs.

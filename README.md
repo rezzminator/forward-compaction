@@ -7,7 +7,7 @@
 [![Claude Code plugin](https://img.shields.io/badge/Claude%20Code-plugin-D97757)](https://docs.claude.com/en/docs/claude-code/plugins)
 [![Version](https://img.shields.io/badge/version-1.0.0-blue)](./CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
-[![Tests](https://img.shields.io/badge/tests-573%20passing-brightgreen)](#development)
+[![Tests](https://img.shields.io/badge/tests-572%20passing-brightgreen)](#development)
 [![Built with Professor](https://img.shields.io/badge/built%20with-Professor-8A2BE2)](https://github.com/rezzminator/professor)
 
 </div>
@@ -169,8 +169,8 @@ needs no ToolSearch.
 - The plugin assembles the handoff as `## Objective`, `## Done`,
   `## Remaining`, `## Next`, then `## Blocked` and `## Findings` when given,
   each heading followed by its argument verbatim and a blank line between
-  sections. The assembled handoff is at most 20,000 characters. Nothing is
-  ever trimmed.
+  sections. The handoff has no length cap: it is stored and installed
+  whole, never trimmed.
 - `load_files` (optional): at most 8 `{path, lines?, why}` entries, each an
   absolute path to a regular file of at most 1,048,576 bytes, `why` 1–200
   characters, `lines` a range like `10-40` or `1-60,160-185`. Each file is
@@ -197,7 +197,7 @@ where that ask comes) — and, when it replaced one, that it did. It prints no
 context size: the plugin measures none for that moment. A refusal starts
 `forward_compaction refused, nothing stored:` and names what to fix: every
 unknown field and every bad section argument, one line each, in one refusal;
-then an assembled handoff over the cap, with its total; then a bad
+then a bad
 `load_files` entry, or a file that is absent, not a regular file, too large
 or could not be checked; then load files over the room, each named with its
 size, with the room, and asking for `lines` ranges or fewer files. A refusal is a tool answer, not an error, so the
@@ -222,12 +222,13 @@ The facts message holds, each section only when it has content:
   notification, message from the person or the coordinator, and message that
   resumed a sub-agent, verbatim, first;
 - the brief (sub-agent), verbatim, or the person's newest ten messages
-  (main chat), oldest first;
+  (main chat), oldest first, always carried whole, whatever their size;
 - the newest ten messages delivered to the sub-agent (its coordinator's, and
   the notifications that resumed it) or the notifications delivered (main
   chat);
 - the results of the tool calls made in the same response as the handoff;
-- the skills in force, as they were loaded. A skill Claude Code loaded
+- every skill and command in force, whole, as it was loaded, whatever its
+  size. A skill Claude Code loaded
   without saying which party loaded it is named, not carried, in every
   party's wake, with the call that loads it again;
 - the agents, listed at install (at most 50 rows): for main every agent, for a
@@ -255,12 +256,12 @@ was last compacted, so the system prompt, tools and skills every reading
 counts cancel. It is unmeasured until the reading has grown 5,000
 tokens past the base, or outside 1 to 8 characters a token, and unmeasured
 nothing is fitted: a handoff's wake carries the facts, the files and every
-message after the call, and a mechanical wake keeps no earlier message. Each section has a share — brief or person's messages 25%,
-what arrived after the handoff 25%, delivered messages or notifications 5%, sibling results 10%, skills the
-whole budget (every skill and command the party invoked is carried whole),
-and the files their own room above — and is carried whole or named as
-not carried, never cut; the person's messages and skills are carried newest
-first while they fit. The room left goes to the messages after the call: the
+message after the call, and a mechanical wake keeps no earlier message. The brief or the person's newest ten messages
+and every skill and command the party invoked are carried whole, outside the
+budget. Every other section has a share — what arrived after the handoff 25%,
+delivered messages or notifications 5%, sibling results 10%, the task list
+5%, and the files their own room above — and is carried whole or named as
+not carried, never cut. The room left goes to the messages after the call: the
 oldest are dropped whole until the rest fits, and the handoff message says
 how many were dropped.
 

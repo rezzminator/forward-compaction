@@ -26,11 +26,12 @@ const num = (value: number): string => value.toLocaleString('en-US');
 const iso = (at: number): string => new Date(at).toISOString();
 
 /**
- * Per-section shares of the budget B (D18), design budgets and never measured sizes: the person's words or the brief and the
- * skills in force are what a woken model most needs (a quarter each), sibling results a tenth, coordinator notices a
- * twentieth; the rest of B goes to the messages kept after the call. Load files have their own room, `loadFilesRoom`.
+ * Per-section shares of the budget B (D18), design budgets and never measured sizes: sibling results a tenth, coordinator
+ * notices a twentieth; the rest of B goes to the messages kept after the call. The person's newest messages or the brief and
+ * every skill in force are what a woken model most needs, so they are carried whole, outside any share. Load files have their
+ * own room, `loadFilesRoom`.
  */
-const SHARE = { people: 0.25, arrived: 0.25, notices: 0.05, siblings: 0.1, skills: 1, tasks: 0.05 } as const;
+const SHARE = { arrived: 0.25, notices: 0.05, siblings: 0.1, tasks: 0.05 } as const;
 /** The most files the Files section lists, newest touch first: a path list stays a glance, as the old carry's trail did. */
 export const FILES_MAX = 15;
 /** The agents section's row cap: a design budget, enough for a coordinator's fleet, never the size of one. */
@@ -38,7 +39,7 @@ export const AGENTS_MAX_ROWS = 50;
 
 /**
  * B = half the ask point, a design budget: half leaves the woken party room to work before its next ask (D18). B bounds the
- * kept tail, not the whole wake: the facts sections' shares (`SHARE`) sum to 1.7×B, skills alone up to B, and load files
+ * kept tail, not the whole wake: the facts sections' shares (`SHARE`) sum to 0.45×B, the person's words and the skills are uncapped, and load files
  * take their own 5% of the max context, so a wake heavy with skills keeps no tail and can start at or past its ask point.
  */
 export function wakeBudget(askPoint: number): number {
@@ -217,16 +218,14 @@ function renderFacts<M>(input: Shared<M>, facts: WakeFacts, { siblings, files, f
   }
 
   if (sub) {
-    const cap = room(SHARE.people);
     if (facts.brief === undefined) sections.push({ text: '## Your brief\n(not recorded: this agent was spawned before forward-compaction started in this process)', content: false });
-    else if (facts.brief.text.length > cap) sections.push({ text: `## Your brief\n(not carried: ${num(facts.brief.text.length)} characters, over the ${num(cap)}-character room; look_back finds it)`, content: false });
     else sections.push(section(`## Your brief\n${facts.brief.text}`));
   } else if (facts.person.length === 0 && (facts.personInTail ?? 0) > 0) {
     sections.push({ text: `## The person's messages\n(all ${facts.personInTail} are in the messages below)`, content: false });
   } else if (facts.person.length === 0) {
     sections.push({ text: `## The person's messages\n(none recorded${facts.startedAt === undefined ? '' : ` since ${iso(facts.startedAt)}`})`, content: false });
   } else {
-    const { shown } = newestFitting(facts.person.slice(-PROMPTS_KEPT), (p) => `### ${iso(p.at)}\n${p.text}`, room(SHARE.people));
+    const shown = facts.person.slice(-PROMPTS_KEPT).map((p) => `### ${iso(p.at)}\n${p.text}`);
     const count = facts.person.length;
     const left = count - shown.length;
     const heading = left === 0 ? `(${shown.length} of ${count})` : `(${shown.length} of ${count}; the ${left} oldest are not carried: look_back finds them)`;
@@ -253,15 +252,8 @@ function renderFacts<M>(input: Shared<M>, facts: WakeFacts, { siblings, files, f
 
   const notCarried: string[] = [];
   const carriedSkills: string[] = [];
-  let skillRoom = room(SHARE.skills); // every skill the party invoked is carried whole: the whole budget, the tail fitted after it
-  for (const s of facts.skills) {
-    const block = `### ${s.skill} (${s.source ?? 'unknown source'}${s.path === undefined ? '' : `, ${s.path}`}${s.keep ? ', pinned: never dropped' : ''})\n${s.text}`;
-    if (block.length + 1 > skillRoom) notCarried.push(`- ${s.skill}: over the skill room (${num(s.text.length)} characters); call Skill ${s.skill} to load it again.`);
-    else {
-      skillRoom -= block.length + 1;
-      carriedSkills.push(block);
-    }
-  }
+  // every skill the party invoked is carried whole, whatever its size; the tail is fitted after it
+  for (const s of facts.skills) carriedSkills.push(`### ${s.skill} (${s.source ?? 'unknown source'}${s.path === undefined ? '' : `, ${s.path}`}${s.keep ? ', pinned: never dropped' : ''})\n${s.text}`);
   if (carriedSkills.length > 0) sections.push(section(['## Skills in force, as loaded (one you no longer need: name it in drop_skills on two handoffs in a row)', ...carriedSkills].join('\n')));
   for (const s of facts.unattributedSkills) notCarried.push(`- ${s.skill}: loaded in this session by an unidentified party; call Skill ${s.skill} if it applies to you.`);
   if (notCarried.length > 0) sections.push({ text: ['## Skills not carried', ...notCarried].join('\n'), content: false });

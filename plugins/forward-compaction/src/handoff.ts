@@ -9,7 +9,7 @@ export { applyDrops, dropNote, pinnedBy } from './drop.ts';
 export const FORWARD_TOOL = 'forward_compaction';
 
 export const FORWARD_TOOL_DESCRIPTION =
-  'Hands off your context — at a clean milestone once context is large. Stores your handoff, one argument per section (20,000 characters in all), written for yourself after a reset; at your next compaction everything before this call is replaced by it plus recorded facts (the person\'s messages or your brief, your skills), and every later message stays verbatim. Returns a receipt of when it installs; a refusal names what to fix and stores nothing. Example: forward_compaction({"objective": "…", "done": "…", "remaining": "…", "next": "…", "load_files": []}). Exact old detail later → look_back.';
+  'Hands off your context — at a clean milestone once context is large. Stores your handoff, one argument per section, any length, written for yourself after a reset; at your next compaction everything before this call is replaced by it plus recorded facts (the person\'s messages or your brief, your skills), and every later message stays verbatim. Returns a receipt of when it installs; a refusal names what to fix and stores nothing. Example: forward_compaction({"objective": "…", "done": "…", "remaining": "…", "next": "…", "load_files": []}). Exact old detail later → look_back.';
 
 /** The handoff's sections in the order they are assembled: the argument, its heading, whether it is required, and what it holds. */
 const SECTIONS = [
@@ -57,8 +57,6 @@ export const FORWARD_INPUT_SCHEMA = {
 } as const;
 
 // Format caps: design budgets on what the model may send, never a measured size.
-/** The assembled handoff's cap: a frontier stays a page or two the woken model reads whole, well inside any wake budget. */
-export const HANDOFF_MAX_CHARS = 20_000;
 /** Load files per call: enough for a plan, a spec and the files in hand, few enough that each is named and chosen. */
 export const LOAD_FILES_MAX = 8;
 /** A load file's `why`: one line saying what it is for. */
@@ -106,7 +104,6 @@ export function parseHandoff(input: unknown): ParsedHandoff | Refusal {
     const text = fields[key];
     return typeof text === 'string' && text.trim() !== '' ? [`## ${heading}\n${text}`] : [];
   }).join('\n\n');
-  if (handoff.length > HANDOFF_MAX_CHARS) return refuse(`the handoff assembled from your sections is ${num(handoff.length)} characters, over the ${num(HANDOFF_MAX_CHARS)} cap. Shorten it (detail can go in load_files, or stay in the transcript for look_back) and call again.`);
   const drops = fields.drop_skills;
   if (drops !== undefined && (!Array.isArray(drops) || drops.length > DROP_MAX || drops.some((d) => typeof d !== 'string' || d.trim() === ''))) return refuse(`drop_skills must be an array of at most ${DROP_MAX} skill or command names, each a non-blank string.`);
   const dropSkills = (drops ?? []) as string[];

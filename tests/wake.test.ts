@@ -210,8 +210,9 @@ describe('buildWake (R20)', () => {
     const finalKept = wake.messages.slice(2).map((m) => m.text);
     expect(seen.at(-1)).toEqual(finalKept);
     expect(wake.kept).toBeLessThan(6);
-    const chars = wake.messages.reduce((n, m) => n + m.text.length, 0);
-    expect(Math.ceil(chars / 3.5)).toBeLessThanOrEqual(wakeBudget(3000));
+    // the person's words are carried whole, outside B: each filler message is in the wake exactly once, kept or in the facts
+    const all = wake.messages.map((m) => m.text).join('\n');
+    for (const m of filler) expect(all.split(m.text).length - 1).toBe(1);
   });
 
   it("hands the facts a kept tool call's own text, so a fact the tail shows there is left out", () => {
@@ -251,14 +252,12 @@ describe('F sections', () => {
     expect(f).toContain('### 2026-10-23T10:00:00.000Z\nfix the parser');
   });
 
-  it('keeps the newest person messages that fit 25% of B and counts the oldest left out (R21)', () => {
-    const person = Array.from({ length: 5 }, (_, i) => ({ at: T0 + i * 1000, text: `p${i} ${'w'.repeat(300)}` }));
+  it('carries the newest ten person messages whole, however much of B they take', () => {
+    const person = Array.from({ length: 5 }, (_, i) => ({ at: T0 + i * 1000, text: `p${i} ${'w'.repeat(3000)}` }));
     const { f } = wakeOf({ askPoint: 2000, f: { person } });
-    expect(f).toContain("## The person's messages, oldest first (2 of 5; the 3 oldest are not carried: look_back finds them)");
-    expect(f).toContain('p3 ');
-    expect(f).toContain('p4 ');
+    expect(f).toContain("## The person's messages, oldest first (5 of 5)");
+    for (let i = 0; i < 5; i++) expect(f).toContain(`p${i} ${'w'.repeat(3000)}`);
     expect(f.indexOf('p3 ')).toBeLessThan(f.indexOf('p4 '));
-    expect(f).not.toContain('p2 ');
   });
 
   it('carries at most the newest ten person messages, and counts the older ones left out', () => {
@@ -317,10 +316,9 @@ describe('F sections', () => {
     expect(f).not.toContain("person's messages");
   });
 
-  it('names a brief that is over its room, and one that was never recorded', () => {
-    const { f } = wakeOf({ askPoint: 2000, f: { brief: { text: 'b'.repeat(2000) } } }, 'subagent');
-    expect(f).toContain('## Your brief\n(not carried: 2,000 characters, over the 875-character room; look_back finds it)');
-    expect(f).not.toContain('bbbbbbbbbb');
+  it('carries a brief whole however much of B it takes, and names one that was never recorded', () => {
+    const { f } = wakeOf({ askPoint: 2000, f: { brief: { text: 'b'.repeat(20_000) } } }, 'subagent');
+    expect(f).toContain('## Your brief\n' + 'b'.repeat(20_000));
     expect(wakeOf({}, 'subagent').f).toContain('(not recorded: this agent was spawned before forward-compaction started in this process)');
   });
 
@@ -339,7 +337,7 @@ describe('F sections', () => {
     expect((wake.messages[0] as BuiltMessage).text).toContain('- Read: result not carried (5,000 characters)');
   });
 
-  it('carries every skill the party invoked whole, however much of the budget it takes, and names only one larger than the whole budget', () => {
+  it('carries every skill the party invoked whole, however much of the budget it takes', () => {
     // askPoint 2000 at 3.5 characters a token: B is 3,500 characters, 25% of it 875
     const f = wakeOf({ askPoint: 2000, f: { skills: [{ skill: 'big', text: 'b'.repeat(2000), source: 'user' }, { skill: 'also', text: 'a'.repeat(1000), source: 'user' }] } }).f;
     expect(f).toContain('### big (user)\n' + 'b'.repeat(2000));
@@ -347,21 +345,20 @@ describe('F sections', () => {
     expect(f).not.toContain('## Skills not carried');
   });
 
-  it('carries skills newest first, names the ones over the room and the unattributed ones', () => {
+  it('carries every skill whole, even one larger than the whole budget, and names the unattributed ones', () => {
     const f = wakeOf({
       askPoint: 2000,
       f: {
         skills: [
           { skill: 'small', text: 'tiny', source: 'user', path: '/s/SKILL.md' },
-          { skill: 'huge', text: 'h'.repeat(4000), source: 'plugin' },
+          { skill: 'huge', text: 'h'.repeat(40_000), source: 'plugin' },
         ],
         unattributedSkills: [{ skill: 'mystery' }],
       },
     }).f;
     expect(f).toContain('## Skills in force, as loaded (one you no longer need: name it in drop_skills on two handoffs in a row)\n### small (user, /s/SKILL.md)\ntiny');
-    expect(f).toContain('## Skills not carried\n- huge: over the skill room (4,000 characters); call Skill huge to load it again.');
-    expect(f).toContain('- mystery: loaded in this session by an unidentified party; call Skill mystery if it applies to you.');
-    expect(f).not.toContain('hhhhhhhhhh');
+    expect(f).toContain('### huge (plugin)\n' + 'h'.repeat(40_000));
+    expect(f).toContain('## Skills not carried\n- mystery: loaded in this session by an unidentified party; call Skill mystery if it applies to you.');
   });
 
   it('lists agents (at most 50) or says why it could not', () => {

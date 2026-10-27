@@ -3,7 +3,6 @@ import {
   FORWARD_INPUT_SCHEMA,
   FORWARD_TOOL,
   FORWARD_TOOL_DESCRIPTION,
-  HANDOFF_MAX_CHARS,
   LOAD_FILES_MAX,
   LOAD_FILE_MAX_BYTES,
   WHY_MAX_CHARS,
@@ -36,10 +35,9 @@ describe('the forward_compaction tool as registered', () => {
   });
 
   it('names its caps once, and the schema agrees with them', () => {
-    expect([HANDOFF_MAX_CHARS, LOAD_FILES_MAX, WHY_MAX_CHARS, LOAD_FILE_MAX_BYTES]).toEqual([20_000, 8, 200, 1_048_576]);
+    expect([LOAD_FILES_MAX, WHY_MAX_CHARS, LOAD_FILE_MAX_BYTES]).toEqual([8, 200, 1_048_576]);
     expect(FORWARD_INPUT_SCHEMA.properties.load_files.maxItems).toBe(LOAD_FILES_MAX);
     expect(FORWARD_INPUT_SCHEMA.properties.load_files.items.properties.why.maxLength).toBe(WHY_MAX_CHARS);
-    expect(FORWARD_TOOL_DESCRIPTION).toContain(`${HANDOFF_MAX_CHARS.toLocaleString('en-US')} characters`);
   });
 
   it('closes the schema: four required sections, two optional ones, at most 8 load_files with a path and a why', () => {
@@ -74,10 +72,10 @@ describe('parseHandoff assembles the sections and keeps their text whole', () =>
     expect(parseHandoff({ ...valid, load_files: files })).toEqual({ handoff: text, loadFiles: files, dropSkills: [] });
   });
 
-  it('takes a 20,000-character assembled handoff (R12) and exactly 8 files', () => {
-    const next = valid.next + 'x'.repeat(HANDOFF_MAX_CHARS - text.length);
+  it('takes a handoff of any length whole, never refused or trimmed for size, and exactly 8 files', () => {
+    const next = valid.next + 'x'.repeat(200_000 - text.length);
     const out = parseHandoff({ ...valid, next });
-    expect('handoff' in out && out.handoff.length).toBe(20_000);
+    expect('handoff' in out && out.handoff.length).toBe(200_000);
     const eight = Array.from({ length: 8 }, (_, i) => ({ path: `/f${i}`, why: 'w' }));
     expect(parseHandoff({ ...valid, load_files: eight })).toMatchObject({ loadFiles: eight });
     expect(parseHandoff({ ...valid, load_files: [{ path: '/f', why: 'w'.repeat(200) }] })).not.toHaveProperty('refusal');
@@ -113,11 +111,6 @@ describe('parseHandoff refuses, naming what to fix', () => {
     for (const input of ['## Objective', undefined, null]) expect(refusal(input)?.split('\n')).toHaveLength(4);
   });
 
-  it('V5 an assembled handoff over 20,000 characters, refused with its total and the cap, never trimmed (R12)', () => {
-    const next = valid.next + 'x'.repeat(20_001 - text.length);
-    expect(refusal({ ...valid, next })).toBe(`${P}the handoff assembled from your sections is 20,001 characters, over the 20,000 cap. Shorten it (detail can go in load_files, or stay in the transcript for look_back) and call again.`);
-  });
-
   it('V7 load_files that is not an array', () => {
     for (const bad of ['a', {}, null, 3]) expect(refusal({ ...valid, load_files: bad })).toBe(`${P}load_files must be an array of {path, lines?, why}.`);
   });
@@ -146,9 +139,9 @@ describe('parseHandoff refuses, naming what to fix', () => {
     expect(refusal({ ...valid, load_files: [{ path: '/a', why: 'x', lines: 5 }] })).toContain('load_files[0].lines "5" is not a range');
   });
 
-  it('refuses in table order: the arguments before the cap, the cap before a bad file', () => {
+  it('refuses in table order: the arguments before a bad file', () => {
     expect(refusal({ ...valid, objective: 5, next: 'x'.repeat(20_001), load_files: 'x' })).toBe(`${P}objective must be a non-blank string; got number.`);
-    expect(refusal({ ...valid, next: 'x'.repeat(20_001), load_files: 'x' })).toContain('over the 20,000 cap');
+    expect(refusal({ ...valid, next: 'x'.repeat(20_001), load_files: 'x' })).toBe(`${P}load_files must be an array of {path, lines?, why}.`);
     expect(refusal({ ...valid, load_files: [{ path: 'rel', why: '' }] })).toContain('.path must be an absolute path');
   });
 });
