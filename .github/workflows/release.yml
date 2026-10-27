@@ -20,7 +20,7 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - run: npm install -g @anthropic-ai/claude-code
+      - run: npm install -g @anthropic-ai/claude-code@2.1.309
       - run: make check
 
   release:
@@ -55,6 +55,7 @@ jobs:
         id: tag
         run: |
           v="$(node -p 'require("./plugins/forward-compaction/.claude-plugin/plugin.json").version')"
+          case "$v" in *-*) echo "::error::$v is a pre-release; a merge into main publishes only a release version"; exit 1 ;; esac
           tag="forward-compaction--v$v"
           rc=0
           git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null || rc=$?

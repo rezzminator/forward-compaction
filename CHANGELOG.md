@@ -2,11 +2,51 @@
 
 Every release of forward-compaction, named sub-agent-compact before 1.0.0. Versions follow [semantic versioning](https://semver.org); each release is the `main` commit tagged `forward-compaction--v<version>` (`sub-agent-compact--v<version>` before 1.0.0), with a GitHub release carrying the section below.
 
-## [Unreleased]
+## [1.0.0] — 2026-10-27
+
+A breaking major: sub-agent-compact is rewritten and renamed forward-compaction, in the same repository, `github.com/rezzminator/sub-agent-compact`. The model writes its own handoff through one tool, `forward_compaction`; the plugin installs it at Claude Code's compaction with facts recorded from typed hook events, and every message after the call is kept verbatim. No summarizer request runs. The 1.0.0-dev sections below record how it got here; this section is what a 0.8.0 user needs.
+
+### Changed
+
+- **Renamed.** Plugin and marketplace `sub-agent-compact` → `forward-compaction`; install id `sub-agent-compact@sub-agent-compact` → `forward-compaction@forward-compaction`; tool server `sub-agent-compact` → `forward-compaction`; release tags `sub-agent-compact--v*` → `forward-compaction--v*`. The repository and its URL are unchanged.
+- **One handoff tool.** `forward_handoff` → `forward_compaction({objective, done, remaining, next, blocked?, findings?, drop_skills?, load_files?})`: the text of each section as its own argument, `load_files` as `{path, lines?, why}`, at most 8 files. `drop_skills` drops a skill or command only when two handoffs in a row name it; a skill or command whose frontmatter sets `forward-compaction-keep: true`, or named in `FORWARD_COMPACTION_KEEP_SKILLS`, is never dropped. The `compact` and `handoff` tools are gone. `look_back` keeps its arguments under the new server.
+- **Sizes are per party, against each party's max context.** Main is nudged from 15% of its window every 5% and gets a mechanical wake at 60% with no handoff stored; a sub-agent (max context 200k) from 40% every 10%, mechanically at 80%.
+- **Models on the ignore list (`haiku` by default) take no handoff** and are held to their ceiling, where they get the mechanical wake.
 
 ### Fixed
 
-- **A log lock no longer wedges when the writer breaking it dies.** A writer that took a stale lock's token to break it and was killed before finishing left the lock with no token, which no later writer would break: every row to that log directory was dropped with `lock held by another writer` until the lock was removed by hand. A waiter now puts back a claim whose writer is gone or older than a minute, and the lock is broken as any stale one.
+- **A log lock no longer wedges when the writer breaking it dies.** A writer that took a stale lock's token to break it and was killed before finishing left the lock with no token, which no later writer would break: every row to that log directory was dropped with `lock held by another writer` until the lock was removed by hand. A waiter now puts back a claim whose writer is gone or that has been held past a minute, and the lock is broken as any stale one. A claim's age is its own, carried in its name, never the age of the token it took, so a live claimer's claim is never put back.
+- **A `forward_compaction` call from behind another plugin's hook is no longer refused.** `requestMeta` and `consent`, which the `tool.call` event may carry beside the arguments, were read as unknown fields.
+- **`look_back` says so when entries went unread.** A search with entries it could not read now states how many and that they were not searched, so a miss never reads as nothing there.
+- **A denied or failed read of a party's window is not repeated on every step.** The read for the ratio base backs off, the gap doubling with each miss.
+
+### Migrating from 0.8.0
+
+1. Uninstall the old plugin and its marketplace: `claude plugin uninstall sub-agent-compact@sub-agent-compact`, then `claude plugin marketplace remove sub-agent-compact`.
+2. Add the marketplace again and install: `claude plugin marketplace add https://github.com/rezzminator/sub-agent-compact.git`, then `claude plugin install forward-compaction@forward-compaction`.
+3. Rename or delete each variable by the table below. An old variable is no longer read and no warning names it.
+4. Delete the settings keys `autoCompact.pinSkills` and `autoCompact.dropSkills` and every `autoCompact` key in agent frontmatter: none is read.
+5. Replace `mcp__sub-agent-compact__forward_handoff` and `mcp__sub-agent-compact__look_back` in prompts, agents and rules with `mcp__forward-compaction__forward_compaction` and `mcp__forward-compaction__look_back`.
+6. Delete `~/.local/state/sub-agent-compact/` yourself; forward-compaction never reads it.
+
+| 0.8.0 variable | 1.0.0 variable | How to migrate |
+| --- | --- | --- |
+| `SUB_AGENT_COMPACT_MAIN_AUTO_COMPACT` | `FORWARD_COMPACTION_MAIN_CEILING` | A token count or a percentage of main's max context; default `60%`. Applies only when no handoff is stored. |
+| `SUB_AGENT_COMPACT_SUBAGENT_AUTO_COMPACT` | `FORWARD_COMPACTION_SUBAGENT_CEILING` | As above, of the sub-agent max context; default `80%`. |
+| `SUB_AGENT_COMPACT_MAIN_AUTO_COMPACT_NUDGE_START` | `FORWARD_COMPACTION_MAIN_NUDGE_START` | Default `15%`. |
+| `SUB_AGENT_COMPACT_SUBAGENT_AUTO_COMPACT_NUDGE_START` | `FORWARD_COMPACTION_SUBAGENT_NUDGE_START` | Default `40%`. |
+| `SUB_AGENT_COMPACT_MAIN_AUTO_COMPACT_NUDGE_EVERY` | `FORWARD_COMPACTION_MAIN_NUDGE_EVERY` | Default `5%`. |
+| `SUB_AGENT_COMPACT_SUBAGENT_AUTO_COMPACT_NUDGE_EVERY` | `FORWARD_COMPACTION_SUBAGENT_NUDGE_EVERY` | Default `10%`. |
+| `SUB_AGENT_COMPACT_LOG_FILE` | `FORWARD_COMPACTION_LOG_FILE` | Still an absolute path; each session writes its own file beside it. |
+| `SUB_AGENT_COMPACT_PIN_SKILLS` | `FORWARD_COMPACTION_KEEP_SKILLS` | Names never dropped from a wake. |
+| `SUB_AGENT_COMPACT_MAIN_AUTO_COMPACT_ENABLED`, `SUB_AGENT_COMPACT_SUBAGENT_AUTO_COMPACT_ENABLED` | removed | To leave a model to Claude Code, list it in `FORWARD_COMPACTION_IGNORE_MODELS`; to leave every party, disable the plugin. |
+| `SUB_AGENT_COMPACT_SUBAGENT_KEEP_BRIEF` | removed | A sub-agent's brief is always carried. |
+| `SUB_AGENT_COMPACT_FORWARD_HANDOFF_TOOL`, `SUB_AGENT_COMPACT_HANDOFF_TOOL`, `SUB_AGENT_COMPACT_COMPACT_TOOL` | removed | `forward_compaction` is always registered; the other tools are gone. |
+| `SUB_AGENT_COMPACT_AGENT_DIRS`, `SUB_AGENT_COMPACT_DROP_SKILLS`, `SUB_AGENT_COMPACT_PROBE_DIR` | removed | No agent definition is read; a party drops skills through `drop_skills`. |
+| — | `FORWARD_COMPACTION_MAIN_MAX_CONTEXT`, `FORWARD_COMPACTION_SUBAGENT_MAX_CONTEXT` | New: the token counts percentages are taken of; main defaults to the window Claude Code reports, a sub-agent to `200k`. |
+| — | `FORWARD_COMPACTION_CEILING_NATIVE` | New: `1` lets Claude Code's own summary run at the ceiling instead of the mechanical wake. |
+| — | `FORWARD_COMPACTION_IGNORE_MODELS` | New: model-id substrings left to Claude Code's compaction; default `haiku`, empty ignores none. |
+| — | `FORWARD_COMPACTION_DEBUG` | New: `0` turns off `debug.jsonl`; default `1`. |
 
 ## [1.0.0-dev.9] — 2026-10-26
 

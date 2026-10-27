@@ -82,7 +82,7 @@ function strings(value, out = []) {
 export function leaks(row, { names }) {
   const found = new Set();
   for (const s of strings(row)) {
-    for (const m of s.matchAll(/\/(?:home|Users)\/([^/\s"'`]+)/g)) found.add(`host path /…/${m[1]}`);
+    for (const m of s.matchAll(/\/(?:(?:home|Users|var\/home)\/([^/\s"'`]+)|root\/)/g)) found.add(`host path /…/${m[1] ?? 'root'}`);
     for (const m of s.matchAll(ANY_EMAIL)) if (!m[0].endsWith(SAFE_EMAIL)) found.add('an email address');
     for (const n of names) if (new RegExp(`\\b${escape(n)}\\b`, 'i').test(s)) found.add('the account name');
   }

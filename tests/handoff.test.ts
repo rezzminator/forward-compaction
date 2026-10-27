@@ -15,6 +15,7 @@ import {
   receipt,
   sliceFile,
   ignoredRefusal,
+  toolInput,
 } from '../plugins/forward-compaction/src/handoff.ts';
 
 const valid = { objective: 'ship it', done: 'parser, tested', remaining: 'the adapter', next: 'wire the hook' };
@@ -279,5 +280,12 @@ describe('every answer ends with the experimental line', () => {
 
   it('asks for the note in the reply when no directory resolves', () => {
     expect(experimental('refused', undefined)).toBe('refused\nforward-compaction is experimental. If it gave you any trouble, append a short note of what happened to your reply.');
+  });
+});
+
+describe('toolInput keeps the event envelope out of the arguments', () => {
+  it('drops every reserved key the tool.call event declares', () => {
+    const e = { tool: 'mcp__x__y', tool_use_id: 't1', agentId: 'a1', requestMeta: { k: 1 }, consent: { ok: true }, objective: 'ship it' };
+    expect(toolInput(e)).toEqual({ objective: 'ship it' });
   });
 });

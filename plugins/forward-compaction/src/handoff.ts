@@ -177,8 +177,8 @@ export function ignoredRefusal(matched: string | undefined, ceiling: number | un
   return `forward_compaction refused, nothing stored: your model is on forward-compaction's ignore list ("${matched}"), so it takes no handoff from you; carry on with your work, and at ${ceiling === undefined ? 'your ceiling' : k(ceiling)} the plugin compacts you mechanically.`;
 }
 
-/** Keys the tool.call event carries beside the tool's arguments. */
-const EVENT_KEYS = new Set(['tool', 'tool_use_id', 'agentId']);
+/** Keys the tool.call event carries beside the tool's arguments (`requestMeta` a hook may add, `consent` a press may carry). */
+const EVENT_KEYS = new Set(['tool', 'tool_use_id', 'agentId', 'requestMeta', 'consent']);
 
 /** The arguments of a tool call: every key of the event but its own (a key that is not a field included, so the check names it) or, when none is there, the event's `input`. */
 export function toolInput(e: Record<string, unknown>): Record<string, unknown> {

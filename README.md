@@ -5,9 +5,9 @@
 **Compaction for Claude Code where the model writes its own handoff: the main chat and every sub-agent hand off through one tool, and everything after the call stays verbatim.**
 
 [![Claude Code plugin](https://img.shields.io/badge/Claude%20Code-plugin-D97757)](https://docs.claude.com/en/docs/claude-code/plugins)
-[![Version](https://img.shields.io/badge/version-1.0.0--dev.9-blue)](./CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.0.0-blue)](./CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
-[![Tests](https://img.shields.io/badge/tests-568%20passing-brightgreen)](#development)
+[![Tests](https://img.shields.io/badge/tests-573%20passing-brightgreen)](#development)
 [![Built with Professor](https://img.shields.io/badge/built%20with-Professor-8A2BE2)](https://github.com/rezzminator/professor)
 
 </div>
@@ -90,7 +90,7 @@ mechanically at 160k.
 > Claude Code 2.1.309.
 
 Moving from the earlier plugin of this repository? The
-[CHANGELOG](./CHANGELOG.md) entry for 1.0.0-dev.1 maps every old setting.
+[CHANGELOG](./CHANGELOG.md) entry for 1.0.0, "Migrating from 0.8.0", maps every old setting.
 
 ## 🧠 How it works
 

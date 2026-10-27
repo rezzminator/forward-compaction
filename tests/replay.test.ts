@@ -476,3 +476,11 @@ describe('sanitize.mjs (R43)', () => {
     expect(r.stderr).toContain('sanitize: row 2 missing');
   });
 });
+
+describe('the replay sanitizer\'s leak check', () => {
+  it('names a home under any common prefix, not only /home and /Users', async () => {
+    // @ts-expect-error sanitize.mjs is an untyped dev script
+    const { leaks } = await import('../scripts/replay/sanitize.mjs');
+    for (const path of ['/root/x', '/var/home/someone/x', '/home/someone/x', '/Users/someone/x']) expect(leaks({ v: path }, { names: [] }), path).not.toEqual([]);
+  });
+});

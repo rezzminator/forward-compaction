@@ -708,10 +708,10 @@ async function readStep(st: State, $: EngineInterface, e: TurnStepInput, r: Turn
   dbg(st, $, 'reading', { party: key, tokens, level, from: party.reading ?? null, absorb: party.absorbNext });
   land(st, $, key, st.parties.read(key, tokens, level), tokens);
   st.installedSince.delete(key);
-  if (party.base !== undefined) return; // the first reading in its live window takes the ratio's base (window.ts `charsPerToken`)
+  if (party.base !== undefined || party.requests < (party.baseRetryAt ?? 0)) return; // the first reading in its live window takes the ratio's base (window.ts `charsPerToken`); a failed read backs off (`baseMissed`)
   const chars = await partyChars(st, $, key, e.agentId);
   dbg(st, $, 'ratio-base', { party: key, chars: chars ?? null, tokens });
-  if (chars !== undefined) st.parties.rebase(key, { chars, tokens });
+  if (chars !== undefined) st.parties.rebase(key, { chars, tokens }); else st.parties.baseMissed(key);
 }
 
 /** P1 (R32): main's answered turn with a handoff stored compacts once. A sub-agent's turn end is one run, never its finish (a child's notification resumes it): its party stays, only a waiting landing is said. */

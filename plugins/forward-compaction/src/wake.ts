@@ -36,7 +36,11 @@ export const FILES_MAX = 15;
 /** The agents section's row cap: a design budget, enough for a coordinator's fleet, never the size of one. */
 export const AGENTS_MAX_ROWS = 50;
 
-/** B = half the ask point, a design budget: a wake above it would draw the next ask at once, and half leaves the woken party room to work before it (D18). */
+/**
+ * B = half the ask point, a design budget: half leaves the woken party room to work before its next ask (D18). B bounds the
+ * kept tail, not the whole wake: the facts sections' shares (`SHARE`) sum to 1.7×B, skills alone up to B, and load files
+ * take their own 5% of the max context, so a wake heavy with skills keeps no tail and can start at or past its ask point.
+ */
 export function wakeBudget(askPoint: number): number {
   return Math.floor(0.5 * askPoint);
 }

@@ -41,6 +41,9 @@ export type PartyState = {
   reading?: number;
   /** The ratio base (window.ts `charsPerToken`), taken at the party's first reading in its live window; none from any compaction of it until its next reading. */
   base?: RatioBase;
+  /** Failed or denied reads of the window for the base since one last succeeded; the next is tried at request `baseRetryAt`, the gap doubling each miss. */
+  baseMisses?: number;
+  baseRetryAt?: number;
   /** An installed wake whose landed line waits for the party's first reading after it. */
   landing?: Landing;
   stored?: StoredHandoff;
@@ -177,7 +180,13 @@ export class Parties {
   /** Sets the party's ratio base, or ends it (an unseen compaction): the next reading takes a new one. A party forgotten meanwhile gains no state. */
   rebase(key: string, base: RatioBase | undefined): void {
     const state = this.states.get(key);
-    if (state) state.base = base;
+    if (state) Object.assign(state, { base, baseMisses: undefined, baseRetryAt: undefined });
+  }
+  /** A read of the window for the base was denied or failed: the next is tried only after a gap that doubles each miss. */
+  baseMissed(key: string): void {
+    const state = this.get(key);
+    state.baseMisses = (state.baseMisses ?? 0) + 1;
+    state.baseRetryAt = state.requests + 2 ** state.baseMisses;
   }
 
   /** A new turn of the party: an ask held before it ended with the old turn, so the next ask is a fresh one, never a request too long. */

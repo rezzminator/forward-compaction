@@ -171,6 +171,12 @@ describe('look_back readable transcript entries (R4)', () => {
     const found = entries('3:{"type":"future_message","message":{"role":"user","content":"needle"}}');
     expect(api('searchResults')(found, ['needle'], 9).error).toBe('1 entry could not be read: #3: unsupported entry type future_message');
   });
+  it('says in the text it hands the model that entries went unread when nothing else matches', () => {
+    const found = entries('3:{"type":"future_message","message":{"role":"user","content":"needle"}}');
+    const out = api('searchResults')(found, ['needle'], 9);
+    expect(out.hits).toBe(0);
+    expect(out.text).toContain('1 entry could not be read');
+  });
   it('shows an attachment with no text field raw, hiding nothing', () => {
     const [e] = entries('4:{"type":"attachment","attachment":{"type":"file","content":{"file":{"content":"needle"}}}}');
     expect(e).toMatchObject({ kind: 'attachment file raw', text: '{"type":"file","content":{"file":{"content":"needle"}}}', warnings: [] });

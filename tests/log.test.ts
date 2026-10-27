@@ -429,6 +429,20 @@ describe('decision log', () => {
     } finally { rmSync(parent, { recursive: true, force: true }); }
   }, 30_000);
 
+  it('keeps a live claimer\'s fresh claim even when the token it took is old', async () => {
+    const parent = mkdtempSync(join(tmpdir(), 'decision-log-'));
+    const path = join(parent, 'decisions.s1.jsonl');
+    try {
+      const claim = join(`${path}.lock`, `pid.claim.${Math.floor(Date.now() / 1000)}.${process.pid}`);
+      mkdirSync(`${path}.lock`); writeFileSync(claim, `${process.pid} 0\n`);
+      const old = new Date(Date.now() - 600_000); utimesSync(claim, old, old);
+      const out = await append(path, ['{"a":1}']);
+      expect(out.stderr).toContain('lock held by another writer');
+      expect(existsSync(claim)).toBe(true);
+      expect(lines(path)).toEqual([]);
+    } finally { rmSync(parent, { recursive: true, force: true }); }
+  }, 60_000);
+
   // A writer whose stdin stays open holds the lock between its first and second half of a row.
   const holding = (argv: string[], env: NodeJS.ProcessEnv = process.env) => {
     const child = spawn(argv[0]!, argv.slice(1), { env });

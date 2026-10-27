@@ -796,4 +796,5 @@ describe('the ratio is measured on the growth since the base, so the fixed overh
     expect(await debugRows(f, 'session.messages-denied')).toContainEqual({ party: `agent:${A1}`, deny: 'agent a1b2c3d4e5 finished; no transcript saved' });
     expect(await debugRows(f, 'ratio-unmeasured')).toEqual([expect.objectContaining({ party: `agent:${A1}`, why: 'no-base', chars: null })]);
   });
+  it('backs off reading a denied window instead of reading it again on every step', async () => { let reads = 0; const f = await begin({ messages: () => (reads++, { deny: 'agent a1b2c3d4e5 finished' }) }); await spawn(f, A1, BRIEF); for (let i = 0; i < 10; i++) await step(f, 44_800 + i * 1_000, A1); expect([reads > 0, reads <= 4]).toEqual([true, true]); });
 });

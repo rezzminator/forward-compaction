@@ -283,6 +283,8 @@ export function searchResults(entries: readonly LookBackEntry[], terms: readonly
   const failed = candidates.flatMap((e) => e.warnings.filter(unread).map((w) => `#${e.line}: ${w}`));
   const unreadEntries = new Set(failed.map((f) => f.split(':')[0])).size;
   const error = failed.length === 0 ? undefined : `${unreadEntries} ${unreadEntries === 1 ? 'entry' : 'entries'} could not be read: ${[...new Set(failed)].slice(0, 5).join('; ')}${failed.length > 5 ? '; …' : ''}`;
+  // An unread entry was not searched: the model is told, so a miss never reads as "nothing there".
+  if (error) rendered += `\n${error}; they were not searched.`;
   return { text: rendered, hits: out.length, ...(error ? { error } : {}) };
 }
 export function entryResult(entries: readonly LookBackEntry[], n: number, boundary: number, names: Record<string, string> = {}): LookBackResult {
