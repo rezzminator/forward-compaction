@@ -1,14 +1,13 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { join } from 'node:path';
 
 // A missing new module is an assertion red, not a transform/build-error red.
 let back: Record<string, any>;
 beforeAll(async () => {
-  const source = '../plugins/sub-agent-compact/src/look-back.ts';
+  const source = '../plugins/forward-compaction/src/look-back.ts';
   try { back = await import(/* @vite-ignore */ source); }
   catch (error) { back = { importError: String(error) }; }
 });
@@ -21,10 +20,10 @@ const text = (s: string) => ({ type: 'text', text: s });
 const entries = (s: string) => api('parseEntries')(s);
 
 describe('look_back arguments and tool contract (R1–R2)', () => {
-  it('publishes the tool, closed schema, required why and either query or entry, and a self-contained description', () => {
+  it('publishes the tool, closed schema, either query or entry, and a self-contained description', () => {
     expect(api('LOOK_BACK_TOOL')).toBe('look_back');
     const schema = api('LOOK_BACK_INPUT_SCHEMA');
-    expect(schema).toMatchObject({ type: 'object', additionalProperties: false, required: ['why'], properties: { why: { type: 'string' }, query: { type: 'string' }, entry: { type: 'integer', minimum: 1 } } });
+    expect(schema).toMatchObject({ type: 'object', additionalProperties: false, properties: { query: { type: 'string' }, entry: { type: 'integer', minimum: 1 } } });
     // No anyOf: the parser checks query-or-entry itself, and a client that sends `entry: null` is not refused by the schema.
     expect(schema.anyOf).toBeUndefined();
     const description = api('LOOK_BACK_DESCRIPTION');
@@ -32,27 +31,25 @@ describe('look_back arguments and tool contract (R1–R2)', () => {
     for (const phrase of ['latest compaction', 'error', 'code', 'value', 'user', 'person']) expect(description).toContain(phrase);
   });
   it.each([
-    [{ why: '  lost\n detail  ', query: 'ERROR "two words" port' }, { why: 'lost detail', query: 'ERROR "two words" port', terms: ['ERROR', 'two words', 'port'] }],
-    [{ why: 'detail', entry: 4, query: ' ignored ' }, { why: 'detail', entry: 4, query: 'ignored', terms: [] }],
-    [{ why: 'x'.repeat(130), query: 'x' }, { why: 'x'.repeat(115) + '[cut]', terms: ['x'] }],
+    [{ query: ' ERROR "two words" port ' }, { query: 'ERROR "two words" port', terms: ['ERROR', 'two words', 'port'] }],
+    [{ entry: 4, query: ' ignored ' }, { entry: 4, query: 'ignored', terms: [] }],
     // A null beside the other argument is absent, as clients send unset optional fields.
-    [{ why: 'detail', query: 'alpha beta', entry: null }, { why: 'detail', query: 'alpha beta', terms: ['alpha', 'beta'] }],
-    [{ why: 'detail', entry: 4, query: null }, { why: 'detail', entry: 4, terms: [] }],
+    [{ query: 'alpha beta', entry: null }, { query: 'alpha beta', terms: ['alpha', 'beta'] }],
+    [{ entry: 4, query: null }, { entry: 4, terms: [] }],
     // A backslash-escaped quote is a literal quote character, inside a phrase or a word (the live devbox query).
-    [{ why: 'x', query: '"Agent \\"rr" total_tokens' }, { why: 'x', query: '"Agent \\"rr" total_tokens', terms: ['Agent "rr', 'total_tokens'] }],
-    [{ why: 'x', query: 'say \\"hi C:\\dir' }, { why: 'x', terms: ['say', '"hi', 'C:\\dir'] }],
+    [{ query: '"Agent \\"rr" total_tokens' }, { query: '"Agent \\"rr" total_tokens', terms: ['Agent "rr', 'total_tokens'] }],
+    [{ query: 'say \\"hi C:\\dir' }, { terms: ['say', '"hi', 'C:\\dir'] }],
   ])('normalizes arguments %j', (input, expected) => {
     const got = api('parseLookBack')(input);
     expect(got).toMatchObject(expected);
-    expect(got.why.length).toBeLessThanOrEqual(120);
     expect(got.error).toBeUndefined();
   });
   it.each([
-    [{ query: 'x' }, 'why'], [{ why: ' ' , query: 'x' }, 'why'], [{ why: 'x' }, 'query or entry'],
-    [{ why: 'x', query: ' "" ' }, 'query'], [{ why: 'x', entry: 0 }, 'entry'], [{ why: 'x', entry: 1.2 }, 'entry'],
-    [{ why: 'x', query: '"unclosed' }, 'quote'], [{ why: 'x', query: '"open \\"' }, 'quote'], [{ why: 'x', query: 'x\u0000y' }, 'query'],
-    [{ why: 'x', query: '"two\nwords"' }, 'query'], [{ why: 'x', query: 7 }, 'query'],
-    [{ why: 'x', query: 'x', other: true }, 'other'],
+    [{}, 'query or entry'],
+    [{ query: ' "" ' }, 'query'], [{ entry: 0 }, 'entry'], [{ entry: 1.2 }, 'entry'],
+    [{ query: '"unclosed' }, 'quote'], [{ query: '"open \\"' }, 'quote'], [{ query: 'x\u0000y' }, 'query'],
+    [{ query: '"two\nwords"' }, 'query'], [{ query: 7 }, 'query'],
+    [{ query: 'x', other: true }, 'other'],
   ])('reports invalid arguments %j', (input, problem) => expect(api('parseLookBack')(input).error).toContain(problem));
 });
 
@@ -74,8 +71,10 @@ describe('look_back readable transcript entries (R4)', () => {
   it('re-checks all terms in decoded readable text, excludes JSON-key and thinking hits, and keeps newest first', () => {
     const raw = [row(1, 'ALPHA beta old'), row(2, [text('Alpha beta new')], 'assistant'), row(3, 'alpha', 'user', { beta: 'metadata' }), row(4, [{ type: 'thinking', thinking: 'alpha beta' }], 'assistant'), '5:raw Alpha beta', row(6, 'alpha beta already held')].join('\n');
     const out = api('searchResults')(entries(raw), ['alpha', 'beta'], 6);
-    expect(out.hits).toBe(3);
-    expect(out.text.match(/^#\d+/gm)).toEqual(['#5', '#2', '#1']);
+    // Every term first, newest first; an entry whose beta sits only in a JSON key holds one of two, ranked after.
+    expect(out.hits).toBe(4);
+    expect(out.text.match(/^#\d+/gm)).toEqual(['#5', '#2', '#1', '#3']);
+    expect(out.text).toMatch(/^#3 .*\(1 of 2 terms\)$/m);
     expect(out.text).toContain('raw Alpha beta');
   });
   it('drops a hit in JSON escaping and requires a quoted phrase as a whole', () => {
@@ -97,13 +96,13 @@ describe('look_back readable transcript entries (R4)', () => {
     expect(out.hits).toBeLessThan(count);
     expect(out.hits).toBeLessThanOrEqual(20);
     expect(out.text.length).toBeLessThanOrEqual(12_000);
-    expect(out.text.endsWith(`${count - out.hits} more matches: narrow the query, or fetch one with entry`)).toBe(true);
+    expect(out.text.endsWith(`${count - out.hits} more matches: quote a phrase or use rarer words to narrow it, or fetch one with entry`)).toBe(true);
   });
   it('distinguishes zero matches and reports unrecognized transcript shapes', () => {
     const out = api('searchResults')(entries('1:{"type":"future_entry","payload":"needle"}'), ['needle'], 2);
     expect(out.hits).toBe(0);
     expect(out.text).toContain('No entry before the compaction at line 2 matches: needle');
-    expect(out.text).toContain('fewer or other words');
+    expect(out.text).toContain('Try other words.');
     expect(out.text).toContain('unsupported entry type future_entry');
     expect(out.error).toBe('1 entry could not be read: #1: unsupported entry type future_entry');
   });
@@ -172,17 +171,23 @@ describe('look_back readable transcript entries (R4)', () => {
     const found = entries('3:{"type":"future_message","message":{"role":"user","content":"needle"}}');
     expect(api('searchResults')(found, ['needle'], 9).error).toBe('1 entry could not be read: #3: unsupported entry type future_message');
   });
+  it('says in the text it hands the model that entries went unread when nothing else matches', () => {
+    const found = entries('3:{"type":"future_message","message":{"role":"user","content":"needle"}}');
+    const out = api('searchResults')(found, ['needle'], 9);
+    expect(out.hits).toBe(0);
+    expect(out.text).toContain('1 entry could not be read');
+  });
   it('shows an attachment with no text field raw, hiding nothing', () => {
     const [e] = entries('4:{"type":"attachment","attachment":{"type":"file","content":{"file":{"content":"needle"}}}}');
     expect(e).toMatchObject({ kind: 'attachment file raw', text: '{"type":"file","content":{"file":{"content":"needle"}}}', warnings: [] });
   });
-  it("ranks the party's own forward handoff call below every other hit", () => {
+  it("ranks the party's own forward_compaction call below every other hit", () => {
     const found = entries([
       row(3, [text('the needle as the user said it')]),
-      row(5, [{ type: 'tool_use', id: 'f1', name: 'mcp__sub-agent-compact__forward_handoff', input: { next: 'needle' } }], 'assistant'),
-      row(6, [{ type: 'tool_result', tool_use_id: 'f1', content: 'Forward handoff stored: needle' }]),
+      row(5, [{ type: 'tool_use', id: 'f1', name: 'mcp__forward-compaction__forward_compaction', input: { next: 'needle' } }], 'assistant'),
+      row(6, [{ type: 'tool_result', tool_use_id: 'f1', content: 'Handoff stored: needle' }]),
     ].join('\n'));
-    const out = api('searchResults')(found, ['needle'], 9, api('toolNames')(found), 'mcp__sub-agent-compact__forward_handoff');
+    const out = api('searchResults')(found, ['needle'], 9, api('toolNames')(found), 'mcp__forward-compaction__forward_compaction');
     expect(out.text.split('\n\n').map((hit: string) => hit.split('  ')[0])).toEqual(['#3', '#6', '#5']);
   });
   it('resolves result tool names through ids and explicitly labels an unavailable name', () => {
@@ -201,15 +206,15 @@ describe('look_back public documentation and oversized queries', () => {
     expect(out.text.length).toBeLessThanOrEqual(12_000);
     expect(out.text).toContain('No entry before the compaction at line 10 matches:');
     expect(out.text).toContain('[query cut]');
-    expect(out.text).toContain('fewer or other words');
+    expect(out.text).toContain('Try other words.');
   });
-  it('documents look_back and counted misses in tools prose and the changelog (R10)', () => {
-    const readme = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'README.md'), 'utf8');
-    expect(readme).toContain('### Look back');
-    expect(readme).toContain('Every call is a counted compaction miss');
-    expect(readme).toContain('look-back-manual');
-    const changelog = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'CHANGELOG.md'), 'utf8');
-    expect(changelog.split('\n## [').some((section) => section.includes('`look_back`') && section.includes('shown to the person'))).toBe(true);
+  it('finds the transcript by its session id, never by a rebuilt directory name, and reports only a find that printed nothing', () => {
+    expect(api('findTranscriptArgv')({ configDir: '/c', session: 's-1' })).toEqual(['find', '-H', '/c/projects', '-maxdepth', '2', '-type', 'f', '-name', 's-1.jsonl']);
+    expect(api('findTranscriptArgv')({ configDir: '/c', session: 's-1', agentId: 'a9' })).toEqual(['find', '-H', '/c/projects', '-maxdepth', '4', '-type', 'f', '-path', '*/s-1/subagents/agent-a9.jsonl']);
+    // a project path over 200 chars is hashed by Claude Code: the real directory is whatever find prints
+    expect(api('firstFound')('/c/projects/-very-long-0a1b2c/s-1.jsonl\n')).toBe('/c/projects/-very-long-0a1b2c/s-1.jsonl');
+    expect(api('firstFound')('')).toBeUndefined();
+    expect(api('firstFound')('find: /c/projects/x: Permission denied\n')).toBeUndefined();
   });
 });
 
@@ -227,13 +232,65 @@ describe('look_back entry fetch (R5)', () => {
   it('reports a missing entry rather than treating it as a blank entry, as the caller\'s input', () => expect(api('entryResult')([], 4, 10)).toMatchObject({ error: expect.stringContaining('entry 4'), input: true }));
 });
 
+describe('look_back of a many-word prose query', () => {
+  // 33823038 L1890: the query kept "(KEY" and "review.md)" as terms and required all thirteen, so it found nothing.
+  const QUERY = 'herdr answer key path used for grading herdr v3 runs (KEY review-r1 review.md)';
+  it('strips the punctuation prose wraps a word in, keeps a word\'s own, and names each term once', () => {
+    expect(api('parseLookBack')({ query: QUERY }).terms).toEqual(['herdr', 'answer', 'key', 'path', 'used', 'for', 'grading', 'v3', 'runs', 'review-r1', 'review.md']);
+    expect(api('parseLookBack')({ query: '"(KEY" `x`, done.' }).terms).toEqual(['(KEY', 'x', 'done']);
+  });
+  it('finds the entry holding most of its terms, through the real search, ranked and marked as partial', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'look-back-rank-'));
+    try {
+      const file = join(directory, 'main.jsonl');
+      writeFileSync(file, [
+        JSON.stringify({ type: 'user', message: { content: 'the answer key for herdr runs is /tmp/herdr/KEY/review-r1/review.md' } }),
+        JSON.stringify({ type: 'user', message: { content: 'used for nothing' } }),
+        JSON.stringify({ type: 'user', message: { content: 'an unrelated line' } }),
+        JSON.stringify({ subtype: 'compact_boundary' }),
+      ].join('\n'));
+      const terms = api('parseLookBack')({ query: QUERY }).terms;
+      const argv = api('searchArgv')(file, 4, terms);
+      const found = entries(api('processOutput')({ exitCode: 0, stdout: execFileSync(argv[0], argv.slice(1), { encoding: 'utf8' }), stderr: '' }, 'search', true));
+      expect(found.map((e: any) => e.line)).toEqual([1, 2]);
+      const out = api('searchResults')(found, terms, 4);
+      expect(out.hits).toBe(2);
+      expect(out.text.startsWith('No entry holds every term (herdr, answer, key, path, used, for, grading, v3, runs, review-r1, review.md); these hold the most:')).toBe(true);
+      expect(out.text.match(/^#\d+/gm)).toEqual(['#1', '#2']);
+      expect(out.text).toContain('(7 of 11 terms)');
+      expect(out.text).toContain('/tmp/herdr/KEY/review-r1/review.md');
+    } finally { rmSync(directory, { recursive: true, force: true }); }
+  });
+});
+
+describe('look_back under the engine output cap', () => {
+  // 0f3e8b92 L8118: a many-word query matched 200 whole lines, image data among them, 7.7M characters; $.process.run keeps 4,194,304, so the marker was cut.
+  it('keeps the search output under the cap, drops image data, and still returns the best hits', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'look-back-cap-'));
+    try {
+      const file = join(directory, 'main.jsonl');
+      const big = (n: number) => JSON.stringify({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: `t${n}`, content: `verdict residual ${'x'.repeat(250_000)}` }] } });
+      const image = JSON.stringify({ type: 'user', message: { content: [{ type: 'text', text: 'verdict residual swap' }, { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'A'.repeat(900_000) } }] } });
+      writeFileSync(file, [...Array.from({ length: 30 }, (_, i) => big(i)), image, JSON.stringify({ subtype: 'compact_boundary' })].join('\n'));
+      const terms = api('parseLookBack')({ query: 'verdict residual swap' }).terms;
+      const argv = api('searchArgv')(file, 32, terms);
+      const stdout = execFileSync(argv[0], argv.slice(1), { encoding: 'utf8', maxBuffer: 1e9 });
+      expect(stdout.length).toBeLessThan(4_194_304);
+      const found = entries(api('processOutput')({ exitCode: 0, stdout, stderr: '' }, 'search', true));
+      expect(found.length).toBeGreaterThan(1);
+      const out = api('searchResults')(found, terms, 32);
+      expect(out.text.split('\n')[0]).toMatch(/^#31 /);
+    } finally { rmSync(directory, { recursive: true, force: true }); }
+  });
+});
+
 describe('look_back shell protocol (R3–R4)', () => {
   it('finds a term holding a quote or a backslash in the raw JSONL, where JSON escapes them', () => {
     const directory = mkdtempSync(join(tmpdir(), 'look-back-escape-'));
     try {
       const file = join(directory, 'party.jsonl');
       writeFileSync(file, [JSON.stringify({ type: 'user', message: { content: 'ran Agent "rr" for total_tokens in C:\\dir' } }), JSON.stringify({ subtype: 'compact_boundary' })].join('\n'));
-      const terms = api('parseLookBack')({ why: 'x', query: '"Agent \\"rr" C:\\dir' }).terms;
+      const terms = api('parseLookBack')({ query: '"Agent \\"rr" C:\\dir' }).terms;
       expect(terms).toEqual(['Agent "rr', 'C:\\dir']);
       const argv = api('searchArgv')(file, 2, terms);
       const found = entries(api('processOutput')({ exitCode: 0, stdout: execFileSync(argv[0], argv.slice(1), { encoding: 'utf8' }), stderr: '' }, 'search', true));
@@ -242,7 +299,7 @@ describe('look_back shell protocol (R3–R4)', () => {
       const call = join(directory, 'call.jsonl');
       writeFileSync(call, [JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'git commit -m "fix" in C:\\dir', subagent_type: 'rr' } }] } }), JSON.stringify({ subtype: 'compact_boundary' })].join('\n'));
       for (const query of ['"-m \\"fix"', 'C:\\dir', '"\\"subagent_type\\":\\"rr\\""']) {
-        const t = api('parseLookBack')({ why: 'x', query }).terms;
+        const t = api('parseLookBack')({ query }).terms;
         const a = api('searchArgv')(call, 2, t);
         const hit = entries(api('processOutput')({ exitCode: 0, stdout: execFileSync(a[0], a.slice(1), { encoding: 'utf8' }), stderr: '' }, 'search', true));
         expect(api('searchResults')(hit, t, 2), query).toMatchObject({ hits: 1 });
@@ -258,7 +315,7 @@ describe('look_back shell protocol (R3–R4)', () => {
       writeFileSync(file, [JSON.stringify({ type: 'user', message: { content: 'alpha ' + special } }), JSON.stringify({ type: 'user', message: { content: 'alpha current' } }), JSON.stringify({ subtype: 'compact_boundary' })].join('\n'));
       const argv = search(file, 2, ['alpha', special]);
       expect(argv.slice(4)).toEqual([file, '2', 'alpha', special]);
-      expect(argv[2]).toContain('tail -n 200');
+      expect(argv[2]).toContain('NR > 200');
       expect(argv[2]).not.toContain(special);
       const output = api('processOutput')({ exitCode: 0, stdout: execFileSync(argv[0], argv.slice(1), { encoding: 'utf8' }), stderr: '' }, 'search', true);
       expect(output).toContain('1:');
@@ -279,7 +336,7 @@ describe('look_back shell protocol (R3–R4)', () => {
       expect(kept.map((e: any) => e.line)).toEqual(Array.from({ length: 200 }, (_, n) => n + 51));
       const rendered = api('searchResults')(kept, terms, 251);
       expect(rendered.text.match(/^#\d+/gm)).toEqual(Array.from({ length: 20 }, (_, n) => `#${250 - n}`));
-      expect(rendered.text).toContain('180 more matches: narrow the query, or fetch one with entry');
+      expect(rendered.text).toContain('180 more matches: quote a phrase or use rarer words to narrow it, or fetch one with entry');
 
       // tail/printf succeed even if the upstream sed fails: stderr is authoritative.
       const missing = search(join(directory, 'missing.jsonl'), 2, ['needle']);
@@ -328,9 +385,14 @@ describe('look_back miss notices and manual detection (R6–R7)', () => {
   ])('detects only the caller file in %s %j', (tool, input, agentId, expected) => expect(api('manualTranscriptCall')(tool, input, 'session-1', agentId)).toBe(expected));
   it('renders one notice for a search, entry or failed attempt', () => {
     const notice = api('lookBackNotice');
-    expect(notice('main', { why: 'lost text' }, { hits: 2 })).toBe('look back (main): lost text — 2 hits');
-    expect(notice('reviewer', { why: 'lost text', entry: 4 }, {})).toBe('look back (reviewer): lost text — entry 4');
-    expect(notice('main', { why: 'lost text' }, { error: 'denied\nretry' })).toBe('look back (main): lost text — failed: denied retry');
+    expect(notice('main', { query: 'lost text' }, { hits: 2 })).toBe('look back (main): query lost text — 2 hits');
+    expect(notice('reviewer', { entry: 4 }, {})).toBe('look back (reviewer): entry 4');
+    expect(notice('main', { query: 'lost\ntext' }, { error: 'denied\nretry' })).toBe('look back (main): query lost text — failed: denied retry');
+    expect(notice('main', { entry: 4 }, { error: 'gone' })).toBe('look back (main): entry 4 — failed: gone');
+    expect(notice('main', {}, { error: 'query or entry is required' })).toBe('look back (main): no query or entry — failed: query or entry is required');
+  });
+  it('cuts a long query in the notice at 120 characters, marked [cut]', () => {
+    expect(api('lookBackNotice')('main', { query: 'x'.repeat(130) }, { hits: 0 })).toBe(`look back (main): query ${'x'.repeat(115)}[cut] — 0 hits`);
   });
 });
 

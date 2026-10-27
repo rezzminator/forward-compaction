@@ -1,0 +1,76 @@
+// The work a party's tool calls record as each one finishes: the files touched and the task list. Read from the call's
+// own arguments and answer, never from rendered text, so the wake restores what Claude Code's own compaction restores
+// (the recent files, the todo list).
+
+/** R read, E edited, W written whole (Write). A file keeps the strongest touch it had: W over E over R. */
+export type FileTag = 'R' | 'E' | 'W';
+export type WorkFact =
+  | { kind: 'file'; path: string; tag: FileTag }
+  | { kind: 'todos'; lines: string[] }
+  | { kind: 'task-create'; id?: string; subject: string }
+  | { kind: 'task-update'; id: string; status?: string; subject?: string };
+
+/** The answer of a finished call, as `next(e)` resolved it: a deny or an error touched nothing. */
+export type CallAnswer = { deny?: string; isError?: boolean; text?: string };
+
+const str = (value: unknown): string | undefined => (typeof value === 'string' && value !== '' ? value : undefined);
+const MARK: Record<string, string> = { completed: '[x]', in_progress: '[~]' };
+const mark = (status: unknown): string => MARK[String(status)] ?? '[ ]';
+
+/** The facts a finished call records, none for a call that was denied, errored or touches no file or task. */
+export function workOf(tool: string, input: Record<string, unknown>, answer: CallAnswer): WorkFact[] {
+  if (answer.deny !== undefined || answer.isError === true) return [];
+  const file = (path: string | undefined, tag: FileTag): WorkFact[] => (path === undefined ? [] : [{ kind: 'file', path, tag }]);
+  switch (tool) {
+    case 'Read':
+      return file(str(input.file_path), 'R');
+    case 'Edit':
+    case 'MultiEdit':
+    case 'Write':
+      return file(str(input.file_path), tool === 'Write' ? 'W' : 'E');
+    case 'NotebookEdit':
+      return file(str(input.notebook_path), 'E');
+    case 'TodoWrite':
+      return Array.isArray(input.todos) ? [{ kind: 'todos', lines: (input.todos as Record<string, unknown>[]).map((t) => `${mark(t?.status)} ${String(t?.content ?? '')}`) }] : [];
+    case 'TaskCreate': {
+      const id = /#(\d+)/.exec(answer.text ?? '')?.[1];
+      return [{ kind: 'task-create', ...(id !== undefined ? { id } : {}), subject: String(input.subject ?? '') }];
+    }
+    case 'TaskUpdate': {
+      const id = str(input.taskId);
+      return id === undefined ? [] : [{ kind: 'task-update', id, ...(str(input.status) !== undefined ? { status: str(input.status) } : {}), ...(str(input.subject) !== undefined ? { subject: str(input.subject) } : {}) }];
+    }
+    default:
+      return [];
+  }
+}
+
+const RANK: Record<FileTag, number> = { R: 0, E: 1, W: 2 };
+
+export type WorkSummary = { files: { path: string; tag: FileTag }[]; tasks: string[] };
+
+/** A party's work, from its facts in the order recorded: every file newest touch first, and the task list as last set (TodoWrite's, or the TaskCreate/TaskUpdate list, whichever moved last). */
+export function workSummary(facts: readonly WorkFact[]): WorkSummary {
+  const files = new Map<string, FileTag>();
+  const tasks = new Map<string, { subject: string; status: string }>();
+  let todos: string[] = [];
+  let todosLast = false;
+  for (const f of facts) {
+    if (f.kind === 'file') {
+      const before = files.get(f.path);
+      files.delete(f.path); // re-inserted last: the map's order is the touch order
+      files.set(f.path, before !== undefined && RANK[before] > RANK[f.tag] ? before : f.tag);
+    } else if (f.kind === 'todos') (todos = f.lines), (todosLast = true);
+    else if (f.kind === 'task-create') (tasks.set(f.id ?? String(tasks.size + 1), { subject: f.subject, status: 'pending' }), (todosLast = false));
+    else {
+      const task = tasks.get(f.id);
+      if (task !== undefined && f.status === 'deleted') tasks.delete(f.id);
+      else if (task !== undefined) Object.assign(task, f.status !== undefined ? { status: f.status } : {}, f.subject !== undefined ? { subject: f.subject } : {});
+      todosLast = false;
+    }
+  }
+  return {
+    files: [...files].reverse().map(([path, tag]) => ({ path, tag })),
+    tasks: todosLast ? todos : [...tasks.values()].map((t) => `${mark(t.status)} ${t.subject}`),
+  };
+}
