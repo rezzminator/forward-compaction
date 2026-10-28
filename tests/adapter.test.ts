@@ -4,9 +4,9 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { fakeEngine, usage, type Script } from './fakes/engine.ts';
 
 const FORWARD = 'mcp__forward-compaction__forward_compaction';
-const SECTIONS = { objective: 'Ship U5.', done: 'The fake.', remaining: 'The adapter.', next: 'Wire session.compact.' };
+const SECTIONS = { objective: 'Ship U5.', decisions: 'none', done: 'The fake.', remaining: 'The adapter.', next: 'Wire session.compact.' };
 /** The frontier the plugin assembles from SECTIONS. */
-const FRONTIER = '## Objective\nShip U5.\n\n## Done\nThe fake.\n\n## Remaining\nThe adapter.\n\n## Next\nWire session.compact.';
+const FRONTIER = '## Objective\nShip U5.\n\n## Decisions\nnone\n\n## Done\nThe fake.\n\n## Remaining\nThe adapter.\n\n## Next\nWire session.compact.';
 const A1 = 'a1b2c3d4e5';
 
 type Fake = ReturnType<typeof fakeEngine>;
@@ -99,8 +99,8 @@ describe('forward_compaction tool answers (R31)', () => {
   it('stores a frontier missing a section and names what it lacks', async () => {
     const f = await begin();
     const r = await f.dispatch('tool.call', { tool: FORWARD, tool_use_id: 'tu-x', objective: 'x' }, async () => ({ result: 'not ours' }));
-    expect(r.result).toMatch(/^Frontier stored \(\d+ characters, 0 files\)\./);
-    expect(r.result).toContain('Stored with 3 changes:\n- done was missing: your frontier is stored without it.');
+    expect(r.result).toMatch(/^Frontier stored \(\d+ characters, 0 files\), but a MANDATORY section is missing/);
+    expect(r.result).toContain('Stored with 4 changes:\n- decisions was missing: your frontier is stored without it.\n- done was missing: your frontier is stored without it.');
   });
 
   it('skips a bad or absent load file (stat ENOENT) and keeps the good ones, each note naming the entry the model sent', async () => {
@@ -654,7 +654,7 @@ describe('audit r4: readings only, measured landed lines, the milestone nudge, l
   it('M3 nudges with the milestone wording, verbatim', async () => {
     const f = await begin();
     await step(f, 51_000);
-    expect((await read(f, 'tu-1')).context?.at(-1)).toBe('forward-compaction: context 51k (5% of 1M). Once your current step is done — never in the middle of one — call mcp__forward-compaction__forward_compaction with objective, done, remaining and next; skip it if only your final answer is left. At 120k you are compacted mechanically. No such tool? Carry on.');
+    expect((await read(f, 'tu-1')).context?.at(-1)).toBe('forward-compaction: context 51k (5% of 1M). Once your current step is done — never in the middle of one — call mcp__forward-compaction__forward_compaction with objective, decisions, done, remaining and next; skip it if only your final answer is left. At 120k you are compacted mechanically. No such tool? Carry on.');
   });
 
   it("L6 stores and carries every load file, with no room and no count cap, each up to 250 lines with where to Read the rest", async () => {

@@ -7,14 +7,14 @@
 [![Claude Code plugin](https://img.shields.io/badge/Claude%20Code-plugin-D97757)](https://docs.claude.com/en/docs/claude-code/plugins)
 [![Version](https://img.shields.io/badge/version-2.1.0-blue)](./CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
-[![Tests](https://img.shields.io/badge/tests-579%20passing-brightgreen)](#development)
+[![Tests](https://img.shields.io/badge/tests-600%20passing-brightgreen)](#development)
 [![Built with Professor](https://img.shields.io/badge/built%20with-Professor-8A2BE2)](https://github.com/rezzminator/professor)
 
 </div>
 
 ```text
 forward_compaction({
-  "objective": "…", "done": "…", "remaining": "…", "next": "…",
+  "objective": "…", "decisions": "…", "done": "…", "remaining": "…", "next": "…",
   "load_files": [{ "path": "/abs/plan.md", "why": "the plan I am executing" }]
 })
 ```
@@ -33,9 +33,10 @@ still holds the context, and builds the rest from facts the plugin recorded
 as they happened.
 
 - ✍️ **The model writes the frontier.** `forward_compaction` takes one
-  argument per section — `objective`, `done`, `remaining` and `next` — and
-  assembles them into one markdown frontier. It is stored, never summarized,
-  and installed verbatim.
+  argument per section — `objective`, `decisions`, `done`, `remaining` and
+  `next`, each MANDATORY — and assembles them into one markdown frontier. It
+  is stored, never summarized, and installed verbatim; one missing a
+  MANDATORY section is stored but never installed.
 - 🧾 **Facts are recorded, never reconstructed.** The person's messages (main
   chat) or the brief (sub-agent), the messages delivered to it, the skills
   loaded, the agents and the background shells come from typed hook events as
@@ -138,7 +139,9 @@ and no ceiling, and an automatic ask from it with nothing stored is held as
    `mcp__forward-compaction__forward_compaction`). The plugin stores the frontier
    in memory for that party and never refuses the call: an argument it cannot
    use is left out or skipped, and the receipt names it. A later call
-   replaces the stored one.
+   replaces the stored one. A frontier missing a MANDATORY section is stored
+   but never installs: every door treats it as nothing stored, until a later
+   call with every MANDATORY section replaces it.
 3. **Installing.** The stored frontier installs at the next door Claude Code
    opens: for the main chat at the end of the turn (the plugin asks Claude
    Code to compact) or at an automatic ask if one comes first; for a
@@ -150,19 +153,30 @@ and no ceiling, and an automatic ask from it with nothing stored is held as
 
 ### The tool
 
-`forward_compaction({objective, done, remaining, next, blocked, findings, load_files, drop_skills, standing_orders, lifted})`,
+`forward_compaction({objective, decisions, done, remaining, next, blocked, findings, load_files, drop_skills, standing_orders, lifted})`,
 with its schema in the prompt's tool list (not deferred), so a nudged model
 needs no ToolSearch.
 
-- `objective`, `done`, `remaining`, `next` (required): non-blank strings —
-  what the work is for and what done means; the finished pieces, each with
-  how it was verified, every figure with the command that produced it; every
-  step left, in order; the first concrete action after the wake.
-- `blocked`, `findings` (optional): strings — what waits on whom; decisions
-  with why, errors verbatim, the commands and recipes the party will need
-  again. Absent or blank, the section is left out.
-- The plugin assembles the frontier as `## Objective`, `## Done`,
-  `## Remaining`, `## Next`, then `## Blocked` and `## Findings` when given,
+- `objective`, `decisions`, `done`, `remaining`, `next` (required, each
+  description opening `MANDATORY:`): non-blank strings — what the work is for
+  and what done means; every ruling the person gave on how something gets
+  done, in the person's words, each with its undo when one exists, `none`
+  when there are none; the finished pieces, each with how it was verified,
+  every figure with the command that produced it; every step left, in order,
+  `none` when nothing is left; the first concrete action after the wake.
+  `decisions` holds how a thing gets done ("the result is `already_sent`, not
+  `sent`"); a rule that binds the rest of the work goes in `standing_orders`.
+- A frontier missing a required section (absent, not a string, or blank) is
+  stored, never refused, but never installs: Claude Code's asks stay held as
+  if nothing were stored (until the ceiling's mechanical wake), and the main
+  chat's turn end does not install it. The decision log's `stored` row names
+  the sections as `incomplete`. A later call with every required section
+  replaces it and installs as usual.
+- `blocked`, `findings` (optional): strings — what waits on whom; the party's
+  own choices with why, errors verbatim, the commands and recipes the party
+  will need again. Absent or blank, the section is left out.
+- The plugin assembles the frontier as `## Objective`, `## Decisions`,
+  `## Done`, `## Remaining`, `## Next`, then `## Blocked` and `## Findings` when given,
   each heading followed by its argument verbatim and a blank line between
   sections. The frontier has no length cap: it is stored and installed
   whole, never trimmed.
@@ -220,7 +234,11 @@ missing, blank or not a string, a bad `drop_skills` name, a bad
 (carried on), a lift whose words no recorded message sent after the order holds
 (the order still binding), a lift of no remembered order, a `load_files` entry
 that is bad, absent, not a regular file or could not be checked,
-and a call with no `tool_use_id`, which the wake cannot place.
+and a call with no `tool_use_id`, which the wake cannot place. A frontier
+missing a required section opens its receipt with `but a MANDATORY section is
+missing, so it does not install`, names each missing section in that list,
+and ends it with `This frontier will not install until you call
+forward_compaction again with every MANDATORY section.`
 
 Every answer ends with one line saying the
 plugin is experimental and asking the model to append a short note of any
@@ -249,6 +267,14 @@ it. It holds, each section only when it has content:
 - what arrived after the frontier and the kept messages lack: every
   notification, message from the person or the coordinator, and message that
   resumed a sub-agent, verbatim, first;
+- plan mode and the plan file, when the party's plan-mode attachments
+  (Claude Code's `prompt.attachment` rows `plan_mode`, `plan_mode_reentry`,
+  `plan_mode_exit`) named them, as Claude Code's own compaction carries them:
+  `## Plan mode` while the party is in plan mode, naming its plan file, and
+  `## Plan file` with the file's path and its content read whole at install,
+  in plan mode or after it ended; a plan file not written yet is left out,
+  one that could not be read is named. Both are carried whole, outside the
+  budget;
 - the brief (sub-agent), verbatim, or the person's newest ten typed messages
   and every answer they gave to an AskUserQuestion, however old (main chat),
   oldest first, always carried whole, whatever their size. An answer, which
@@ -296,7 +322,15 @@ it. It holds, each section only when it has content:
 - the task list as last set, from `TodoWrite` or `TaskCreate`/`TaskUpdate`,
   whichever moved last, carried whole, never fitted;
 - the files the frontier asked to carry, each at most 250 lines, and the ones
-  not carried with why.
+  not carried with why;
+- in a mechanical wake only, under `## Files you were working on, newest
+  first, read at install`: the 5 newest files the party touched, read from
+  disk at install, each at most 250 lines with the same `[N more lines not
+  carried: …]` line, as Claude Code's own compaction restores its 5 most
+  recent files because it fires uninvited. One that could not be read is
+  named in place with why. A frontier's wake carries only the files the
+  frontier asked for, and the wake an error falls back to, built without
+  any read, carries neither these files nor the plan file.
 
 Its size is held to a budget of half Claude Code's ask point (the
 `autoCompactThreshold` that `$.session.usage` reports, held at or below the
@@ -311,8 +345,8 @@ tokens past the base, or outside 1 to 8 characters a token, and unmeasured
 nothing is fitted: a frontier's wake carries the facts, the files and every
 message after the call, and a mechanical wake keeps no earlier message. The standing orders, the brief or the person's newest ten typed messages and every answer,
 and the task list are carried whole, outside the budget; the skills and
-commands within their own limits above, and the files each within 250 lines,
-are outside it too. Every other section has a share — what arrived after the frontier 25%,
+commands within their own limits above, the plan file whole, and the files
+each within 250 lines, are outside it too. Every other section has a share — what arrived after the frontier 25%,
 delivered messages or notifications 5%, sibling results 10%, the shell
 commands 5% — and is carried whole or named as
 not carried, never cut. The room left goes to the messages after the call: the
@@ -322,7 +356,8 @@ how many were dropped.
 The frontier message carries the frontier verbatim, tells the model to
 continue from its `## Next`, and says how many later messages
 follow. A mechanical wake replaces it with a message saying no frontier was
-written, how many of the newest messages were kept and how many are gone,
+written (or that the stored one never installed, naming the sections it
+lacked), how many of the newest messages were kept and how many are gone,
 and to re-establish the objective from the person's messages or the brief.
 
 Each install writes one line, measured: it waits for the party's first

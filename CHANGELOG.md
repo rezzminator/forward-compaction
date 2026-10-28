@@ -2,6 +2,22 @@
 
 Every release of forward-compaction, named sub-agent-compact before 1.0.0. Versions follow [semantic versioning](https://semver.org); each release is the `main` commit tagged `forward-compaction--v<version>` (`sub-agent-compact--v<version>` before 1.0.0), with a GitHub release carrying the section below.
 
+## [Unreleased]
+
+### Added
+
+- **A new MANDATORY `decisions` section.** `forward_compaction` takes `decisions`: every ruling the person gave on how something gets done, in the person's words, each with its undo when one exists, `none` when there are none. It is required, and the frontier renders it as `## Decisions` right after `## Objective`. A rule that binds the rest of the work still goes in `standing_orders`.
+- **The wake carries plan mode and the plan file.** From Claude Code's own plan-mode attachments (`prompt.attachment` `plan_mode`, `plan_mode_reentry`, `plan_mode_exit`), each party's wake carries `## Plan mode` while it is in plan mode, naming its plan file, and `## Plan file` with the file's path and content, read whole at install; a plan file not written yet is left out, one that could not be read is named.
+- **The mechanical wake re-places the files the party was working on.** `## Files you were working on, newest first, read at install` carries the 5 newest files the party touched, read from disk at install, each at most 250 lines with where to Read the rest, as Claude Code's own compaction restores its 5 most recent files; one that could not be read is named. A frontier's wake carries only the files the frontier asked for.
+
+### Changed
+
+- **The section arguments say MANDATORY.** The descriptions of `objective`, `decisions`, `done`, `remaining` and `next` each open with `MANDATORY:` and say what goes in it; `remaining` says `none` when nothing is left, `findings` now holds the party's own choices with why. The nudge names `decisions` among the sections.
+
+### Fixed
+
+- **A frontier missing a MANDATORY section never installs.** A call cut off mid-way (absent, non-string or blank `objective`, `decisions`, `done`, `remaining` or `next`) is still stored, never refused, but every door treats it as nothing stored: Claude Code's asks stay held until the ceiling's mechanical wake, and the main chat's turn end does not install it. Its receipt says it does not install, names each missing section, and ends with `This frontier will not install until you call forward_compaction again with every MANDATORY section.`; the `stored` decision row names them as `incomplete`; a later complete call replaces it and installs as usual. A mechanical wake after one says which sections it lacked. Before, a frontier ending mid-word with no `remaining` and no `next` was installed.
+
 ## [2.1.0] — 2026-10-28
 
 ### Added

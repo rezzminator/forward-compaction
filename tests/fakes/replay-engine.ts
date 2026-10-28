@@ -293,7 +293,7 @@ async function drive(recorded: Invocation[], root: string): Promise<Replay> {
 
 export const A1 = 'a1b2c3d4e5';
 export const FORWARD = 'mcp__forward-compaction__forward_compaction';
-export const SECTIONS = { objective: 'Replay the synthetic fixture.', done: 'Recorded it.', remaining: 'Replay it.', next: 'Check I3 and I5.' };
+export const SECTIONS = { objective: 'Replay the synthetic fixture.', decisions: 'none', done: 'Recorded it.', remaining: 'Replay it.', next: 'Check I3 and I5.' };
 export const SKILL_TEXT = 'Base directory for this skill: /HOME/project/.claude/skills/replay-rules\n\n# Replay rules\nThe marker for this skill is replay-rules-marker-7f3a.';
 export const BRIEF = 'Brief for agent one: read the filler and compact.';
 

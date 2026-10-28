@@ -10,7 +10,7 @@ is the behavioural spec.
 
 - The model always chooses when to compact: the plugin only nudges, as a party's context crosses its nudge levels, and a nudge says to pick the milestone, not whether.
 - The plugin holds Claude Code's compaction. `CLAUDE_CODE_AUTO_COMPACT_WINDOW=100000` exists only so Claude Code asks early, about every request from about 63k; it is never the compaction point.
-- Each ask is skipped until a frontier is stored, and that ask installs it; or until the party reaches its ceiling, and it gets the mechanical wake: recorded facts, no frontier from the model. Main also installs a stored frontier at its own turn end, through `$.session.compact()`.
+- Each ask is skipped until a frontier with every MANDATORY section is stored, and that ask installs it; or until the party reaches its ceiling, and it gets the mechanical wake: recorded facts, no frontier from the model. A frontier missing a MANDATORY section is stored but never installs: every door treats it as nothing stored. Main also installs a stored complete frontier at its own turn end, through `$.session.compact()`.
 - The exceptions to "the model chooses" are only these:
   - the ceiling: the mechanical wake, or Claude Code's own summary under `FORWARD_COMPACTION_CEILING_NATIVE`;
   - a request too long (an ask following a held ask in the same turn that no request completed): the mechanical wake at once, below the ceiling;
@@ -20,13 +20,15 @@ is the behavioural spec.
   - Claude Code's own fork, a party not ours: its ask passes.
 - A party with no reading yet is held until its next reading; one whose window is unknown never reaches its ceiling. A precompute ask is always skipped.
 - Parties: the main chat and each sub-agent by its agentId, each with its own state, max context, ceiling and nudge levels, set by `FORWARD_COMPACTION_MAIN_{MAX_CONTEXT|CEILING|NUDGE_START|NUDGE_EVERY}` and `FORWARD_COMPACTION_SUBAGENT_{…}`.
-- The install: everything `## What the wake must carry` holds, the frontier, the recorded facts (the messages delivered to the party, agents, shells, the files touched, the shell commands run, the task list), the `load_files`, the newest messages after the call that fit, kept verbatim, and every delivery recorded after the call that those messages lack.
+- The install: everything `## What the wake must carry` holds, the frontier, the recorded facts (the messages delivered to the party, agents, shells, the files touched, the shell commands run, the task list, plan mode and the plan file), the `load_files` (a mechanical wake: the party's newest files, re-read from disk), the newest messages after the call that fit, kept verbatim, and every delivery recorded after the call that those messages lack.
 - A sub-agent's party lives across its runs: one waiting on its background children ends a turn and is resumed by each child's notification, so a turn end is never its finish.
 
 ## What the wake must carry
 
 - The wake exists to carry content: a woken party continues with everything it needs, and no size budget outranks a rule in this section.
 - The frontier has no length cap: it is stored and installed whole, never refused, trimmed or summarized for its size.
+- The frontier's MANDATORY sections are `objective`, `decisions`, `done`, `remaining` and `next`; a frontier with one absent, not a string or blank is stored, never refused, but never installs, its receipt naming each missing section, until a later complete call replaces it.
+- `decisions` carries every ruling the person gave on how something gets done, in the person's words, each with its undo when one exists; a rule that binds the rest of the work is a standing order.
 - Every skill and command the party loaded is carried into every wake within Claude Code's own post-compaction limits: newest loaded first, each cut past `SKILL_MAX_CHARS` to its head and Claude Code's own truncation marker, all together within `SKILLS_MAX_CHARS`, and one that does not fit what is left named as not carried with the call that loads it again. One leaves by name only when two frontiers in a row name it in `drop_skills`; one pinned by its frontmatter's `forward-compaction-keep: true` or by `FORWARD_COMPACTION_KEEP_SKILLS` never does, and is cut and fitted like the rest.
 - The person's ten newest typed messages (`PROMPTS_KEPT`, main) and every answer they gave to the model's AskUserQuestion, however old, or the brief (sub-agent), are carried whole into every wake, whatever their size; the heading counts the answers and the older typed messages left out.
 - A standing order is the person's order that binds the rest of the work (a prohibition, a limit, a rule); it survives every wake, the mechanical one included, until the person lifts it.
@@ -34,6 +36,8 @@ is the behavioural spec.
 - A frontier that leaves out a standing order is stored, and the plugin carries the order on from the party's remembered orders; it leaves only on a lift quoting the person's words from a message sent after the order's time, and a lift without those words leaves it binding, named in the receipt.
 - The wake renders the standing orders above the frontier, marked binding.
 - Only what the model can find again is fitted to a budget: the kept tail, the notifications and delivered messages, sibling results, the shell commands run (verbatim, each with its description), and the files and agents lists. The task list is carried whole; each `load_files` file carries up to `LOAD_FILE_MAX_LINES` lines, a longer one naming where to Read the rest, with no room and no count cap, never refused for size. Each one left out is named as not carried, never silently gone.
+- Plan mode and the plan file, as Claude Code's plan-mode attachments name them for the party, are carried into every wake, the plan file read whole at install; the plugin API exposes no active goal, so the wake carries none.
+- A mechanical wake re-reads the `RECENT_FILES_KEPT` newest files the party touched from disk, each within `LOAD_FILE_MAX_LINES`, as Claude Code's own compaction does because it fires uninvited; a frontier wake carries only its `load_files`.
 
 ## Layout
 

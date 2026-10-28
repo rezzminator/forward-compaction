@@ -13,7 +13,7 @@ import { buildWake, mechanicalWake, type BuiltMessage, type WakeFacts, type Wake
 // and rendered above the frontier in every wake, the mechanical one included.
 
 const ORDER = { order: 'do not spawn more', at: '2026-10-27T14:53:00.000Z' };
-const valid = { objective: 'finish the round', done: 'round 1', remaining: 'round 2', next: 'wait for the chats' };
+const valid = { objective: 'finish the round', decisions: 'none', done: 'round 1', remaining: 'round 2', next: 'wait for the chats' };
 
 describe('parseFrontier: standing_orders and lifted', () => {
   const LATER = Date.parse(ORDER.at) + 60_000;

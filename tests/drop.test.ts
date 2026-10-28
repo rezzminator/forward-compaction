@@ -7,7 +7,7 @@ import { fakeEngine, usage } from './fakes/engine.ts';
 // drop_skills: a skill or command named on two frontiers in a row leaves the second wake; one its frontmatter pins never does.
 
 const FORWARD = 'mcp__forward-compaction__forward_compaction';
-const SECTIONS = { objective: 'Ship U5.', done: 'The fake.', remaining: 'The adapter.', next: 'Wire session.compact.' };
+const SECTIONS = { objective: 'Ship U5.', decisions: 'none', done: 'The fake.', remaining: 'The adapter.', next: 'Wire session.compact.' };
 const A1 = 'a1b2c3d4e5';
 const PIN = { [FRONTMATTER_KEEP]: true };
 

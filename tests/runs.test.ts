@@ -7,7 +7,7 @@ import { fakeEngine, usage } from './fakes/engine.ts';
 // so its party outlives a turn end. And what reaches a party between its forward_compaction call and the install opens the wake.
 
 const FORWARD = 'mcp__forward-compaction__forward_compaction';
-const SECTIONS = { objective: 'Ship U5.', done: 'The fake.', remaining: 'The adapter.', next: 'Wire session.compact.' };
+const SECTIONS = { objective: 'Ship U5.', decisions: 'none', done: 'The fake.', remaining: 'The adapter.', next: 'Wire session.compact.' };
 const A1 = 'a1b2c3d4e5';
 
 type Fake = ReturnType<typeof fakeEngine>;

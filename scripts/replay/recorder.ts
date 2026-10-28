@@ -79,6 +79,29 @@ function envGet($: EngineInterface, name: string): Promise<string | undefined> {
   }
 }
 
+/** The plugin's state keys: Claude Code requires each ref's plugin and key as string literals, so each is spelled out; `tests/replay.test.ts` holds this list to the adapter's. */
+export const STATE_KEYS = ['judged', 'orders', 'prompts', 'skills'] as const;
+
+function stateGet($: EngineInterface, ref: { key: string; id?: string }): unknown {
+  switch (ref.key) {
+    case 'judged': return $.state.get({ plugin: 'forward-compaction', key: 'judged', id: ref.id } as never);
+    case 'orders': return $.state.get({ plugin: 'forward-compaction', key: 'orders', id: ref.id } as never);
+    case 'prompts': return $.state.get({ plugin: 'forward-compaction', key: 'prompts', id: ref.id } as never);
+    case 'skills': return $.state.get({ plugin: 'forward-compaction', key: 'skills', id: ref.id } as never);
+    default: throw new Error(`recorder: state key ${ref.key} is not in STATE_KEYS (scripts/replay/recorder.ts)`);
+  }
+}
+
+function stateSet($: EngineInterface, ref: { key: string; id?: string }, value: unknown): unknown {
+  switch (ref.key) {
+    case 'judged': return $.state.set({ plugin: 'forward-compaction', key: 'judged', id: ref.id } as never, value as never);
+    case 'orders': return $.state.set({ plugin: 'forward-compaction', key: 'orders', id: ref.id } as never, value as never);
+    case 'prompts': return $.state.set({ plugin: 'forward-compaction', key: 'prompts', id: ref.id } as never, value as never);
+    case 'skills': return $.state.set({ plugin: 'forward-compaction', key: 'skills', id: ref.id } as never, value as never);
+    default: throw new Error(`recorder: state key ${ref.key} is not in STATE_KEYS (scripts/replay/recorder.ts)`);
+  }
+}
+
 /** Arguments as the plugin gave them, without the trailing undefined a wrapper adds. */
 const given = (...args: unknown[]): unknown[] => {
   while (args.length > 0 && args.at(-1) === undefined) args.pop();
@@ -134,8 +157,8 @@ function engineFor($: EngineInterface, id: number): any {
       usage: (args?: any) => call('session.usage', given(args), () => (args === undefined ? $.session.usage() : $.session.usage(args))),
     },
     state: {
-      get: (ref: any) => call('state.get', [ref], () => $.state.get(ref)),
-      set: (ref: any, value: unknown) => call('state.set', [ref, value], () => $.state.set(ref, value as never)),
+      get: (ref: any) => call('state.get', [ref], () => stateGet($, ref)),
+      set: (ref: any, value: unknown) => call('state.set', [ref, value], () => stateSet($, ref, value)),
     },
     tool: { register: (spec: any) => call('tool.register', [spec], () => $.tool.register(spec)) },
     ui: { log: (text: string, options?: any) => call('ui.log', given(text, options), () => (options === undefined ? $.ui.log(text) : $.ui.log(text, options))) },
@@ -215,7 +238,7 @@ async function* invokeSteps(hook: string, $: EngineInterface, e: unknown, next: 
 }
 
 /** Every event the plugin registers. Claude Code reads `on("<event>", hook)` statically, so each is written out; a hook the plugin adds and this list lacks is named in the version row, and sanitize refuses the recording. */
-export const RECORDED = ['session.start', 'tool.call', 'session.compact', 'turn.step', 'turn.start', 'turn.complete', 'prompt.submit', 'session.receive', 'skill.prompt', 'agent.spawn', 'classic.Stop', 'classic.SubagentStop', 'session.end'] as const;
+export const RECORDED = ['session.start', 'tool.call', 'session.compact', 'turn.step', 'turn.start', 'turn.complete', 'prompt.submit', 'prompt.attachment', 'session.receive', 'skill.prompt', 'agent.spawn', 'classic.Stop', 'classic.SubagentStop', 'session.end'] as const;
 let unrecorded: string[] = [];
 
 export const register: Register = (on: On, options) => {
@@ -232,6 +255,7 @@ export const register: Register = (on: On, options) => {
   on('turn.start', async ($, e, next) => invoke('turn.start', $, e, next) as any);
   on('turn.complete', async ($, e, next) => invoke('turn.complete', $, e, next) as any);
   on('prompt.submit', async ($, e, next) => invoke('prompt.submit', $, e, next) as any);
+  on('prompt.attachment', async ($, e, next) => invoke('prompt.attachment', $, e, next) as any);
   on('session.receive', async ($, e, next) => invoke('session.receive', $, e, next) as any);
   on('skill.prompt', async ($, e, next) => invoke('skill.prompt', $, e, next) as any);
   on('agent.spawn', async ($, e, next) => invoke('agent.spawn', $, e, next) as any);

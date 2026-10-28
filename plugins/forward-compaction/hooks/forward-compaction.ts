@@ -3,10 +3,11 @@ import { bounded, unlessAborted } from '../src/bounded.ts';
 import { applyDrops, dropNote, changesNote, pinnedBy, experimental, parseFrontier, loadFileNote, receipt, parseLineRanges, sliceFile, toolInput, type FileCheck, type LoadFile } from '../src/frontier.ts';
 import { answersOf, workOf, type CallAnswer } from '../src/work.ts';
 import { newLedger, markStart, addEntry, resolveSpawn, attributeSkill, shellsOf, factsFor, promptsKept, restorePrompts, skillsKept, restoreSkills, liftSources, isPersonOrigin, keyOf, originKind, type Ledger, type PartyKey } from '../src/ledger.ts';
-import { splitAtCall, buildWake, mechanicalWake, landedLine, type WakeFile, type AgentRow, type Landing } from '../src/wake.ts';
+import { splitAtCall, buildWake, mechanicalWake, landedLine, recentFiles, type WakeFile, type AgentRow, type Landing } from '../src/wake.ts';
+import { planFrom, planRead, PLAN_ROWS, type WakePlan } from '../src/plan.ts';
 import { decide, turnEndDoor, readingTokens, knownTrigger } from '../src/decide.ts';
 import { k, nudgeLevel, nudgeText } from '../src/nudge.ts';
-import { Parties, type Judging } from '../src/parties.ts';
+import { installable, Parties, type Judging } from '../src/parties.ts';
 import { askPointOf, charsPerToken, partyMarks, startWarnings, apiChars, type AskPoint, type Marks, type UsageBreakdown } from '../src/window.ts';
 import { unseenCompaction } from '../src/unseen.ts';
 import { parseLookBack, boundaryArgv, boundaryLine, searchArgv, entryArgv, namesArgv, processOutput, parseEntries, toolNames, resultIds, searchResults, entryResult, manualTranscriptCall, lookBackNotice, findTranscriptArgv, firstFound, type LookBackResult } from '../src/look-back.ts';
@@ -500,12 +501,13 @@ async function answerForward(st: State, $: EngineInterface, e: Record<string, un
     if (toolUseId === '') notes.push('the call has no tool_use_id, so the wake cannot place it: at the install this frontier is dropped and you get the mechanical wake.');
     const tokens = st.parties.get(key).reading; // the last reading: the call's own context is measured only by the next request
     await $.state.set({ plugin: 'forward-compaction', key: 'orders', id: `${await (st.sessionId ??= $.session.id())}/${key}` }, parsed.standingOrders); // kept before the store: a failed write stores nothing
-    const replaced = st.parties.store(key, { text: parsed.frontier, loadFiles: parsed.loadFiles, toolUseId, storedAtTokens: tokens, since: st.ledger.nextSeq, standingOrders: parsed.standingOrders, lifted: parsed.lifted });
+    const replaced = st.parties.store(key, { text: parsed.frontier, loadFiles: parsed.loadFiles, toolUseId, storedAtTokens: tokens, since: st.ledger.nextSeq, standingOrders: parsed.standingOrders, lifted: parsed.lifted, missing: parsed.missing });
     const drop = applyDrops(st.ledger, key, parsed.dropSkills, st.parties.get(key).dropAsked); (st.ledger = drop.ledger), (st.parties.get(key).dropAsked = drop.outcome.pending); // a frontier naming nothing resets the count
     if (parsed.dropSkills.length > 0) (record(st, $, { event: 'drop', party: key, ...drop.outcome }), await keepKept(st, $, key));
     const files = parsed.loadFiles.length;
-    record(st, $, { event: 'stored', party: key, chars: parsed.frontier.length, files, orders: parsed.standingOrders.length, lifted: parsed.lifted.length, notes: notes.length, tokens: tokens ?? null, ...(replaced !== undefined ? { replaced: replaced.storedAtTokens ?? null } : {}) });
-    return [key === 'main' ? receipt({ party: 'main', chars: parsed.frontier.length, files, tokens, askPoint: m?.askPoint, replaced: replaced !== undefined }) : receipt({ party: 'subagent', chars: parsed.frontier.length, files, tokens, askPoint: m!.askPoint, replaced: replaced !== undefined }), dropNote(drop.outcome), changesNote(notes)].filter(Boolean).join(' ');
+    const incomplete = parsed.missing.length > 0; // stored, never installed: every door treats it as nothing stored (parties.ts `installable`)
+    record(st, $, { event: 'stored', party: key, chars: parsed.frontier.length, files, orders: parsed.standingOrders.length, lifted: parsed.lifted.length, notes: notes.length, tokens: tokens ?? null, ...(replaced !== undefined ? { replaced: replaced.storedAtTokens ?? null } : {}), ...(incomplete ? { incomplete: parsed.missing } : {}) });
+    return [key === 'main' ? receipt({ party: 'main', chars: parsed.frontier.length, files, tokens, askPoint: m?.askPoint, replaced: replaced !== undefined, incomplete }) : receipt({ party: 'subagent', chars: parsed.frontier.length, files, tokens, askPoint: m!.askPoint, replaced: replaced !== undefined, incomplete }), dropNote(drop.outcome), changesNote(notes, parsed.missing)].filter(Boolean).join(' ');
   } catch (error) {
     say(st, $, `forward-compaction: storing ${key}'s frontier failed: ${message(error)}`, 'error', { event: 'store-error', where: 'answerForward', party: key, error: message(error) });
     return `forward_compaction failed, nothing stored: ${message(error)}`;
@@ -566,6 +568,12 @@ async function readLoadFiles($: EngineInterface, files: readonly LoadFile[]): Pr
   }));
 }
 
+/** The party's plan state, its plan file read now (plan.ts `planRead`). */
+async function readPlan(st: State, $: EngineInterface, key: PartyKey): Promise<WakePlan | undefined> {
+  const seen = st.parties.get(key).plan, plan: WakePlan | undefined = seen?.path === undefined ? seen : planRead(seen, await Promise.resolve().then(() => $.fs.read(seen.path!)).then((text) => ({ text }), (error: unknown) => ({ error })));
+  return (dbg(st, $, 'plan-read', { party: key, mode: plan?.mode ?? null, path: plan?.path ?? null, chars: plan?.content?.length ?? null, problem: plan?.problem ?? null }), plan);
+}
+
 /** A wake the engine took: no reading stands until the next request's, its next fall is no unseen compaction, and a landing still waiting from an earlier install is said now. */
 function installed(st: State, $: EngineInterface, key: string, landing: Landing | undefined, signal?: AbortSignal): void {
   if (signal?.aborted) return;
@@ -590,11 +598,12 @@ async function compactAsk(st: State, $: EngineInterface, e: SessionCompactInput,
   const kind = key === 'main' ? 'main' : await partyKind(st, $, e.agentId!);
   await judge(st, $, key); const party = st.parties.get(key);
   const { label, stored: held } = party;
-  const found = held !== undefined && splitAtCall(e.messages, held.toolUseId) !== undefined;
+  const ready = installable(held); // one missing a MANDATORY section counts as nothing stored, at every door
+  const found = ready && splitAtCall(e.messages, held!.toolUseId) !== undefined;
   const tokens = party.reading; // measured only; none since an install, or yet, is unknown
   const m = marks(st, key);
   const matched = st.parties.ignored(key, st.config.ignoreModels);
-  const action = decide({ trigger, party: kind, stored: found, storedMissing: held !== undefined && !found, tokens, ceiling: m?.ceiling, reactive: st.parties.reactive(key), ceilingNative: st.config.ceilingNative, label, ignored: matched !== undefined, windowUnknown: st.parties.windowUnknown(key, judging(st).mainKnown) });
+  const action = decide({ trigger, party: kind, stored: found, storedMissing: ready && !found, tokens, ceiling: m?.ceiling, reactive: st.parties.reactive(key), ceilingNative: st.config.ceilingNative, label, ignored: matched !== undefined, windowUnknown: st.parties.windowUnknown(key, judging(st).mainKnown) });
   const row: Row = { event: 'compact', party: key, trigger, decision: action.decision, why: action.why, tokens: tokens ?? null, ceiling: m?.ceiling ?? null, askPoint: m?.askPoint ?? null, ...(matched !== undefined ? { matched } : {}) };
   if ('dropStored' in action && action.dropStored && held !== undefined) {
     st.parties.takeStored(key);
@@ -613,10 +622,10 @@ async function compactAsk(st: State, $: EngineInterface, e: SessionCompactInput,
     record(st, $, { ...row, reason: action.reason });
     return { skip: action.reason };
   }
-  const shared = { messages: e.messages, party: kind === 'main' ? ('main' as const) : ('subagent' as const), tokens, askPoint: m?.askPoint ?? 0, charsPerToken: ratioOf(st, $, key, 'compact', await partyChars(st, $, key, e.agentId), m), now: await $.clock.now(), facts: (kept: readonly string[]) => factsFor(st.ledger, key, { keptTexts: kept, ...(action.action === 'install' ? { since: held!.since } : {}) }), agents: await agentRows($), logDir: st.pluginLogDir, orders: action.action === 'install' ? { standing: held!.standingOrders ?? [], lifted: held!.lifted ?? [] } : { standing: party.orders ?? [] }, ...(e.agentId !== undefined ? { self: e.agentId } : {}) };
+  const shared = { messages: e.messages, party: kind === 'main' ? ('main' as const) : ('subagent' as const), tokens, askPoint: m?.askPoint ?? 0, charsPerToken: ratioOf(st, $, key, 'compact', await partyChars(st, $, key, e.agentId), m), now: await $.clock.now(), facts: (kept: readonly string[]) => factsFor(st.ledger, key, { keptTexts: kept, ...(action.action === 'install' ? { since: held!.since } : {}) }), agents: await agentRows($), logDir: st.pluginLogDir, orders: action.action === 'install' ? { standing: held!.standingOrders ?? [], lifted: held!.lifted ?? [] } : { standing: party.orders ?? [] }, plan: await readPlan(st, $, key), ...(e.agentId !== undefined ? { self: e.agentId } : {}) };
   const wake = action.action === 'install'
     ? buildWake({ ...shared, toolUseId: held!.toolUseId, frontier: held!.text, tool: st.toolNames.forward_compaction, files: await readLoadFiles($, held!.loadFiles) })
-    : mechanicalWake({ ...shared, tool: st.toolNames.forward_compaction, reason: action.why === 'ceiling' ? { kind: 'ceiling', ceiling: m!.ceiling } : { kind: 'reactive' } });
+    : mechanicalWake({ ...shared, tool: st.toolNames.forward_compaction, recent: await readLoadFiles($, recentFiles(factsFor(st.ledger, key, { keptTexts: [] }).work?.files ?? []).map((path) => ({ path, why: 'recent' }))), incomplete: held?.missing, reason: action.why === 'ceiling' ? { kind: 'ceiling', ceiling: m!.ceiling } : { kind: 'reactive' } });
   dbg(st, $, 'wake', { party: key, kind: action.action, ratio: shared.charsPerToken ?? null, askPoint: shared.askPoint, sizes: wake.sizes, headChars: wake.headChars, carried: wake.carried, notCarried: wake.notCarried, kept: wake.kept, dropped: wake.dropped });
   installed(st, $, key, action.action === 'install' ? { kind: 'frontier', label, before: tokens, chars: held!.text.length, facts: wake.facts, kept: wake.kept, dropped: wake.dropped } : { kind: 'mechanical', label, before: tokens, tokens, ceiling: m?.ceiling ?? 0 }, signal);
   record(st, $, { ...row, facts: wake.facts, kept: wake.kept, dropped: wake.dropped });
@@ -700,7 +709,7 @@ async function turnEnds(st: State, $: EngineInterface, e: TurnCompleteInput): Pr
   const key = keyOf(e.agentId);
   if (key !== 'main') return land(st, $, key, st.parties.takeLanding(key));
   const party = st.parties.get('main');
-  const door = turnEndDoor({ main: true, reason: e.reason, stored: party.stored !== undefined, installedThisTurn: party.installedThisTurn });
+  const door = turnEndDoor({ main: true, reason: e.reason, stored: installable(party.stored), installedThisTurn: party.installedThisTurn });
   st.parties.turnEnded('main');
   if (!door.compact) return;
   try {
@@ -867,6 +876,12 @@ export const register: Register = (on: On, options: PluginOptions) => {
 
   on('session.receive', async ($, e, next) => {
     await guard(st, $, 'session.receive', () => noteReceived(st, $, e), e);
+    return next(e);
+  });
+
+  // A plan-mode row names plan mode and the plan file for its party (plan.ts `planFrom`); every attachment passes on untouched.
+  on('prompt.attachment', async ($, e, next) => {
+    if (PLAN_ROWS.has(e.type)) await guard(st, $, 'prompt.attachment', () => { const p = st.parties.get(keyOf(e.agentId)); p.plan = planFrom(p.plan, e.type, 'detail' in e ? e.detail : undefined); dbg(st, $, 'plan', { party: p.key, type: e.type, mode: p.plan?.mode ?? null, path: p.plan?.path ?? null }); }, e);
     return next(e);
   });
 
