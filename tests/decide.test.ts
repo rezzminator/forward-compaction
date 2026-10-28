@@ -92,8 +92,8 @@ describe('decide: automatic ask (C6-C10, R26-R28)', () => {
   });
 
   it('C9 holds a sub-agent whose window is not known past the ceiling, as waiting; a request too long stays mechanical', () => {
-    expect(ask({ party: 'subagent', tokens: 189_000, ceiling: 120_000, windowUnknown: true, label: 'flights-foreman-sonnet a55986' })).toEqual({
-      action: 'skip', decision: 'skip', why: 'waiting', reason: "forward-compaction: holding Claude Code's compaction for flights-foreman-sonnet a55986 until its frontier is stored or the ceiling is reached",
+    expect(ask({ party: 'subagent', tokens: 189_000, ceiling: 120_000, windowUnknown: true, label: 'code-builder a55986' })).toEqual({
+      action: 'skip', decision: 'skip', why: 'waiting', reason: "forward-compaction: holding Claude Code's compaction for code-builder a55986 until its frontier is stored or the ceiling is reached",
     });
     expect(ask({ party: 'subagent', tokens: 189_000, ceiling: 120_000, windowUnknown: true, reactive: true })).toMatchObject({ action: 'mechanical', why: 'reactive' });
     expect(ask({ party: 'subagent', tokens: 189_000, ceiling: 120_000, windowUnknown: true, stored: true })).toMatchObject({ action: 'install' });
