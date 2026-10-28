@@ -295,15 +295,15 @@ export const A1 = 'a1b2c3d4e5';
 export const FORWARD = 'mcp__forward-compaction__forward_compaction';
 export const SECTIONS = { objective: 'Replay the synthetic fixture.', done: 'Recorded it.', remaining: 'Replay it.', next: 'Check I3 and I5.' };
 export const SKILL_TEXT = 'Base directory for this skill: /HOME/project/.claude/skills/replay-rules\n\n# Replay rules\nThe marker for this skill is replay-rules-marker-7f3a.';
-export const BRIEF = 'Brief for agent one: read the filler and hand off.';
+export const BRIEF = 'Brief for agent one: read the filler and compact.';
 
 /** The sub-agent's transcript at its ask: the forward_compaction call, its result, and two messages after it. */
 export function askMessages(): unknown[] {
   return [
     { role: 'user', text: BRIEF, toolUses: [], handle: 'h0' },
     { role: 'assistant', text: 'storing', toolUses: [{ tool_use_id: 'tu-h', tool: FORWARD, input: SECTIONS }], handle: 'h1' },
-    { role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: 'tu-h', text: 'Handoff stored' }], handle: 'h2' },
-    { role: 'assistant', text: 'reading on after the handoff', toolUses: [], handle: 'h3' },
+    { role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: 'tu-h', text: 'Frontier stored' }], handle: 'h2' },
+    { role: 'assistant', text: 'reading on after the frontier', toolUses: [], handle: 'h3' },
     { role: 'user', text: 'a later note', toolUses: [], handle: 'h4' },
   ];
 }

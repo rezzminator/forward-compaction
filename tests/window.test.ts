@@ -112,8 +112,8 @@ describe('startWarnings: what session.start names once, from the API numbers', (
     const warnings = startWarnings({ rawMaxTokens: 1_000_000, autocompactSource: 'model-default', autoCompactThreshold: 967_000 }, { tokens: 967_000, source: 'autoCompactThreshold' }, main, { ...sub, askPoint: 200_000 });
     expect(warnings[0]).toEqual({
       key: 'compact-window',
-      line: 'forward-compaction: Claude Code compacts against a 1M window (model-default) and asks to compact from about 967k, so a handoff installs no earlier. Set CLAUDE_CODE_AUTO_COMPACT_WINDOW to 100000 in your settings env.',
-      row: { event: 'warning', key: 'compact-window', rawMaxTokens: 1_000_000, autocompactSource: 'model-default', askPoint: 967_000 },
+      line: 'forward-compaction: Claude Code compacts against a 1M window (model-default) and asks to compact from about 967k, so a frontier installs no earlier. Set CLAUDE_CODE_AUTO_COMPACT_WINDOW to 100000 in your settings env.',
+      row: { event: 'compact-window', key: 'compact-window', rawMaxTokens: 1_000_000, autocompactSource: 'model-default', askPoint: 967_000 },
     });
   });
 
@@ -121,8 +121,8 @@ describe('startWarnings: what session.start names once, from the API numbers', (
     const ok = { rawMaxTokens: 100_000, autocompactSource: 'env', autoCompactThreshold: 63_000 };
     expect(startWarnings(ok, { tokens: 63_000, source: 'autoCompactThreshold' }, main, sub)).toEqual([]);
     expect(startWarnings(ok, { tokens: 63_000, source: 'autoCompactThreshold' }, { ...main, ceiling: 50_000 }, { ...sub, ceiling: 40_000 }).map((w) => [w.key, w.line])).toEqual([
-      ['ceiling-below-ask', "forward-compaction: the main ceiling 50k is below Claude Code's ask point 63k; a main with no handoff is compacted mechanically at its first ask."],
-      ['ceiling-below-ask:subagent', "forward-compaction: the sub-agent ceiling 40k is below Claude Code's ask point 63k; a sub-agent with no handoff is compacted mechanically at its first ask."],
+      ['ceiling-below-ask', "forward-compaction: the main ceiling 50k is below Claude Code's ask point 63k; a main with no frontier is compacted mechanically at its first ask."],
+      ['ceiling-below-ask:subagent', "forward-compaction: the sub-agent ceiling 40k is below Claude Code's ask point 63k; a sub-agent with no frontier is compacted mechanically at its first ask."],
     ]);
   });
 

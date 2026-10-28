@@ -1,8 +1,8 @@
 {
   "name": "forward-compaction",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "private": true,
-  "description": "The model writes its own handoff through one tool and the plugin installs it at Claude Code's compaction, with facts recorded from typed events and every later message kept verbatim.",
+  "description": "The model writes its own frontier through one tool and the plugin installs it at Claude Code's compaction, with facts recorded from typed events and every later message kept verbatim.",
   "type": "module",
   "license": "MIT",
   "engines": {
@@ -11,7 +11,7 @@
   "scripts": {
     "test": "vitest run --dir tests",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.hooks.json",
-    "validate:plugin": "claude plugin validate --strict . && claude plugin validate --strict plugins/forward-compaction",
+    "validate:plugin": "claude plugin validate --strict plugins/forward-compaction",
     "release:check": "scripts/release-check.sh",
     "replay:record": "scripts/replay/record.sh"
   },
@@ -25,7 +25,7 @@
     "claude-code-plugin",
     "compaction",
     "context-window",
-    "handoff",
+    "frontier",
     "function-hooks",
     "claude-mods",
     "multi-agent"

@@ -1,4 +1,4 @@
-import { FORWARD_INPUT_SCHEMA, FORWARD_TOOL, FORWARD_TOOL_DESCRIPTION } from './handoff.ts';
+import { FORWARD_INPUT_SCHEMA, FORWARD_TOOL, FORWARD_TOOL_DESCRIPTION } from './frontier.ts';
 import { LOOK_BACK_DESCRIPTION, LOOK_BACK_INPUT_SCHEMA, LOOK_BACK_TOOL } from './look-back.ts';
 
 /** Registering the tools holds a turn no longer than this: past it the turn goes on and the plugin stops waiting on registration. */
@@ -24,6 +24,6 @@ export function toolsToRegister(
 
 /** Each tool's registration spec, and what is lost when it cannot be registered. */
 export const TOOLS = {
-  forward_compaction: { name: FORWARD_TOOL, description: FORWARD_TOOL_DESCRIPTION, inputSchema: FORWARD_INPUT_SCHEMA, isDeferred: false, lost: 'no party can hand off' },
-  look_back: { name: LOOK_BACK_TOOL, description: LOOK_BACK_DESCRIPTION, inputSchema: LOOK_BACK_INPUT_SCHEMA, lost: 'transcript recovery is unavailable' },
+  forward_compaction: { name: FORWARD_TOOL, description: FORWARD_TOOL_DESCRIPTION, inputSchema: FORWARD_INPUT_SCHEMA, isDeferred: false, lost: 'no party can compact' },
+  look_back: { name: LOOK_BACK_TOOL, description: LOOK_BACK_DESCRIPTION, inputSchema: LOOK_BACK_INPUT_SCHEMA, isDeferred: false, lost: 'transcript recovery is unavailable' },
 } as const;

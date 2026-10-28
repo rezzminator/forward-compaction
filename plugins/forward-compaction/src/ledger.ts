@@ -14,7 +14,8 @@ export type ShellTask = { id: string; type: string; status: string; description:
 export type CronJob = { id: string; schedule: string; recurring: boolean; prompt: string };
 
 type Base = { seq: number; at: number };
-export type PersonEntry = Base & { kind: 'person'; party: 'main'; text: string; command?: string };
+/** `answer`: an answer to the model's AskUserQuestion, `text` the questions with it, `answer` the person's own words alone. */
+export type PersonEntry = Base & { kind: 'person'; party: 'main'; text: string; command?: string; answer?: string };
 export type NoticeEntry = Base & { kind: 'notice'; party: 'main'; origin: string; text: string };
 export type ReceivedEntry = Base & { kind: 'received'; party: PartyKey; origin: string; text: string };
 export type BriefEntry = Base & {
@@ -63,8 +64,15 @@ export function addEntry(ledger: Ledger, entry: EntryInput): Ledger {
 /** The most prompts a party keeps, for its wake and across a plugin reload: the person's messages (main) or its coordinator's (a sub-agent, its brief besides), the newest ten, the owner's ruling. */
 export const PROMPTS_KEPT = 10;
 
+/** The messages kept, oldest first: the newest PROMPTS_KEPT typed and every answer to a question however old, a ruling the work rests on (the owner's ruling, 2026-10-28). */
+export function keptSaid<T extends object>(said: readonly T[]): T[] {
+  const answer = (p: T): boolean => 'answer' in p && p.answer !== undefined;
+  const typed = new Set(said.filter((p) => !answer(p)).slice(-PROMPTS_KEPT));
+  return said.filter((p) => answer(p) || typed.has(p));
+}
+
 /** A prompt as `$.state` keeps it: a ledger entry without its seq and party. */
-export type KeptPrompt = { kind: 'person' | 'received' | 'brief'; at: number; text: string; command?: string; origin?: string; description?: string; subagentType?: string; spawnedBy?: string };
+export type KeptPrompt = { kind: 'person' | 'received' | 'brief'; at: number; text: string; command?: string; answer?: string; origin?: string; description?: string; subagentType?: string; spawnedBy?: string };
 type PromptEntry = PersonEntry | ReceivedEntry | BriefEntry;
 const isPrompt = (e: LedgerEntry, party: PartyKey): e is PromptEntry => (e.kind === 'person' || e.kind === 'received' || e.kind === 'brief') && e.party === party;
 const promptKey = (p: { kind: string; at: number; text: string }): string => `${p.kind}\u0000${p.at}\u0000${p.text}`;
@@ -73,7 +81,7 @@ const promptKey = (p: { kind: string; at: number; text: string }): string => `${
 export function promptsKept(ledger: Ledger, party: PartyKey): KeptPrompt[] {
   const mine = ledger.entries.filter((e): e is PromptEntry => isPrompt(e, party));
   const brief = mine.filter((e) => e.kind === 'brief').slice(-1);
-  const said = mine.filter((e) => e.kind !== 'brief').slice(-PROMPTS_KEPT);
+  const said = keptSaid(mine.filter((e) => e.kind !== 'brief'));
   return [...brief, ...said].map(({ seq: _seq, party: _party, ...kept }) => kept as KeptPrompt);
 }
 
@@ -116,6 +124,12 @@ export function restoreSkills(ledger: Ledger, party: PartyKey, kept: unknown): L
 }
 
 /** A preload skill is first filed under `spawn:{tool_use_id}`; once the spawn returns, it belongs to the child. */
+/** The texts a standing order's lift may quote (orders.ts): main's messages from the person; a sub-agent's brief and the messages delivered to it. */
+export function liftSources(ledger: Ledger, party: PartyKey): { text: string; at: number }[] {
+  const kinds = party === 'main' ? ['person'] : ['brief', 'received'];
+  return ledger.entries.filter((e) => kinds.includes(e.kind) && 'party' in e && e.party === party).map((e) => ({ text: (e as { answer?: string }).answer ?? (e as { text: string }).text, at: e.at }));
+}
+
 export function resolveSpawn(ledger: Ledger, toolUseId: string, agentId: string): Ledger {
   const from = `spawn:${toolUseId}`;
   const entries = ledger.entries.map((e) => (e.kind === 'skill' && e.party === from ? { ...e, party: `agent:${agentId}` as const } : e));
@@ -148,7 +162,7 @@ export type Facts = {
   /** Person messages left out because the kept tail already holds them. */
   personInTail: number;
   notices: NoticeEntry[];
-  /** Every delivery to the party recorded from seq `since` (its handoff stored) that the kept tail does not hold, oldest first: the model wrote its handoff without them. Left out of person, notices and received. */
+  /** Every delivery to the party recorded from seq `since` (its frontier stored) that the kept tail does not hold, oldest first: the model wrote its frontier without them. Left out of person, notices and received. */
   arrived: { at: number; origin: string; text: string }[];
   brief?: BriefEntry;
   received: ReceivedEntry[];

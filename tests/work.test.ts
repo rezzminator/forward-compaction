@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { workOf, workSummary, type WorkFact } from '../plugins/forward-compaction/src/work.ts';
+import { answersOf, workOf, workSummary, type WorkFact } from '../plugins/forward-compaction/src/work.ts';
 
 const ok = { text: 'done' };
 
@@ -16,7 +16,14 @@ describe('workOf: what a finished call records', () => {
     expect(workOf('Edit', { file_path: '/w/a.ts' }, { deny: 'no' })).toEqual([]);
     expect(workOf('Write', { file_path: '/w/a.ts' }, { isError: true, text: 'EACCES' })).toEqual([]);
     expect(workOf('Read', {}, ok)).toEqual([]);
-    expect(workOf('Bash', { command: 'ls' }, ok)).toEqual([]);
+    expect(workOf('Grep', { pattern: 'x' }, ok)).toEqual([]);
+  });
+
+  it('M2 + M4: records a Bash call\'s command verbatim with its description, an errored one too (the command to rerun), never a denied one or its output', () => {
+    expect(workOf('Bash', { command: 'npm test -- a.test.ts', description: 'Run the a tests' }, { text: 'output never kept' })).toEqual([{ kind: 'command', command: 'npm test -- a.test.ts', description: 'Run the a tests' }]);
+    expect(workOf('Bash', { command: 'false' }, { isError: true, text: 'exit 1' })).toEqual([{ kind: 'command', command: 'false' }]);
+    expect(workOf('Bash', { command: 'rm x' }, { deny: 'no' })).toEqual([]);
+    expect(workOf('Bash', {}, ok)).toEqual([]);
   });
 
   it('records the todo list as set, and task creates and updates with the id from the answer', () => {
@@ -47,5 +54,34 @@ describe("workSummary: a party's files and tasks", () => {
     expect(workSummary(tasks).tasks).toEqual(['[~] one, renamed']);
     expect(workSummary([...tasks, { kind: 'todos', lines: ['[x] new todo'] }]).tasks).toEqual(['[x] new todo']);
     expect(workSummary([]).tasks).toEqual([]);
+  });
+
+  it('lists the commands newest first, each once at its newest run', () => {
+    const run = (command: string, description?: string): WorkFact => ({ kind: 'command', command, ...(description !== undefined ? { description } : {}) });
+    expect(workSummary([run('make', 'Build'), run('ls'), run('make', 'Build again')]).commands).toEqual([{ command: 'make', description: 'Build again' }, { command: 'ls' }]);
+    expect(workSummary([]).commands).toEqual([]);
+  });
+});
+
+describe("answersOf: the person's answer to an AskUserQuestion call", () => {
+  const questions = [{ question: 'Which quote?', header: 'Quotes', options: [], multiSelect: false }, { question: 'Which account pays?', header: 'Account', options: [], multiSelect: false }];
+
+  it("renders every question with its answer and notes, and keeps the person's own words apart", () => {
+    const result = { questions, answers: { 'Which quote?': 'Quote if verbatim, else segment', 'Which account pays?': 'Account 2' }, annotations: { 'Which account pays?': { notes: 'never the default one' } } };
+    expect(answersOf('AskUserQuestion', { questions }, { result, text: 'Your questions have been answered' })).toEqual({
+      text: 'Which quote?\nAnswer: Quote if verbatim, else segment\nWhich account pays?\nAnswer: Account 2\nNotes: never the default one',
+      said: 'Quote if verbatim, else segment\nAccount 2\nnever the default one',
+    });
+  });
+
+  it('carries a question the person turned back as the text the model read, with no words of theirs to lift an order', () => {
+    const text = 'The user wants to clarify these questions.\nQuestions asked:\n- "Which quote?"\n  Answer: Remove both';
+    expect(answersOf('AskUserQuestion', { questions }, { isError: true, text })).toEqual({ text, said: '' });
+  });
+
+  it('records nothing for a denied call, another tool, or an answer with nothing in it', () => {
+    expect(answersOf('AskUserQuestion', { questions }, { deny: 'no' })).toBeUndefined();
+    expect(answersOf('Bash', { command: 'ls' }, { result: { answers: { a: 'b' } } })).toBeUndefined();
+    expect(answersOf('AskUserQuestion', { questions }, { result: { answers: {} } })).toBeUndefined();
   });
 });

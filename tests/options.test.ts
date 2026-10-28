@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { formatSize, OPTION_ENV, parseEnvFlag, parseSize, resolveOptions, sizeTokens } from '../plugins/forward-compaction/src/options.ts';
+import { formatSize, OPTION_ENV, parseEnvFlag, parseSize, resolveOptions, sizeTokens, subagentMaxContext } from '../plugins/forward-compaction/src/options.ts';
 import { optionVars } from './option-env.ts';
 
 describe('parseSize and sizeTokens', () => {
@@ -23,6 +23,17 @@ describe('parseSize and sizeTokens', () => {
   });
 });
 
+describe('subagentMaxContext (L5, S1, S5)', () => {
+  it("measures a sub-agent whose model id carries [1m] against 1m, every other against 200k, and a set variable wins for all", () => {
+    expect(subagentMaxContext(undefined, 'claude-opus-5-5[1m]')).toBe(1_000_000);
+    expect(subagentMaxContext(undefined, 'claude-sonnet-5-5')).toBe(200_000);
+    expect(subagentMaxContext(undefined, 'claude-haiku-4-5-20251001')).toBe(200_000);
+    expect(subagentMaxContext(undefined, undefined)).toBe(200_000);
+    expect(subagentMaxContext(400_000, 'claude-opus-5-5[1m]')).toBe(400_000);
+    expect(subagentMaxContext(400_000, 'claude-sonnet-5-5')).toBe(400_000);
+  });
+});
+
 describe('parseEnvFlag', () => {
   it('reads 1, 0, true and false in any case', () => {
     for (const [raw, value] of [['1', true], ['TRUE', true], [' true ', true], ['0', false], ['False', false]] as const) expect(parseEnvFlag(raw)).toEqual({ ok: true, value });
@@ -34,7 +45,7 @@ describe('resolveOptions', () => {
   it('holds the defaults with nothing set', () => {
     expect(resolveOptions()).toEqual({
       main: { ceiling: { percent: 60 }, nudgeStart: { percent: 15 }, nudgeEvery: { percent: 5 } },
-      subagent: { ceiling: { percent: 80 }, nudgeStart: { percent: 40 }, nudgeEvery: { percent: 10 }, maxContext: 200_000 },
+      subagent: { ceiling: { percent: 80 }, nudgeStart: { percent: 40 }, nudgeEvery: { percent: 10 } },
       ceilingNative: false, ignoreModels: ['haiku'], keepSkills: [], debug: true, errors: [],
     });
   });
@@ -50,7 +61,6 @@ describe('resolveOptions', () => {
       subagentNudgeStart: 'FORWARD_COMPACTION_SUBAGENT_NUDGE_START',
       subagentNudgeEvery: 'FORWARD_COMPACTION_SUBAGENT_NUDGE_EVERY',
       ceilingNative: 'FORWARD_COMPACTION_CEILING_NATIVE',
-      logFile: 'FORWARD_COMPACTION_LOG_FILE',
       ignoreModels: 'FORWARD_COMPACTION_IGNORE_MODELS',
       keepSkills: 'FORWARD_COMPACTION_KEEP_SKILLS',
       debug: 'FORWARD_COMPACTION_DEBUG',
@@ -62,7 +72,7 @@ describe('resolveOptions', () => {
     expect(resolveOptions({ vars: {} }).ignoreModels).toEqual(['haiku']);
     expect(resolveOptions({ vars: { FORWARD_COMPACTION_IGNORE_MODELS: '' } }).ignoreModels).toEqual([]);
     expect(resolveOptions({ vars: { FORWARD_COMPACTION_IGNORE_MODELS: ' , ' } }).ignoreModels).toEqual([]);
-    expect(resolveOptions({ vars: { FORWARD_COMPACTION_KEEP_SKILLS: ' god-speed, pfm:Release ,,' } }).keepSkills).toEqual(['god-speed', 'pfm:Release']);
+    expect(resolveOptions({ vars: { FORWARD_COMPACTION_KEEP_SKILLS: ' god-speed, deploy:Release ,,' } }).keepSkills).toEqual(['god-speed', 'deploy:Release']);
   });
 
   it('reads the debug flag, on by default, and names a bad value by its variable', () => {
@@ -88,10 +98,10 @@ describe('resolveOptions', () => {
     expect(resolveOptions().main.maxContext).toBeUndefined();
     const bad = resolveOptions({ vars: { FORWARD_COMPACTION_MAIN_MAX_CONTEXT: '50%', FORWARD_COMPACTION_SUBAGENT_MAX_CONTEXT: 'big' } });
     expect(bad.main.maxContext).toBeUndefined();
-    expect(bad.subagent.maxContext).toBe(200_000);
+    expect(bad.subagent.maxContext).toBeUndefined();
     expect(bad.errors).toEqual([
       'forward-compaction: env FORWARD_COMPACTION_MAIN_MAX_CONTEXT is invalid (a max context is a token count, not a percentage: "50%"); using the default main\'s window',
-      'forward-compaction: env FORWARD_COMPACTION_SUBAGENT_MAX_CONTEXT is invalid (not an integer, a k/m value or a percentage: "big"); using the default 200000',
+      'forward-compaction: env FORWARD_COMPACTION_SUBAGENT_MAX_CONTEXT is invalid (not an integer, a k/m value or a percentage: "big"); using the default each sub-agent\'s model\'s max context',
     ]);
   });
 
@@ -112,14 +122,13 @@ describe('resolveOptions', () => {
     });
   });
 
-  it('refuses a relative log file and keeps the default under PLUGIN_LOG_DIR', () => {
-    const resolved = resolveOptions({ pluginLogDir: '/state', vars: { FORWARD_COMPACTION_LOG_FILE: 'rel.jsonl' } });
-    expect(resolved.logFile).toBe('/state/forward-compaction/decisions/.jsonl');
-    expect(resolved.errors).toEqual(['forward-compaction: env FORWARD_COMPACTION_LOG_FILE is invalid (not an absolute path: "rel.jsonl"); using the default /state/forward-compaction/decisions/.jsonl']);
-    expect(resolveOptions({ vars: { FORWARD_COMPACTION_LOG_FILE: '/logs/d.jsonl' } }).logFile).toBe('/logs/d.jsonl');
-    expect(resolveOptions().logFile).toBeUndefined();
+  it('puts the decision log in the plugin log directory, and reads no variable that moves it', () => {
+    expect(resolveOptions({ pluginLogDir: '/state' }).logFile).toBe('/state/forward-compaction/decisions/.jsonl');
     // State on disk: with no PLUGIN_LOG_DIR the decision log sits beside the level logs under HOME.
     expect(resolveOptions({ home: '/h' }).logFile).toBe('/h/.local/state/forward-compaction/logs/decisions/.jsonl');
+    expect(resolveOptions().logFile).toBeUndefined();
+    const moved = resolveOptions({ pluginLogDir: '/state', vars: { FORWARD_COMPACTION_LOG_FILE: '/logs/d.jsonl' } });
+    expect([moved.logFile, moved.errors]).toEqual(['/state/forward-compaction/decisions/.jsonl', []]);
   });
 
   it('names a nudge start that is not below the ceiling in the same unit, and passes across units', () => {

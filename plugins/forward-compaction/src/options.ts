@@ -1,15 +1,22 @@
-import { pluginLogDir } from './log.ts';
+import { pluginLogDir } from './plugin-log.ts';
 
 /** A context size: a token count, or a percentage of the party's max context. */
 export type Size = { tokens: number } | { percent: number };
 
-/** Each party's sizes: the ceiling (with no handoff stored, the context at which a mechanical wake is installed), where the first nudge goes out and the growth between nudges, each a token count or a percentage of the party's max context. */
+/** Each party's sizes: the ceiling (with no frontier stored, the context at which a mechanical wake is installed), where the first nudge goes out and the growth between nudges, each a token count or a percentage of the party's max context. */
 export type PartySizes = { ceiling: Size; nudgeStart: Size; nudgeEvery: Size };
 export const DEFAULT_MAIN: PartySizes = { ceiling: { percent: 60 }, nudgeStart: { percent: 15 }, nudgeEvery: { percent: 5 } };
 /** 160k on the 200k sub-agent max context; the first nudge at 80k sits above the floor a sub-agent's wake lands at. */
 export const DEFAULT_SUBAGENT: PartySizes = { ceiling: { percent: 80 }, nudgeStart: { percent: 40 }, nudgeEvery: { percent: 10 } };
-/** Every sub-agent's max context: Claude Code's API reports no sub-agent's window. Main's defaults to the window `$.session.usage()` reports. */
+/** A sub-agent's max context when its model id has no `[1m]` marker: Claude Code's API reports no sub-agent's window. Main's defaults to the window `$.session.usage()` reports. */
 export const DEFAULT_SUBAGENT_MAX_CONTEXT = 200_000;
+/** A sub-agent's max context when its model id carries the API's own `[1m]` context marker. */
+export const MARKED_SUBAGENT_MAX_CONTEXT = 1_000_000;
+
+/** A sub-agent's max context: the set variable for every sub-agent, else 1m for a model id carrying `[1m]` and 200k for every other (and while no step has named its model). */
+export function subagentMaxContext(set: number | undefined, model: string | undefined): number {
+  return set ?? (model?.includes('[1m]') ? MARKED_SUBAGENT_MAX_CONTEXT : DEFAULT_SUBAGENT_MAX_CONTEXT);
+}
 /** Mechanical wakes, not native summaries, at the ceiling. */
 export const DEFAULT_CEILING_NATIVE = false;
 /** Models the plugin leaves to Claude Code's own compaction, matched as case-insensitive substrings of the model id a step reports. */
@@ -71,7 +78,6 @@ export const OPTION_ENV = {
   subagentNudgeStart: 'FORWARD_COMPACTION_SUBAGENT_NUDGE_START',
   subagentNudgeEvery: 'FORWARD_COMPACTION_SUBAGENT_NUDGE_EVERY',
   ceilingNative: 'FORWARD_COMPACTION_CEILING_NATIVE',
-  logFile: 'FORWARD_COMPACTION_LOG_FILE',
   ignoreModels: 'FORWARD_COMPACTION_IGNORE_MODELS',
   keepSkills: 'FORWARD_COMPACTION_KEEP_SKILLS',
   debug: 'FORWARD_COMPACTION_DEBUG',
@@ -90,9 +96,11 @@ export function parseEnvFlag(raw: string): Parse<boolean> {
 export type ResolvedOptions = {
   /** Main's sizes and max context; no max context set means the window `$.session.usage()` reports. */
   main: PartySizes & { maxContext?: number };
-  subagent: PartySizes & { maxContext: number };
-  /** At the ceiling with no handoff, Claude Code's own summary runs instead of the mechanical wake. */
+  /** No max context set means each sub-agent's own, from its model id (`subagentMaxContext`). */
+  subagent: PartySizes & { maxContext?: number };
+  /** At the ceiling with no frontier, Claude Code's own summary runs instead of the mechanical wake. */
   ceilingNative: boolean;
+  /** The decision log's name template, `{plugin log dir}/decisions/.jsonl`: no option moves it. Unset when there is no plugin log directory. */
   logFile?: string;
   /** Lower-cased ignore-list entries; empty when the variable is set empty. */
   ignoreModels: string[];
@@ -150,22 +158,23 @@ export function resolveOptions(env: OptionEnvironment = {}): ResolvedOptions {
     return fallback;
   };
   // A max context is a token count: a percentage has no window to be of.
-  const maxContext = (option: 'mainMaxContext' | 'subagentMaxContext', fallback: number | undefined): number | undefined => {
+  const maxContext = (option: 'mainMaxContext' | 'subagentMaxContext', fallback: string): number | undefined => {
     const raw = fromEnv(option);
-    if (raw === undefined) return fallback;
+    if (raw === undefined) return undefined;
     const parsed = parseSize(raw);
     if (parsed.ok && 'tokens' in parsed.value) return parsed.value.tokens;
-    badEnv(option, parsed.ok ? `a max context is a token count, not a percentage: ${JSON.stringify(raw)}` : parsed.error, fallback === undefined ? "main's window" : String(fallback));
-    return fallback;
+    badEnv(option, parsed.ok ? `a max context is a token count, not a percentage: ${JSON.stringify(raw)}` : parsed.error, fallback);
+    return undefined;
   };
   const sizes = (party: 'main' | 'subagent', fallback: PartySizes): PartySizes => ({
     ceiling: size(`${party}Ceiling`, fallback.ceiling),
     nudgeStart: size(`${party}NudgeStart`, fallback.nudgeStart),
     nudgeEvery: size(`${party}NudgeEvery`, fallback.nudgeEvery),
   });
-  const mainMax = maxContext('mainMaxContext', undefined);
+  const mainMax = maxContext('mainMaxContext', "main's window");
   const main = { ...sizes('main', DEFAULT_MAIN), ...(mainMax !== undefined ? { maxContext: mainMax } : {}) };
-  const subagent = { ...sizes('subagent', DEFAULT_SUBAGENT), maxContext: maxContext('subagentMaxContext', DEFAULT_SUBAGENT_MAX_CONTEXT)! };
+  const subagentMax = maxContext('subagentMaxContext', "each sub-agent's model's max context");
+  const subagent = { ...sizes('subagent', DEFAULT_SUBAGENT), ...(subagentMax !== undefined ? { maxContext: subagentMax } : {}) };
   const ceilingNative = flag('ceilingNative', DEFAULT_CEILING_NATIVE);
   const debug = flag('debug', DEFAULT_DEBUG);
   // Unset is the default; set empty (or only commas) is a list of none: the one option whose empty value is a value.
@@ -173,14 +182,8 @@ export function resolveOptions(env: OptionEnvironment = {}): ResolvedOptions {
   const ignoreModels = rawIgnore === undefined ? [...DEFAULT_IGNORE_MODELS] : rawIgnore.split(',').map((entry) => entry.trim().toLowerCase()).filter((entry) => entry !== '');
   const keepSkills = (env.vars?.[OPTION_ENV.keepSkills] ?? DEFAULT_KEEP_SKILLS.join(',')).split(',').map((entry) => entry.trim()).filter((entry) => entry !== '');
   for (const late of [nudgeAfterCeiling('main', main), nudgeAfterCeiling('subagent', subagent)]) if (late !== undefined) errors.push(late);
-  // Unset or invalid → the default: the plugin's decisions folder under PLUGIN_LOG_DIR, else under HOME, else no decision log.
+  // The decision log lives in the plugin's log directory (PLUGIN_LOG_DIR, else under HOME); with neither, there is none.
   const base = pluginLogDir(env.pluginLogDir, env.home, 'forward-compaction');
-  const fallbackLog = base === undefined ? undefined : `${base}/decisions/.jsonl`;
-  let logFile = fallbackLog;
-  const envLog = fromEnv('logFile');
-  if (envLog !== undefined) {
-    if (envLog.startsWith('/')) logFile = envLog;
-    else badEnv('logFile', `not an absolute path: ${JSON.stringify(envLog)}`, fallbackLog ?? '(no decision log)');
-  }
+  const logFile = base === undefined ? undefined : `${base}/decisions/.jsonl`;
   return { main, subagent, ceilingNative, ...(logFile ? { logFile } : {}), ignoreModels, keepSkills, debug, errors };
 }

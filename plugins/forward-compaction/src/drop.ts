@@ -1,4 +1,4 @@
-// Dropping a skill or command from the wake: the model names it in drop_skills on two handoffs in a row, and the second
+// Dropping a skill or command from the wake: the model names it in drop_skills on two frontiers in a row, and the second
 // one's wake leaves it out. A file whose frontmatter sets FRONTMATTER_KEEP, or a name FORWARD_COMPACTION_KEEP_SKILLS lists, is never dropped.
 
 import type { Ledger, PartyKey, SkillEntry } from './ledger.ts';
@@ -19,9 +19,9 @@ export function pinnedBy(frontmatter: unknown): boolean {
 export type DropOutcome = { dropped: string[]; pending: string[]; pinned: string[]; unknown: string[] };
 
 /**
- * Applies one stored handoff's drop_skills for a party. A name the party has loaded, not pinned, and named by its previous
- * stored handoff too is dropped: every skill entry of that name is taken out of the ledger, so neither this wake nor a later
- * one carries it until the party loads it again. A loaded, unpinned name asked once is pending: the next handoff must name it
+ * Applies one stored frontier's drop_skills for a party. A name the party has loaded, not pinned, and named by its previous
+ * stored frontier too is dropped: every skill entry of that name is taken out of the ledger, so neither this wake nor a later
+ * one carries it until the party loads it again. A loaded, unpinned name asked once is pending: the next frontier must name it
  * again. A pinned name, or one the party never loaded, is answered and never counted.
  */
 export function applyDrops(ledger: Ledger, party: PartyKey, asked: readonly string[], previous: readonly string[]): { ledger: Ledger; outcome: DropOutcome } {
@@ -44,7 +44,7 @@ export function dropNote(outcome: DropOutcome): string {
   const list = (names: string[]) => names.join(', ');
   return [
     outcome.dropped.length > 0 ? `Dropped from your wake: ${list(outcome.dropped)}. Load one again with the Skill tool if you need it.` : '',
-    outcome.pending.length > 0 ? `Not dropped yet: ${list(outcome.pending)}. Name it in drop_skills on your next handoff too, and that wake leaves it out.` : '',
+    outcome.pending.length > 0 ? `Not dropped yet: ${list(outcome.pending)}. Name it in drop_skills on your next frontier too, and that wake leaves it out.` : '',
     outcome.pinned.length > 0 ? `Never dropped: ${list(outcome.pinned)}. It is pinned: its file's frontmatter sets ${FRONTMATTER_KEEP}, or FORWARD_COMPACTION_KEEP_SKILLS names it.` : '',
     outcome.unknown.length > 0 ? `Not in your context, nothing to drop: ${list(outcome.unknown)}. Use the name the skill or command was loaded under.` : '',
   ].filter(Boolean).join(' ');

@@ -1,24 +1,24 @@
-// The forward_compaction tool contract: what the model may send, what is refused (never trimmed), and what the receipt says.
+// The forward_compaction tool contract: what the model may send, what is stored whole (never trimmed, never refused), and what the receipt says.
 
 import { k } from './nudge.ts';
-import { loadFilesRoom } from './window.ts';
 import { DROP_MAX } from './drop.ts';
+import { carryOrders, type LiftedOrder, type OrderMemory, type StandingOrder } from './orders.ts';
 export { applyDrops, dropNote, pinnedBy } from './drop.ts';
 
 /** The tool's name as registered; the model sees `mcp__forward-compaction__forward_compaction`. */
 export const FORWARD_TOOL = 'forward_compaction';
 
 export const FORWARD_TOOL_DESCRIPTION =
-  'Hands off your context — at a clean milestone once context is large. Stores your handoff, one argument per section (20,000 characters in all), written for yourself after a reset; at your next compaction everything before this call is replaced by it plus recorded facts (the person\'s messages or your brief, your skills), and every later message stays verbatim. Returns a receipt of when it installs; a refusal names what to fix and stores nothing. Example: forward_compaction({"objective": "…", "done": "…", "remaining": "…", "next": "…", "load_files": []}). Exact old detail later → look_back.';
+  'Compacts your context — at a clean milestone once context is large. Stores your frontier, one argument per section, any length, for yourself after a reset; at your next compaction it and recorded facts replace everything before this call, the newest later messages that fit stay verbatim, the rest named as not carried. The person\'s binding orders go in standing_orders, verbatim. Always stores; the receipt names any change. Example: forward_compaction({"objective": "…", "done": "…", "remaining": "…", "next": "…", "load_files": []}). Exact old detail later → look_back.';
 
-/** The handoff's sections in the order they are assembled: the argument, its heading, whether it is required, and what it holds. */
+/** The frontier's sections in the order they are assembled: the argument, its heading, whether it is required, and what it holds. */
 const SECTIONS = [
   { key: 'objective', heading: 'Objective', required: true, description: 'What the work is for and what done means.' },
-  { key: 'done', heading: 'Done', required: true, description: 'Finished pieces, each with how it was verified.' },
+  { key: 'done', heading: 'Done', required: true, description: 'Finished pieces, each with how it was verified; every figure with the command that produced it.' },
   { key: 'remaining', heading: 'Remaining', required: true, description: 'Every step left, in order.' },
   { key: 'next', heading: 'Next', required: true, description: 'The first concrete action after the wake.' },
   { key: 'blocked', heading: 'Blocked', required: false, description: 'Optional: what waits on whom.' },
-  { key: 'findings', heading: 'Findings', required: false, description: 'Optional: decisions with why, errors verbatim.' },
+  { key: 'findings', heading: 'Findings', required: false, description: 'Optional: decisions with why, errors verbatim, the commands and recipes you will need again.' },
 ] as const;
 
 export const FORWARD_INPUT_SCHEMA = {
@@ -35,7 +35,7 @@ export const FORWARD_INPUT_SCHEMA = {
     load_files: {
       type: 'array',
       maxItems: 8,
-      description: 'Files carried whole into the new context, read when it installs. Files that come to more than 5% of your window are refused at the call: pass lines ranges or fewer files.',
+      description: 'Files carried whole into the new context, read when it installs, while their room (5% of your max context) lasts; a file left out is named with its size and the room. Pass lines ranges to carry only what you need.',
       items: {
         type: 'object',
         additionalProperties: false,
@@ -51,93 +51,133 @@ export const FORWARD_INPUT_SCHEMA = {
       type: 'array',
       maxItems: DROP_MAX,
       items: { type: 'string' },
-      description: 'Optional: names of skills or commands in your context you no longer need. Name one on two handoffs in a row and the second wake leaves it out; one its file pins stays.',
+      description: 'Optional: names of skills or commands in your context you no longer need. Name one on two frontiers in a row and the second wake leaves it out; one its file pins stays.',
+    },
+    standing_orders: {
+      type: 'array',
+      description: "Every order of the person's that binds the rest of the work (a prohibition, a limit, a rule), each in every frontier until the person lifts it.",
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['order', 'at'],
+        properties: {
+          order: { type: 'string', description: "The person's words, verbatim." },
+          at: { type: 'string', description: "The ISO time of the person's message." },
+        },
+      },
+    },
+    lifted: {
+      type: 'array',
+      description: 'Orders your last frontier carried that the person has since lifted.',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['order', 'by'],
+        properties: {
+          order: { type: 'string', description: 'The order, exactly as your last frontier carried it.' },
+          by: { type: 'string', description: "The person's words that lifted it, verbatim." },
+        },
+      },
     },
   },
 } as const;
 
 // Format caps: design budgets on what the model may send, never a measured size.
-/** The assembled handoff's cap: a frontier stays a page or two the woken model reads whole, well inside any wake budget. */
-export const HANDOFF_MAX_CHARS = 20_000;
 /** Load files per call: enough for a plan, a spec and the files in hand, few enough that each is named and chosen. */
 export const LOAD_FILES_MAX = 8;
 /** A load file's `why`: one line saying what it is for. */
 export const WHY_MAX_CHARS = 200;
-/** A load file's size on disk (1 MiB): a file past it is a dump to slice with `lines`, not a file to carry whole. */
-export const LOAD_FILE_MAX_BYTES = 1_048_576;
 
 /** One file the model asked to carry whole into the wake; every field is the model's own text, kept verbatim. */
 export type LoadFile = { path: string; lines?: string; why: string };
 
-export type ParsedHandoff = { handoff: string; loadFiles: LoadFile[]; dropSkills: string[] };
-export type Refusal = { refusal: string };
+export type ParsedFrontier = {
+  frontier: string;
+  loadFiles: LoadFile[];
+  /** The place in the call's `load_files` of each entry of `loadFiles`, so a note on one names the entry the model sent. */
+  loadAt: number[];
+  dropSkills: string[];
+  standingOrders: StandingOrder[];
+  lifted: LiftedOrder[];
+  /** One line per argument left out, skipped or carried by the plugin instead: the receipt names each, the model fixes nothing. */
+  notes: string[];
+};
 
-const FIELDS = [...SECTIONS.map((section) => section.key), 'load_files', 'drop_skills'];
-const PREFIX = 'forward_compaction refused, nothing stored: ';
-const refuse = (text: string): Refusal => ({ refusal: PREFIX + text });
+const FIELDS = [...SECTIONS.map((section) => section.key), 'load_files', 'drop_skills', 'standing_orders', 'lifted'];
 const num = (n: number): string => n.toLocaleString('en-US');
 const kind = (v: unknown): string => (v === null ? 'null' : Array.isArray(v) ? 'array' : typeof v);
 const isAbsolutePath = (p: string): boolean => /^(\/|[A-Za-z]:[\\/]|\\\\)/.test(p);
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 
-/** One line per bad argument: an unknown field, a required section missing, not a string or blank, an optional one given but not a string. */
-function argumentFaults(fields: Record<string, unknown>): string[] {
-  const unknown = Object.keys(fields).filter((key) => !FIELDS.includes(key)).map((key) => `unknown field "${key}". The fields are ${FIELDS.slice(0, -1).join(', ')} and drop_skills.`);
+/** One line per section left out: a required one missing or blank, any one given but not a string; one per unknown field. */
+function argumentNotes(fields: Record<string, unknown>): string[] {
+  const unknown = Object.keys(fields).filter((key) => !FIELDS.includes(key)).map((key) => `unknown field "${key}" ignored. The fields are ${FIELDS.slice(0, -1).join(', ')} and ${FIELDS.at(-1)}.`);
   const sections = SECTIONS.flatMap(({ key, required }) => {
     const value = fields[key];
-    if (required && (typeof value !== 'string' || value.trim() === '')) return [`${key} must be a non-blank string; got ${typeof value === 'string' ? 'a blank string' : kind(value)}.`];
-    if (!required && value !== undefined && typeof value !== 'string') return [`${key} must be a string when given; got ${kind(value)}.`];
-    return [];
+    if (typeof value === 'string' && value.trim() !== '') return [];
+    if (value === undefined || value === '' || (typeof value === 'string' && value.trim() === '')) return required ? [`${key} was ${value === undefined ? 'missing' : 'blank'}: your frontier is stored without it.`] : [];
+    return [`${key} must be a string; got ${kind(value)}: your frontier is stored without it.`];
   });
   return [...unknown, ...sections];
 }
 
 /**
- * Validates the model's tool input before anything is stored (V1-V11 of the spec table), every bad argument named in
- * one refusal, then assembles the handoff from its sections in order, an absent or blank optional one left out. Each
- * section's text and the files come back exactly as sent: nothing is trimmed, a fault is refused for the model to fix.
- * `$.fs.stat` checks (V12-V15) are the adapter's, through `loadFileRefusal`.
+ * Reads the model's tool input into a frontier that is always stored: nothing is refused. Each bad argument is left
+ * out (a section) or skipped (one `load_files`, `drop_skills`, `standing_orders` or `lifted` entry) and named in `notes`
+ * for the receipt, the sections' text and the files coming back exactly as sent. With `memory`, the party's remembered
+ * standing orders, the plugin carries every one the frontier left out and keeps every one a lift did not prove
+ * (orders.ts `carryOrders`).
+ * `$.fs.stat` checks (V12-V15) are the adapter's, through `loadFileNote`.
  */
-export function parseHandoff(input: unknown): ParsedHandoff | Refusal {
+export function parseFrontier(input: unknown, memory?: OrderMemory): ParsedFrontier {
   const fields = isObject(input) ? input : {};
-  const faults = argumentFaults(fields);
-  if (faults.length > 0) return refuse(faults.join('\n'));
-  const handoff = SECTIONS.flatMap(({ key, heading }) => {
+  const notes = argumentNotes(fields);
+  const frontier = SECTIONS.flatMap(({ key, heading }) => {
     const text = fields[key];
     return typeof text === 'string' && text.trim() !== '' ? [`## ${heading}\n${text}`] : [];
   }).join('\n\n');
-  if (handoff.length > HANDOFF_MAX_CHARS) return refuse(`the handoff assembled from your sections is ${num(handoff.length)} characters, over the ${num(HANDOFF_MAX_CHARS)} cap. Shorten it (detail can go in load_files, or stay in the transcript for look_back) and call again.`);
   const drops = fields.drop_skills;
-  if (drops !== undefined && (!Array.isArray(drops) || drops.length > DROP_MAX || drops.some((d) => typeof d !== 'string' || d.trim() === ''))) return refuse(`drop_skills must be an array of at most ${DROP_MAX} skill or command names, each a non-blank string.`);
-  const dropSkills = (drops ?? []) as string[];
-  const files = fields.load_files;
-
-  if (files === undefined) return { handoff, loadFiles: [], dropSkills };
-  if (!Array.isArray(files)) return refuse('load_files must be an array of {path, lines?, why}.');
-  if (files.length > LOAD_FILES_MAX) return refuse(`load_files has ${files.length} entries, over the ${LOAD_FILES_MAX} cap.`);
-  const loadFiles: LoadFile[] = [];
-  for (const [i, entry] of files.entries()) {
-    const { path, why, lines: ranges } = isObject(entry) ? entry : ({} as Record<string, unknown>);
-    if (typeof path !== 'string' || !isAbsolutePath(path)) return refuse(`load_files[${i}].path must be an absolute path; got "${String(path)}".`);
-    const whyLength = typeof why === 'string' ? why.length : 0;
-    if (typeof why !== 'string' || why.trim() === '' || whyLength > WHY_MAX_CHARS) return refuse(`load_files[${i}].why must be 1\u2013${WHY_MAX_CHARS} characters; it is ${whyLength}.`);
-    if (ranges !== undefined && (typeof ranges !== 'string' || parseLineRanges(ranges) === undefined)) return refuse(`load_files[${i}].lines "${String(ranges)}" is not a range like "10-40" or "1-60,160-185".`);
-    loadFiles.push({ path, why, ...(ranges !== undefined ? { lines: ranges as string } : {}) });
+  let dropSkills: string[] = [];
+  if (drops !== undefined && !Array.isArray(drops)) notes.push('drop_skills must be an array of skill or command names: none dropped.');
+  else if (drops !== undefined) {
+    dropSkills = drops.filter((d, i): d is string => (typeof d === 'string' && d.trim() !== '') || (notes.push(`drop_skills[${i}] must be a non-blank string: skipped.`), false));
+    if (dropSkills.length > DROP_MAX) (notes.push(`drop_skills has ${dropSkills.length} names, over the ${DROP_MAX} cap: the first ${DROP_MAX} are used.`), (dropSkills = dropSkills.slice(0, DROP_MAX)));
   }
-  return { handoff, loadFiles, dropSkills };
+  const orders = carryOrders(memory ?? { remembered: [], said: [], party: 'main' }, fields.standing_orders, fields.lifted);
+  notes.push(...orders.notes);
+  const files = fields.load_files;
+  const loadFiles: LoadFile[] = [];
+  const loadAt: number[] = [];
+  if (files !== undefined && !Array.isArray(files)) notes.push('load_files must be an array of {path, lines?, why}: none carried.');
+  else {
+    if (files !== undefined && files.length > LOAD_FILES_MAX) notes.push(`load_files has ${files.length} entries, over the ${LOAD_FILES_MAX} cap: entries ${LOAD_FILES_MAX}-${files.length - 1} are skipped.`);
+    for (const [i, entry] of (files ?? []).slice(0, LOAD_FILES_MAX).entries()) {
+      const { path, why, lines: ranges } = isObject(entry) ? entry : ({} as Record<string, unknown>);
+      const whyLength = typeof why === 'string' ? why.length : 0;
+      if (typeof path !== 'string' || !isAbsolutePath(path)) notes.push(`load_files[${i}].path must be an absolute path; got "${String(path)}": skipped.`);
+      else if (typeof why !== 'string' || why.trim() === '' || whyLength > WHY_MAX_CHARS) notes.push(`load_files[${i}].why must be 1\u2013${WHY_MAX_CHARS} characters; it is ${whyLength}: ${path} skipped.`);
+      else if (ranges !== undefined && (typeof ranges !== 'string' || parseLineRanges(ranges) === undefined)) notes.push(`load_files[${i}].lines "${String(ranges)}" is not a range like "10-40" or "1-60,160-185": ${path} skipped.`);
+      else (loadFiles.push({ path, why, ...(ranges !== undefined ? { lines: ranges as string } : {}) }), loadAt.push(i));
+    }
+  }
+  return { frontier, dropSkills, standingOrders: orders.standing, lifted: orders.lifted, loadFiles, loadAt, notes };
 }
 
 /** What the adapter learned from `$.fs.stat(path)` on one load file: its stat, or `absent` (ENOENT), or the error text of any other throw. */
 export type FileCheck = { kind: 'file' | 'dir' | 'other'; size: number } | { absent: true } | { error: string };
 
-/** V12-V15: the refusal for one load file (`index` is its place in `load_files`, from 0), or undefined when it can be carried. */
-export function loadFileRefusal(index: number, path: string, check: FileCheck): string | undefined {
+/** V12-V15: the note for one load file that is skipped (`index` is its place in `load_files`, from 0), or undefined when it can be carried. */
+export function loadFileNote(index: number, path: string, check: FileCheck): string | undefined {
   const at = `load_files[${index}] ${path}`;
-  if ('error' in check) return PREFIX + `${at} could not be checked: ${check.error}.`;
-  if ('absent' in check) return PREFIX + `${at}: no such file.`;
-  if (check.kind !== 'file') return PREFIX + `${at} is not a regular file.`;
-  if (check.size > LOAD_FILE_MAX_BYTES) return PREFIX + `${at} is ${num(check.size)} bytes, over the ${num(LOAD_FILE_MAX_BYTES)} cap for a carried file.`;
+  if ('error' in check) return `${at} could not be checked: ${check.error}: skipped.`;
+  if ('absent' in check) return `${at}: no such file: skipped.`;
+  if (check.kind !== 'file') return `${at} is not a regular file: skipped.`;
   return undefined;
+}
+
+/** The receipt's list of what the plugin left out, skipped or carried on for the model: empty when it changed nothing. */
+export function changesNote(notes: readonly string[]): string {
+  return notes.length === 0 ? '' : `Stored with ${notes.length} ${notes.length === 1 ? 'change' : 'changes'}:\n${notes.map((n) => `- ${n}`).join('\n')}`;
 }
 
 /** `tokens`: the party's last reading, absent when it has none; it picks the sentence and is never printed, being a step behind the call. */
@@ -145,36 +185,14 @@ export type ReceiptInput =
   | { party: 'main'; chars: number; files: number; tokens?: number; askPoint?: number; replaced?: boolean }
   | { party: 'subagent'; chars: number; files: number; tokens?: number; askPoint: number; replaced?: boolean };
 
-/** The tool result of a stored handoff: when it installs, true to the party's door (a sub-agent's only door is Claude Code's ask). */
+/** The tool result of a stored frontier: when it installs, true to the party's door (a sub-agent's only door is Claude Code's ask). */
 export function receipt(input: ReceiptInput): string {
-  const stored = `Handoff stored (${num(input.chars)} characters, ${input.files} files).`;
-  const behind = 'Everything after this call is kept verbatim behind it';
-  const replaced = input.replaced ? ' It replaces the handoff you stored before.' : '';
+  const stored = `Frontier stored (${num(input.chars)} characters, ${input.files} files).`;
+  const behind = 'The newest messages after this call that fit are kept verbatim behind it, the rest named as not carried';
+  const replaced = input.replaced ? ' It replaces the frontier you stored before.' : '';
   if (input.party === 'main') return `${stored} It installs at the end of this turn, or at Claude Code's next compaction ask if one comes first. ${behind}, so finish the step in hand; you need not stop.${replaced}`;
   if (input.tokens !== undefined && input.tokens >= input.askPoint) return `${stored} It installs at Claude Code's next compaction ask, before your next request. ${behind}.${replaced}`;
   return `${stored} Claude Code has not asked to compact you yet: it installs at Claude Code's next ask, from about ${k(input.askPoint)} context. ${behind}. Carry on with your work.${replaced}`;
-}
-
-/**
- * The refusal for load files whose content comes to more than `loadFilesRoom` of the party's max context at its measured
- * characters per token (`ratio`), each file named with its size (`chars`, as read for the wake: a `lines` range counts its
- * lines alone); undefined when they fit, and with no ratio (unmeasured yet), when nothing can be measured. Refused, never trimmed.
- */
-export function loadRoomRefusal(files: readonly { path: string; chars: number }[], maxContext: number, ratio: number | undefined): string | undefined {
-  const room = loadFilesRoom(maxContext, ratio);
-  const total = files.reduce((sum, f) => sum + f.chars, 0);
-  if (total <= room) return undefined;
-  return [
-    PREFIX + `load_files come to ${num(total)} characters, over the ${num(room)}-character room for carried files (5% of your ${k(maxContext)} max context):`,
-    ...files.map((f) => `- ${f.path}: ${num(f.chars)} characters`),
-    'Pass lines ranges (like "10-40" or "1-60,160-185") to carry only what you need, or fewer files, and call again.',
-  ].join('\n');
-}
-
-/** The answer to a forward_compaction call from a party whose model is on the ignore list (`Parties.ignored`, the entry it matched): refused, nothing stored. Undefined for a party the plugin manages. */
-export function ignoredRefusal(matched: string | undefined, ceiling: number | undefined): string | undefined {
-  if (matched === undefined) return undefined;
-  return `forward_compaction refused, nothing stored: your model is on forward-compaction's ignore list ("${matched}"), so it takes no handoff from you; carry on with your work, and at ${ceiling === undefined ? 'your ceiling' : k(ceiling)} the plugin compacts you mechanically.`;
 }
 
 /** Keys the tool.call event carries beside the tool's arguments (`requestMeta` a hook may add, `consent` a press may carry). */
@@ -189,7 +207,7 @@ export function toolInput(e: Record<string, unknown>): Record<string, unknown> {
   return nested !== null && typeof nested === 'object' && !Array.isArray(nested) ? (nested as Record<string, unknown>) : {};
 }
 
-/** Every forward_compaction answer, receipt or refusal, ends with this line; `logDir` is the level-log directory, where the issues file lives. */
+/** Every forward_compaction answer, receipt or failure, ends with this line; `logDir` is the level-log directory, where the issues file lives. */
 export const EXPERIMENTAL_OPENING = 'forward-compaction is experimental.';
 export function experimental(text: string, logDir: string | undefined): string {
   const where = logDir === undefined ? 'your reply.' : `${logDir.replace(/\/+$/, '')}/issues.md; it will be taken care of later.`;
