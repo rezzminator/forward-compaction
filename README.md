@@ -75,8 +75,8 @@ export CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1
 export CLAUDE_CODE_AUTO_COMPACT_WINDOW=100000
 
 # 2. Install
-claude plugin marketplace add https://github.com/rezzminator/sub-agent-compact.git
-claude plugin install forward-compaction@forward-compaction
+claude plugin marketplace add rezzminator/professor
+claude plugin install forward-compaction@professor
 ```
 
 Both variables also work in the `env` block of `settings.json`. With the

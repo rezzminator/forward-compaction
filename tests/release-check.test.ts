@@ -15,10 +15,9 @@ afterEach(() => {
 function plant(opts: { badge: string; testBody?: string }): string {
   const root = mkdtempSync(join(tmpdir(), 'fc-release-check-'));
   planted.push(root);
-  for (const dir of ['scripts', '.claude-plugin', 'plugins/forward-compaction/.claude-plugin', 'tests']) mkdirSync(join(root, dir), { recursive: true });
+  for (const dir of ['scripts', 'plugins/forward-compaction/.claude-plugin', 'tests']) mkdirSync(join(root, dir), { recursive: true });
   copyFileSync(join(REPO, 'scripts/release-check.sh'), join(root, 'scripts/release-check.sh'));
   writeFileSync(join(root, 'plugins/forward-compaction/.claude-plugin/plugin.json'), '{"name":"forward-compaction","version":"1.2.3"}');
-  writeFileSync(join(root, '.claude-plugin/marketplace.json'), '{"plugins":[{"name":"forward-compaction","version":"1.2.3"}]}');
   writeFileSync(join(root, 'package.json'), '{"name":"forward-compaction","version":"1.2.3"}');
   writeFileSync(join(root, 'README.md'), `[![Version](https://img.shields.io/badge/version-1.2.3-blue)](./CHANGELOG.md)\n${opts.badge}\n`);
   writeFileSync(join(root, 'CHANGELOG.md'), '## [1.2.3] — 2026-01-02\n');

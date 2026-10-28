@@ -42,7 +42,7 @@ is the behavioural spec.
 - `plugins/forward-compaction/contract.d.ts`: the session state the host keeps for the plugin (`$.state`, each party's newest prompts and its skills); `plugin.json` names it in `types`.
 - `plugins/forward-compaction/src/`: every decision, pure and unit-tested; `tests/` holds one vitest file per concern.
 - `types/claude-code.d.ts`: the plugin API (from `/plugin-types`), the truth for every hook's shape; grep it before using an event.
-- `plugins/forward-compaction/.claude-plugin/`: `plugin.json` (manifest, no `userConfig`) and `icon.svg`; the root `.claude-plugin/marketplace.json` makes the repo its own marketplace, with a `git-subdir` source at `plugins/forward-compaction`.
+- `plugins/forward-compaction/.claude-plugin/`: `plugin.json` (manifest, no `userConfig`) and `icon.svg`; the plugin installs as `forward-compaction@professor`.
 
 ## Commands
 
@@ -62,7 +62,7 @@ Refresh the installed copy with `claude plugin marketplace update` as written, n
 - A bad option is logged by its variable and falls back to its default.
 - Every option is read from a variable `FORWARD_COMPACTION_{OPTION}`, upper snake, and nowhere else: the plugin declares no `userConfig`, and a non-empty options object handed to `register` is named in one warning and not applied. Flags `1|0|true|false`, any case; sizes, dirs and log file the option's grammar; unset, empty or blank is absent; a bad value is named by its variable and the default applies.
 - A new option adds its variable to `OPTION_ENV` (`plugins/forward-compaction/src/options.ts`), a literal `readOptionVar` line to the adapter and its README options-table entry; `tests/register.test.ts` holds the literals to `OPTION_ENV`.
-- A version bump moves `plugins/forward-compaction/.claude-plugin/plugin.json`, `marketplace.json`, `package.json` (and its lockfile) and the README badge together; installed copies update only on a new version.
+- A version bump moves `plugins/forward-compaction/.claude-plugin/plugin.json`, `package.json` (and its lockfile) and the README badge together; installed copies update only on a new version.
 - The README tests badge states the count of tests `npm test` passes; `npm run release:check` runs the suite and fails when they differ, so the badge is set last, after the final test is added.
 - Defaults live in two places only, and agree: `plugins/forward-compaction/src/options.ts` (`DEFAULT_*`, `MARKED_SUBAGENT_MAX_CONTEXT`) and the README options table; this file names an option, never its default number.
 - The README benchmark reports measured runs only; a figure the code has changed since is labelled not re-measured.
@@ -72,7 +72,7 @@ Refresh the installed copy with `claude plugin marketplace update` as written, n
 ## Branches and releases
 
 - `develop` is the default branch: every change lands there, by a commit or a pull request, and no CI runs on a push. `.github/workflows/release.yml` runs on the `develop → main` pull request only. `develop` is protected by the ruleset `develop keeps its history`: never force-push or delete it.
-- `main` is release-only (ruleset `main is release-only`). It moves only by merging the `develop → main` pull request, with a merge commit and never a squash, so both branches share one history, and only after `check` and `release` pass: never a direct push, never an admin override. The marketplace installs the plugin from `main` (`git-subdir`, `ref: main`), so users only ever get a released version.
+- `main` is release-only (ruleset `main is release-only`). It moves only by merging the `develop → main` pull request, with a merge commit and never a squash, so both branches share one history, and only after `check` and `release` pass: never a direct push, never an admin override. Professor's marketplace installs the plugin from `main` (`git-subdir`, `ref: main`), so users only ever get a released version.
 - A release, in order:
   1. On `develop`: bump the version in all four places, and move `## [Unreleased]` in `CHANGELOG.md` to `## [X.Y.Z] — date`. Every merge into `main` publishes, so a pre-release suffix (`-dev.N`, `-alpha`) becomes the real release version here.
   2. `make release-check` passes, after `git fetch origin main`.

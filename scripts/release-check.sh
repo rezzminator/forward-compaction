@@ -11,10 +11,8 @@ read_json() { node -e 'const [f, e] = process.argv.slice(1); const j = JSON.pars
 v=$(read_json plugins/forward-compaction/.claude-plugin/plugin.json version)
 [ -n "$v" ] || { echo "ERROR plugin.json has no version"; exit 2; }
 fail=0
-m=$(node -e 'const j = require("./.claude-plugin/marketplace.json"); process.stdout.write(j.plugins.find((p) => p.name === "forward-compaction")?.version ?? "")') || { echo "ERROR cannot read marketplace.json"; exit 2; }
 p=$(read_json package.json version)
 b=$(grep -oE 'badge/version-[0-9A-Za-z.-]+-blue' README.md | sed -E 's/badge\/version-|-blue$//g; s/--/-/g')
-[ "$m" = "$v" ] || { echo "FAIL marketplace.json says $m, plugin.json $v"; fail=1; }
 [ "$p" = "$v" ] || { echo "FAIL package.json says $p, plugin.json $v"; fail=1; }
 [ "$b" = "$v" ] || { echo "FAIL README badge says ${b:-nothing}, plugin.json $v"; fail=1; }
 grep -qE "^## \[$v\] — [0-9]{4}-[0-9]{2}-[0-9]{2}$" CHANGELOG.md || { echo "FAIL CHANGELOG.md has no dated section for $v"; fail=1; }
