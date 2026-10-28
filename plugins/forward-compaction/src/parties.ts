@@ -1,6 +1,5 @@
 import type { Landing } from './wake.ts';
 import { ignoredBy, type RatioBase } from './window.ts';
-import { GATE_STEPS } from './nudge.ts';
 import { keptOrders, type LiftedOrder, type StandingOrder } from './orders.ts';
 
 /** A file the model asked the wake to carry (the tool's `load_files` entry). */
@@ -63,14 +62,8 @@ export type PartyState = {
   absorbNext: boolean;
   /** The party's first reading after its last install: its next nudge waits until the context has grown by `every` past it. */
   wokeAt?: number;
-  /** The nudge level from which the party's calls wait for its frontier (nudge.ts `gated`): GATE_STEPS past its first nudge since the last install; absent until that nudge. */
-  gateLevel?: number;
-  /** The party's completed requests: a gated call's request is told from a later one by it. */
+  /** The party's completed requests. */
   requests: number;
-  /** The request whose calls the gate refused since the last install (`gateAnswer`). */
-  gateRequest?: number;
-  /** The gate let the party's calls run since the last install: it answered a refused request with no frontier. */
-  gateOpen?: boolean;
   installs: number;
   /** An install happened in the party's current turn: the turn-end door (P1) does not fire again. */
   installedThisTurn: boolean;
@@ -232,20 +225,6 @@ export class Parties {
     state.requests += 1;
   }
 
-  /**
-   * What a gated call gets: refused while it belongs to the request that met the gate (its parallel calls too), let
-   * run from any later one, `opens` the first time. No API names a sub-agent's tools: one whose list lacks the frontier
-   * tool answers the refusal with another call, and would otherwise wait forever; its ceiling's mechanical wake stays.
-   */
-  gateAnswer(key: string): 'refuse' | 'opens' | 'open' {
-    const state = this.get(key);
-    state.gateRequest ??= state.requests;
-    if (state.gateRequest === state.requests) return 'refuse';
-    if (state.gateOpen) return 'open';
-    state.gateOpen = true;
-    return 'opens';
-  }
-
   /** The ask follows a skip with no completed request between: Claude Code reports the request too long, not a fresh ask (D8). */
   reactive(key: string): boolean {
     const state = this.states.get(key);
@@ -263,7 +242,6 @@ export class Parties {
     if (state.stored || state.absorbNext || level <= state.nudgeLevel) return false;
     if (state.wokeAt !== undefined && tokens !== undefined && every !== undefined && tokens < state.wokeAt + every) return false;
     state.nudgeLevel = level;
-    state.gateLevel ??= level + GATE_STEPS;
     return true;
   }
 
@@ -280,9 +258,6 @@ export class Parties {
       nudgeLevel: 0,
       absorbNext: true,
       wokeAt: undefined,
-      gateLevel: undefined,
-      gateRequest: undefined,
-      gateOpen: undefined,
       reading: undefined,
       base: undefined,
       landing,

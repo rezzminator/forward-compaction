@@ -1,15 +1,15 @@
-// The forward_compaction tool contract: what the model may send, what is refused (never trimmed), and what the receipt says.
+// The forward_compaction tool contract: what the model may send, what is stored whole (never trimmed, never refused), and what the receipt says.
 
 import { k } from './nudge.ts';
 import { DROP_MAX } from './drop.ts';
-import { orderFaults, orderShapeFaults, type LiftedOrder, type OrderMemory, type StandingOrder } from './orders.ts';
+import { carryOrders, type LiftedOrder, type OrderMemory, type StandingOrder } from './orders.ts';
 export { applyDrops, dropNote, pinnedBy } from './drop.ts';
 
 /** The tool's name as registered; the model sees `mcp__forward-compaction__forward_compaction`. */
 export const FORWARD_TOOL = 'forward_compaction';
 
 export const FORWARD_TOOL_DESCRIPTION =
-  'Compacts your context — at a clean milestone once context is large. Stores your frontier, one argument per section, any length, for yourself after a reset; at your next compaction it and recorded facts replace everything before this call, the newest later messages that fit stay verbatim, the rest named as not carried. The person\'s binding orders go in standing_orders, verbatim. Returns a receipt; a refusal names what to fix and stores nothing. Example: forward_compaction({"objective": "…", "done": "…", "remaining": "…", "next": "…", "load_files": []}). Exact old detail later → look_back.';
+  'Compacts your context — at a clean milestone once context is large. Stores your frontier, one argument per section, any length, for yourself after a reset; at your next compaction it and recorded facts replace everything before this call, the newest later messages that fit stay verbatim, the rest named as not carried. The person\'s binding orders go in standing_orders, verbatim. Always stores; the receipt names any change. Example: forward_compaction({"objective": "…", "done": "…", "remaining": "…", "next": "…", "load_files": []}). Exact old detail later → look_back.';
 
 /** The frontier's sections in the order they are assembled: the argument, its heading, whether it is required, and what it holds. */
 const SECTIONS = [
@@ -91,86 +91,93 @@ export const WHY_MAX_CHARS = 200;
 /** One file the model asked to carry whole into the wake; every field is the model's own text, kept verbatim. */
 export type LoadFile = { path: string; lines?: string; why: string };
 
-export type ParsedFrontier = { frontier: string; loadFiles: LoadFile[]; dropSkills: string[]; standingOrders: StandingOrder[]; lifted: LiftedOrder[] };
-/** `orderFaults`: set when the drop check refused, the count of its faults; the refusal then quotes orders, so its row carries the count, never the text. */
-export type Refusal = { refusal: string; orderFaults?: number };
-
-/** The refused row's fields for `refusal`: a dropped order's refusal names the reason and its count, never the person's words; any other carries its text. */
-export function refusedFields(parsed: ParsedFrontier | Refusal, refusal: string): { reason: 'standing-orders'; faults: number } | { refusal: string } {
-  return 'refusal' in parsed && parsed.orderFaults !== undefined && refusal === parsed.refusal ? { reason: 'standing-orders', faults: parsed.orderFaults } : { refusal };
-}
+export type ParsedFrontier = {
+  frontier: string;
+  loadFiles: LoadFile[];
+  /** The place in the call's `load_files` of each entry of `loadFiles`, so a note on one names the entry the model sent. */
+  loadAt: number[];
+  dropSkills: string[];
+  standingOrders: StandingOrder[];
+  lifted: LiftedOrder[];
+  /** One line per argument left out, skipped or carried by the plugin instead: the receipt names each, the model fixes nothing. */
+  notes: string[];
+};
 
 const FIELDS = [...SECTIONS.map((section) => section.key), 'load_files', 'drop_skills', 'standing_orders', 'lifted'];
-const PREFIX = 'forward_compaction refused, nothing stored: ';
-const refuse = (text: string): Refusal => ({ refusal: PREFIX + text });
 const num = (n: number): string => n.toLocaleString('en-US');
 const kind = (v: unknown): string => (v === null ? 'null' : Array.isArray(v) ? 'array' : typeof v);
 const isAbsolutePath = (p: string): boolean => /^(\/|[A-Za-z]:[\\/]|\\\\)/.test(p);
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 
-/** One line per bad argument: an unknown field, a required section missing, not a string or blank, an optional one given but not a string. */
-function argumentFaults(fields: Record<string, unknown>): string[] {
-  const unknown = Object.keys(fields).filter((key) => !FIELDS.includes(key)).map((key) => `unknown field "${key}". The fields are ${FIELDS.slice(0, -1).join(', ')} and ${FIELDS.at(-1)}.`);
+/** One line per section left out: a required one missing or blank, any one given but not a string; one per unknown field. */
+function argumentNotes(fields: Record<string, unknown>): string[] {
+  const unknown = Object.keys(fields).filter((key) => !FIELDS.includes(key)).map((key) => `unknown field "${key}" ignored. The fields are ${FIELDS.slice(0, -1).join(', ')} and ${FIELDS.at(-1)}.`);
   const sections = SECTIONS.flatMap(({ key, required }) => {
     const value = fields[key];
-    if (required && (typeof value !== 'string' || value.trim() === '')) return [`${key} must be a non-blank string; got ${typeof value === 'string' ? 'a blank string' : kind(value)}.`];
-    if (!required && value !== undefined && typeof value !== 'string') return [`${key} must be a string when given; got ${kind(value)}.`];
-    return [];
+    if (typeof value === 'string' && value.trim() !== '') return [];
+    if (value === undefined || value === '' || (typeof value === 'string' && value.trim() === '')) return required ? [`${key} was ${value === undefined ? 'missing' : 'blank'}: your frontier is stored without it.`] : [];
+    return [`${key} must be a string; got ${kind(value)}: your frontier is stored without it.`];
   });
-  return [...unknown, ...sections, ...orderShapeFaults(fields.standing_orders, fields.lifted)];
+  return [...unknown, ...sections];
 }
 
 /**
- * Validates the model's tool input before anything is stored (V1-V11 of the spec table), every bad argument named in
- * one refusal, then assembles the frontier from its sections in order, an absent or blank optional one left out. Each
- * section's text and the files come back exactly as sent: nothing is trimmed, a fault is refused for the model to fix.
- * With `memory`, the party's remembered standing orders, a frontier that drops one unlifted is refused after drop_skills
- * and before load_files, every fault in one refusal (orders.ts `orderFaults`).
- * `$.fs.stat` checks (V12-V15) are the adapter's, through `loadFileRefusal`.
+ * Reads the model's tool input into a frontier that is always stored: nothing is refused. Each bad argument is left
+ * out (a section) or skipped (one `load_files`, `drop_skills`, `standing_orders` or `lifted` entry) and named in `notes`
+ * for the receipt, the sections' text and the files coming back exactly as sent. With `memory`, the party's remembered
+ * standing orders, the plugin carries every one the frontier left out and keeps every one a lift did not prove
+ * (orders.ts `carryOrders`).
+ * `$.fs.stat` checks (V12-V15) are the adapter's, through `loadFileNote`.
  */
-export function parseFrontier(input: unknown, memory?: OrderMemory): ParsedFrontier | Refusal {
+export function parseFrontier(input: unknown, memory?: OrderMemory): ParsedFrontier {
   const fields = isObject(input) ? input : {};
-  const faults = argumentFaults(fields);
-  if (faults.length > 0) return refuse(faults.join('\n'));
+  const notes = argumentNotes(fields);
   const frontier = SECTIONS.flatMap(({ key, heading }) => {
     const text = fields[key];
     return typeof text === 'string' && text.trim() !== '' ? [`## ${heading}\n${text}`] : [];
   }).join('\n\n');
   const drops = fields.drop_skills;
-  if (drops !== undefined && (!Array.isArray(drops) || drops.length > DROP_MAX || drops.some((d) => typeof d !== 'string' || d.trim() === ''))) return refuse(`drop_skills must be an array of at most ${DROP_MAX} skill or command names, each a non-blank string.`);
-  const dropSkills = (drops ?? []) as string[];
-  const standingOrders = ((fields.standing_orders ?? []) as StandingOrder[]).map(({ order, at }) => ({ order, at }));
-  const asked = ((fields.lifted ?? []) as { order: string; by: string }[]).map(({ order, by }) => ({ order, by }));
-  const orders = orderFaults(memory ?? { remembered: [], said: [], party: 'main' }, standingOrders, asked);
-  if (orders.faults.length > 0) return { ...refuse(orders.faults.join('\n')), orderFaults: orders.faults.length };
-  const parsed = { frontier, dropSkills, standingOrders, lifted: orders.lifted };
-  const files = fields.load_files;
-
-  if (files === undefined) return { ...parsed, loadFiles: [] };
-  if (!Array.isArray(files)) return refuse('load_files must be an array of {path, lines?, why}.');
-  if (files.length > LOAD_FILES_MAX) return refuse(`load_files has ${files.length} entries, over the ${LOAD_FILES_MAX} cap.`);
-  const loadFiles: LoadFile[] = [];
-  for (const [i, entry] of files.entries()) {
-    const { path, why, lines: ranges } = isObject(entry) ? entry : ({} as Record<string, unknown>);
-    if (typeof path !== 'string' || !isAbsolutePath(path)) return refuse(`load_files[${i}].path must be an absolute path; got "${String(path)}".`);
-    const whyLength = typeof why === 'string' ? why.length : 0;
-    if (typeof why !== 'string' || why.trim() === '' || whyLength > WHY_MAX_CHARS) return refuse(`load_files[${i}].why must be 1\u2013${WHY_MAX_CHARS} characters; it is ${whyLength}.`);
-    if (ranges !== undefined && (typeof ranges !== 'string' || parseLineRanges(ranges) === undefined)) return refuse(`load_files[${i}].lines "${String(ranges)}" is not a range like "10-40" or "1-60,160-185".`);
-    loadFiles.push({ path, why, ...(ranges !== undefined ? { lines: ranges as string } : {}) });
+  let dropSkills: string[] = [];
+  if (drops !== undefined && !Array.isArray(drops)) notes.push('drop_skills must be an array of skill or command names: none dropped.');
+  else if (drops !== undefined) {
+    dropSkills = drops.filter((d, i): d is string => (typeof d === 'string' && d.trim() !== '') || (notes.push(`drop_skills[${i}] must be a non-blank string: skipped.`), false));
+    if (dropSkills.length > DROP_MAX) (notes.push(`drop_skills has ${dropSkills.length} names, over the ${DROP_MAX} cap: the first ${DROP_MAX} are used.`), (dropSkills = dropSkills.slice(0, DROP_MAX)));
   }
-  return { ...parsed, loadFiles };
+  const orders = carryOrders(memory ?? { remembered: [], said: [], party: 'main' }, fields.standing_orders, fields.lifted);
+  notes.push(...orders.notes);
+  const files = fields.load_files;
+  const loadFiles: LoadFile[] = [];
+  const loadAt: number[] = [];
+  if (files !== undefined && !Array.isArray(files)) notes.push('load_files must be an array of {path, lines?, why}: none carried.');
+  else {
+    if (files !== undefined && files.length > LOAD_FILES_MAX) notes.push(`load_files has ${files.length} entries, over the ${LOAD_FILES_MAX} cap: entries ${LOAD_FILES_MAX}-${files.length - 1} are skipped.`);
+    for (const [i, entry] of (files ?? []).slice(0, LOAD_FILES_MAX).entries()) {
+      const { path, why, lines: ranges } = isObject(entry) ? entry : ({} as Record<string, unknown>);
+      const whyLength = typeof why === 'string' ? why.length : 0;
+      if (typeof path !== 'string' || !isAbsolutePath(path)) notes.push(`load_files[${i}].path must be an absolute path; got "${String(path)}": skipped.`);
+      else if (typeof why !== 'string' || why.trim() === '' || whyLength > WHY_MAX_CHARS) notes.push(`load_files[${i}].why must be 1\u2013${WHY_MAX_CHARS} characters; it is ${whyLength}: ${path} skipped.`);
+      else if (ranges !== undefined && (typeof ranges !== 'string' || parseLineRanges(ranges) === undefined)) notes.push(`load_files[${i}].lines "${String(ranges)}" is not a range like "10-40" or "1-60,160-185": ${path} skipped.`);
+      else (loadFiles.push({ path, why, ...(ranges !== undefined ? { lines: ranges as string } : {}) }), loadAt.push(i));
+    }
+  }
+  return { frontier, dropSkills, standingOrders: orders.standing, lifted: orders.lifted, loadFiles, loadAt, notes };
 }
 
 /** What the adapter learned from `$.fs.stat(path)` on one load file: its stat, or `absent` (ENOENT), or the error text of any other throw. */
 export type FileCheck = { kind: 'file' | 'dir' | 'other'; size: number } | { absent: true } | { error: string };
 
-/** V12-V15: the refusal for one load file (`index` is its place in `load_files`, from 0), or undefined when it can be carried. */
-export function loadFileRefusal(index: number, path: string, check: FileCheck): string | undefined {
+/** V12-V15: the note for one load file that is skipped (`index` is its place in `load_files`, from 0), or undefined when it can be carried. */
+export function loadFileNote(index: number, path: string, check: FileCheck): string | undefined {
   const at = `load_files[${index}] ${path}`;
-  if ('error' in check) return PREFIX + `${at} could not be checked: ${check.error}.`;
-  if ('absent' in check) return PREFIX + `${at}: no such file.`;
-  if (check.kind !== 'file') return PREFIX + `${at} is not a regular file.`;
+  if ('error' in check) return `${at} could not be checked: ${check.error}: skipped.`;
+  if ('absent' in check) return `${at}: no such file: skipped.`;
+  if (check.kind !== 'file') return `${at} is not a regular file: skipped.`;
   return undefined;
+}
+
+/** The receipt's list of what the plugin left out, skipped or carried on for the model: empty when it changed nothing. */
+export function changesNote(notes: readonly string[]): string {
+  return notes.length === 0 ? '' : `Stored with ${notes.length} ${notes.length === 1 ? 'change' : 'changes'}:\n${notes.map((n) => `- ${n}`).join('\n')}`;
 }
 
 /** `tokens`: the party's last reading, absent when it has none; it picks the sentence and is never printed, being a step behind the call. */
@@ -188,12 +195,6 @@ export function receipt(input: ReceiptInput): string {
   return `${stored} Claude Code has not asked to compact you yet: it installs at Claude Code's next ask, from about ${k(input.askPoint)} context. ${behind}. Carry on with your work.${replaced}`;
 }
 
-/** The answer to a forward_compaction call from a party whose model is on the ignore list (`Parties.ignored`, the entry it matched): refused, nothing stored. Undefined for a party the plugin manages. */
-export function ignoredRefusal(matched: string | undefined, ceiling: number | undefined): string | undefined {
-  if (matched === undefined) return undefined;
-  return `forward_compaction refused, nothing stored: your model is on forward-compaction's ignore list ("${matched}"), so it takes no frontier from you; carry on with your work, and at ${ceiling === undefined ? 'your ceiling' : k(ceiling)} the plugin compacts you mechanically.`;
-}
-
 /** Keys the tool.call event carries beside the tool's arguments (`requestMeta` a hook may add, `consent` a press may carry). */
 const EVENT_KEYS = new Set(['tool', 'tool_use_id', 'agentId', 'requestMeta', 'consent']);
 
@@ -206,7 +207,7 @@ export function toolInput(e: Record<string, unknown>): Record<string, unknown> {
   return nested !== null && typeof nested === 'object' && !Array.isArray(nested) ? (nested as Record<string, unknown>) : {};
 }
 
-/** Every forward_compaction answer, receipt or refusal, ends with this line; `logDir` is the level-log directory, where the issues file lives. */
+/** Every forward_compaction answer, receipt or failure, ends with this line; `logDir` is the level-log directory, where the issues file lives. */
 export const EXPERIMENTAL_OPENING = 'forward-compaction is experimental.';
 export function experimental(text: string, logDir: string | undefined): string {
   const where = logDir === undefined ? 'your reply.' : `${logDir.replace(/\/+$/, '')}/issues.md; it will be taken care of later.`;

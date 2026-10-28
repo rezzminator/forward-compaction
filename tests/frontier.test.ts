@@ -1,27 +1,24 @@
 import { describe, expect, it } from 'vitest';
+import { DROP_MAX } from '../plugins/forward-compaction/src/drop.ts';
 import {
   FORWARD_INPUT_SCHEMA,
   FORWARD_TOOL,
   FORWARD_TOOL_DESCRIPTION,
   LOAD_FILES_MAX,
   WHY_MAX_CHARS,
-  loadFileRefusal,
+  loadFileNote,
   parseFrontier,
   parseLineRanges,
   experimental,
   receipt,
   sliceFile,
-  ignoredRefusal,
+  changesNote,
   toolInput,
 } from '../plugins/forward-compaction/src/frontier.ts';
 
 const valid = { objective: 'ship it', done: 'parser, tested', remaining: 'the adapter', next: 'wire the hook' };
 const text = '## Objective\nship it\n\n## Done\nparser, tested\n\n## Remaining\nthe adapter\n\n## Next\nwire the hook';
-const P = 'forward_compaction refused, nothing stored: ';
-const refusal = (input: unknown): string | undefined => {
-  const out = parseFrontier(input);
-  return 'refusal' in out ? out.refusal : undefined;
-};
+const notes = (input: unknown): string[] => parseFrontier(input).notes;
 const SECTIONS = ['objective', 'done', 'remaining', 'next', 'blocked', 'findings'];
 
 describe('the forward_compaction tool as registered', () => {
@@ -54,122 +51,142 @@ describe('the forward_compaction tool as registered', () => {
 
 describe('parseFrontier assembles the sections and keeps their text whole', () => {
   it('assembles the four required sections in order, and no load files when none are given', () => {
-    expect(parseFrontier(valid)).toEqual({ frontier: text, loadFiles: [], dropSkills: [], standingOrders: [], lifted: [] });
+    expect(parseFrontier(valid)).toEqual({ frontier: text, loadFiles: [], loadAt: [], dropSkills: [], standingOrders: [], lifted: [], notes: [] });
   });
 
   it('places the optional sections after them, Blocked before Findings, and leaves out an absent or blank one', () => {
-    expect(parseFrontier({ findings: 'f', ...valid, blocked: 'b' })).toEqual({ frontier: `${text}\n\n## Blocked\nb\n\n## Findings\nf`, loadFiles: [], dropSkills: [], standingOrders: [], lifted: [] });
-    expect(parseFrontier({ ...valid, findings: 'f' })).toEqual({ frontier: `${text}\n\n## Findings\nf`, loadFiles: [], dropSkills: [], standingOrders: [], lifted: [] });
-    expect(parseFrontier({ ...valid, blocked: '  ' })).toEqual({ frontier: text, loadFiles: [], dropSkills: [], standingOrders: [], lifted: [] });
+    expect(parseFrontier({ findings: 'f', ...valid, blocked: 'b' })).toEqual({ frontier: `${text}\n\n## Blocked\nb\n\n## Findings\nf`, loadFiles: [], loadAt: [], dropSkills: [], standingOrders: [], lifted: [], notes: [] });
+    expect(parseFrontier({ ...valid, findings: 'f' })).toEqual({ frontier: `${text}\n\n## Findings\nf`, loadFiles: [], loadAt: [], dropSkills: [], standingOrders: [], lifted: [], notes: [] });
+    expect(parseFrontier({ ...valid, blocked: '  ' })).toEqual({ frontier: text, loadFiles: [], loadAt: [], dropSkills: [], standingOrders: [], lifted: [], notes: [] });
   });
 
   it('keeps a section\'s own headings, blank lines, trailing space and Windows line ends untouched', () => {
     const own = 'x  \r\n\r\n### Goal\r\n## Notes\r\n';
-    expect(parseFrontier({ ...valid, objective: own })).toEqual({ frontier: text.replace('ship it', own), loadFiles: [], dropSkills: [], standingOrders: [], lifted: [] });
+    expect(parseFrontier({ ...valid, objective: own })).toEqual({ frontier: text.replace('ship it', own), loadFiles: [], loadAt: [], dropSkills: [], standingOrders: [], lifted: [], notes: [] });
   });
 
   it('keeps a load file as given, lines and why included', () => {
     const files = [{ path: '/a/b.ts', lines: '1-60,160-185', why: 'the parser' }, { path: 'C:\\a\\b.ts', why: 'win' }];
-    expect(parseFrontier({ ...valid, load_files: files })).toEqual({ frontier: text, loadFiles: files, dropSkills: [], standingOrders: [], lifted: [] });
+    expect(parseFrontier({ ...valid, load_files: files })).toEqual({ frontier: text, loadFiles: files, loadAt: [0, 1], dropSkills: [], standingOrders: [], lifted: [], notes: [] });
   });
 
   it('takes a frontier of any length whole, never refused or trimmed for size, and exactly 8 files', () => {
     const next = valid.next + 'x'.repeat(200_000 - text.length);
     const out = parseFrontier({ ...valid, next });
-    expect('frontier' in out && out.frontier.length).toBe(200_000);
+    expect(out.frontier.length).toBe(200_000);
     const eight = Array.from({ length: 8 }, (_, i) => ({ path: `/f${i}`, why: 'w' }));
     expect(parseFrontier({ ...valid, load_files: eight })).toMatchObject({ loadFiles: eight });
-    expect(parseFrontier({ ...valid, load_files: [{ path: '/f', why: 'w'.repeat(200) }] })).not.toHaveProperty('refusal');
+    expect(parseFrontier({ ...valid, load_files: [{ path: '/f', why: 'w'.repeat(200) }] }).notes).toEqual([]);
   });
 });
 
-describe('parseFrontier refuses, naming what to fix', () => {
-  it('V1 an unknown field, the old frontier argument included (R14)', () => {
-    expect(refusal({ ...valid, drop: [] })).toBe(`${P}unknown field "drop". The fields are objective, done, remaining, next, blocked, findings, load_files, drop_skills, standing_orders and lifted.`);
-    expect(refusal({ ...valid, frontier: text })).toContain('unknown field "frontier"');
+describe('parseFrontier stores whatever it is sent and names what it left out', () => {
+  it('V1 an unknown field is ignored and named, the old frontier argument included (R14)', () => {
+    expect(notes({ ...valid, drop: [] })).toEqual(['unknown field "drop" ignored. The fields are objective, done, remaining, next, blocked, findings, load_files, drop_skills, standing_orders and lifted.']);
+    expect(notes({ ...valid, frontier: text })[0]).toContain('unknown field "frontier"');
+    expect(parseFrontier({ ...valid, frontier: text }).frontier).toBe(text);
   });
 
-  it('V2 a required section that is missing, not a string or blank, by name', () => {
-    expect(refusal({ ...valid, objective: 5 })).toBe(`${P}objective must be a non-blank string; got number.`);
-    expect(refusal({ ...valid, done: undefined })).toBe(`${P}done must be a non-blank string; got undefined.`);
-    expect(refusal({ ...valid, remaining: null })).toBe(`${P}remaining must be a non-blank string; got null.`);
-    expect(refusal({ ...valid, next: ' \n ' })).toBe(`${P}next must be a non-blank string; got a blank string.`);
+  it('V2 a required section that is missing, not a string or blank is left out, by name', () => {
+    expect(notes({ ...valid, objective: 5 })).toEqual(['objective must be a string; got number: your frontier is stored without it.']);
+    expect(notes({ ...valid, done: undefined })).toEqual(['done was missing: your frontier is stored without it.']);
+    expect(notes({ ...valid, remaining: null })).toEqual(['remaining must be a string; got null: your frontier is stored without it.']);
+    expect(notes({ ...valid, next: ' \n ' })).toEqual(['next was blank: your frontier is stored without it.']);
+    expect(parseFrontier({ ...valid, done: undefined }).frontier).toBe('## Objective\nship it\n\n## Remaining\nthe adapter\n\n## Next\nwire the hook');
   });
 
-  it('V3 an optional section that is present but not a string, by name', () => {
-    expect(refusal({ ...valid, blocked: ['a'] })).toBe(`${P}blocked must be a string when given; got array.`);
-    expect(refusal({ ...valid, findings: 3 })).toBe(`${P}findings must be a string when given; got number.`);
+  it('V3 an optional section that is present but not a string is left out, by name', () => {
+    expect(notes({ ...valid, blocked: ['a'] })).toEqual(['blocked must be a string; got array: your frontier is stored without it.']);
+    expect(notes({ ...valid, findings: 3 })).toEqual(['findings must be a string; got number: your frontier is stored without it.']);
+    expect(parseFrontier({ ...valid, findings: 3 }).frontier).toBe(text);
   });
 
-  it('V4 names every bad argument in one refusal, one line each', () => {
-    expect(refusal({ done: 'd', extra: 1, findings: {} })).toBe([
-      `${P}unknown field "extra". The fields are objective, done, remaining, next, blocked, findings, load_files, drop_skills, standing_orders and lifted.`,
-      'objective must be a non-blank string; got undefined.',
-      'remaining must be a non-blank string; got undefined.',
-      'next must be a non-blank string; got undefined.',
-      'findings must be a string when given; got object.',
-    ].join('\n'));
-    for (const input of ['## Objective', undefined, null]) expect(refusal(input)?.split('\n')).toHaveLength(4);
+  it('V4 names every bad argument, one line each, and stores an input with nothing in it', () => {
+    expect(notes({ done: 'd', extra: 1, findings: {} })).toEqual([
+      'unknown field "extra" ignored. The fields are objective, done, remaining, next, blocked, findings, load_files, drop_skills, standing_orders and lifted.',
+      'objective was missing: your frontier is stored without it.',
+      'remaining was missing: your frontier is stored without it.',
+      'next was missing: your frontier is stored without it.',
+      'findings must be a string; got object: your frontier is stored without it.',
+    ]);
+    for (const input of ['## Objective', undefined, null]) expect(parseFrontier(input)).toMatchObject({ frontier: '', notes: expect.arrayContaining(['objective was missing: your frontier is stored without it.']) });
   });
 
-  it('V7 load_files that is not an array', () => {
-    for (const bad of ['a', {}, null, 3]) expect(refusal({ ...valid, load_files: bad })).toBe(`${P}load_files must be an array of {path, lines?, why}.`);
+  it('V7 load_files that is not an array carries no file', () => {
+    for (const bad of ['a', {}, null, 3]) expect(parseFrontier({ ...valid, load_files: bad })).toMatchObject({ loadFiles: [], notes: ['load_files must be an array of {path, lines?, why}: none carried.'] });
   });
 
-  it('V8 more than 8 entries (R15)', () => {
+  it('V8 more than 8 entries: the first 8 are carried, the rest named (R15)', () => {
     const nine = Array.from({ length: 9 }, (_, i) => ({ path: `/f${i}`, why: 'w' }));
-    expect(refusal({ ...valid, load_files: nine })).toBe(`${P}load_files has 9 entries, over the 8 cap.`);
+    const out = parseFrontier({ ...valid, load_files: nine });
+    expect(out.notes).toEqual(['load_files has 9 entries, over the 8 cap: entries 8-8 are skipped.']);
+    expect(out.loadFiles).toEqual(nine.slice(0, 8));
   });
 
-  it('V9 a path that is missing or not absolute (R15)', () => {
-    expect(refusal({ ...valid, load_files: [{ path: 'src/a.ts', why: 'x' }] })).toBe(`${P}load_files[0].path must be an absolute path; got "src/a.ts".`);
-    expect(refusal({ ...valid, load_files: [{ path: '/ok', why: 'x' }, { why: 'x' }] })).toBe(`${P}load_files[1].path must be an absolute path; got "undefined".`);
-    expect(refusal({ ...valid, load_files: ['/ok'] })).toContain('load_files[0].path must be an absolute path');
+  it('V9 a path that is missing or not absolute skips that entry only (R15)', () => {
+    expect(notes({ ...valid, load_files: [{ path: 'src/a.ts', why: 'x' }] })).toEqual(['load_files[0].path must be an absolute path; got "src/a.ts": skipped.']);
+    const out = parseFrontier({ ...valid, load_files: [{ path: '/ok', why: 'x' }, { why: 'x' }] });
+    expect(out.notes).toEqual(['load_files[1].path must be an absolute path; got "undefined": skipped.']);
+    expect(out.loadFiles).toEqual([{ path: '/ok', why: 'x' }]);
+    expect(notes({ ...valid, load_files: ['/ok'] })[0]).toContain('load_files[0].path must be an absolute path');
   });
 
-  it('V10 a why that is missing, empty or over 200', () => {
-    expect(refusal({ ...valid, load_files: [{ path: '/a' }] })).toBe(`${P}load_files[0].why must be 1–200 characters; it is 0.`);
-    expect(refusal({ ...valid, load_files: [{ path: '/a', why: '' }] })).toContain('it is 0.');
-    expect(refusal({ ...valid, load_files: [{ path: '/a', why: '   ' }] })).toContain('1–200 characters');
-    expect(refusal({ ...valid, load_files: [{ path: '/a', why: 'w'.repeat(201) }] })).toBe(`${P}load_files[0].why must be 1–200 characters; it is 201.`);
+  it('V10 a why that is missing, empty or over 200 skips that entry', () => {
+    expect(notes({ ...valid, load_files: [{ path: '/a' }] })).toEqual(['load_files[0].why must be 1–200 characters; it is 0: /a skipped.']);
+    expect(notes({ ...valid, load_files: [{ path: '/a', why: '' }] })[0]).toContain('it is 0');
+    expect(notes({ ...valid, load_files: [{ path: '/a', why: '   ' }] })[0]).toContain('1–200 characters');
+    expect(notes({ ...valid, load_files: [{ path: '/a', why: 'w'.repeat(201) }] })).toEqual(['load_files[0].why must be 1–200 characters; it is 201: /a skipped.']);
   });
 
-  it('V11 lines that are not a range list (R15)', () => {
-    expect(refusal({ ...valid, load_files: [{ path: '/a', why: 'x', lines: '10-' }] })).toBe(`${P}load_files[0].lines "10-" is not a range like "10-40" or "1-60,160-185".`);
-    expect(refusal({ ...valid, load_files: [{ path: '/a', why: 'x', lines: '' }] })).toContain('load_files[0].lines ""');
-    expect(refusal({ ...valid, load_files: [{ path: '/a', why: 'x', lines: 5 }] })).toContain('load_files[0].lines "5" is not a range');
+  it('V11 lines that are not a range list skips that entry (R15)', () => {
+    expect(notes({ ...valid, load_files: [{ path: '/a', why: 'x', lines: '10-' }] })).toEqual(['load_files[0].lines "10-" is not a range like "10-40" or "1-60,160-185": /a skipped.']);
+    expect(notes({ ...valid, load_files: [{ path: '/a', why: 'x', lines: '' }] })[0]).toContain('load_files[0].lines ""');
+    expect(notes({ ...valid, load_files: [{ path: '/a', why: 'x', lines: 5 }] })[0]).toContain('load_files[0].lines "5" is not a range');
   });
 
-  it('refuses in table order: the arguments before a bad file', () => {
-    expect(refusal({ ...valid, objective: 5, next: 'x'.repeat(20_001), load_files: 'x' })).toBe(`${P}objective must be a non-blank string; got number.`);
-    expect(refusal({ ...valid, next: 'x'.repeat(20_001), load_files: 'x' })).toBe(`${P}load_files must be an array of {path, lines?, why}.`);
-    expect(refusal({ ...valid, load_files: [{ path: 'rel', why: '' }] })).toContain('.path must be an absolute path');
+  it('keeps the place each carried file had in load_files, so a later note names the entry the model sent', () => {
+    expect(parseFrontier({ ...valid, load_files: [{ path: 'rel', why: 'x' }, { path: '/b', why: 'x' }] })).toMatchObject({ loadFiles: [{ path: '/b', why: 'x' }], loadAt: [1] });
+  });
+
+  it('drop_skills: a bad name is skipped, a non-array drops none, and names past the cap are not used', () => {
+    expect(parseFrontier({ ...valid, drop_skills: ['a', '', 3] })).toMatchObject({ dropSkills: ['a'], notes: ['drop_skills[1] must be a non-blank string: skipped.', 'drop_skills[2] must be a non-blank string: skipped.'] });
+    expect(parseFrontier({ ...valid, drop_skills: 'a' })).toMatchObject({ dropSkills: [], notes: ['drop_skills must be an array of skill or command names: none dropped.'] });
+    const many = Array.from({ length: DROP_MAX + 2 }, (_, i) => `s${i}`);
+    expect(parseFrontier({ ...valid, drop_skills: many })).toMatchObject({ dropSkills: many.slice(0, DROP_MAX), notes: [expect.stringContaining('over the')] });
   });
 });
 
-describe('loadFileRefusal judges what $.fs.stat found', () => {
+describe('loadFileNote judges what $.fs.stat found', () => {
   it('accepts a regular file', () => {
-    expect(loadFileRefusal(0, '/a', { kind: 'file', size: 0 })).toBeUndefined();
-    expect(loadFileRefusal(0, '/a', { kind: 'file', size: 1_048_576 })).toBeUndefined();
+    expect(loadFileNote(0, '/a', { kind: 'file', size: 0 })).toBeUndefined();
+    expect(loadFileNote(0, '/a', { kind: 'file', size: 1_048_576 })).toBeUndefined();
   });
 
   it('V12 absent', () => {
-    expect(loadFileRefusal(2, '/a/b.ts', { absent: true })).toBe(`${P}load_files[2] /a/b.ts: no such file.`);
+    expect(loadFileNote(2, '/a/b.ts', { absent: true })).toBe('load_files[2] /a/b.ts: no such file: skipped.');
   });
 
   it('V13 not a regular file', () => {
-    expect(loadFileRefusal(0, '/a', { kind: 'dir', size: 4096 })).toBe(`${P}load_files[0] /a is not a regular file.`);
-    expect(loadFileRefusal(1, '/a', { kind: 'other', size: 0 })).toBe(`${P}load_files[1] /a is not a regular file.`);
+    expect(loadFileNote(0, '/a', { kind: 'dir', size: 4096 })).toBe('load_files[0] /a is not a regular file: skipped.');
+    expect(loadFileNote(1, '/a', { kind: 'other', size: 0 })).toBe('load_files[1] /a is not a regular file: skipped.');
   });
 
-  it('L6 never refuses a file for its size: the wake fits it or names it', () => {
-    expect(loadFileRefusal(0, '/big', { kind: 'file', size: 50_000_000 })).toBeUndefined();
+  it('L6 never skips a file for its size: the wake fits it or names it', () => {
+    expect(loadFileNote(0, '/big', { kind: 'file', size: 50_000_000 })).toBeUndefined();
   });
 
   it('V15 a stat that threw is "could not be checked", never "no such file"', () => {
-    const out = loadFileRefusal(0, '/a', { error: 'EACCES: permission denied' });
-    expect(out).toBe(`${P}load_files[0] /a could not be checked: EACCES: permission denied.`);
+    const out = loadFileNote(0, '/a', { error: 'EACCES: permission denied' });
+    expect(out).toBe('load_files[0] /a could not be checked: EACCES: permission denied: skipped.');
     expect(out).not.toContain('no such file');
+  });
+});
+
+describe('changesNote lists what the plugin changed in the call', () => {
+  it('is empty when nothing changed, else one line per change', () => {
+    expect(changesNote([])).toBe('');
+    expect(changesNote(['a'])).toBe('Stored with 1 change:\n- a');
+    expect(changesNote(['a', 'b'])).toBe('Stored with 2 changes:\n- a\n- b');
   });
 });
 
@@ -240,13 +257,6 @@ describe('parseLineRanges and sliceFile (copied from the old carry module)', () 
     const file = 'a\nb\nc\nd\ne\nf\ng\n';
     expect(sliceFile(file, [{ from: 6, to: 7 }, { from: 1, to: 2 }])).toEqual({ body: 'a\nb\n[lines 3-5 not loaded]\nf\ng', shown: '1-2,6-7' });
     expect(sliceFile(file, [{ from: 1, to: 3 }, { from: 2, to: 4 }, { from: 5, to: 5 }])).toEqual({ body: 'a\nb\nc\nd\ne', shown: '1-5' });
-  });
-});
-
-describe('ignoredRefusal (Ignored models)', () => {
-  it('names the ignore-list entry and the ceiling it is compacted mechanically at, in one line', () => {
-    expect(ignoredRefusal('haiku', 160_000)).toBe('forward_compaction refused, nothing stored: your model is on forward-compaction\'s ignore list ("haiku"), so it takes no frontier from you; carry on with your work, and at 160k the plugin compacts you mechanically.');
-    expect(ignoredRefusal(undefined, 160_000)).toBeUndefined();
   });
 });
 

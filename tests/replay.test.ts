@@ -29,12 +29,12 @@ const isForward = (tool: unknown): boolean => typeof tool === 'string' && tool.e
 const wakeOf = (inv: Invocation): any[] | undefined => (inv.hook === 'session.compact' && inv.next === undefined && Array.isArray(inv.end?.result?.messages) ? inv.end!.result.messages : undefined);
 const texts = (messages: readonly any[]): string => messages.map((m) => [m.text ?? '', ...(m.toolResults ?? []).map((r: any) => r.text ?? '')].join('\n')).join('\n');
 const nextWake = (view: View, key: string, after: number): Invocation | undefined => view.find((c) => c.seq > after && party(c.input) === key && wakeOf(c) !== undefined);
-/** The frontier the plugin assembled from the call's section arguments, or undefined when it refused them. */
+/** The frontier the plugin assembled from the call's section arguments, or undefined when the call carried none. */
 const SECTION_KEYS = ['objective', 'done', 'remaining', 'next', 'blocked', 'findings'];
 const frontierOf = (call: Invocation): string | undefined => {
   const args = call.input?.objective !== undefined ? call.input : call.input?.input ?? {};
   const out = parseFrontier(Object.fromEntries(SECTION_KEYS.filter((key) => key in args).map((key) => [key, args[key]])));
-  return 'frontier' in out ? out.frontier : undefined;
+  return out.frontier === '' ? undefined : out.frontier;
 };
 const count = (hay: string, needle: string): number => (needle === '' ? 0 : hay.split(needle).length - 1);
 const knownAgents = (view: View): Set<string> => new Set(view.filter((i) => i.hook === 'agent.spawn').map((i) => i.nextResult?.result?.agentId).filter((id): id is string => typeof id === 'string'));

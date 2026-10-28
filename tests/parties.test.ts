@@ -163,7 +163,6 @@ describe('the first reading after an install (no re-nudge)', () => {
     const due = (tokens: number) => (parties.read('agent:a1', tokens, at(tokens)), parties.nudgeDue('agent:a1', at(tokens), tokens, 20_000));
     expect([72_000, 79_000, 81_000, 86_559].map(due)).toEqual([false, false, false, false]); // 81k crossed a level boundary 14k after the wake
     expect(due(86_560)).toBe(true);
-    expect(parties.get('agent:a1').gateLevel).toBe(at(86_560) + 1);
   });
 
   it('absorbs nothing for a party never installed', () => {
@@ -369,35 +368,5 @@ describe('the ratio base (window.ts charsPerToken)', () => {
     parties.rebase('agent:gone', { chars: 1, tokens: 1 });
     expect(parties.takeLandings()).toEqual([]);
     expect(parties.get('agent:gone').base).toBeUndefined();
-  });
-});
-
-describe('gate level', () => {
-  it('is set one step past the first nudge since the last install, kept by later nudges, and cleared by an install', () => {
-    const parties = new Parties();
-    expect(parties.get('agent:a1').gateLevel).toBeUndefined();
-    parties.nudgeDue('agent:a1', 1);
-    expect(parties.get('agent:a1').gateLevel).toBe(2);
-    parties.nudgeDue('agent:a1', 3);
-    expect(parties.get('agent:a1').gateLevel).toBe(2);
-    parties.installed('agent:a1');
-    expect(parties.get('agent:a1').gateLevel).toBeUndefined();
-  });
-});
-
-describe('the gate answer', () => {
-  it('refuses every call of the request that met the gate, opens on a later request once, and closes again at an install', () => {
-    const parties = new Parties();
-    parties.read('agent:a1', 104_000);
-    expect(parties.gateAnswer('agent:a1')).toBe('refuse');
-    expect(parties.gateAnswer('agent:a1')).toBe('refuse'); // a parallel call of the same request
-    parties.read('agent:a1', 105_000);
-    expect(parties.gateAnswer('agent:a1')).toBe('opens');
-    expect(parties.gateAnswer('agent:a1')).toBe('open');
-    parties.read('agent:a1', 106_000);
-    expect(parties.gateAnswer('agent:a1')).toBe('open');
-    parties.installed('agent:a1');
-    parties.read('agent:a1', 40_000);
-    expect(parties.gateAnswer('agent:a1')).toBe('refuse');
   });
 });

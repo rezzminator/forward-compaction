@@ -64,18 +64,16 @@ describe("a sub-agent's runs, and what arrives between a frontier and its instal
   };
   const ask = (f: Fake) => f.dispatch('session.compact', { trigger: 'auto', agentId: A1, messages: transcript() }, async () => ({ skip: 'native ran' }));
 
-  it("keeps a sub-agent's nudges, gate and reading across its runs, and gives it the mechanical wake at the next run's ask past its ceiling", async () => {
+  it("keeps a sub-agent's nudges and reading across its runs, and gives it the mechanical wake at the next run's ask past its ceiling", async () => {
     const f = await begin();
     await spawn(f);
     const levels: number[] = [];
-    const refused: number[] = [];
     for (const tokens of [80_000, 100_000, 120_000, 140_000]) {
       const r = (await run(f, async () => (await step(f, tokens, A1), read(f, `tu-${tokens}`, A1)))) as { context?: unknown[]; deny?: string };
+      expect(r.deny).toBeUndefined();
       if ((r.context ?? []).length > 0) levels.push(tokens);
-      if (r.deny !== undefined) refused.push(tokens);
     }
-    expect(levels).toEqual([80_000, 120_000, 140_000]);
-    expect(refused).toEqual([100_000]);
+    expect(levels).toEqual([80_000, 100_000, 120_000, 140_000]);
     await run(f, () => step(f, 160_000, A1));
     expect(((await run(f, () => ask(f))) as { messages: { text: string }[] }).messages[1]?.text).toMatch(/past the 160k ceiling/);
   });

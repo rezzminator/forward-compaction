@@ -52,10 +52,10 @@ describe('applyDrops', () => {
 });
 
 describe('parseFrontier drop_skills', () => {
-  it('takes a list of names, and refuses anything else naming the argument', () => {
+  it('takes a list of names, and skips anything else, naming the argument', () => {
     expect(parseFrontier({ ...SECTIONS, drop_skills: ['notes'] })).toMatchObject({ dropSkills: ['notes'] });
     expect(parseFrontier(SECTIONS)).toMatchObject({ dropSkills: [] });
-    for (const bad of ['notes', [''], [3], Array.from({ length: 33 }, (_, i) => `s${i}`)]) expect(parseFrontier({ ...SECTIONS, drop_skills: bad })).toMatchObject({ refusal: expect.stringContaining('drop_skills must be an array') });
+    for (const bad of ['notes', [''], [3], Array.from({ length: 33 }, (_, i) => `s${i}`)]) expect(parseFrontier({ ...SECTIONS, drop_skills: bad }).notes.join('\n')).toContain('drop_skills');
   });
 });
 

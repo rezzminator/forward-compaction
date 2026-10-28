@@ -42,7 +42,7 @@ export type DecideInput = {
   ceilingNative?: boolean;
   /** Screen name of the party: "main", or "{subagentType} {agentId first 6}". */
   label?: string;
-  /** `Parties.ignored`: the party's model is on the ignore list: it takes no frontier, and its asks are held until its ceiling. */
+  /** `Parties.ignored`: the party's model is on the ignore list: with no frontier stored its asks are held until its ceiling. */
   ignored?: boolean;
   /** `Parties.windowUnknown`: the party's ceiling is not known, so it is never reached; a reactive ask stays mechanical. */
   windowUnknown?: boolean;
@@ -61,8 +61,8 @@ export type Action =
  * (the turn-end door) and for any party at an automatic ask. With nothing stored an automatic ask is held until
  * the ceiling, or at once when it follows a held ask unanswered (the request was too long), and then the party
  * gets a mechanical wake, or Claude Code's own summary when the ceiling is native. A foreign party (the engine's own
- * fork) is never ours: its automatic ask passes. A party whose model is on the ignore list stores nothing, so its ask is
- * held as `ignored-model` until the ceiling. An automatic ask from any other party with no reading and nothing stored is
+ * fork) is never ours: its automatic ask passes. A party whose model is on the ignore list with nothing stored has its ask
+ * held as `ignored-model` until the ceiling; its stored frontier installs like any other's. An automatic ask from any other party with no reading and nothing stored is
  * held as `no-reading`: the next reading decides. A stored frontier whose call left the transcript is dropped, and the ask goes on as if none were stored.
  */
 export function decide({ trigger, party, stored = false, storedMissing = false, tokens, ceiling = Number.POSITIVE_INFINITY, reactive = false, ceilingNative = false, label = 'main', ignored = false, windowUnknown = false }: DecideInput): Action {
@@ -74,7 +74,7 @@ export function decide({ trigger, party, stored = false, storedMissing = false, 
     return { action: 'next', decision: 'pass', why: 'plugin', ...(party === 'main' ? drop : {}) };
   }
   if (party === 'foreign') return { action: 'next', decision: 'foreign', why: 'foreign' };
-  if (stored && !ignored) return { action: 'install', decision: 'install', why: 'stored' };
+  if (stored) return { action: 'install', decision: 'install', why: 'stored' };
   const atCeiling = !windowUnknown && tokens !== undefined && tokens >= ceiling;
   if (atCeiling || reactive) {
     const why = atCeiling ? 'ceiling' : 'reactive';

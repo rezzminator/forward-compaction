@@ -1,11 +1,11 @@
 import type { EngineInterface, On, PluginOptions, Register, SessionCompactInput, SessionCompactResult, ToolCallResult, TurnStartInput, TurnStepInput, TurnStepResult, TurnCompleteInput, PromptSubmitInput, SessionReceiveInput, SkillPromptInput, AgentSpawnInput, AgentSpawnResult } from 'claude-code';
 import { bounded, unlessAborted } from '../src/bounded.ts';
-import { applyDrops, refusedFields, dropNote, pinnedBy, experimental, parseFrontier, loadFileRefusal, receipt, ignoredRefusal, parseLineRanges, sliceFile, toolInput, type FileCheck, type LoadFile } from '../src/frontier.ts';
+import { applyDrops, dropNote, changesNote, pinnedBy, experimental, parseFrontier, loadFileNote, receipt, parseLineRanges, sliceFile, toolInput, type FileCheck, type LoadFile } from '../src/frontier.ts';
 import { workOf, type CallAnswer } from '../src/work.ts';
 import { newLedger, markStart, addEntry, resolveSpawn, attributeSkill, shellsOf, factsFor, promptsKept, restorePrompts, skillsKept, restoreSkills, liftSources, isPersonOrigin, keyOf, originKind, type Ledger, type PartyKey } from '../src/ledger.ts';
 import { splitAtCall, buildWake, mechanicalWake, landedLine, type WakeFile, type AgentRow, type Landing } from '../src/wake.ts';
 import { decide, turnEndDoor, readingTokens, knownTrigger } from '../src/decide.ts';
-import { k, nudgeLevel, nudgeText, gated, gateMark, gateText } from '../src/nudge.ts';
+import { k, nudgeLevel, nudgeText } from '../src/nudge.ts';
 import { Parties, type Judging } from '../src/parties.ts';
 import { askPointOf, charsPerToken, partyMarks, startWarnings, apiChars, type AskPoint, type Marks, type UsageBreakdown } from '../src/window.ts';
 import { unseenCompaction } from '../src/unseen.ts';
@@ -488,19 +488,24 @@ async function answerForward(st: State, $: EngineInterface, e: Record<string, un
     await restoreKept(st, $, key); // a skill and the orders kept across a plugin reload are back before the drop check and any drop
     const parsed = parseFrontier(toolInput(e), { remembered: st.parties.get(key).orders ?? [], said: liftSources(st.ledger, key), party: key === 'main' ? 'main' : 'subagent' });
     const m = marks(st, key);
-    const matched = st.parties.ignored(key, st.config.ignoreModels);
-    let refusal = ignoredRefusal(matched, m?.ceiling) ?? ('refusal' in parsed ? parsed.refusal : undefined);
-    if (!('refusal' in parsed)) for (const [index, file] of parsed.loadFiles.entries()) refusal ??= loadFileRefusal(index, file.path, await statFile(st, $, file.path));
-    if (refusal === undefined && typeof e.tool_use_id !== 'string') refusal = 'forward_compaction refused, nothing stored: the call has no tool_use_id, so the wake cannot find it.';
-    if (refusal !== undefined || 'refusal' in parsed) return (record(st, $, { event: 'refused', party: key, ...refusedFields(parsed, refusal!), ...(matched !== undefined ? { matched } : {}) }), refusal!); // the row names the field that failed, never the person's words
+    const notes = [...parsed.notes];
+    const carried: typeof parsed.loadFiles = [];
+    for (const [i, file] of parsed.loadFiles.entries()) {
+      const note = loadFileNote(parsed.loadAt[i]!, file.path, await statFile(st, $, file.path));
+      if (note === undefined) carried.push(file);
+      else notes.push(note);
+    }
+    parsed.loadFiles = carried;
+    const toolUseId = typeof e.tool_use_id === 'string' ? e.tool_use_id : '';
+    if (toolUseId === '') notes.push('the call has no tool_use_id, so the wake cannot place it: at the install this frontier is dropped and you get the mechanical wake.');
     const tokens = st.parties.get(key).reading; // the last reading: the call's own context is measured only by the next request
     await $.state.set({ plugin: 'forward-compaction', key: 'orders', id: `${await (st.sessionId ??= $.session.id())}/${key}` }, parsed.standingOrders); // kept before the store: a failed write stores nothing
-    const replaced = st.parties.store(key, { text: parsed.frontier, loadFiles: parsed.loadFiles, toolUseId: e.tool_use_id as string, storedAtTokens: tokens, since: st.ledger.nextSeq, standingOrders: parsed.standingOrders, lifted: parsed.lifted });
+    const replaced = st.parties.store(key, { text: parsed.frontier, loadFiles: parsed.loadFiles, toolUseId, storedAtTokens: tokens, since: st.ledger.nextSeq, standingOrders: parsed.standingOrders, lifted: parsed.lifted });
     const drop = applyDrops(st.ledger, key, parsed.dropSkills, st.parties.get(key).dropAsked); (st.ledger = drop.ledger), (st.parties.get(key).dropAsked = drop.outcome.pending); // a frontier naming nothing resets the count
     if (parsed.dropSkills.length > 0) (record(st, $, { event: 'drop', party: key, ...drop.outcome }), await keepKept(st, $, key));
     const files = parsed.loadFiles.length;
-    record(st, $, { event: 'stored', party: key, chars: parsed.frontier.length, files, orders: parsed.standingOrders.length, lifted: parsed.lifted.length, tokens: tokens ?? null, ...(replaced !== undefined ? { replaced: replaced.storedAtTokens ?? null } : {}) });
-    return [key === 'main' ? receipt({ party: 'main', chars: parsed.frontier.length, files, tokens, askPoint: m?.askPoint, replaced: replaced !== undefined }) : receipt({ party: 'subagent', chars: parsed.frontier.length, files, tokens, askPoint: m!.askPoint, replaced: replaced !== undefined }), dropNote(drop.outcome)].filter(Boolean).join(' ');
+    record(st, $, { event: 'stored', party: key, chars: parsed.frontier.length, files, orders: parsed.standingOrders.length, lifted: parsed.lifted.length, notes: notes.length, tokens: tokens ?? null, ...(replaced !== undefined ? { replaced: replaced.storedAtTokens ?? null } : {}) });
+    return [key === 'main' ? receipt({ party: 'main', chars: parsed.frontier.length, files, tokens, askPoint: m?.askPoint, replaced: replaced !== undefined }) : receipt({ party: 'subagent', chars: parsed.frontier.length, files, tokens, askPoint: m!.askPoint, replaced: replaced !== undefined }), dropNote(drop.outcome), changesNote(notes)].filter(Boolean).join(' ');
   } catch (error) {
     say(st, $, `forward-compaction: storing ${key}'s frontier failed: ${message(error)}`, 'error', { event: 'store-error', where: 'answerForward', party: key, error: message(error) });
     return `forward_compaction failed, nothing stored: ${message(error)}`;
@@ -519,23 +524,11 @@ async function nudged(st: State, $: EngineInterface, key: PartyKey, result: Tool
     const withheld = tokens === undefined ? 'no-reading' : m === undefined ? 'window-unknown' : level === 0 ? 'below-start' : st.parties.ignored(key, st.config.ignoreModels) !== undefined ? 'ignored-model' : !st.parties.nudgeDue(key, level, tokens!, m!.every) ? 'not-due' : undefined;
     if (withheld !== undefined) return (dbg(st, $, 'nudge-withheld', { party: key, why: withheld, tokens: tokens ?? null, level, start: m?.start ?? null, every: m?.every ?? null }), result);
     record(st, $, { event: 'nudge', party: key, level, tokens, start: m!.start, every: m!.every });
-    return { ...result, context: [...(result.context ?? []), nudgeText({ tokens: tokens!, window: m!.maxContext, ceiling: m!.ceiling, tool: st.toolNames.forward_compaction, ...(key === 'main' || party.gateLevel === undefined ? {} : { gateAt: gateMark(m!.start, m!.every, party.gateLevel) }) })] };
+    return { ...result, context: [...(result.context ?? []), nudgeText({ tokens: tokens!, window: m!.maxContext, ceiling: m!.ceiling, tool: st.toolNames.forward_compaction })] };
   } catch (error) {
     say(st, $, `forward-compaction: nudging ${key} failed: ${message(error)}`, 'error', { event: 'nudge-error', where: 'nudged', party: key, error: message(error) });
     return result;
   }
-}
-
-/** The refusal for a call that waits on the party's frontier (src/nudge.ts `gated`); `opens` or `open` once the gate lets it run (Parties `gateAnswer`); undefined when not gated. */
-function gateRefusal(st: State, key: PartyKey, tool: string): string | undefined {
-  if (!key.startsWith('agent:') || !st.knownAgents.has(key.slice('agent:'.length))) return undefined; // main and Claude Code's own forks are never gated
-  const party = st.parties.get(key);
-  const m = marks(st, key);
-  const open = [st.toolNames.forward_compaction, st.toolNames.look_back, 'ToolSearch'].filter((t): t is string => t !== undefined);
-  const level = party.reading === undefined || m === undefined ? 0 : nudgeLevel(party.reading, m.start, m.every);
-  if (m === undefined || !gated({ party: 'subagent', level, gateLevel: party.gateLevel, stored: party.stored !== undefined, ignored: st.parties.ignored(key, st.config.ignoreModels) !== undefined, tool, open })) return undefined;
-  const answer = st.parties.gateAnswer(key);
-  return answer === 'refuse' ? gateText({ tokens: party.reading!, tool: st.toolNames.forward_compaction }) : answer;
 }
 
 /** A sub-agent spawned here is ours; any other agent id the engine's own run, unless `$.agent.list` knows it. */
@@ -823,9 +816,6 @@ export const register: Register = (on: On, options: PluginOptions) => {
     if (st.toolNames.forward_compaction !== undefined && e.tool === st.toolNames.forward_compaction) return { result: experimental(await answerForward(st, $, e as Record<string, unknown>), st.pluginLogDir) };
     await unlessAborted(observeManualLookBack(st, $, e as Record<string, unknown>), next.signal);
     const key = keyOf(e.agentId);
-    const refused = gateRefusal(st, key, String(e.tool));
-    if (refused === 'opens') record(st, $, { event: 'gate-opened', party: key, tool: e.tool, tokens: st.parties.get(key).reading ?? null });
-    else if (refused !== undefined && refused !== 'open') return (record(st, $, { event: 'gated', party: key, tool: e.tool, tokens: st.parties.get(key).reading ?? null }), { deny: refused });
     const id = e.tool_use_id;
     const tracked = typeof id === 'string' && (e.tool === 'Skill' || e.tool === 'Agent');
     if (tracked) st.inFlight.set(id, { party: key, tool: e.tool });

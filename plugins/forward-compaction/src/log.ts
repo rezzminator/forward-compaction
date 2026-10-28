@@ -478,7 +478,7 @@ export function pluginLogEvent(row: Record<string, unknown>): Omit<PluginLogFiel
     if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean' || value === null) detail[key] = value;
   }
   const skips = event === 'skips' && typeof row.count === 'number' ? `${row.count} more held compaction asks folded` : undefined;
-  const msg = [row.line, row.error, row.problem, row.detail, row.refusal, skips, row.reason, row.why].find((value) => typeof value === 'string');
+  const msg = [row.line, row.error, row.problem, row.detail, skips, row.reason, row.why].find((value) => typeof value === 'string');
   return { level, event, msg: typeof msg === 'string' ? msg : event.replace(/-/g, ' '), where: `hooks/forward-compaction.ts#${typeof row.where === 'string' ? row.where : 'record'}`, detail, ...(event === 'skips' && typeof row.ts === 'string' ? { ts: row.ts } : {}) };
 }
 

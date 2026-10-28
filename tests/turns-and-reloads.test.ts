@@ -5,7 +5,7 @@ import { fakeEngine, usage, type Script } from './fakes/engine.ts';
 
 // The adapter's wiring of session-lifetime facts: a new turn ends the request-too-long inference (D8), the person's
 // messages outlive a plugin reload through the host's session state, finished tool calls record the party's work, and a
-// sub-agent past its gate mark compacts before anything else runs.
+// sub-agent far past its nudges has every call run, unrefused.
 
 type Fake = ReturnType<typeof fakeEngine>;
 const fakes: Fake[] = [];
@@ -111,42 +111,23 @@ describe("the party's work, from its finished tool calls", () => {
   });
 });
 
-describe('the compaction gate', () => {
+describe('a sub-agent far past its nudges', () => {
   const A = 'a1b2c3d4e5';
-  const FC = 'mcp__forward-compaction__forward_compaction';
   const agentStep = (f: Fake, tokens: number) => f.dispatch('turn.step', { turnId: 't1', index: 0, model: 'claude-sonnet-4-5', messageCount: 4, agentId: A }, async () => ({ turnId: 't1', index: 0, answer: '', toolUses: [], stopReason: 'tool_use', ...usage(tokens) }));
-  const read = (f: Fake, agentId?: string) => f.dispatch('tool.call', { tool: 'Read', tool_use_id: 'r', file_path: '/w/a.ts', ...(agentId ? { agentId } : {}) }, async () => ({ result: {}, text: 'body' }));
+  const write = (f: Fake) => f.dispatch('tool.call', { tool: 'Write', tool_use_id: 'w', file_path: '/w/a.ts', content: 'x', agentId: A }, async () => ({ result: {}, text: 'body' }));
 
-  it("refuses a sub-agent's calls past its gate mark until it stores a frontier, and never main's", async () => {
+  it('has every call run, below its ceiling, and no nudge says any call waits', async () => {
     const f = await begin();
     await f.dispatch('agent.spawn', { tool_use_id: 'tu-spawn', prompt: 'Brief', description: 'one', subagentType: 'general-purpose', provider: { kind: 'local' } }, async () => ({ model: 'sonnet', agentId: A }));
-    await agentStep(f, 85_000);
-    expect((await read(f, A)).context?.at(-1)).toContain('From 100k your other calls wait for it.');
-    await agentStep(f, 99_000);
-    expect(await read(f, A)).toMatchObject({ text: 'body' });
-    await agentStep(f, 104_000);
-    expect((await read(f, A)).deny).toMatch(/^forward-compaction: this call did not run — at 104k you compact first\./);
-    await step(f, 104_000);
-    expect(await read(f)).toMatchObject({ text: 'body' });
-    const stored = await f.dispatch('tool.call', { tool: FC, tool_use_id: 'tu-h', agentId: A, objective: 'o', done: 'd', remaining: 'r', next: 'n' }, async () => ({ result: 'not ours' }));
-    expect(stored.result).toContain('Frontier stored');
-    expect(await read(f, A)).toMatchObject({ text: 'body' });
-  });
-
-  it('lets a sub-agent with no frontier tool on after one refused request, logged once', async () => {
-    const f = await begin();
-    await f.dispatch('agent.spawn', { tool_use_id: 'tu-spawn', prompt: 'Brief', description: 'one', subagentType: 'pcm', provider: { kind: 'local' } }, async () => ({ model: 'sonnet', agentId: A }));
-    await agentStep(f, 85_000);
-    await read(f, A);
-    await agentStep(f, 104_000);
-    expect((await read(f, A)).deny).toContain('this call did not run');
-    expect((await read(f, A)).deny).toContain('this call did not run');
-    await agentStep(f, 105_000);
-    expect(await read(f, A)).toMatchObject({ text: 'body' });
-    expect(await read(f, A)).toMatchObject({ text: 'body' });
-    await f.dispatch('session.end', { reason: 'other' }, async () => ({}));
-    const dir = join(f.home, '.local/state/forward-compaction/logs/decisions');
-    const rows = readdirSync(dir).flatMap((n) => readFileSync(join(dir, n), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)));
-    expect(rows.filter((r) => r.event === 'gate-opened')).toEqual([expect.objectContaining({ party: `agent:${A}`, tool: 'Read', tokens: 105_000 })]);
+    const nudges: string[] = [];
+    for (const tokens of [85_000, 105_000, 125_000, 150_000]) {
+      await agentStep(f, tokens);
+      const r = await write(f);
+      expect(r).toMatchObject({ text: 'body' });
+      expect(r.deny).toBeUndefined();
+      nudges.push(...(r.context ?? []).map(String));
+    }
+    expect(nudges.length).toBeGreaterThan(1);
+    for (const n of nudges) expect(n).not.toMatch(/your other calls wait|did not run/);
   });
 });

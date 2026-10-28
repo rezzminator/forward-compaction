@@ -253,7 +253,6 @@ exec /bin/chmod "$@"
     ]);
     expect(future.pluginLogEvent?.({ event: 'nudge', party: 'main', tokens: 51_000, focus: 'private' }).detail).toEqual({ party: 'main', tokens: 51_000 });
     expect(future.pluginLogEvent?.({ event: 'stored', party: 'main', chars: 40, files: 2, tokens: 9 }).detail).toEqual({ party: 'main', chars: 40, files: 2, tokens: 9 });
-    expect(future.pluginLogEvent?.({ event: 'refused', party: 'main', refusal: 'forward_compaction refused, nothing stored: x' })).toMatchObject({ level: 'info', msg: 'forward_compaction refused, nothing stored: x' });
     expect(future.pluginLogEvent?.({ event: 'skips', party: 'main', count: 7 })).toMatchObject({ level: 'info', event: 'skips', msg: '7 more held compaction asks folded' });
     expect(future.pluginLogEvent?.({ event: 'nudge', party: 'main', level: 2, tokens: 9 }).detail).toEqual({ party: 'main', level: 2, tokens: 9 });
     expect(future.pluginLogEvent?.({ event: 'compact', party: 'main', trigger: 'auto', decision: 'skip', why: 'waiting', tokens: 9 }).detail).toEqual({ party: 'main', trigger: 'auto', decision: 'skip', why: 'waiting', tokens: 9 });

@@ -172,10 +172,14 @@ describe('readingTokens', () => {
 describe('decide: ignored model (Ignored models)', () => {
   it("holds an ignored party's automatic ask as ignored-model, a Haiku sub-agent asked at 64k included, never passing it to Claude Code", () => {
     for (const party of ['main', 'subagent'] as const) {
-      for (const state of [{}, { stored: true }, { tokens: 64_000, ceiling: 160_000 }, { tokens: undefined, ceiling: 160_000 }]) {
+      for (const state of [{}, { tokens: 64_000, ceiling: 160_000 }, { tokens: undefined, ceiling: 160_000 }]) {
         expect(decide({ trigger: 'auto', party, ignored: true, label: 'x', ...state })).toEqual({ action: 'skip', decision: 'skip', why: 'ignored-model', reason: "forward-compaction: holding Claude Code's compaction for x: its model is on the ignore list, so it is compacted mechanically at its ceiling" });
       }
     }
+  });
+
+  it("installs an ignored party's stored frontier at an automatic ask, like any other party's", () => {
+    for (const party of ['main', 'subagent'] as const) expect(decide({ trigger: 'auto', party, ignored: true, stored: true })).toEqual({ action: 'install', decision: 'install', why: 'stored' });
   });
 
   it('gives an ignored party the mechanical wake at its ceiling or a reactive ask, and the native summary with the native flag', () => {

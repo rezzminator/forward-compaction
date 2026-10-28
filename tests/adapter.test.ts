@@ -86,26 +86,32 @@ describe('forward_compaction tool answers (R31)', () => {
     expect(r.result).toContain('It installs at the end of this turn');
   });
 
-  it('ends every answer, receipt and refusal alike, with the experimental line naming the issues file', async () => {
+  it('ends every answer, a receipt with changes included, with the experimental line naming the issues file', async () => {
     const f = await begin();
     const line = `forward-compaction is experimental. If it gave you any trouble, append a short note of what happened to ${f.home}/.local/state/forward-compaction/logs/issues.md; it will be taken care of later.`;
     const stored = await store(f);
     expect(stored.result.split('\n').at(-1)).toBe(line);
-    const refused = await f.dispatch('tool.call', { tool: FORWARD, tool_use_id: 'tu-x', objective: 'x' }, async () => ({ result: 'not ours' }));
-    expect(refused.result.split('\n').at(-1)).toBe(line);
-    expect(refused.result.split('\n').filter((l: string) => l === line)).toHaveLength(1);
+    const changed = await f.dispatch('tool.call', { tool: FORWARD, tool_use_id: 'tu-x', objective: 'x' }, async () => ({ result: 'not ours' }));
+    expect(changed.result.split('\n').at(-1)).toBe(line);
+    expect(changed.result.split('\n').filter((l: string) => l === line)).toHaveLength(1);
   });
 
-  it('refuses a frontier missing a section and stores nothing', async () => {
+  it('stores a frontier missing a section and names what it lacks', async () => {
     const f = await begin();
     const r = await f.dispatch('tool.call', { tool: FORWARD, tool_use_id: 'tu-x', objective: 'x' }, async () => ({ result: 'not ours' }));
-    expect(r.result).toMatch(/^forward_compaction refused, nothing stored: done must be a non-blank string/);
+    expect(r.result).toMatch(/^Frontier stored \(\d+ characters, 0 files\)\./);
+    expect(r.result).toContain('Stored with 3 changes:\n- done was missing: your frontier is stored without it.');
   });
 
-  it('refuses a load file that does not exist (stat ENOENT)', async () => {
-    const f = await begin();
-    const r = await f.dispatch('tool.call', { tool: FORWARD, tool_use_id: 'tu-x', ...SECTIONS, load_files: [{ path: '/work/gone.ts', why: 'needed' }] }, async () => ({ result: 'not ours' }));
-    expect(r.result).toContain('load_files[0] /work/gone.ts: no such file.');
+  it('skips a bad or absent load file (stat ENOENT) and keeps the good ones, each note naming the entry the model sent', async () => {
+    const f = await begin({ files: { '/work/b.ts': { content: 'b' } } });
+    const r = await f.dispatch('tool.call', { tool: FORWARD, tool_use_id: 'tu-x', ...SECTIONS, load_files: [{ path: 'rel.ts', why: 'x' }, { path: '/work/b.ts', why: 'x' }, { path: '/work/gone.ts', why: 'x' }] }, async () => ({ result: 'not ours' }));
+    expect(r.result).toContain(', 1 files).');
+    expect(r.result).toContain('- load_files[0].path must be an absolute path; got "rel.ts": skipped.');
+    expect(r.result).toContain('- load_files[2] /work/gone.ts: no such file: skipped.');
+    const bare = await f.dispatch('tool.call', { tool: FORWARD, ...SECTIONS }, async () => ({ result: 'not ours' }));
+    expect(bare.result).toContain('Frontier stored');
+    expect(bare.result).toContain('the call has no tool_use_id, so the wake cannot place it');
   });
 });
 
@@ -420,36 +426,35 @@ describe('ignored models: FORWARD_COMPACTION_IGNORE_MODELS, Haiku by default', (
     expect(compacts).toEqual([['skip', 'ignored-model', 64_000, 160_000, 'haiku'], ['mechanical', 'ceiling', 160_000, 160_000, 'haiku']]);
   });
 
-  it("nudges a managed sub-agent at 80k of its 200k max context, refuses its calls at 100k, lets the next request run when it does not compact, and gives it the mechanical wake at 160k", async () => {
+  it("nudges a managed sub-agent at 80k of its 200k max context, runs every call past it, and gives it the mechanical wake at 160k", async () => {
     const f = await begin({ env: defaults });
     await spawn(f);
     const levels: number[] = [];
-    const refused: number[] = [];
     for (const tokens of [79_000, 80_000, 99_000, 100_000, 120_000, 140_000, 150_000]) {
       await step(f, tokens, A1);
       const r = await read(f, `tu-${tokens}`, A1);
+      expect(r.deny).toBeUndefined();
       if ((r.context ?? []).length > 0) levels.push(tokens);
-      if (r.deny !== undefined) refused.push(tokens);
     }
-    expect(levels).toEqual([80_000, 120_000, 140_000]);
-    expect(refused).toEqual([100_000]);
+    expect(levels).toEqual([80_000, 100_000, 120_000, 140_000]);
     await step(f, 160_000, A1);
     expect((await f.dispatch('session.compact', { trigger: 'auto', agentId: A1, messages: transcript() }, async () => ({ skip: 'native ran' }))).messages[1].text).toMatch(/past the 160k ceiling/);
   });
 
-  it("refuses an ignored party's forward_compaction call with nothing stored, naming the list entry and its ceiling, and an empty list ignores none", async () => {
+  it("stores an ignored party's forward_compaction call like any other's and installs it at the party's next ask", async () => {
     const f = await begin({ env: defaults });
     await spawn(f);
     await haikuStep(f, 30_000);
     const r = await store(f, A1);
-    expect(r.result).toMatch(/^forward_compaction refused, nothing stored: your model is on forward-compaction's ignore list \("haiku"\), so it takes no frontier from you; carry on with your work, and at 160k the plugin compacts you mechanically\.\nforward-compaction is experimental\./);
+    expect(r.result).toMatch(/^Frontier stored \(\d+ characters, 0 files\)\./);
+    expect(r.result).not.toContain('refused');
+    await haikuStep(f, 64_000);
+    const wake = await f.dispatch('session.compact', { trigger: 'auto', agentId: A1, messages: transcript() }, async () => ({ skip: 'native ran' }));
+    expect(wake.messages[1].text).toContain('## Objective');
     const all = await rows(f);
-    expect(all.filter((row) => row.event === 'stored')).toEqual([]);
-    expect(all.find((row) => row.event === 'refused')).toMatchObject({ party: `agent:${A1}`, matched: 'haiku' });
-    const none = await begin({ env: { ...defaults, FORWARD_COMPACTION_IGNORE_MODELS: '' } });
-    await spawn(none);
-    await haikuStep(none, 30_000);
-    expect((await store(none, A1)).result).toContain('Frontier stored');
+    expect(all.filter((row) => row.event === 'stored')).toHaveLength(1);
+    expect(all.filter((row) => row.event === 'refused')).toEqual([]);
+    expect(all.filter((row) => row.event === 'compact').map((row) => row.decision)).toEqual(['install']);
   });
 
   it("gives main no nudge and no ceiling until its window is read, and manages it against FORWARD_COMPACTION_MAIN_MAX_CONTEXT when that is set", async () => {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { k, nudgeLevel, nudgeText, gated, gateMark, gateText, GATE_STEPS } from '../plugins/forward-compaction/src/nudge.ts';
+import { k, nudgeLevel, nudgeText } from '../plugins/forward-compaction/src/nudge.ts';
 
 describe('nudgeLevel (R29)', () => {
   it('is 0 below the start, 1 at it, and one more per step of growth', () => {
@@ -50,39 +50,9 @@ describe('k', () => {
   });
 });
 
-describe('the compaction gate', () => {
-  const at = (over: Partial<Parameters<typeof gated>[0]> = {}) => gated({ party: 'subagent', level: 2, gateLevel: 2, stored: false, ignored: false, tool: 'Read', open: ['FC', 'LB', 'ToolSearch'], ...over });
-
-  it('closes at its gate level, one step past the first nudge, at that level\'s nudge point', () => {
-    expect(GATE_STEPS).toBe(1);
-    expect(gateMark(80_000, 20_000, 2)).toBe(100_000);
-    expect(at()).toBe(true);
-    expect(at({ level: 3 })).toBe(true);
-    expect(at({ level: 1 })).toBe(false);
-  });
-
-  it('never gates main, an ignored model, a party with a frontier stored or not yet nudged, or the tools that lead to the frontier', () => {
-    expect(at({ party: 'main' })).toBe(false);
-    expect(at({ ignored: true })).toBe(false);
-    expect(at({ stored: true })).toBe(false);
-    expect(at({ gateLevel: undefined })).toBe(false);
-    for (const tool of ['FC', 'LB', 'ToolSearch']) expect(at({ tool })).toBe(false);
-  });
-
-  it('says nothing ran, to compact first, and to repeat the call', () => {
-    expect(gateText({ tokens: 104_000, tool: 'FC' })).toBe('forward-compaction: this call did not run — at 104k you compact first. Call FC (objective, done, remaining, next), then repeat this call. Only your result and final answer left, or no such tool? Repeat this call: it runs.');
-  });
-
-  it('is announced by the nudge before it, and not once it closed', () => {
-    expect(nudgeText({ tokens: 85_000, window: 200_000, ceiling: 160_000, gateAt: 100_000 })).toContain(' From 100k your other calls wait for it. ');
-    expect(nudgeText({ tokens: 105_000, window: 200_000, ceiling: 160_000, gateAt: 100_000 })).not.toContain('your other calls wait');
-    expect(nudgeText({ tokens: 85_000, window: 200_000, ceiling: 160_000 })).not.toContain('your other calls wait');
-  });
-});
-
-describe('the nudge and the refusal stay short', () => {
+describe('the nudge stays short', () => {
   it('make no promise about what a compaction keeps, and never say "lost"', () => {
-    for (const text of [gateText({ tokens: 104_000 }), nudgeText({ tokens: 85_000, window: 200_000, ceiling: 160_000, gateAt: 100_000 })]) {
+    for (const text of [nudgeText({ tokens: 85_000, window: 200_000, ceiling: 160_000 })]) {
       expect(text).not.toMatch(/costs you nothing|every message after it|lost/);
       expect(text.length).toBeLessThan(400);
     }

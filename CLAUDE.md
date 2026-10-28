@@ -13,9 +13,8 @@ is the behavioural spec.
 - Each ask is skipped until a frontier is stored, and that ask installs it; or until the party reaches its ceiling, and it gets the mechanical wake: recorded facts, no frontier from the model. Main also installs a stored frontier at its own turn end, through `$.session.compact()`.
 - The exceptions to "the model chooses" are only these:
   - the ceiling: the mechanical wake, or Claude Code's own summary under `FORWARD_COMPACTION_CEILING_NATIVE`;
-  - a sub-agent's gate: one nudge level past its first nudge since its last install, every call of that request but `forward_compaction` and `look_back` is refused, so a fast reader cannot run past its milestones into the mechanical wake; a party that answers with another call instead (no API names its tools, so its list may lack `forward_compaction`) runs on until its next install, nudged, to its ceiling; main is never gated;
   - a request too long (an ask following a held ask in the same turn that no request completed): the mechanical wake at once, below the ceiling;
-  - an ignored model (`FORWARD_COMPACTION_IGNORE_MODELS`, Haiku by default): no nudges, its `forward_compaction` call refused, its asks held to its ceiling and then compacted mechanically, never at Claude Code's early ask;
+  - an ignored model (`FORWARD_COMPACTION_IGNORE_MODELS`, Haiku by default): no nudges, its asks held to its ceiling and then compacted mechanically, never at Claude Code's early ask; its `forward_compaction` call is stored like any other's;
   - an error, which never holds a compaction: the party gets the mechanical wake, and if that fails too, Claude Code's own summary runs; every failure is logged with context;
   - the person's own `/compact`: Claude Code's own summary, and the stored frontier is dropped;
   - Claude Code's own fork, a party not ours: its ask passes.
@@ -32,7 +31,7 @@ is the behavioural spec.
 - The person's ten newest messages (`PROMPTS_KEPT`, main) or the brief (sub-agent) are carried whole into every wake, whatever their size.
 - A standing order is the person's order that binds the rest of the work (a prohibition, a limit, a rule); it survives every wake, the mechanical one included, until the person lifts it.
 - The frontier carries each standing order verbatim, with the time of the person's message, in its own `standing_orders` argument.
-- `forward_compaction` refuses a frontier that leaves out a standing order the previous frontier carried, unless it quotes the person's words that lifted it, from a message sent after the order's time.
+- A frontier that leaves out a standing order is stored, and the plugin carries the order on from the party's remembered orders; it leaves only on a lift quoting the person's words from a message sent after the order's time, and a lift without those words leaves it binding, named in the receipt.
 - The wake renders the standing orders above the frontier, marked binding.
 - Only what the model can find again is fitted to a budget: the kept tail, the notifications and delivered messages, sibling results, the commands run (verbatim, each with its description), the task list, the files and agents lists and the `load_files` (carried whole while their room lasts, never refused for size); each one left out is named as not carried, never silently gone.
 
@@ -53,6 +52,7 @@ Refresh the installed copy with `claude plugin marketplace update` as written, n
 
 ## Rules
 
+- forward-compaction NEVER blocks, refuses, delays or holds back any operation of any agent or of the main chat. Every tool call runs. The plugin only nudges, and compacts mechanically at a party's ceiling.
 - Every number the plugin decides on or reports comes from Claude Code's plugin API, as far as it reaches: `$.session.usage()` (window, auto-compact threshold), `turn.step` usage (each party's reading), `session.compact`'s `tokensBefore`/`tokensAfter`, `$.agent.list()`, `$.session.messages()`.
 - No guessed, estimated or invented number: no character-count token estimates, no hard-coded model-window tables; the `[1m]` context marker in the model id a step reports is the API's own literal, not a model-name table.
 - Where the API gives nothing, a value a user tunes (a max context, ceiling or nudge level) is a named option with its default, a sub-agent's max context with two, picked by that marker; a design budget (the wake's section shares, the `load_files` share, a format cap such as `WHY_MAX_CHARS`) is a named constant whose one-line comment says why, and is never reported as a measured size.
