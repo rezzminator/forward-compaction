@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { askPointOf, ceilingTokens, charsPerToken, ignoredBy, loadFilesRoom, partyMarks, RATIO_MIN_GROWTH, RATIO_RANGE, startWarnings, apiChars } from '../plugins/forward-compaction/src/window.ts';
+import { askPointOf, ceilingTokens, charsPerToken, ignoredBy, partyMarks, RATIO_MIN_GROWTH, RATIO_RANGE, startWarnings, apiChars } from '../plugins/forward-compaction/src/window.ts';
 
 describe('askPointOf: the ask point from $.session.usage', () => {
   it("is the breakdown's autoCompactThreshold when Claude Code reports one", () => {
@@ -79,14 +79,6 @@ describe('apiChars and charsPerToken: the ratio measured on the growth', () => {
     expect(charsPerToken({ chars: 100_000, tokens: 40_000 }, 110_000, 60_000)).toEqual({ why: 'out-of-range', delta: 0.5 });
     expect(charsPerToken({ chars: 0, tokens: 40_000 }, 20_000, 60_000)).toEqual({ ratio: 1 });
     expect(charsPerToken({ chars: 0, tokens: 40_000 }, 160_000, 60_000)).toEqual({ ratio: 8 });
-  });
-});
-
-describe('loadFilesRoom (M4)', () => {
-  it("is 5% of the party's max context at its measured ratio, unbounded with none", () => {
-    expect(loadFilesRoom(1_000_000, 2)).toBe(100_000);
-    expect(loadFilesRoom(400_000, 2.5)).toBe(50_000);
-    expect(loadFilesRoom(1_000_000, undefined)).toBe(Number.POSITIVE_INFINITY);
   });
 });
 

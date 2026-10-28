@@ -1,7 +1,6 @@
 // The wake: what a compaction installs. [facts] [frontier] [tail…] — the facts and the frontier are built here from typed values,
 // the tail is the engine's own messages returned untouched. Pure: files, agents and the clock arrive as inputs.
 import { DEFAULT_TOOL, k as kilo } from './nudge.ts';
-import { LOAD_FILES_SHARE, loadFilesRoom } from './window.ts';
 import { keptSaid, PROMPTS_KEPT } from './ledger.ts';
 import { experimental, EXPERIMENTAL_OPENING } from './frontier.ts';
 import { ordersSection, type LiftedOrder, type StandingOrder } from './orders.ts';
@@ -27,12 +26,13 @@ const num = (value: number): string => value.toLocaleString('en-US');
 const iso = (at: number): string => new Date(at).toISOString();
 
 /**
- * Per-section shares of the budget B (D18), design budgets and never measured sizes: sibling results a tenth, coordinator
- * notices, the task list and the commands run a twentieth each; the rest of B goes to the messages kept after the call. The person's newest messages or the brief and
- * every skill in force are what a woken model most needs, so they are carried whole, outside any share. Load files have their
- * own room, `loadFilesRoom`.
+ * Per-section shares of the budget B (D18), design budgets and never measured sizes: what arrived after the frontier a quarter,
+ * sibling results a tenth, coordinator notices and the shell commands run a twentieth each; the rest of B goes to the messages
+ * kept after the call. The person's newest messages or the brief, the task list, the skills in force (within their own
+ * character limits below) and the load files (each within LOAD_FILE_MAX_LINES) are what a woken model most needs, so they
+ * are carried outside any share.
  */
-const SHARE = { arrived: 0.25, notices: 0.05, siblings: 0.1, tasks: 0.05, commands: 0.05 } as const;
+const SHARE = { arrived: 0.25, notices: 0.05, siblings: 0.1, commands: 0.05 } as const;
 /** The plugin version that builds a wake, named in its facts header so a chat on an old build is visible; tests/layout.test.ts pins it to plugin.json. */
 export const PLUGIN_VERSION = '2.0.0';
 /** An image the person attached: a built wake message holds only text (`session.compact`'s messages), so each is named, never silently gone. */
@@ -44,11 +44,34 @@ export const COMMANDS_KEPT = 20;
 export const FILES_MAX = 15;
 /** The agents section's row cap: a design budget, enough for a coordinator's fleet, never the size of one. */
 export const AGENTS_MAX_ROWS = 50;
+/** One skill's carried text: Claude Code's own 5,000 tokens a skill after compaction, at its 4 characters a token; a design budget in characters, never a measured token count. */
+export const SKILL_MAX_CHARS = 20_000;
+/** All carried skills together: Claude Code's own 25,000 tokens for skills after compaction, at its 4 characters a token; a design budget in characters, never a measured token count. */
+export const SKILLS_MAX_CHARS = 100_000;
+/** What ends a skill cut to SKILL_MAX_CHARS, Claude Code's own marker, verbatim. */
+export const SKILL_TRUNCATED = '\n\n[... skill content truncated for compaction; use Read on the skill path if you need the full text]';
+
+/**
+ * The skills a wake carries, as Claude Code carries them after its own compaction: newest loaded first, each cut past
+ * SKILL_MAX_CHARS to its head and SKILL_TRUNCATED, and together within SKILLS_MAX_CHARS; one that does not fit what is
+ * left is skipped and the next, smaller one may still fit. A pinned skill is cut and fitted like the rest.
+ */
+export function fitSkills<S extends { text: string }>(skills: readonly S[]): { carried: S[]; skipped: S[] } {
+  const carried: S[] = [];
+  const skipped: S[] = [];
+  let left = SKILLS_MAX_CHARS;
+  for (const s of skills) {
+    const text = s.text.length > SKILL_MAX_CHARS ? s.text.slice(0, SKILL_MAX_CHARS - SKILL_TRUNCATED.length) + SKILL_TRUNCATED : s.text;
+    if (text.length > left) skipped.push(s);
+    else (left -= text.length), carried.push({ ...s, text });
+  }
+  return { carried, skipped };
+}
 
 /**
  * B = half the ask point, a design budget: half leaves the woken party room to work before its next ask (D18). B bounds the
- * kept tail, not the whole wake: the facts sections' shares (`SHARE`) sum to 0.5×B, the person's words and the skills are uncapped, and load files
- * take their own 5% of the max context, so a wake heavy with skills keeps no tail and can start at or past its ask point.
+ * kept tail, not the whole wake: the facts sections' shares (`SHARE`) sum to 0.45×B, and the person's words, the task list, the
+ * skills and the load files are carried outside B, so a wake heavy with them keeps no tail and can start at or past its ask point.
  */
 export function wakeBudget(askPoint: number): number {
   return Math.floor(0.5 * askPoint);
@@ -166,8 +189,7 @@ type Shared<M> = {
   /** The party's standing orders, and the orders lifted since its last install, shown once; absent or empty, no section. */
   orders?: { standing: readonly StandingOrder[]; lifted?: readonly LiftedOrder[] };
 };
-/** `maxContext`: the party's max context, whose `loadFilesRoom` the files are carried in. */
-export type BuildWakeInput<M> = Shared<M> & { toolUseId: string; frontier: string; files?: readonly WakeFile[]; maxContext?: number };
+export type BuildWakeInput<M> = Shared<M> & { toolUseId: string; frontier: string; files?: readonly WakeFile[] };
 export type MechanicalWakeInput<M> = Shared<M> & { reason: { kind: 'ceiling'; ceiling: number } | { kind: 'reactive' } };
 
 export type Wake<M> = {
@@ -207,12 +229,12 @@ function age(ms: number): string {
   return `${Math.round(s / 3600)}h`;
 }
 
-type Extras = { siblings: readonly Sibling[]; files: readonly WakeFile[]; fileRoom: number; maxContext?: number };
+type Extras = { siblings: readonly Sibling[]; files: readonly WakeFile[] };
 
 type Rendered = { text: string; sections: number; sizes: Wake<never>['sizes']; carried: string[]; notCarried: string[] };
 
 /** F: every section with its cap; whole or not, never cut. With no measured ratio no section is capped. */
-function renderFacts<M>(input: Shared<M>, facts: WakeFacts, { siblings, files, fileRoom, maxContext }: Extras): Rendered {
+function renderFacts<M>(input: Shared<M>, facts: WakeFacts, { siblings, files }: Extras): Rendered {
   const B = wakeBudget(input.askPoint);
   const room = (share: number): number => charsIn(B * share, input.charsPerToken);
   const filesCarried: string[] = [];
@@ -243,8 +265,9 @@ function renderFacts<M>(input: Shared<M>, facts: WakeFacts, { siblings, files, f
     const count = facts.person.length;
     const left = count - shown.length;
     const answers = facts.person.filter((p) => p.answer !== undefined).length;
-    const carried = `${shown.length} of ${count}${answers === 0 ? '' : `, ${answers} of them answering your questions`}`;
-    const heading = left === 0 ? `(${carried})` : `(${carried}; the ${left} oldest are not carried: look_back finds them)`;
+    // `recorded`: the count is the plugin's own record, which a restart begins again; the transcript may hold older ones.
+    const carried = `${shown.length} of ${count} recorded${answers === 0 ? '' : `, ${answers} of them answering your questions`}`;
+    const heading = left === 0 ? `(${carried})` : `(${carried}; the ${left} oldest recorded are not carried: look_back finds them)`;
     sections.push(section([`## The person's messages, oldest first ${heading}`, ...shown].join('\n')));
   }
 
@@ -267,10 +290,11 @@ function renderFacts<M>(input: Shared<M>, facts: WakeFacts, { siblings, files, f
   }
 
   const notCarried: string[] = [];
-  const carriedSkills: string[] = [];
-  // every skill the party invoked is carried whole, whatever its size; the tail is fitted after it
-  for (const s of facts.skills) carriedSkills.push(`### ${s.skill} (${s.source ?? 'unknown source'}${s.path === undefined ? '' : `, ${s.path}`}${s.keep ? ', pinned: never dropped' : ''})\n${s.text}`);
+  // the skills within Claude Code's own post-compaction limits, outside B; the tail is fitted after them
+  const skills = fitSkills(facts.skills);
+  const carriedSkills = skills.carried.map((s) => `### ${s.skill} (${s.source ?? 'unknown source'}${s.path === undefined ? '' : `, ${s.path}`}${s.keep ? ', pinned: never dropped' : ''})\n${s.text}`);
   if (carriedSkills.length > 0) sections.push(section(['## Skills in force, as loaded (one you no longer need: name it in drop_skills on two frontiers in a row)', ...carriedSkills].join('\n')));
+  for (const s of skills.skipped) notCarried.push(`- ${s.skill}: over the ${num(SKILLS_MAX_CHARS)}-character room for skills; call Skill ${s.skill}${s.path === undefined ? '' : ` or Read ${s.path}`} if it applies to you.`);
   for (const s of facts.unattributedSkills) notCarried.push(`- ${s.skill}: loaded in this session by an unidentified party; call Skill ${s.skill} if it applies to you.`);
   if (notCarried.length > 0) sections.push({ text: ['## Skills not carried', ...notCarried].join('\n'), content: false });
 
@@ -283,13 +307,9 @@ function renderFacts<M>(input: Shared<M>, facts: WakeFacts, { siblings, files, f
     const kept = work.commands.slice(0, COMMANDS_KEPT); // newest first; fitted from the newest, the older left out named
     const { shown, left } = newestFitting([...kept].reverse(), (c) => `### ${c.description ?? '(no description)'}\n${c.command}`, room(SHARE.commands));
     const out = left + work.commands.length - kept.length;
-    sections.push(section([`## Commands you ran, newest first${out > 0 ? ` (${out} older not carried; look_back finds them)` : ''}`, ...shown.reverse()].join('\n')));
+    sections.push(section([`## Shell commands you ran, newest first${out > 0 ? ` (${out} older not carried; look_back finds them)` : ''}`, ...shown.reverse()].join('\n')));
   }
-  if (work !== undefined && work.tasks.length > 0) {
-    const text = ['## Tasks, as last set', ...work.tasks].join('\n');
-    const cap = room(SHARE.tasks);
-    sections.push(text.length <= cap ? section(text) : { text: `## Tasks\n(not carried: ${num(text.length)} characters, over the ${num(cap)}-character room; look_back finds them)`, content: false });
-  }
+  if (work !== undefined && work.tasks.length > 0) sections.push(section(['## Tasks, as last set', ...work.tasks].join('\n'))); // whole, never fitted
 
   if (input.agents !== undefined) {
     if (!Array.isArray(input.agents)) sections.push({ text: `## Agents\n(could not be listed: ${(input.agents as { error: string }).error})`, content: false });
@@ -312,8 +332,7 @@ function renderFacts<M>(input: Shared<M>, facts: WakeFacts, { siblings, files, f
   }
 
   if (files.length > 0) {
-    let left = fileRoom; // the content alone counts
-    const over = (chars: number): string => maxContext === undefined ? `${num(chars)} characters, not carried: the max context is not known, so there is no room for carried files` : `${num(chars)} characters, over the ${num(left)} characters left of the ${num(fileRoom)}-character room for carried files (${LOAD_FILES_SHARE * 100}% of the ${kilo(maxContext)} max context)`;
+    // each already cut to LOAD_FILE_MAX_LINES (frontier.ts `sliceFile`); no room and no count cap
     const carried: string[] = [];
     const dropped: string[] = [];
     for (const f of files) {
@@ -322,12 +341,8 @@ function renderFacts<M>(input: Shared<M>, facts: WakeFacts, { siblings, files, f
         filesNotCarried.push(f.path);
         continue;
       }
-      if (f.content.length > left) (dropped.push(`- ${f.path}: ${over(f.content.length)}`), filesNotCarried.push(f.path));
-      else {
-        left -= f.content.length;
-        filesCarried.push(f.path);
-        carried.push(`### ${f.path}${f.lines === undefined ? '' : ` lines ${f.lines}`} — ${f.why}\n${f.content}`);
-      }
+      filesCarried.push(f.path);
+      carried.push(`### ${f.path}${f.lines === undefined ? '' : ` lines ${f.lines}`} — ${f.why}\n${f.content}`);
     }
     if (carried.length > 0) sections.push(section(['## Files you asked to carry', ...carried].join('\n')));
     if (dropped.length > 0) sections.push({ text: ['## Files not carried', ...dropped].join('\n'), content: false });
@@ -395,7 +410,7 @@ const within = (orders: Shared<never>['orders']): string => ((orders?.standing.l
 export function buildWake<M extends WakeMessage>(input: BuildWakeInput<M>): Wake<M> {
   const split = splitAtCall(input.messages, input.toolUseId);
   if (split === undefined) throw new Error(`forward-compaction: call ${input.toolUseId} is not in the transcript to compact`);
-  return assemble(input, split.tail, { siblings: split.siblings, files: input.files ?? [], fileRoom: loadFilesRoom(input.maxContext ?? 0, input.charsPerToken), ...(input.maxContext !== undefined ? { maxContext: input.maxContext } : {}) }, ({ kept, dropped }) => {
+  return assemble(input, split.tail, { siblings: split.siblings, files: input.files ?? [] }, ({ kept, dropped }) => {
     const lines = [
       `[forward-compaction: frontier] Below is the frontier you wrote with forward_compaction: continue from its ## Next${within(input.orders)}.`,
       `=== frontier ===\n${input.frontier}\n=== end of frontier ===`,
@@ -413,7 +428,7 @@ export function buildWake<M extends WakeMessage>(input: BuildWakeInput<M>): Wake
 export function mechanicalWake<M extends WakeMessage>(input: MechanicalWakeInput<M>): Wake<M> {
   const why = input.reason.kind === 'ceiling' ? `, past the ${kilo(input.reason.ceiling)} ceiling` : ', and Claude Code reported your request too long';
   const source = input.party === 'main' ? "the person's messages" : 'your brief';
-  return assemble(input, input.messages, { siblings: [], files: [], fileRoom: 0 }, ({ kept, dropped }) => experimental(
+  return assemble(input, input.messages, { siblings: [], files: [] }, ({ kept, dropped }) => experimental(
     `[forward-compaction: no frontier written by the model] Your context reached ${input.tokens === undefined ? 'a size not measured yet' : `${kilo(input.tokens)} tokens`}${why}, and you had not called forward_compaction, so the plugin compacted it mechanically: the facts above and your newest ${kept} messages below, kept verbatim; ${dropped} older messages are gone (look_back finds an exact detail). No objective or next step was written. Re-establish them from ${source} and the messages below, then continue${within(input.orders)}; call ${input.tool ?? DEFAULT_TOOL} at your next milestone.`, input.logDir),
   'none');
 }

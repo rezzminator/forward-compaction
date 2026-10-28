@@ -4,7 +4,7 @@ import {
   FORWARD_INPUT_SCHEMA,
   FORWARD_TOOL,
   FORWARD_TOOL_DESCRIPTION,
-  LOAD_FILES_MAX,
+  LOAD_FILE_MAX_LINES,
   WHY_MAX_CHARS,
   loadFileNote,
   parseFrontier,
@@ -32,12 +32,13 @@ describe('the forward_compaction tool as registered', () => {
   });
 
   it('names its caps once, and the schema agrees with them', () => {
-    expect([LOAD_FILES_MAX, WHY_MAX_CHARS]).toEqual([8, 200]);
-    expect(FORWARD_INPUT_SCHEMA.properties.load_files.maxItems).toBe(LOAD_FILES_MAX);
+    expect([LOAD_FILE_MAX_LINES, WHY_MAX_CHARS]).toEqual([250, 200]);
+    expect(FORWARD_INPUT_SCHEMA.properties.load_files).not.toHaveProperty('maxItems');
+    expect(FORWARD_INPUT_SCHEMA.properties.load_files.description).toBe('Files carried into the new context, read when it installs: each up to 250 lines; a longer file or range carries its first 250 and names where to Read the rest. Pass lines ranges to carry only what you need.');
     expect(FORWARD_INPUT_SCHEMA.properties.load_files.items.properties.why.maxLength).toBe(WHY_MAX_CHARS);
   });
 
-  it('closes the schema: four required sections, two optional ones, at most 8 load_files with a path and a why', () => {
+  it('closes the schema: four required sections, two optional ones, load_files each with a path and a why', () => {
     expect(FORWARD_INPUT_SCHEMA).toMatchObject({ type: 'object', additionalProperties: false, required: ['objective', 'done', 'remaining', 'next'] });
     expect(Object.keys(FORWARD_INPUT_SCHEMA.properties)).toEqual([...SECTIONS, 'load_files', 'drop_skills', 'standing_orders', 'lifted']);
     for (const name of SECTIONS) expect(FORWARD_INPUT_SCHEMA.properties[name as 'objective']).toMatchObject({ type: 'string', description: expect.any(String) });
@@ -45,7 +46,7 @@ describe('the forward_compaction tool as registered', () => {
     expect(FORWARD_INPUT_SCHEMA.properties.findings.description).toBe('Optional: decisions with why, errors verbatim, the commands and recipes you will need again.');
     expect(FORWARD_INPUT_SCHEMA.properties.done.description).toBe('Finished pieces, each with how it was verified; every figure with the command that produced it.');
     const files = FORWARD_INPUT_SCHEMA.properties.load_files;
-    expect(files).toMatchObject({ type: 'array', maxItems: 8, items: { additionalProperties: false, required: ['path', 'why'], properties: { why: { maxLength: 200 } } } });
+    expect(files).toMatchObject({ type: 'array', items: { additionalProperties: false, required: ['path', 'why'], properties: { why: { maxLength: 200 } } } });
   });
 });
 
@@ -70,7 +71,7 @@ describe('parseFrontier assembles the sections and keeps their text whole', () =
     expect(parseFrontier({ ...valid, load_files: files })).toEqual({ frontier: text, loadFiles: files, loadAt: [0, 1], dropSkills: [], standingOrders: [], lifted: [], notes: [] });
   });
 
-  it('takes a frontier of any length whole, never refused or trimmed for size, and exactly 8 files', () => {
+  it('takes a frontier of any length whole, never refused or trimmed for size', () => {
     const next = valid.next + 'x'.repeat(200_000 - text.length);
     const out = parseFrontier({ ...valid, next });
     expect(out.frontier.length).toBe(200_000);
@@ -116,11 +117,11 @@ describe('parseFrontier stores whatever it is sent and names what it left out', 
     for (const bad of ['a', {}, null, 3]) expect(parseFrontier({ ...valid, load_files: bad })).toMatchObject({ loadFiles: [], notes: ['load_files must be an array of {path, lines?, why}: none carried.'] });
   });
 
-  it('V8 more than 8 entries: the first 8 are carried, the rest named (R15)', () => {
-    const nine = Array.from({ length: 9 }, (_, i) => ({ path: `/f${i}`, why: 'w' }));
-    const out = parseFrontier({ ...valid, load_files: nine });
-    expect(out.notes).toEqual(['load_files has 9 entries, over the 8 cap: entries 8-8 are skipped.']);
-    expect(out.loadFiles).toEqual(nine.slice(0, 8));
+  it('V8 has no count cap: every well-formed entry is carried, none named', () => {
+    const twenty = Array.from({ length: 20 }, (_, i) => ({ path: `/f${i}`, why: 'w' }));
+    const out = parseFrontier({ ...valid, load_files: twenty });
+    expect(out.notes).toEqual([]);
+    expect(out.loadFiles).toEqual(twenty);
   });
 
   it('V9 a path that is missing or not absolute skips that entry only (R15)', () => {
@@ -228,7 +229,7 @@ describe('parseLineRanges and sliceFile (copied from the old carry module)', () 
     expect(parseLineRanges('20-10')).toBeUndefined();
     expect(parseLineRanges('abc')).toBeUndefined();
     expect(parseLineRanges('10-')).toBeUndefined();
-    expect(sliceFile('a\nb\nc\nd\ne', [{ from: 2, to: 4 }])).toEqual({ body: 'b\nc\nd', shown: '2-4' });
+    expect(sliceFile('/f', 'a\nb\nc\nd\ne', [{ from: 2, to: 4 }])).toEqual({ body: 'b\nc\nd', shown: '2-4' });
   });
 
   it('takes several ranges, each loaded in order with the lines between them named as not loaded', () => {
@@ -236,27 +237,50 @@ describe('parseLineRanges and sliceFile (copied from the old carry module)', () 
     expect(parseLineRanges(' 3 , 5-6 ')).toEqual([{ from: 3, to: 3 }, { from: 5, to: 6 }]);
     expect(parseLineRanges('1-3,,5')).toBeUndefined();
     expect(parseLineRanges('1-3,x')).toBeUndefined();
-    expect(sliceFile('a\nb\nc\nd\ne\nf', [{ from: 1, to: 2 }, { from: 5, to: 6 }])).toEqual({ body: 'a\nb\n[lines 3-4 not loaded]\ne\nf', shown: '1-2,5-6' });
+    expect(sliceFile('/f', 'a\nb\nc\nd\ne\nf', [{ from: 1, to: 2 }, { from: 5, to: 6 }])).toEqual({ body: 'a\nb\n[lines 3-4 not loaded]\ne\nf', shown: '1-2,5-6' });
   });
 
   it('names a range past the end of the file, never loading it as nothing', () => {
     const file = Array.from({ length: 149 }, (_, n) => `line ${n + 1}`).join('\n') + '\n';
-    expect(sliceFile(file, [{ from: 150, to: 200 }])).toEqual({ problem: 'lines 150-200: past the end of the file, which has 149 lines' });
-    expect(sliceFile(file, [{ from: 148, to: 200 }])).toEqual({ body: 'line 148\nline 149', shown: '148-149', problem: 'lines 148-200: the file ends at line 149' });
-    expect(sliceFile(file, [{ from: 1, to: 1 }, { from: 160, to: 170 }])).toEqual({ body: 'line 1', shown: '1', problem: 'lines 160-170: past the end of the file, which has 149 lines' });
-    expect(sliceFile('', undefined)).toEqual({ problem: 'the file is empty' });
-    expect(sliceFile('x\n', undefined)).toEqual({ body: 'x\n', shown: '' });
+    expect(sliceFile('/f', file, [{ from: 150, to: 200 }])).toEqual({ problem: 'lines 150-200: past the end of the file, which has 149 lines' });
+    expect(sliceFile('/f', file, [{ from: 148, to: 200 }])).toEqual({ body: 'line 148\nline 149', shown: '148-149', problem: 'lines 148-200: the file ends at line 149' });
+    expect(sliceFile('/f', file, [{ from: 1, to: 1 }, { from: 160, to: 170 }])).toEqual({ body: 'line 1', shown: '1', problem: 'lines 160-170: past the end of the file, which has 149 lines' });
+    expect(sliceFile('/f', '', undefined)).toEqual({ problem: 'the file is empty' });
+    expect(sliceFile('/f', 'x\n', undefined)).toEqual({ body: 'x\n', shown: '' });
   });
 
   it('names a range of only blank lines, never loading it as a block that says nothing', () => {
-    expect(sliceFile('a\n\n\nd\n', [{ from: 2, to: 3 }])).toEqual({ problem: 'lines 2-3: only blank lines' });
-    expect(sliceFile('a\n\n', [{ from: 2, to: 5 }])).toEqual({ problem: 'lines 2-5: the file ends at line 2; lines 2: only blank lines' });
+    expect(sliceFile('/f', 'a\n\n\nd\n', [{ from: 2, to: 3 }])).toEqual({ problem: 'lines 2-3: only blank lines' });
+    expect(sliceFile('/f', 'a\n\n', [{ from: 2, to: 5 }])).toEqual({ problem: 'lines 2-5: the file ends at line 2; lines 2: only blank lines' });
   });
 
   it('loads ranges in file order, an overlap once', () => {
     const file = 'a\nb\nc\nd\ne\nf\ng\n';
-    expect(sliceFile(file, [{ from: 6, to: 7 }, { from: 1, to: 2 }])).toEqual({ body: 'a\nb\n[lines 3-5 not loaded]\nf\ng', shown: '1-2,6-7' });
-    expect(sliceFile(file, [{ from: 1, to: 3 }, { from: 2, to: 4 }, { from: 5, to: 5 }])).toEqual({ body: 'a\nb\nc\nd\ne', shown: '1-5' });
+    expect(sliceFile('/f', file, [{ from: 6, to: 7 }, { from: 1, to: 2 }])).toEqual({ body: 'a\nb\n[lines 3-5 not loaded]\nf\ng', shown: '1-2,6-7' });
+    expect(sliceFile('/f', file, [{ from: 1, to: 3 }, { from: 2, to: 4 }, { from: 5, to: 5 }])).toEqual({ body: 'a\nb\nc\nd\ne', shown: '1-5' });
+  });
+
+  it('carries at most 250 lines of a file, from line 1, and names where to Read the rest', () => {
+    const file = (n: number): string => Array.from({ length: n }, (_, i) => `l${i + 1}`).join('\n') + '\n';
+    expect(sliceFile('/f', file(250), undefined)).toEqual({ body: file(250), shown: '' });
+    const first = Array.from({ length: 250 }, (_, i) => `l${i + 1}`).join('\n');
+    expect(sliceFile('/f', file(400), undefined)).toEqual({ body: `${first}\n[150 more lines not carried: Read /f from line 251]`, shown: '1-250' });
+  });
+
+  it('carries at most 250 lines of the ranges asked, counting the lines left in the ranges, and names the next one to Read', () => {
+    const file = Array.from({ length: 1000 }, (_, i) => `l${i + 1}`).join('\n');
+    const body = (from: number, to: number): string => Array.from({ length: to - from + 1 }, (_, i) => `l${from + i}`).join('\n');
+    expect(sliceFile('/f', file, [{ from: 101, to: 600 }])).toEqual({ body: `${body(101, 350)}\n[250 more lines not carried: Read /f from line 351]`, shown: '101-350' });
+    // 200 from the first range, 50 of the second, then 50 left of it and 100 of the third
+    expect(sliceFile('/f', file, [{ from: 1, to: 200 }, { from: 301, to: 400 }, { from: 801, to: 900 }])).toEqual({
+      body: `${body(1, 200)}\n[lines 201-300 not loaded]\n${body(301, 350)}\n[150 more lines not carried: Read /f from line 351]`,
+      shown: '1-200,301-350',
+    });
+    expect(sliceFile('/f', file, [{ from: 1, to: 250 }, { from: 900, to: 1200 }])).toEqual({
+      body: `${body(1, 250)}\n[101 more lines not carried: Read /f from line 900]`,
+      shown: '1-250',
+      problem: 'lines 900-1200: the file ends at line 1000',
+    });
   });
 });
 
