@@ -86,14 +86,6 @@ export function charsPerToken(base: RatioBase | undefined, chars: number | undef
   return delta >= RATIO_RANGE.min && delta <= RATIO_RANGE.max ? { ratio: delta } : { why: 'out-of-range', delta };
 }
 
-/** The share of a party's max context its carried load files may take, a design budget the owner reads, never a measured size: a twentieth leaves the wake budget to the facts and the kept messages. */
-export const LOAD_FILES_SHARE = 0.05;
-
-/** The characters of load-file content a party's wake carries, at its measured ratio; unbounded with no ratio. */
-export function loadFilesRoom(maxContext: number, ratio: number | undefined): number {
-  return ratio === undefined ? Number.POSITIVE_INFINITY : Math.floor(maxContext * LOAD_FILES_SHARE * ratio);
-}
-
 /**
  * The `CLAUDE_CODE_AUTO_COMPACT_WINDOW` the README asks for: Claude Code then asks about every request from about 63k, early
  * enough for a stored frontier to install (CLAUDE.md, Spine). A recommendation named to the owner, never a measured size.

@@ -5,9 +5,9 @@
 **Compaction for Claude Code where the model writes its own frontier: the main chat and every sub-agent compact through one tool, and the newest messages after the call stay verbatim.**
 
 [![Claude Code plugin](https://img.shields.io/badge/Claude%20Code-plugin-D97757)](https://docs.claude.com/en/docs/claude-code/plugins)
-[![Version](https://img.shields.io/badge/version-2.0.0-blue)](./CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-2.1.0-blue)](./CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
-[![Tests](https://img.shields.io/badge/tests-575%20passing-brightgreen)](#development)
+[![Tests](https://img.shields.io/badge/tests-579%20passing-brightgreen)](#development)
 [![Built with Professor](https://img.shields.io/badge/built%20with-Professor-8A2BE2)](https://github.com/rezzminator/professor)
 
 </div>
@@ -19,7 +19,7 @@ forward_compaction({
 })
 ```
 
-<sup>One call, one argument per section. At Claude Code's next compaction the plugin replaces everything before the call with recorded facts plus this frontier, and keeps every message after it word for word.</sup>
+<sup>One call, one argument per section. At Claude Code's next compaction the plugin replaces everything before the call with recorded facts plus this frontier, and keeps the newest messages after it that fit, word for word.</sup>
 
 ---
 
@@ -166,15 +166,16 @@ needs no ToolSearch.
   each heading followed by its argument verbatim and a blank line between
   sections. The frontier has no length cap: it is stored and installed
   whole, never trimmed.
-- `load_files` (optional): at most 8 `{path, lines?, why}` entries, each an
-  absolute path to a regular file, `why` 1–200 characters, `lines` a range
-  like `10-40` or `1-60,160-185`. Their size never refuses the frontier: it is
-  always stored. Each file is read when the frontier installs and carried
-  whole while its room lasts: 5% of the party's max context, turned into
-  characters at the party's measured characters per token (see the wake's
-  budget below), a `lines` range counting only its lines. Each file left out
-  is named under `## Files not carried` with its size, the room left and the
-  room, never cut; with no ratio measured yet every file is carried.
+- `load_files` (optional): `{path, lines?, why}` entries, as many as the
+  party needs, each an absolute path to a regular file, `why` 1–200
+  characters, `lines` a range like `10-40` or `1-60,160-185`. Their size never
+  refuses the frontier: it is always stored. Each file is read when the
+  frontier installs and carries at most 250 lines: of its `lines` ranges when
+  given, else from line 1. When lines are left past the 250th, the file's
+  block ends with one line, `[N more lines not carried: Read {path} from line
+  L]`, N the lines left in the ranges or the file and L the next one. There is
+  no room for the files together. A file that is missing, or whose ranges
+  hold no line, is named under `## Files not carried` with why.
 - `drop_skills` (optional): at most 32 names of skills or commands the party
   loaded and no longer needs. A name is dropped only when two frontiers in a
   row name it: the second one's wake leaves it out, and so does every later
@@ -182,14 +183,17 @@ needs no ToolSearch.
   the count again. A skill or command whose file's frontmatter sets
   `forward-compaction-keep: true`, or that `FORWARD_COMPACTION_KEEP_SKILLS`
   names, is never dropped, whoever asks; the wake
-  marks it `pinned: never dropped`. The receipt says, per name, whether it
+  marks it `pinned: never dropped`. A pin exempts it from `drop_skills` only:
+  it is cut and fitted to the skills' limits like any other. The receipt says, per name, whether it
   was dropped, waits for the next frontier, is pinned, or was never loaded.
 - `standing_orders` (optional): the person's orders that bind the rest of the
   work (a prohibition, a limit, a rule), each `{order, at}`: `order` the
   person's words verbatim, `at` the ISO time of the message that gave it. The
   model names them; the plugin never guesses one from the person's wording.
   When a recorded message of the person's holds the order's words, the plugin
-  stamps `at` from the first such message, never the model's guess.
+  stamps `at` from the first such message, never the model's guess, a
+  remembered order's included. Words match across spacing and letter case: a
+  model that rejoins the person's lines or re-cases a word still quotes them.
   The plugin remembers the standing orders of each party's last stored
   frontier, across installs, the mechanical wake, the person's own `/compact`
   and a plugin reload. The party's next frontier carries each one again with the
@@ -197,7 +201,7 @@ needs no ToolSearch.
   plugin from that memory, and the receipt names it.
 - `lifted` (optional): the orders the person has lifted, each `{order, by}`:
   `order` exactly the text the last frontier carried, `by` the person's words
-  that lifted it, verbatim. A lift counts only when `by` is found in a message
+  that lifted it, verbatim (spacing and letter case aside). A lift counts only when `by` is found in a message
   the plugin recorded for the party and sent after the order's `at`: the
   person's messages for the main chat, its brief or a message delivered to it
   for a sub-agent. Words said before the order was given lift nothing. Only a
@@ -215,7 +219,7 @@ missing, blank or not a string, a bad `drop_skills` name, a bad
 `standing_orders` or `lifted` entry, a standing order the frontier left out
 (carried on), a lift whose words no recorded message sent after the order holds
 (the order still binding), a lift of no remembered order, a `load_files` entry
-that is bad, over the cap, absent, not a regular file or could not be checked,
+that is bad, absent, not a regular file or could not be checked,
 and a call with no `tool_use_id`, which the wake cannot place.
 
 Every answer ends with one line saying the
@@ -232,7 +236,7 @@ replaces the message that held it, and, like a mechanical wake's message,
 ends with the experimental line and where to note any trouble.
 
 The facts message opens with the plugin version that built the wake
-(`compacted by forward-compaction 2.0.0`), so a chat on an old build shows
+(`compacted by forward-compaction 2.1.0`), so a chat on an old build shows
 it. It holds, each section only when it has content:
 
 - the standing orders, first, under `## Standing orders — binding until the
@@ -250,8 +254,10 @@ it. It holds, each section only when it has content:
   oldest first, always carried whole, whatever their size. An answer, which
   reaches the model as the tool's result, never as a prompt, is headed
   `(the person answering your question)` and holds each question, its
-  `Answer:` and any `Notes:`. The heading counts what is carried, the answers
-  among it, and the older typed messages left out, which look_back finds. A
+  `Answer:` and any `Notes:`. The heading counts what is carried of the messages
+  the plugin recorded (`N of M recorded`; a restart begins the record again),
+  the answers among it, and the oldest recorded typed messages left out, which
+  look_back finds. A
   wake carries text only: each `[Image #N]` in them reads
   `[Image #N] (image not carried: the wake cannot hold images)`. A resumed
   sub-agent's resuming message is a delivered message, never part of its
@@ -260,8 +266,17 @@ it. It holds, each section only when it has content:
   the notifications that resumed it) or the notifications delivered (main
   chat);
 - the results of the tool calls made in the same response as the frontier;
-- every skill and command in force, whole, as it was loaded, whatever its
-  size. A skill Claude Code loaded
+- the skills and commands in force, as they were loaded, within Claude Code's
+  own limits after its compaction: newest loaded first, each cut past 20,000
+  characters to its first characters and Claude Code's marker
+  `[... skill content truncated for compaction; use Read on the skill path if
+  you need the full text]`, and all of them together within 100,000
+  characters (Claude Code's 5,000 tokens a skill and 25,000 in all, at its 4
+  characters a token: design budgets in characters, never a measured token
+  count). A skill that does not fit what is left is skipped, and a smaller one
+  after it may still fit; each skipped one is named under `## Skills not
+  carried` with the `Skill` call, and the path to `Read` when known, that
+  loads it again. A skill Claude Code loaded
   without saying which party loaded it is named, not carried, in every
   party's wake, with the call that loads it again;
 - the agents, listed at install (at most 50 rows): for main every agent, for a
@@ -269,8 +284,8 @@ it. It holds, each section only when it has content:
 - the background shells and crons, from the newest Stop event, with its age.
   The list is session-wide, not per agent; before any Stop event it says the
   running shells are unknown;
-- the commands the party ran, newest first, under `## Commands you ran,
-  newest first`: each finished `Bash` call's command verbatim under its
+- the shell commands the party ran, newest first, under `## Shell commands
+  you ran, newest first`: each finished `Bash` call's command verbatim under its
   `description`, a failed one too (it is the command to rerun), a denied one
   never, never their output; at most 20, a command run again kept at its
   newest run, the older ones named as not carried;
@@ -279,9 +294,9 @@ it. It holds, each section only when it has content:
   `Edit`, `MultiEdit`, `Write` and `NotebookEdit` calls; a denied or failed
   call touched nothing;
 - the task list as last set, from `TodoWrite` or `TaskCreate`/`TaskUpdate`,
-  whichever moved last, carried whole within 5% of the budget or named as not
-  carried;
-- the files the frontier asked to carry, and the ones not carried with why.
+  whichever moved last, carried whole, never fitted;
+- the files the frontier asked to carry, each at most 250 lines, and the ones
+  not carried with why.
 
 Its size is held to a budget of half Claude Code's ask point (the
 `autoCompactThreshold` that `$.session.usage` reports, held at or below the
@@ -294,11 +309,12 @@ was last compacted, so the system prompt, tools and skills every reading
 counts cancel. It is unmeasured until the reading has grown 5,000
 tokens past the base, or outside 1 to 8 characters a token, and unmeasured
 nothing is fitted: a frontier's wake carries the facts, the files and every
-message after the call, and a mechanical wake keeps no earlier message. The standing orders, the brief or the person's newest ten typed messages and every answer
-and every skill and command the party invoked are carried whole, outside the
-budget. Every other section has a share — what arrived after the frontier 25%,
-delivered messages or notifications 5%, sibling results 10%, the task list
-5%, the commands 5%, and the files their own room above — and is carried whole or named as
+message after the call, and a mechanical wake keeps no earlier message. The standing orders, the brief or the person's newest ten typed messages and every answer,
+and the task list are carried whole, outside the budget; the skills and
+commands within their own limits above, and the files each within 250 lines,
+are outside it too. Every other section has a share — what arrived after the frontier 25%,
+delivered messages or notifications 5%, sibling results 10%, the shell
+commands 5% — and is carried whole or named as
 not carried, never cut. The room left goes to the messages after the call: the
 oldest are dropped whole until the rest fits, and the frontier message says
 how many were dropped.

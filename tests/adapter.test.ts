@@ -570,7 +570,7 @@ describe('a folded skips row is stamped once (H2)', () => {
 });
 
 
-describe('audit r4: readings only, measured landed lines, the milestone nudge, the load_files room, own agents', () => {
+describe('audit r4: readings only, measured landed lines, the milestone nudge, load_files carried whole, own agents', () => {
   const read = (f: Fake, id: string, chars = 4, agentId?: string) => f.dispatch('tool.call', { tool: 'Read', tool_use_id: id, file_path: '/x', ...(agentId ? { agentId } : {}) }, async () => ({ result: 'x'.repeat(chars) }));
   const ask = (f: Fake, messages: unknown[], agentId?: string) => f.dispatch('session.compact', { trigger: 'auto', messages, ...(agentId ? { agentId } : {}) }, async () => ({ skip: 'native ran' }));
   // A landed line, chosen frontier or mechanical wake, is a logged row only; the screen never shows it.
@@ -657,21 +657,24 @@ describe('audit r4: readings only, measured landed lines, the milestone nudge, t
     expect((await read(f, 'tu-1')).context?.at(-1)).toBe('forward-compaction: context 51k (5% of 1M). Once your current step is done — never in the middle of one — call mcp__forward-compaction__forward_compaction with objective, done, remaining and next; skip it if only your final answer is left. At 120k you are compacted mechanically. No such tool? Carry on.');
   });
 
-  it("L6 stores load files past 5% of the max context, never refusing the frontier, and the wake fits them, naming each left out with its size and the room", async () => {
-    const [big, mid, rest] = ['/work/big.md', '/work/mid.md', '/work/rest.md'];
-    // 100,000 characters grown over 40,000 tokens since the base: 2.5 characters a token, measured
+  it("L6 stores and carries every load file, with no room and no count cap, each up to 250 lines with where to Read the rest", async () => {
+    const [big, mid, many] = ['/work/big.md', '/work/mid.md', Array.from({ length: 10 }, (_, i) => `/work/f${i}.md`)];
+    const lines = Array.from({ length: 400 }, (_, i) => `b${i + 1}`).join('\n');
     let chars = 60_000;
     const messages = () => [{ role: 'user', content: [{ type: 'text', text: 'x'.repeat(chars) }] }];
-    const f = await begin({ messages, files: { [big]: { content: 'b'.repeat(2_000_000) }, [mid]: { content: 'm'.repeat(70_000) }, [rest]: { content: 'r'.repeat(60_000) } } });
+    const f = await begin({ messages, files: { [big]: { content: lines }, [mid]: { content: 'm'.repeat(2_000_000) }, ...Object.fromEntries(many.map((p) => [p, { content: p }])) } });
     await spawn(f);
     await step(f, 24_000, A1);
     chars = 160_000;
     await step(f, 64_000, A1);
-    const r = await f.dispatch('tool.call', { tool: FORWARD, tool_use_id: 'tu-h', agentId: A1, ...SECTIONS, load_files: [mid, big, rest].map((path) => ({ path, why: 'needed' })) }, async () => ({ result: 'not ours' }));
-    expect(r.result).toContain('Frontier stored (');
+    const r = await f.dispatch('tool.call', { tool: FORWARD, tool_use_id: 'tu-h', agentId: A1, ...SECTIONS, load_files: [mid, big, ...many].map((path) => ({ path, why: 'needed' })) }, async () => ({ result: 'not ours' }));
+    expect(r.result).toContain('characters, 12 files).');
     const wake = (await ask(f, transcript(), A1)).messages[0].text;
-    expect(wake).toContain('## Files you asked to carry\n### /work/mid.md — needed\nmmm');
-    expect(wake).toContain('## Files not carried\n- /work/big.md: 2,000,000 characters, over the 55,000 characters left of the 125,000-character room for carried files (5% of the 1M max context)\n- /work/rest.md: 60,000 characters, over the 55,000 characters left');
+    expect(wake).toContain('## Files you asked to carry\n### /work/mid.md — needed\n' + 'm'.repeat(2_000_000));
+    expect(wake).toContain('### /work/big.md lines 1-250 — needed\nb1\n');
+    expect(wake).toContain('\nb250\n[150 more lines not carried: Read /work/big.md from line 251]');
+    for (const p of many) expect(wake).toContain(`### ${p} — needed\n${p}`);
+    expect(wake).not.toContain('## Files not carried');
   });
 
   it("M5 lists only a sub-agent's own children in its wake, and every agent in main's", async () => {

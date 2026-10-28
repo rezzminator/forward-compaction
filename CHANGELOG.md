@@ -2,6 +2,26 @@
 
 Every release of forward-compaction, named sub-agent-compact before 1.0.0. Versions follow [semantic versioning](https://semver.org); each release is the `main` commit tagged `forward-compaction--v<version>` (`sub-agent-compact--v<version>` before 1.0.0), with a GitHub release carrying the section below.
 
+## [2.1.0] — 2026-10-28
+
+### Added
+
+- **A load file past 250 lines says where the rest is.** Its block ends with one line, `[N more lines not carried: Read {path} from line L]`: N the lines left in the requested ranges or the file, L the next one to read.
+- **A skill left out for room says how to load it again.** Each is named under `## Skills not carried` as `- {name}: over the 100,000-character room for skills; call Skill {name} or Read {path} if it applies to you.`, the path when known.
+
+### Changed
+
+- **The commands section is `## Shell commands you ran, newest first`**, not `## Commands you ran, newest first`: it lists the party's `Bash` commands, never its slash commands.
+- **The task list is carried whole, never fitted.** `## Tasks, as last set` no longer shares 5% of the wake budget, and the `## Tasks (not carried: …)` line is gone.
+- **The skills follow Claude Code's own limits after compaction.** Skills are taken newest loaded first; a skill past 20,000 characters is cut to its head and Claude Code's marker `[... skill content truncated for compaction; use Read on the skill path if you need the full text]`; all carried skills together stay within 100,000 characters, a skill that does not fit what is left is skipped and a smaller one after it may still fit. The limits are Claude Code's 5,000 tokens a skill and 25,000 in all at its 4 characters a token: design budgets in characters, never a measured token count. Before, every skill was carried whole, whatever its size. A pinned skill (`forward-compaction-keep: true` or `FORWARD_COMPACTION_KEEP_SKILLS`) is cut and fitted like the rest; its pin still exempts it from `drop_skills`.
+- **`load_files` has no room and no count cap; each file carries at most 250 lines.** The room of 5% of the party's max context and the cap of 8 entries are gone: every file that can be read is carried, its `lines` ranges or the file from line 1, up to 250 lines. The tool's `load_files` description says so, and its schema no longer sets `maxItems`. A missing file or a bad range is still named under `## Files not carried`.
+
+### Fixed
+
+- **Standing orders match the person's words across spacing and letter case.** A model that rejoins the person's lines or re-cases a word, quoting an order or the words that lift it, no longer leaves the order on the model's guessed time or the lift refused.
+- **A remembered order is re-timed from the person's first message holding it**, not only a new one, so an order first stored with the model's guessed time takes the time of the message that gave it.
+- **The person's messages heading says the counts are recorded ones:** `(N of M recorded; the K oldest recorded are not carried: …)`. The count is the plugin's own record, which a restart begins again, so the transcript may hold older messages.
+
 ## [2.0.0] — 2026-10-28
 
 ### Added

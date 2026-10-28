@@ -34,8 +34,7 @@ export const FORWARD_INPUT_SCHEMA = {
     findings: { type: 'string', description: SECTIONS[5].description },
     load_files: {
       type: 'array',
-      maxItems: 8,
-      description: 'Files carried whole into the new context, read when it installs, while their room (5% of your max context) lasts; a file left out is named with its size and the room. Pass lines ranges to carry only what you need.',
+      description: 'Files carried into the new context, read when it installs: each up to 250 lines; a longer file or range carries its first 250 and names where to Read the rest. Pass lines ranges to carry only what you need.',
       items: {
         type: 'object',
         additionalProperties: false,
@@ -83,12 +82,12 @@ export const FORWARD_INPUT_SCHEMA = {
 } as const;
 
 // Format caps: design budgets on what the model may send, never a measured size.
-/** Load files per call: enough for a plan, a spec and the files in hand, few enough that each is named and chosen. */
-export const LOAD_FILES_MAX = 8;
+/** Lines one load file carries: a plan, a spec or a module in hand reads whole, and a longer one names where to Read the rest. */
+export const LOAD_FILE_MAX_LINES = 250;
 /** A load file's `why`: one line saying what it is for. */
 export const WHY_MAX_CHARS = 200;
 
-/** One file the model asked to carry whole into the wake; every field is the model's own text, kept verbatim. */
+/** One file the model asked to carry into the wake; every field is the model's own text, kept verbatim. */
 export type LoadFile = { path: string; lines?: string; why: string };
 
 export type ParsedFrontier = {
@@ -150,8 +149,7 @@ export function parseFrontier(input: unknown, memory?: OrderMemory): ParsedFront
   const loadAt: number[] = [];
   if (files !== undefined && !Array.isArray(files)) notes.push('load_files must be an array of {path, lines?, why}: none carried.');
   else {
-    if (files !== undefined && files.length > LOAD_FILES_MAX) notes.push(`load_files has ${files.length} entries, over the ${LOAD_FILES_MAX} cap: entries ${LOAD_FILES_MAX}-${files.length - 1} are skipped.`);
-    for (const [i, entry] of (files ?? []).slice(0, LOAD_FILES_MAX).entries()) {
+    for (const [i, entry] of (files ?? []).entries()) {
       const { path, why, lines: ranges } = isObject(entry) ? entry : ({} as Record<string, unknown>);
       const whyLength = typeof why === 'string' ? why.length : 0;
       if (typeof path !== 'string' || !isAbsolutePath(path)) notes.push(`load_files[${i}].path must be an absolute path; got "${String(path)}": skipped.`);
@@ -230,16 +228,22 @@ export function parseLineRanges(text: string): { from: number; to: number }[] | 
 const span = (r: { from: number; to: number }): string => (r.from === r.to ? `${r.from}` : `${r.from}-${r.to}`);
 
 /**
- * A file's text as `load_files` asked for it: whole without ranges, else its ranges in file order, overlapping or
- * touching ones merged, the lines between two of them named by one `[lines a-b not loaded]` line. `shown` is the ranges that loaded, clipped to the file. A range
- * past the file's end, or clipped by it, is a `problem`, and an empty load is one too: a slice of nothing never
- * reaches the wake as a Load block that says nothing.
+ * A file's text as `load_files` asked for it, at most LOAD_FILE_MAX_LINES lines: from line 1 without ranges, else its ranges
+ * in file order, overlapping or touching ones merged, the lines between two of them named by one `[lines a-b not loaded]`
+ * line. Lines asked for past the cap are counted, and the body ends with one line naming where to Read them. `shown` is
+ * the ranges that loaded, clipped to the file and the cap ('' for a whole file). A range past the file's end, or clipped
+ * by it, is a `problem`, and an empty load is one too: a slice of nothing never reaches the wake as a Load block that says nothing.
  */
-export function sliceFile(text: string, ranges: readonly { from: number; to: number }[] | undefined): { body: string; shown: string; problem?: string } | { problem: string } {
-  if (ranges === undefined) return text.trim() === '' ? { problem: 'the file is empty' } : { body: text, shown: '' };
+export function sliceFile(path: string, text: string, ranges: readonly { from: number; to: number }[] | undefined): { body: string; shown: string; problem?: string } | { problem: string } {
   const lines = text.split('\n');
   if (lines.length > 0 && lines[lines.length - 1] === '') lines.pop();
   const count = lines.length;
+  const more = (left: number, from: number): string => `[${left} more lines not carried: Read ${path} from line ${from}]`;
+  if (ranges === undefined) {
+    if (text.trim() === '') return { problem: 'the file is empty' };
+    if (count <= LOAD_FILE_MAX_LINES) return { body: text, shown: '' };
+    return { body: [...lines.slice(0, LOAD_FILE_MAX_LINES), more(count - LOAD_FILE_MAX_LINES, LOAD_FILE_MAX_LINES + 1)].join('\n'), shown: `1-${LOAD_FILE_MAX_LINES}` };
+  }
   const parts: string[] = [];
   const shown: { from: number; to: number }[] = [];
   const problems: string[] = [];
@@ -251,6 +255,10 @@ export function sliceFile(text: string, ranges: readonly { from: number; to: num
     else ordered.push({ ...r });
   }
   let held = false;
+  let room = LOAD_FILE_MAX_LINES;
+  // The lines asked for past the cap, and the first of them.
+  let left = 0;
+  let next: number | undefined;
   for (const r of ordered) {
     if (r.from > count) {
       problems.push(`lines ${span(r)}: past the end of the file, which has ${count} ${count === 1 ? 'line' : 'lines'}`);
@@ -258,16 +266,25 @@ export function sliceFile(text: string, ranges: readonly { from: number; to: num
     }
     const to = Math.min(r.to, count);
     if (to < r.to) problems.push(`lines ${span(r)}: the file ends at line ${count}`);
+    if (room === 0) {
+      left += to - r.from + 1;
+      next ??= r.from;
+      continue;
+    }
+    const end = Math.min(to, r.from + room - 1);
+    if (end < to) (left += to - end), (next = end + 1);
     const last = shown[shown.length - 1];
     if (last !== undefined && r.from > last.to + 1) parts.push(`[lines ${span({ from: last.to + 1, to: r.from - 1 })} not loaded]`);
-    const taken = lines.slice(r.from - 1, to);
+    const taken = lines.slice(r.from - 1, end);
     if (taken.some((line) => line.trim() !== '')) held = true;
     parts.push(...taken);
-    shown.push({ from: r.from, to });
+    room -= taken.length;
+    shown.push({ from: r.from, to: end });
   }
   const problem = problems.length > 0 ? problems.join('; ') : undefined;
   if (shown.length === 0) return { problem: problem ?? 'no lines asked for' };
   if (!held) return { problem: [problem, `lines ${shown.map(span).join(',')}: only blank lines`].filter((p) => p !== undefined).join('; ') };
+  if (left > 0) parts.push(more(left, next!));
   return { body: parts.join('\n'), shown: shown.map(span).join(','), ...(problem !== undefined ? { problem } : {}) };
 }
 

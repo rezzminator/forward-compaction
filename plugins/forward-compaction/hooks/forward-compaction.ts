@@ -558,7 +558,7 @@ async function agentRows($: EngineInterface): Promise<AgentRow[] | { error: stri
 async function readLoadFiles($: EngineInterface, files: readonly LoadFile[]): Promise<WakeFile[]> {
   return Promise.all(files.map(async (file): Promise<WakeFile> => {
     try {
-      const sliced = sliceFile(await $.fs.read(file.path), file.lines === undefined ? undefined : parseLineRanges(file.lines));
+      const sliced = sliceFile(file.path, await $.fs.read(file.path), file.lines === undefined ? undefined : parseLineRanges(file.lines));
       return 'body' in sliced ? { ...file, ...(sliced.shown ? { lines: sliced.shown } : {}), content: sliced.body } : { ...file, problem: sliced.problem };
     } catch (error) {
       return { ...file, problem: message(error) };
@@ -615,7 +615,7 @@ async function compactAsk(st: State, $: EngineInterface, e: SessionCompactInput,
   }
   const shared = { messages: e.messages, party: kind === 'main' ? ('main' as const) : ('subagent' as const), tokens, askPoint: m?.askPoint ?? 0, charsPerToken: ratioOf(st, $, key, 'compact', await partyChars(st, $, key, e.agentId), m), now: await $.clock.now(), facts: (kept: readonly string[]) => factsFor(st.ledger, key, { keptTexts: kept, ...(action.action === 'install' ? { since: held!.since } : {}) }), agents: await agentRows($), logDir: st.pluginLogDir, orders: action.action === 'install' ? { standing: held!.standingOrders ?? [], lifted: held!.lifted ?? [] } : { standing: party.orders ?? [] }, ...(e.agentId !== undefined ? { self: e.agentId } : {}) };
   const wake = action.action === 'install'
-    ? buildWake({ ...shared, toolUseId: held!.toolUseId, frontier: held!.text, maxContext: m?.maxContext, tool: st.toolNames.forward_compaction, files: await readLoadFiles($, held!.loadFiles) })
+    ? buildWake({ ...shared, toolUseId: held!.toolUseId, frontier: held!.text, tool: st.toolNames.forward_compaction, files: await readLoadFiles($, held!.loadFiles) })
     : mechanicalWake({ ...shared, tool: st.toolNames.forward_compaction, reason: action.why === 'ceiling' ? { kind: 'ceiling', ceiling: m!.ceiling } : { kind: 'reactive' } });
   dbg(st, $, 'wake', { party: key, kind: action.action, ratio: shared.charsPerToken ?? null, askPoint: shared.askPoint, sizes: wake.sizes, headChars: wake.headChars, carried: wake.carried, notCarried: wake.notCarried, kept: wake.kept, dropped: wake.dropped });
   installed(st, $, key, action.action === 'install' ? { kind: 'frontier', label, before: tokens, chars: held!.text.length, facts: wake.facts, kept: wake.kept, dropped: wake.dropped } : { kind: 'mechanical', label, before: tokens, tokens, ceiling: m?.ceiling ?? 0 }, signal);

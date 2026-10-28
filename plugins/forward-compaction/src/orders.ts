@@ -16,6 +16,10 @@ export const ORDERS_HEADING = '## Standing orders — binding until the person l
 
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 const blank = (v: unknown): boolean => typeof v !== 'string' || v.trim() === '';
+/** Text as a match reads it: one space for every run of whitespace, lower case. A model quoting the person rejoins lines and re-cases words; the words stay the person's. */
+const plain = (text: string): string => text.replace(/\s+/g, ' ').trim().toLowerCase();
+/** Whether `said` holds `words`, across spacing and letter case. */
+const holds = (said: string, words: string): boolean => plain(said).includes(plain(words));
 const isIsoTime = (v: unknown): v is string => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(v) && !Number.isNaN(Date.parse(v));
 
 /** The `standing_orders` entries and `lifted` entries that are well formed, and one note per bad entry or non-array, naming its place and never its text. */
@@ -49,19 +53,19 @@ export function carryOrders(memory: OrderMemory, standing: unknown, lifted: unkn
   const read = wellFormed(standing, lifted);
   const notes = read.notes;
   const known = new Map<string, StandingOrder>();
-  // A new order's time is the person's first message that holds it, when one does: the model's `at` is a guess.
+  // An order's time is the person's first message that holds it, when one does: the model's `at` is a guess, a remembered one's included.
   const stamped = (o: StandingOrder): StandingOrder => {
-    const first = memory.said.find((m) => m.text.includes(o.order.trim()));
+    const first = memory.said.find((m) => holds(m.text, o.order));
     return first === undefined ? o : { ...o, at: new Date(first.at).toISOString() };
   };
-  for (const o of [...memory.remembered, ...read.standing.map(stamped)]) if (!known.has(o.order)) known.set(o.order, o);
+  for (const o of [...memory.remembered, ...read.standing].map(stamped)) if (!known.has(o.order)) known.set(o.order, o);
   const sources = memory.party === 'main' ? 'no message from the person' : 'neither your brief nor any message delivered to you';
   const gone = new Map<string, LiftedOrder>();
   for (const l of read.asked) {
     const order = known.get(l.order);
     if (order === undefined) notes.push(`lifted "${l.order}" names no standing order: ignored.`);
     else if (gone.has(l.order)) continue;
-    else if (memory.said.some((m) => m.at > Date.parse(order.at) && m.text.includes(l.by.trim()))) gone.set(l.order, { order: l.order, at: order.at, by: l.by });
+    else if (memory.said.some((m) => m.at > Date.parse(order.at) && holds(m.text, l.by))) gone.set(l.order, { order: l.order, at: order.at, by: l.by });
     else notes.push(`order "${l.order}" still binding: ${sources} after ${order.at} contains "${l.by}".`);
   }
   const carried = new Set(read.standing.map((o) => o.order));

@@ -20,20 +20,20 @@ is the behavioural spec.
   - Claude Code's own fork, a party not ours: its ask passes.
 - A party with no reading yet is held until its next reading; one whose window is unknown never reaches its ceiling. A precompute ask is always skipped.
 - Parties: the main chat and each sub-agent by its agentId, each with its own state, max context, ceiling and nudge levels, set by `FORWARD_COMPACTION_MAIN_{MAX_CONTEXT|CEILING|NUDGE_START|NUDGE_EVERY}` and `FORWARD_COMPACTION_SUBAGENT_{…}`.
-- The install: everything `## What the wake must carry` holds, the frontier, the recorded facts (the messages delivered to the party, agents, shells, the files touched, the commands run, the task list), the `load_files`, the newest messages after the call that fit, kept verbatim, and every delivery recorded after the call that those messages lack.
+- The install: everything `## What the wake must carry` holds, the frontier, the recorded facts (the messages delivered to the party, agents, shells, the files touched, the shell commands run, the task list), the `load_files`, the newest messages after the call that fit, kept verbatim, and every delivery recorded after the call that those messages lack.
 - A sub-agent's party lives across its runs: one waiting on its background children ends a turn and is resumed by each child's notification, so a turn end is never its finish.
 
 ## What the wake must carry
 
 - The wake exists to carry content: a woken party continues with everything it needs, and no size budget outranks a rule in this section.
 - The frontier has no length cap: it is stored and installed whole, never refused, trimmed or summarized for its size.
-- Every skill and command the party loaded is carried whole into every wake, whatever its size, and never dropped for room: one leaves only when two frontiers in a row name it in `drop_skills`, and one whose frontmatter sets `forward-compaction-keep: true` never does.
+- Every skill and command the party loaded is carried into every wake within Claude Code's own post-compaction limits: newest loaded first, each cut past `SKILL_MAX_CHARS` to its head and Claude Code's own truncation marker, all together within `SKILLS_MAX_CHARS`, and one that does not fit what is left named as not carried with the call that loads it again. One leaves by name only when two frontiers in a row name it in `drop_skills`; one pinned by its frontmatter's `forward-compaction-keep: true` or by `FORWARD_COMPACTION_KEEP_SKILLS` never does, and is cut and fitted like the rest.
 - The person's ten newest typed messages (`PROMPTS_KEPT`, main) and every answer they gave to the model's AskUserQuestion, however old, or the brief (sub-agent), are carried whole into every wake, whatever their size; the heading counts the answers and the older typed messages left out.
 - A standing order is the person's order that binds the rest of the work (a prohibition, a limit, a rule); it survives every wake, the mechanical one included, until the person lifts it.
 - The frontier carries each standing order verbatim, with the time of the person's message, in its own `standing_orders` argument; the plugin replaces that time with the person's first recorded message holding the order, when one does.
 - A frontier that leaves out a standing order is stored, and the plugin carries the order on from the party's remembered orders; it leaves only on a lift quoting the person's words from a message sent after the order's time, and a lift without those words leaves it binding, named in the receipt.
 - The wake renders the standing orders above the frontier, marked binding.
-- Only what the model can find again is fitted to a budget: the kept tail, the notifications and delivered messages, sibling results, the commands run (verbatim, each with its description), the task list, the files and agents lists and the `load_files` (carried whole while their room lasts, never refused for size); each one left out is named as not carried, never silently gone.
+- Only what the model can find again is fitted to a budget: the kept tail, the notifications and delivered messages, sibling results, the shell commands run (verbatim, each with its description), and the files and agents lists. The task list is carried whole; each `load_files` file carries up to `LOAD_FILE_MAX_LINES` lines, a longer one naming where to Read the rest, with no room and no count cap, never refused for size. Each one left out is named as not carried, never silently gone.
 
 ## Layout
 
@@ -55,7 +55,7 @@ Refresh the installed copy with `claude plugin marketplace update` as written, n
 - forward-compaction NEVER blocks, refuses, delays or holds back any operation of any agent or of the main chat. Every tool call runs. The plugin only nudges, and compacts mechanically at a party's ceiling.
 - Every number the plugin decides on or reports comes from Claude Code's plugin API, as far as it reaches: `$.session.usage()` (window, auto-compact threshold), `turn.step` usage (each party's reading), `session.compact`'s `tokensBefore`/`tokensAfter`, `$.agent.list()`, `$.session.messages()`.
 - No guessed, estimated or invented number: no character-count token estimates, no hard-coded model-window tables; the `[1m]` context marker in the model id a step reports is the API's own literal, not a model-name table.
-- Where the API gives nothing, a value a user tunes (a max context, ceiling or nudge level) is a named option with its default, a sub-agent's max context with two, picked by that marker; a design budget (the wake's section shares, the `load_files` share, a format cap such as `WHY_MAX_CHARS`) is a named constant whose one-line comment says why, and is never reported as a measured size.
+- Where the API gives nothing, a value a user tunes (a max context, ceiling or nudge level) is a named option with its default, a sub-agent's max context with two, picked by that marker; a design budget (the wake's section shares, the skills' character limits, a format cap such as `WHY_MAX_CHARS` or `LOAD_FILE_MAX_LINES`) is a named constant whose one-line comment says why, and is never reported as a measured size.
 - A number with no source is unknown and is said as unknown.
 - Every step writes a debug row (`debug.jsonl`), so any decision traces back to its inputs.
 - A new behaviour lands in `plugins/forward-compaction/src/` as a pure function with a test watched failing first; the adapter only wires it.

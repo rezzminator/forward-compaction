@@ -100,7 +100,7 @@ describe('M2 + M4: the wake carries the commands the party ran', () => {
       { role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: 'tu-h', text: 'Frontier stored' }], handle: 'h2' },
     ];
     const wake = (await f.dispatch('session.compact', { trigger: 'auto', agentId: A1, messages }, async () => ({ skip: 'native ran' }))).messages[0].text;
-    expect(wake).toContain("## Commands you ran, newest first\n### Run the S6 test\nnpx vitest run fixes.test.ts -t 'S6'\n### Build the plugin\nnpm run build");
+    expect(wake).toContain("## Shell commands you ran, newest first\n### Run the S6 test\nnpx vitest run fixes.test.ts -t 'S6'\n### Build the plugin\nnpm run build");
     expect(wake).not.toContain('OUTPUT-NEVER-CARRIED');
   });
 });

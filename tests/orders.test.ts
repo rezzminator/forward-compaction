@@ -24,6 +24,26 @@ describe('parseFrontier: standing_orders and lifted', () => {
     expect(parseFrontier({ ...valid, standing_orders: [ORDER] })).toMatchObject({ standingOrders: [ORDER] });
   });
 
+  it("matches the person's words across spacing and letter case, for an order's time and for a lift", () => {
+    const order = { order: 'Delete END TO END', at: '2026-10-28T12:10:00Z' };
+    const said = [
+      { text: 'Yes, I want you to delete end to end\nall of it', at: Date.parse('2026-10-28T12:28:00Z') },
+      { text: 'Alright, write this plane DOWN\n\nWe will do THIS plan', at: Date.parse('2026-10-28T13:00:00Z') },
+    ];
+    const memory = { remembered: [], said, party: 'main' as const };
+    expect(parseFrontier({ ...valid, standing_orders: [order] }, memory).standingOrders).toEqual([{ order: order.order, at: '2026-10-28T12:28:00.000Z' }]);
+    const by = 'Alright, write this plane DOWN We will do THIS plan';
+    const lift = parseFrontier({ ...valid, lifted: [{ order: order.order, by }] }, { ...memory, remembered: [{ order: order.order, at: '2026-10-28T12:28:00.000Z' }] });
+    expect(lift).toMatchObject({ standingOrders: [], lifted: [{ order: order.order, at: '2026-10-28T12:28:00.000Z', by }], notes: [] });
+  });
+
+  it('re-times a remembered order from the message that gave it, leaving one no message holds as it was', () => {
+    const said = [{ text: 'God speed, you got this', at: Date.parse('2026-10-27T23:12:50Z') }];
+    const remembered = [{ order: 'God speed, you got this', at: '2026-10-28T00:00:00Z' }, ORDER];
+    expect(parseFrontier({ ...valid, standing_orders: remembered }, { remembered, said, party: 'main' }).standingOrders)
+      .toEqual([{ order: 'God speed, you got this', at: '2026-10-27T23:12:50.000Z' }, ORDER]);
+  });
+
   it("stamps an order with the time of the person's first message that holds it, never the model's guess", () => {
     const said = [{ text: 'ok', at: Date.parse('2026-10-28T03:07:29.631Z') }, { text: 'Land it right on develop', at: Date.parse('2026-10-28T03:08:02.143Z') }, { text: 'again: Land it right on develop', at: Date.parse('2026-10-28T04:00:00Z') }];
     const guessed = { order: 'Land it right on develop', at: '2026-10-28T03:00:00Z' };
