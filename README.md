@@ -5,9 +5,9 @@
 **Compaction for Claude Code where the model writes its own frontier: the main chat and every sub-agent compact through one tool, and the newest messages after the call stay verbatim.**
 
 [![Claude Code plugin](https://img.shields.io/badge/Claude%20Code-plugin-D97757)](https://docs.claude.com/en/docs/claude-code/plugins)
-[![Version](https://img.shields.io/badge/version-1.0.0-blue)](./CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-2.0.0-blue)](./CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
-[![Tests](https://img.shields.io/badge/tests-567%20passing-brightgreen)](#development)
+[![Tests](https://img.shields.io/badge/tests-575%20passing-brightgreen)](#development)
 [![Built with Professor](https://img.shields.io/badge/built%20with-Professor-8A2BE2)](https://github.com/rezzminator/professor)
 
 </div>
@@ -40,8 +40,9 @@ as they happened.
   chat) or the brief (sub-agent), the messages delivered to it, the skills
   loaded, the agents and the background shells come from typed hook events as
   they happened. Nothing is grepped out of a transcript or re-read from disk.
-  Each party's newest prompts (the person's ten newest messages, or a
-  sub-agent's brief and the ten newest delivered to it) and the skills it loaded
+  Each party's newest prompts (the person's ten newest typed messages and every
+  answer they gave to an AskUserQuestion, or a sub-agent's brief and the ten
+  newest delivered to it) and the skills it loaded
   (the latest text of each), and the standing orders of its last stored
   frontier, are also held in Claude Code's session state, so a
   plugin reload (`/reload-plugins`) does not lose them. The files touched and the task list come from each finished tool call.
@@ -187,6 +188,8 @@ needs no ToolSearch.
   work (a prohibition, a limit, a rule), each `{order, at}`: `order` the
   person's words verbatim, `at` the ISO time of the message that gave it. The
   model names them; the plugin never guesses one from the person's wording.
+  When a recorded message of the person's holds the order's words, the plugin
+  stamps `at` from the first such message, never the model's guess.
   The plugin remembers the standing orders of each party's last stored
   frontier, across installs, the mechanical wake, the person's own `/compact`
   and a plugin reload. The party's next frontier carries each one again with the
@@ -229,7 +232,7 @@ replaces the message that held it, and, like a mechanical wake's message,
 ends with the experimental line and where to note any trouble.
 
 The facts message opens with the plugin version that built the wake
-(`compacted by forward-compaction 1.0.0`), so a chat on an old build shows
+(`compacted by forward-compaction 2.0.0`), so a chat on an old build shows
 it. It holds, each section only when it has content:
 
 - the standing orders, first, under `## Standing orders — binding until the
@@ -242,8 +245,13 @@ it. It holds, each section only when it has content:
 - what arrived after the frontier and the kept messages lack: every
   notification, message from the person or the coordinator, and message that
   resumed a sub-agent, verbatim, first;
-- the brief (sub-agent), verbatim, or the person's newest ten messages
-  (main chat), oldest first, always carried whole, whatever their size. A
+- the brief (sub-agent), verbatim, or the person's newest ten typed messages
+  and every answer they gave to an AskUserQuestion, however old (main chat),
+  oldest first, always carried whole, whatever their size. An answer, which
+  reaches the model as the tool's result, never as a prompt, is headed
+  `(the person answering your question)` and holds each question, its
+  `Answer:` and any `Notes:`. The heading counts what is carried, the answers
+  among it, and the older typed messages left out, which look_back finds. A
   wake carries text only: each `[Image #N]` in them reads
   `[Image #N] (image not carried: the wake cannot hold images)`. A resumed
   sub-agent's resuming message is a delivered message, never part of its
@@ -286,7 +294,7 @@ was last compacted, so the system prompt, tools and skills every reading
 counts cancel. It is unmeasured until the reading has grown 5,000
 tokens past the base, or outside 1 to 8 characters a token, and unmeasured
 nothing is fitted: a frontier's wake carries the facts, the files and every
-message after the call, and a mechanical wake keeps no earlier message. The standing orders, the brief or the person's newest ten messages
+message after the call, and a mechanical wake keeps no earlier message. The standing orders, the brief or the person's newest ten typed messages and every answer
 and every skill and command the party invoked are carried whole, outside the
 budget. Every other section has a share — what arrived after the frontier 25%,
 delivered messages or notifications 5%, sibling results 10%, the task list

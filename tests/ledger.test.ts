@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  promptsKept, restorePrompts, PROMPTS_KEPT, skillsKept, restoreSkills,
+  promptsKept, restorePrompts, PROMPTS_KEPT, skillsKept, restoreSkills, liftSources,
   PERSON_ORIGINS, addEntry, attributeSkill, factsFor, isPersonOrigin, markStart, newLedger, resolveSpawn, shellsOf,
   type EntryInput, type Ledger, type PartyKey,
 } from '../plugins/forward-compaction/src/ledger.ts';
@@ -284,6 +284,18 @@ describe('the prompts kept across a plugin reload', () => {
     const own = said(2);
     expect(restorePrompts(own, 'main', undefined)).toBe(own);
     expect(restorePrompts(own, 'main', { at: 1 })).toBe(own);
+  });
+  it('keeps every answer to a question, however old, besides the ten newest typed messages', () => {
+    const answer: EntryInput = { kind: 'person', party: 'main', at: 0, text: 'Which quote?\nAnswer: Segment', answer: 'Segment' };
+    const l = build(answer, ...Array.from({ length: 11 }, (_, i) => person(`m${i}`, i + 1)));
+    expect(promptsKept(l, 'main').map((p) => p.text)).toEqual(['Which quote?\nAnswer: Segment', 'm1', 'm2', 'm3', 'm4', 'm5', 'm6', 'm7', 'm8', 'm9', 'm10']);
+    const back = restorePrompts(newLedger(), 'main', promptsKept(l, 'main'));
+    expect(back.entries[0]).toMatchObject({ kind: 'person', text: 'Which quote?\nAnswer: Segment', answer: 'Segment' });
+  });
+
+  it("lifts and stamps orders with only the person's own words of an answer, never the question the model wrote", () => {
+    const l = build({ kind: 'person', party: 'main', at: 5, text: 'Shall I push?\nAnswer: Not yet', answer: 'Not yet' }, person('typed', 6));
+    expect(liftSources(l, 'main')).toEqual([{ text: 'Not yet', at: 5 }, { text: 'typed', at: 6 }]);
   });
 });
 

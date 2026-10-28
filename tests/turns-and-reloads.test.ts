@@ -131,3 +131,19 @@ describe('a sub-agent far past its nudges', () => {
     for (const n of nudges) expect(n).not.toMatch(/your other calls wait|did not run/);
   });
 });
+
+describe("the person's answers to AskUserQuestion", () => {
+  it("records main's answered questions as the person's words and carries each into the wake beside the ten newest typed", async () => {
+    const f = await begin();
+    const questions = [{ question: 'What should notes and guidance show?', header: 'Quotes', options: [], multiSelect: false }];
+    const result = { questions, answers: { 'What should notes and guidance show?': 'Quote if verbatim, else segment' }, annotations: {} };
+    await f.dispatch('tool.call', { tool: 'AskUserQuestion', tool_use_id: 'tu-q1', questions }, async () => ({ result }));
+    for (let i = 0; i < 11; i++) await f.dispatch('prompt.submit', { text: `typed ${i}.`, origin: { kind: 'composer' } }, async () => ({}));
+    await step(f, 125_000);
+    const text = (await ask(f)).messages[0].text;
+    expect(text).toContain("## The person's messages, oldest first (11 of 12, 1 of them answering your questions; the 1 oldest are not carried: look_back finds them)");
+    expect(text).toMatch(/### \S+ \(the person answering your question\)\nWhat should notes and guidance show\?\nAnswer: Quote if verbatim, else segment\n/);
+    expect(text).not.toContain('typed 0.');
+    expect(text).toContain('typed 10.');
+  });
+});

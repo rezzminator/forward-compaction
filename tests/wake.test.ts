@@ -269,6 +269,16 @@ describe('F sections', () => {
     expect(f).not.toContain('ask1.');
   });
 
+  it('carries every answer to a question beside the ten newest typed messages, each marked as an answer', () => {
+    const answer = { at: T0, text: 'Which quote?\nAnswer: Segment', answer: 'Segment' };
+    const person = [answer, ...Array.from({ length: 11 }, (_, i) => ({ at: T0 + (i + 1) * 1000, text: `ask${i}.` }))];
+    const { f } = wakeOf({ f: { person } });
+    expect(f).toContain("## The person's messages, oldest first (11 of 12, 1 of them answering your questions; the 1 oldest are not carried: look_back finds them)");
+    expect(f).toContain('### 2026-10-23T10:00:00.000Z (the person answering your question)\nWhich quote?\nAnswer: Segment');
+    expect(f).not.toContain('ask0.');
+    expect(f).toContain('ask10.');
+  });
+
   it("carries at most a sub-agent's newest ten coordinator messages, and counts the older ones", () => {
     const received = Array.from({ length: 12 }, (_, i) => ({ at: T0 + i * 1000, origin: 'coordinator', text: `note${i}.` }));
     const w = mechanicalWake({ ...base, messages: [user('a'), assistant('b')], party: 'subagent', facts: facts({ brief: { text: 'brief' }, received }), reason: { kind: 'ceiling', ceiling: 120_000 } });

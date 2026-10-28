@@ -12,7 +12,7 @@ export type WorkFact =
   | { kind: 'task-update'; id: string; status?: string; subject?: string };
 
 /** The answer of a finished call, as `next(e)` resolved it: a deny or an error touched nothing. */
-export type CallAnswer = { deny?: string; isError?: boolean; text?: string };
+export type CallAnswer = { deny?: string; isError?: boolean; text?: string; result?: unknown };
 
 const str = (value: unknown): string | undefined => (typeof value === 'string' && value !== '' ? value : undefined);
 const MARK: Record<string, string> = { completed: '[x]', in_progress: '[~]' };
@@ -52,6 +52,24 @@ const RANK: Record<FileTag, number> = { R: 0, E: 1, W: 2 };
 
 export type WorkCommand = { command: string; description?: string };
 export type WorkSummary = { files: { path: string; tag: FileTag }[]; commands: WorkCommand[]; tasks: string[] };
+
+/**
+ * The person's answer to an AskUserQuestion call, which reaches the model as the call's result, never as a prompt: `text`
+ * each question with its answer and notes, `said` the person's own words alone (a lift may quote only those, never the
+ * question the model wrote). A call turned back or holding no answers record is carried as the text the model read.
+ */
+export function answersOf(tool: string, input: Record<string, unknown>, answer: CallAnswer): { text: string; said: string } | undefined {
+  if (tool !== 'AskUserQuestion' || answer.deny !== undefined) return undefined;
+  const record = (answer.result ?? {}) as { answers?: unknown; annotations?: unknown };
+  const answers = typeof record.answers === 'object' && record.answers !== null && answer.isError !== true ? Object.entries(record.answers as Record<string, unknown>) : [];
+  if (answers.length === 0) return str(answer.text) === undefined ? undefined : { text: answer.text!, said: '' };
+  const notes = (record.annotations ?? {}) as Record<string, { notes?: unknown } | undefined>;
+  const lines = answers.map(([question, value]) => ({ question, said: [String(value), ...(str(notes[question]?.notes) !== undefined ? [String(notes[question]!.notes)] : [])] }));
+  return {
+    text: lines.map((l) => [l.question, `Answer: ${l.said[0]}`, ...l.said.slice(1).map((n) => `Notes: ${n}`)].join('\n')).join('\n'),
+    said: lines.flatMap((l) => l.said).join('\n'),
+  };
+}
 
 /** A party's work, from its facts in the order recorded: every file newest touch first, every command once at its newest run, newest first, and the task list as last set (TodoWrite's, or the TaskCreate/TaskUpdate list, whichever moved last). */
 export function workSummary(facts: readonly WorkFact[]): WorkSummary {

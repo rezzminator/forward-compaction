@@ -28,9 +28,9 @@ is the behavioural spec.
 - The wake exists to carry content: a woken party continues with everything it needs, and no size budget outranks a rule in this section.
 - The frontier has no length cap: it is stored and installed whole, never refused, trimmed or summarized for its size.
 - Every skill and command the party loaded is carried whole into every wake, whatever its size, and never dropped for room: one leaves only when two frontiers in a row name it in `drop_skills`, and one whose frontmatter sets `forward-compaction-keep: true` never does.
-- The person's ten newest messages (`PROMPTS_KEPT`, main) or the brief (sub-agent) are carried whole into every wake, whatever their size.
+- The person's ten newest typed messages (`PROMPTS_KEPT`, main) and every answer they gave to the model's AskUserQuestion, however old, or the brief (sub-agent), are carried whole into every wake, whatever their size; the heading counts the answers and the older typed messages left out.
 - A standing order is the person's order that binds the rest of the work (a prohibition, a limit, a rule); it survives every wake, the mechanical one included, until the person lifts it.
-- The frontier carries each standing order verbatim, with the time of the person's message, in its own `standing_orders` argument.
+- The frontier carries each standing order verbatim, with the time of the person's message, in its own `standing_orders` argument; the plugin replaces that time with the person's first recorded message holding the order, when one does.
 - A frontier that leaves out a standing order is stored, and the plugin carries the order on from the party's remembered orders; it leaves only on a lift quoting the person's words from a message sent after the order's time, and a lift without those words leaves it binding, named in the receipt.
 - The wake renders the standing orders above the frontier, marked binding.
 - Only what the model can find again is fitted to a budget: the kept tail, the notifications and delivered messages, sibling results, the commands run (verbatim, each with its description), the task list, the files and agents lists and the `load_files` (carried whole while their room lasts, never refused for size); each one left out is named as not carried, never silently gone.

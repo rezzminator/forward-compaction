@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { workOf, workSummary, type WorkFact } from '../plugins/forward-compaction/src/work.ts';
+import { answersOf, workOf, workSummary, type WorkFact } from '../plugins/forward-compaction/src/work.ts';
 
 const ok = { text: 'done' };
 
@@ -60,5 +60,28 @@ describe("workSummary: a party's files and tasks", () => {
     const run = (command: string, description?: string): WorkFact => ({ kind: 'command', command, ...(description !== undefined ? { description } : {}) });
     expect(workSummary([run('make', 'Build'), run('ls'), run('make', 'Build again')]).commands).toEqual([{ command: 'make', description: 'Build again' }, { command: 'ls' }]);
     expect(workSummary([]).commands).toEqual([]);
+  });
+});
+
+describe("answersOf: the person's answer to an AskUserQuestion call", () => {
+  const questions = [{ question: 'Which quote?', header: 'Quotes', options: [], multiSelect: false }, { question: 'Which account pays?', header: 'Account', options: [], multiSelect: false }];
+
+  it("renders every question with its answer and notes, and keeps the person's own words apart", () => {
+    const result = { questions, answers: { 'Which quote?': 'Quote if verbatim, else segment', 'Which account pays?': 'Account 2' }, annotations: { 'Which account pays?': { notes: 'never the default one' } } };
+    expect(answersOf('AskUserQuestion', { questions }, { result, text: 'Your questions have been answered' })).toEqual({
+      text: 'Which quote?\nAnswer: Quote if verbatim, else segment\nWhich account pays?\nAnswer: Account 2\nNotes: never the default one',
+      said: 'Quote if verbatim, else segment\nAccount 2\nnever the default one',
+    });
+  });
+
+  it('carries a question the person turned back as the text the model read, with no words of theirs to lift an order', () => {
+    const text = 'The user wants to clarify these questions.\nQuestions asked:\n- "Which quote?"\n  Answer: Remove both';
+    expect(answersOf('AskUserQuestion', { questions }, { isError: true, text })).toEqual({ text, said: '' });
+  });
+
+  it('records nothing for a denied call, another tool, or an answer with nothing in it', () => {
+    expect(answersOf('AskUserQuestion', { questions }, { deny: 'no' })).toBeUndefined();
+    expect(answersOf('Bash', { command: 'ls' }, { result: { answers: { a: 'b' } } })).toBeUndefined();
+    expect(answersOf('AskUserQuestion', { questions }, { result: { answers: {} } })).toBeUndefined();
   });
 });

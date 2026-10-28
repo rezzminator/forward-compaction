@@ -1,7 +1,7 @@
 import type { EngineInterface, On, PluginOptions, Register, SessionCompactInput, SessionCompactResult, ToolCallResult, TurnStartInput, TurnStepInput, TurnStepResult, TurnCompleteInput, PromptSubmitInput, SessionReceiveInput, SkillPromptInput, AgentSpawnInput, AgentSpawnResult } from 'claude-code';
 import { bounded, unlessAborted } from '../src/bounded.ts';
 import { applyDrops, dropNote, changesNote, pinnedBy, experimental, parseFrontier, loadFileNote, receipt, parseLineRanges, sliceFile, toolInput, type FileCheck, type LoadFile } from '../src/frontier.ts';
-import { workOf, type CallAnswer } from '../src/work.ts';
+import { answersOf, workOf, type CallAnswer } from '../src/work.ts';
 import { newLedger, markStart, addEntry, resolveSpawn, attributeSkill, shellsOf, factsFor, promptsKept, restorePrompts, skillsKept, restoreSkills, liftSources, isPersonOrigin, keyOf, originKind, type Ledger, type PartyKey } from '../src/ledger.ts';
 import { splitAtCall, buildWake, mechanicalWake, landedLine, type WakeFile, type AgentRow, type Landing } from '../src/wake.ts';
 import { decide, turnEndDoor, readingTokens, knownTrigger } from '../src/decide.ts';
@@ -723,9 +723,13 @@ async function noteSubmit(st: State, $: EngineInterface, e: PromptSubmitInput): 
   if (isPersonOrigin(origin)) await keepKept(st, $, 'main');
 }
 
-/** The files a finished call touched and the task list it set, as the party's work (src/work.ts). */
+/** The files a finished call touched and the task list it set, as the party's work (src/work.ts); main's answered AskUserQuestion, as the person's words. */
 async function noteWork(st: State, $: EngineInterface, party: PartyKey, e: Record<string, unknown>, answer: ToolCallResult): Promise<void> {
   for (const fact of workOf(String(e.tool), toolInput(e), answer as CallAnswer)) st.ledger = addEntry(st.ledger, { kind: 'work', party, at: await $.clock.now(), fact });
+  const answered = party === 'main' ? answersOf(String(e.tool), toolInput(e), answer as CallAnswer) : undefined;
+  if (answered === undefined) return;
+  st.ledger = addEntry(st.ledger, { kind: 'person', party: 'main', at: await $.clock.now(), text: answered.text, answer: answered.said });
+  await keepKept(st, $, 'main');
 }
 
 /** A party's newest prompts and its loaded skills, held by the host for the session (contract.d.ts), so a plugin reload does not lose them; its standing orders are kept as its frontier is stored. */

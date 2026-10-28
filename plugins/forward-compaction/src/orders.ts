@@ -49,7 +49,12 @@ export function carryOrders(memory: OrderMemory, standing: unknown, lifted: unkn
   const read = wellFormed(standing, lifted);
   const notes = read.notes;
   const known = new Map<string, StandingOrder>();
-  for (const o of [...memory.remembered, ...read.standing]) if (!known.has(o.order)) known.set(o.order, o);
+  // A new order's time is the person's first message that holds it, when one does: the model's `at` is a guess.
+  const stamped = (o: StandingOrder): StandingOrder => {
+    const first = memory.said.find((m) => m.text.includes(o.order.trim()));
+    return first === undefined ? o : { ...o, at: new Date(first.at).toISOString() };
+  };
+  for (const o of [...memory.remembered, ...read.standing.map(stamped)]) if (!known.has(o.order)) known.set(o.order, o);
   const sources = memory.party === 'main' ? 'no message from the person' : 'neither your brief nor any message delivered to you';
   const gone = new Map<string, LiftedOrder>();
   for (const l of read.asked) {

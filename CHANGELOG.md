@@ -2,19 +2,19 @@
 
 Every release of forward-compaction, named sub-agent-compact before 1.0.0. Versions follow [semantic versioning](https://semver.org); each release is the `main` commit tagged `forward-compaction--v<version>` (`sub-agent-compact--v<version>` before 1.0.0), with a GitHub release carrying the section below.
 
-## [Unreleased]
-
-- Installs as `forward-compaction@professor` from the professor marketplace; the repo's own marketplace file is gone.
+## [2.0.0] — 2026-10-28
 
 ### Added
 
 - **Standing orders survive every wake.** `forward_compaction` takes `standing_orders` (`{order, at}`: the person's binding order verbatim, with the time of their message) and `lifted` (`{order, by}`: an order the person lifted, with their lifting words verbatim). The plugin remembers each party's orders across installs, the mechanical wake, the person's own `/compact` and a plugin reload, and carries on any order a frontier leaves out until a lift in words a message recorded for the party holds clears it. Every wake opens with `## Standing orders — binding until the person lifts them`, carried whole outside the budget; a lifted order is shown once.
 - **The wake carries the commands the party ran.** A new facts section, `## Commands you ran, newest first`, lists the party's newest 20 `Bash` commands verbatim under their descriptions, never their output, within a 5% share; the older ones are named as not carried.
-- **The facts header names the plugin version that built the wake** (`compacted by forward-compaction 1.0.0`), so a chat on an old build shows it.
+- **The facts header names the plugin version that built the wake** (`compacted by forward-compaction 2.0.0`), so a chat on an old build shows it.
+- **The wake carries the person's answers to AskUserQuestion.** An answer reaches the model as the tool's result, never as a prompt, so no wake carried it, and a woken chat lost the decisions the person made there. Every answer the main chat receives is now recorded as the person's words and carried whole into every wake, however old, beside the ten newest typed messages, headed `(the person answering your question)` with each question, its `Answer:` and any `Notes:`; the heading counts the answers among the carried messages, beside the older typed ones left out. A lift of a standing order may quote the person's answer, never the question the model wrote.
 - **Images are named, never silently lost.** The plugin API builds a wake message from its text alone, so each `[Image #N]` in the person's kept messages reads `[Image #N] (image not carried: the wake cannot hold images)`.
 
 ### Changed
 
+- Installs as `forward-compaction@professor` from the professor marketplace; the repo's own marketplace file is gone.
 - **The model writes a frontier and compacts.** The text the model writes through `forward_compaction` is its frontier, and the act is to compact. For log readers: the `landed` row's `kind: handoff` is `kind: frontier`; the wake opens `[forward-compaction: frontier]` around a `=== frontier ===` block, not `[forward-compaction: handoff]` and `=== handoff ===`; the receipt opens `Frontier stored`; the landed line reads `{label} frontier landed — …; {chars} characters, …`, not `{label} handoff landed — …; frontier {chars} characters, …`; every screen line, and the `msg` and `line` values that log it, says frontier where it said handoff.
 - **Only errors reach the screen.** Warning, info and debug rows go to their level files, or nowhere when no log can hold them: a skipped turn-end install (`turn-end-skipped`), an unseen compaction (`unseen-compaction`), a session-start window or ceiling warning (`compact-window`, `ceiling-below-ask`), the mechanical wake's landed line and a native summary at the ceiling no longer print, not even while the log fails. While a log fails, one line per failing streak says so, re-armed by the next successful write.
 - **The nudge is short and says when to compact.** It asks for `forward_compaction` once the current step is done, never in the middle of one. It no longer says that compacting costs nothing or that every message after the call is kept, and the wake no longer says it either.
@@ -22,6 +22,7 @@ Every release of forward-compaction, named sub-agent-compact before 1.0.0. Versi
 - **Each sub-agent is measured against its own model's max context.** With `FORWARD_COMPACTION_SUBAGENT_MAX_CONTEXT` unset, a sub-agent whose step-reported model id carries the API's `[1m]` context marker is sized against 1,000,000 and every other against 200,000; before, every sub-agent was sized against 200,000, so a 1M sub-agent was nudged at 8% of its window. A set variable still applies to every sub-agent.
 - **The tool description and the receipt say what the wake keeps.** They no longer promise that every message after the call stays verbatim: the newest that fit are kept, the rest named as not carried.
 - **`load_files` never refuse a frontier.** A frontier whose files exceed their room is stored; at install each file is carried whole while the room lasts, and each one left out is named with its size and the room. A bad path or entry is skipped and named in the receipt.
+- **A standing order carries the time the person gave it.** A new order's `at` is the time of the person's first recorded message holding its words, when one does; the model's own time was a guess, shown in the wake as recorded.
 - **A lift counts only from words sent after the order.** A `lifted` entry's `by` must be found in a message recorded after the order's `at`; earlier words lift nothing, and the receipt names the order as still binding.
 - **`look_back` loads with the prompt**, not deferred, like `forward_compaction`.
 - **The frontier guidance asks for what a wake needs again.** `done` asks for each figure with the command that produced it, and `findings` for the commands and recipes needed again.
@@ -34,9 +35,6 @@ Every release of forward-compaction, named sub-agent-compact before 1.0.0. Versi
 ### Removed
 
 - **`FORWARD_COMPACTION_LOG_FILE`.** The decision log lives in the plugin log directory, `decisions/{session}.jsonl` under `$PLUGIN_LOG_DIR/forward-compaction`, else under `~/.local/state/forward-compaction/logs`; no variable moves it. Migration: unset `FORWARD_COMPACTION_LOG_FILE`; it is no longer read, and logs it wrote elsewhere stay where they are.
-
-### Removed
-
 - The sub-agent gate: no call is ever refused; a sub-agent is nudged and compacted mechanically at its ceiling.
 - The refusals of `forward_compaction`: an ignored model's call, a frontier that drops a standing order or lifts one without the person's words, and a bad argument, `drop_skills` name, `load_files` entry or missing file are no longer turned away. The `refused` decision row is gone.
 

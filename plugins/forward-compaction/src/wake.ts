@@ -2,7 +2,7 @@
 // the tail is the engine's own messages returned untouched. Pure: files, agents and the clock arrive as inputs.
 import { DEFAULT_TOOL, k as kilo } from './nudge.ts';
 import { LOAD_FILES_SHARE, loadFilesRoom } from './window.ts';
-import { PROMPTS_KEPT } from './ledger.ts';
+import { keptSaid, PROMPTS_KEPT } from './ledger.ts';
 import { experimental, EXPERIMENTAL_OPENING } from './frontier.ts';
 import { ordersSection, type LiftedOrder, type StandingOrder } from './orders.ts';
 
@@ -34,7 +34,7 @@ const iso = (at: number): string => new Date(at).toISOString();
  */
 const SHARE = { arrived: 0.25, notices: 0.05, siblings: 0.1, tasks: 0.05, commands: 0.05 } as const;
 /** The plugin version that builds a wake, named in its facts header so a chat on an old build is visible; tests/layout.test.ts pins it to plugin.json. */
-export const PLUGIN_VERSION = '1.0.0';
+export const PLUGIN_VERSION = '2.0.0';
 /** An image the person attached: a built wake message holds only text (`session.compact`'s messages), so each is named, never silently gone. */
 const IMAGE = /\[Image #\d+\]/g;
 const IMAGE_NOTE = '$& (image not carried: the wake cannot hold images)';
@@ -115,7 +115,7 @@ export function fitTail<M extends WakeMessage>(messages: readonly M[], budgetTok
 
 /** What the ledger gives for a party (ledger.ts `Facts` fits); only what the wake renders. */
 export type WakeFacts = {
-  person: readonly { at: number; text: string }[];
+  person: readonly { at: number; text: string; answer?: string }[];
   /** Person messages the ledger left out because the tail holds them. */
   personInTail?: number;
   notices: readonly { at: number; origin: string; text: string }[];
@@ -239,10 +239,12 @@ function renderFacts<M>(input: Shared<M>, facts: WakeFacts, { siblings, files, f
   } else if (facts.person.length === 0) {
     sections.push({ text: `## The person's messages\n(none recorded${facts.startedAt === undefined ? '' : ` since ${iso(facts.startedAt)}`})`, content: false });
   } else {
-    const shown = facts.person.slice(-PROMPTS_KEPT).map((p) => `### ${iso(p.at)}\n${p.text.replace(IMAGE, IMAGE_NOTE)}`);
+    const shown = keptSaid(facts.person).map((p) => `### ${iso(p.at)}${p.answer === undefined ? '' : ' (the person answering your question)'}\n${p.text.replace(IMAGE, IMAGE_NOTE)}`);
     const count = facts.person.length;
     const left = count - shown.length;
-    const heading = left === 0 ? `(${shown.length} of ${count})` : `(${shown.length} of ${count}; the ${left} oldest are not carried: look_back finds them)`;
+    const answers = facts.person.filter((p) => p.answer !== undefined).length;
+    const carried = `${shown.length} of ${count}${answers === 0 ? '' : `, ${answers} of them answering your questions`}`;
+    const heading = left === 0 ? `(${carried})` : `(${carried}; the ${left} oldest are not carried: look_back finds them)`;
     sections.push(section([`## The person's messages, oldest first ${heading}`, ...shown].join('\n')));
   }
 

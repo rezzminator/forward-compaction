@@ -24,6 +24,13 @@ describe('parseFrontier: standing_orders and lifted', () => {
     expect(parseFrontier({ ...valid, standing_orders: [ORDER] })).toMatchObject({ standingOrders: [ORDER] });
   });
 
+  it("stamps an order with the time of the person's first message that holds it, never the model's guess", () => {
+    const said = [{ text: 'ok', at: Date.parse('2026-10-28T03:07:29.631Z') }, { text: 'Land it right on develop', at: Date.parse('2026-10-28T03:08:02.143Z') }, { text: 'again: Land it right on develop', at: Date.parse('2026-10-28T04:00:00Z') }];
+    const guessed = { order: 'Land it right on develop', at: '2026-10-28T03:00:00Z' };
+    expect(parseFrontier({ ...valid, standing_orders: [guessed, ORDER] }, { remembered: [], said, party: 'main' }).standingOrders)
+      .toEqual([{ order: guessed.order, at: '2026-10-28T03:08:02.143Z' }, ORDER]);
+  });
+
   it('skips every bad order entry and names it, one line each, never quoting the order', () => {
     const out = parseFrontier({ ...valid, standing_orders: [{ order: ' ', at: 'yesterday' }, { order: 'x', at: 'yesterday' }, ORDER], lifted: [{ order: 'x' }] });
     expect(out.notes).toEqual([
