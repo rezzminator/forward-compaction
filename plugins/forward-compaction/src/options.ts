@@ -1,4 +1,4 @@
-import { pluginLogDir } from './log.ts';
+import { pluginLogDir } from './plugin-log.ts';
 
 /** A context size: a token count, or a percentage of the party's max context. */
 export type Size = { tokens: number } | { percent: number };
@@ -78,7 +78,6 @@ export const OPTION_ENV = {
   subagentNudgeStart: 'FORWARD_COMPACTION_SUBAGENT_NUDGE_START',
   subagentNudgeEvery: 'FORWARD_COMPACTION_SUBAGENT_NUDGE_EVERY',
   ceilingNative: 'FORWARD_COMPACTION_CEILING_NATIVE',
-  logFile: 'FORWARD_COMPACTION_LOG_FILE',
   ignoreModels: 'FORWARD_COMPACTION_IGNORE_MODELS',
   keepSkills: 'FORWARD_COMPACTION_KEEP_SKILLS',
   debug: 'FORWARD_COMPACTION_DEBUG',
@@ -101,6 +100,7 @@ export type ResolvedOptions = {
   subagent: PartySizes & { maxContext?: number };
   /** At the ceiling with no frontier, Claude Code's own summary runs instead of the mechanical wake. */
   ceilingNative: boolean;
+  /** The decision log's name template, `{plugin log dir}/decisions/.jsonl`: no option moves it. Unset when there is no plugin log directory. */
   logFile?: string;
   /** Lower-cased ignore-list entries; empty when the variable is set empty. */
   ignoreModels: string[];
@@ -182,14 +182,8 @@ export function resolveOptions(env: OptionEnvironment = {}): ResolvedOptions {
   const ignoreModels = rawIgnore === undefined ? [...DEFAULT_IGNORE_MODELS] : rawIgnore.split(',').map((entry) => entry.trim().toLowerCase()).filter((entry) => entry !== '');
   const keepSkills = (env.vars?.[OPTION_ENV.keepSkills] ?? DEFAULT_KEEP_SKILLS.join(',')).split(',').map((entry) => entry.trim()).filter((entry) => entry !== '');
   for (const late of [nudgeAfterCeiling('main', main), nudgeAfterCeiling('subagent', subagent)]) if (late !== undefined) errors.push(late);
-  // Unset or invalid → the default: the plugin's decisions folder under PLUGIN_LOG_DIR, else under HOME, else no decision log.
+  // The decision log lives in the plugin's log directory (PLUGIN_LOG_DIR, else under HOME); with neither, there is none.
   const base = pluginLogDir(env.pluginLogDir, env.home, 'forward-compaction');
-  const fallbackLog = base === undefined ? undefined : `${base}/decisions/.jsonl`;
-  let logFile = fallbackLog;
-  const envLog = fromEnv('logFile');
-  if (envLog !== undefined) {
-    if (envLog.startsWith('/')) logFile = envLog;
-    else badEnv('logFile', `not an absolute path: ${JSON.stringify(envLog)}`, fallbackLog ?? '(no decision log)');
-  }
+  const logFile = base === undefined ? undefined : `${base}/decisions/.jsonl`;
   return { main, subagent, ceilingNative, ...(logFile ? { logFile } : {}), ignoreModels, keepSkills, debug, errors };
 }

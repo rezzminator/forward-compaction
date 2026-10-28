@@ -543,7 +543,8 @@ describe('a folded skips row is stamped once (H2)', () => {
   it('carries one timestamp in the decision log and the level log', async () => {
     const real = Date.prototype.toISOString;
     let ms = 0;
-    Date.prototype.toISOString = function (this: Date) { return real.call(new Date(Date.UTC(2026, 9, 24, 0, 0, 0, ++ms % 1000))); }; // every call a new instant
+    // Every stamp of the present a new instant; a stamp already given (2026-10-24) re-serializes as itself.
+    Date.prototype.toISOString = function (this: Date) { return real.call(this.getTime() < Date.UTC(2026, 9, 25) ? this : new Date(Date.UTC(2026, 9, 24, 0, 0, 0, ++ms % 1000))); };
     try {
       const f = await begin();
       for (let i = 0; i < 3; i++) {

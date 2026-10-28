@@ -7,7 +7,7 @@
 [![Claude Code plugin](https://img.shields.io/badge/Claude%20Code-plugin-D97757)](https://docs.claude.com/en/docs/claude-code/plugins)
 [![Version](https://img.shields.io/badge/version-1.0.0-blue)](./CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
-[![Tests](https://img.shields.io/badge/tests-616%20passing-brightgreen)](#development)
+[![Tests](https://img.shields.io/badge/tests-572%20passing-brightgreen)](#development)
 [![Built with Professor](https://img.shields.io/badge/built%20with-Professor-8A2BE2)](https://github.com/rezzminator/professor)
 
 </div>
@@ -385,7 +385,6 @@ set empty, it ignores no model (the one option whose empty value is a value).
 | `FORWARD_COMPACTION_IGNORE_MODELS` | model list | `haiku` | Models that take no frontier: no nudge, the tool refused, every ask held to the ceiling and then compacted mechanically ([Ignored models](#ignored-models)). |
 | `FORWARD_COMPACTION_KEEP_SKILLS` | name list | `none` | Skills and commands never dropped from a wake, comma-separated, as a file's `forward-compaction-keep: true` pins it ([The tool](#the-tool)). |
 | `FORWARD_COMPACTION_DEBUG` | flag | `1` | `0`: no `debug.jsonl`, the row the plugin writes at every step. |
-| `FORWARD_COMPACTION_LOG_FILE` | path | `~/.local/state/forward-compaction/logs/decisions/.jsonl` | Where decision rows go; each session writes `{session}.jsonl` beside it. With `PLUGIN_LOG_DIR` set the default is `$PLUGIN_LOG_DIR/forward-compaction/decisions/.jsonl`. A relative path is refused and the default applies. |
 
 A nudge start at or past its party's ceiling in the same unit is kept and
 named once: no nudge goes out before the ceiling. A ceiling below Claude

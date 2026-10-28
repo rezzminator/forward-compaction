@@ -20,7 +20,7 @@ function engine(writeError: () => string) {
   const healed = { on: false };
   const ok = { exitCode: 0, stdout: '', stderr: '' };
   const f = fakeEngine({
-    env: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '100000', FORWARD_COMPACTION_LOG_FILE: '/logs/decisions.jsonl' },
+    env: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '100000', PLUGIN_LOG_DIR: '/logs' },
     run: (argv) => (argv[3] === 'plugin-log' ? ok : argv[3] !== 'decision-log' ? undefined : healed.on ? ok : { exitCode: 1, stdout: '', stderr: `${writeError()}\n` }),
   });
   fakes.push(f);
@@ -38,7 +38,7 @@ function engine(writeError: () => string) {
   };
 }
 
-const PATH = '/logs/decisions.session-1.jsonl';
+const PATH = '/logs/forward-compaction/decisions/session-1.jsonl';
 const failures = (texts: string[]) => texts.filter((line) => line.includes('writing the decision log'));
 const lost = (texts: string[]) => texts.filter((line) => line.includes('not written to'));
 
@@ -81,10 +81,10 @@ describe('a decision log that cannot be written, through the adapter', () => {
     await cc.end();
     const shown = failures(cc.texts());
     expect(shown).toHaveLength(2);
-    expect(shown[1]).toMatch(/^writing the decision log for \/logs\/decisions\.session-1\.jsonl failed: EACCES: permission denied; its \d+ rows are kept and written with the next, and the 1 oldest held row was dropped past the 2000-row hold$/);
+    expect(shown[1]).toMatch(/^writing the decision log for \/logs\/forward-compaction\/decisions\/session-1\.jsonl failed: EACCES: permission denied; its \d+ rows are kept and written with the next, and the 1 oldest held row was dropped past the 2000-row hold$/);
     const gone = lost(cc.texts());
     expect(gone).toHaveLength(1);
-    const [, total, dropped] = /^(\d+) decision rows were not written to \/logs\/decisions\.session-1\.jsonl \((\d+) of them dropped past the 2000-row hold\): EACCES: permission denied$/.exec(gone[0]!) ?? [];
+    const [, total, dropped] = /^(\d+) decision rows were not written to \/logs\/forward-compaction\/decisions\/session-1\.jsonl \((\d+) of them dropped past the 2000-row hold\): EACCES: permission denied$/.exec(gone[0]!) ?? [];
     expect(Number(dropped)).toBeGreaterThanOrEqual(3);
     expect(Number(total)).toBe(2_000 + Number(dropped));
   }, 30_000);
@@ -106,7 +106,7 @@ describe('a plugin log that cannot be written, through the adapter', () => {
     const failing = { on: false };
     const ok = { exitCode: 0, stdout: '', stderr: '' };
     const f = fakeEngine({
-      env: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '100000', FORWARD_COMPACTION_LOG_FILE: '/logs/decisions.jsonl' },
+      env: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '100000' },
       run: (argv) => (argv[3] === 'decision-log' ? ok : argv[3] === 'plugin-log' && failing.on ? { exitCode: 1, stdout: '', stderr: 'lock held by another writer\n' } : undefined),
     });
     fakes.push(f);
@@ -137,7 +137,7 @@ describe('only errors reach the screen', () => {
     const failing = { on: false };
     const f = fakeEngine({
       window: 1_000_000,
-      env: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '100000', FORWARD_COMPACTION_LOG_FILE: '/logs/decisions.jsonl' },
+      env: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '100000' },
       run: (argv) => (argv[3] === 'decision-log' ? ok : argv[3] === 'plugin-log' && failing.on ? { exitCode: 1, stdout: '', stderr: 'lock held by another writer\n' } : undefined),
     });
     fakes.push(f);
