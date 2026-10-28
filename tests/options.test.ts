@@ -61,7 +61,6 @@ describe('resolveOptions', () => {
       subagentNudgeStart: 'FORWARD_COMPACTION_SUBAGENT_NUDGE_START',
       subagentNudgeEvery: 'FORWARD_COMPACTION_SUBAGENT_NUDGE_EVERY',
       ceilingNative: 'FORWARD_COMPACTION_CEILING_NATIVE',
-      logFile: 'FORWARD_COMPACTION_LOG_FILE',
       ignoreModels: 'FORWARD_COMPACTION_IGNORE_MODELS',
       keepSkills: 'FORWARD_COMPACTION_KEEP_SKILLS',
       debug: 'FORWARD_COMPACTION_DEBUG',
@@ -123,14 +122,13 @@ describe('resolveOptions', () => {
     });
   });
 
-  it('refuses a relative log file and keeps the default under PLUGIN_LOG_DIR', () => {
-    const resolved = resolveOptions({ pluginLogDir: '/state', vars: { FORWARD_COMPACTION_LOG_FILE: 'rel.jsonl' } });
-    expect(resolved.logFile).toBe('/state/forward-compaction/decisions/.jsonl');
-    expect(resolved.errors).toEqual(['forward-compaction: env FORWARD_COMPACTION_LOG_FILE is invalid (not an absolute path: "rel.jsonl"); using the default /state/forward-compaction/decisions/.jsonl']);
-    expect(resolveOptions({ vars: { FORWARD_COMPACTION_LOG_FILE: '/logs/d.jsonl' } }).logFile).toBe('/logs/d.jsonl');
-    expect(resolveOptions().logFile).toBeUndefined();
+  it('puts the decision log in the plugin log directory, and reads no variable that moves it', () => {
+    expect(resolveOptions({ pluginLogDir: '/state' }).logFile).toBe('/state/forward-compaction/decisions/.jsonl');
     // State on disk: with no PLUGIN_LOG_DIR the decision log sits beside the level logs under HOME.
     expect(resolveOptions({ home: '/h' }).logFile).toBe('/h/.local/state/forward-compaction/logs/decisions/.jsonl');
+    expect(resolveOptions().logFile).toBeUndefined();
+    const moved = resolveOptions({ pluginLogDir: '/state', vars: { FORWARD_COMPACTION_LOG_FILE: '/logs/d.jsonl' } });
+    expect([moved.logFile, moved.errors]).toEqual(['/state/forward-compaction/decisions/.jsonl', []]);
   });
 
   it('names a nudge start that is not below the ceiling in the same unit, and passes across units', () => {

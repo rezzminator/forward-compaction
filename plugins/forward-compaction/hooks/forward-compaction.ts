@@ -10,7 +10,8 @@ import { Parties, type Judging } from '../src/parties.ts';
 import { askPointOf, charsPerToken, partyMarks, startWarnings, apiChars, type AskPoint, type Marks, type UsageBreakdown } from '../src/window.ts';
 import { unseenCompaction } from '../src/unseen.ts';
 import { parseLookBack, boundaryArgv, boundaryLine, searchArgv, entryArgv, namesArgv, processOutput, parseEntries, toolNames, resultIds, searchResults, entryResult, manualTranscriptCall, lookBackNotice, findTranscriptArgv, firstFound, type LookBackResult } from '../src/look-back.ts';
-import { DecisionWriteError, hookRow, sessionLogPath, runCwd, decisionAppendArgv, retentionArgv, requeueRows, decisionFailure, endReport, SkipFold, pluginLogDir, levelRow, pluginLogEvent, PluginLogQueue, PLUGIN_LOG_HOLD_ROWS, type PluginLogLevel, type PluginLogFields } from '../src/log.ts';
+import { DecisionWriteError, hookRow, sessionLogPath, runCwd, decisionAppendArgv, retentionArgv, DECISION_HOLD_ROWS, decisionFailure, endReport, SkipFold, pluginLogEvent, pluginLogDiagnostic } from '../src/log.ts';
+import { levelRow, onScreen, pluginLogDir, PluginLogQueue, requeueRows, type PluginLogLevel, type PluginLogFields } from '../src/plugin-log.ts';
 import { resolveOptions, subagentMaxContext, type OptionEnvironment, type ResolvedOptions } from '../src/options.ts';
 import { TOOLS, toolsToRegister, ENSURE_TOOLS_TIMEOUT_MS, END_CORE_RESERVE_MS, REGISTER_TRIES, PENDING_BEFORE_CONFIG, type ToolKind } from '../src/register.ts';
 
@@ -71,7 +72,7 @@ const screenLine = (line: string): string => line.replace(/^forward-compaction: 
 
 /** Every line said lands in the decision log as a `said` row; only an error reaches the screen. A line said with its diagnostic row is one level-log entry: the row's, at the level said. */
 function say(st: State, $: EngineInterface, line: string, level: PluginLogLevel = 'error', row?: Row): void {
-  const shown = level === 'error'; // warning, info and debug rows go to their files, or nowhere when no log can hold them
+  const shown = onScreen(level); // warning, info and debug rows go to their files, or nowhere when no log can hold them
   const diagnostic = row === undefined ? undefined : pluginLogEvent({ line: screenLine(line), ...row });
   plog(st, $, diagnostic !== undefined ? { ...diagnostic, level } : { level, event: 'said', msg: screenLine(line), where: 'hooks/forward-compaction.ts#say' });
   if (shown) show($, line);
@@ -99,23 +100,24 @@ function plog(st: State, $: EngineInterface, fields: Omit<PluginLogFields, 'plug
       queue.add(levelRow({ plugin: 'forward-compaction', level: 'error', event: 'plugin-log-session-error', msg: screenLine(sessionError), where: 'hooks/forward-compaction.ts#plog' }, now));
       show($, sessionError);
     }
-    queue.add(levelRow({ plugin: 'forward-compaction', ...fields, ...(session ? { session } : {}) }, now));
+    queue.add(levelRow({ plugin: 'forward-compaction', ...fields, msg: pluginLogDiagnostic(fields.msg), ...(session ? { session } : {}) }, now));
     st.levelBatched += rows;
     if (st.levelLinks > 1) return void (held = true); // a burst of rows is one append process: the burst's last row writes them all
     [rows, st.levelBatched] = [st.levelBatched, 0];
     const out = await queue.flush((argv) => $.process.run(argv, { ...runCwd(st.pluginLogDir ?? ''), timeoutMs: 15_000 }));
-    if (out.error !== undefined && !st.pluginFailing) pluginLogFailed(st, $, out.error, out.held);
+    // The library says its own line once per failing streak, and writes the rows its hold let go as an error row.
+    if (out.screen !== undefined) pluginLogFailed(st, $, out.screen, out.error ?? '', out.held);
     st.pluginFailing = out.held !== 0;
-    if (out.lost > 0) plog(st, $, { level: 'error', event: 'plugin-log-rows-dropped', msg: `${out.lost} level ${out.lost === 1 ? 'row was' : 'rows were'} dropped past the ${PLUGIN_LOG_HOLD_ROWS}-row hold while the plugin log failed`, where: 'hooks/forward-compaction.ts#plog', detail: { rows: out.lost } });
   }).catch((error) => {
-    if (!st.pluginFailing) pluginLogFailed(st, $, message(error), rows);
+    const cause = message(error);
+    if (!st.pluginFailing) pluginLogFailed(st, $, `forward-compaction: plugin log ${st.pluginLogDir} failed: ${cause}; ${rows} ${rows === 1 ? 'row is' : 'rows are'} lost`, cause, 0);
     st.pluginFailing = true;
   }).finally(() => { st.levelLinks--; if (!held) st.levelRowsWriting -= rows; });
 }
 
-/** Once per failing streak: on the screen and in the decision log, whose row maps to no level, so it never recurses into the failing log. */
-function pluginLogFailed(st: State, $: EngineInterface, error: string, held: number): void {
-  show($, `forward-compaction: plugin log ${st.pluginLogDir} failed: ${error}; ${held} ${held === 1 ? 'row is' : 'rows are'} kept and retried with the next write`);
+/** Once per failing streak: the line on the screen, and a decision row that maps to no level, so it never recurses into the failing log. */
+function pluginLogFailed(st: State, $: EngineInterface, line: string, error: string, held: number): void {
+  show($, line);
   record(st, $, { event: 'plugin-log-failed', dir: st.pluginLogDir ?? null, error, held });
 }
 
@@ -195,7 +197,7 @@ function flushDecisions(st: State, $: EngineInterface, last = false): void {
       } catch (error) {
         // The `$` of an abandoned dispatch (an interrupt, a rejected tool) aborts its run: the batch goes back to the front of the queue and the next flush, under a live dispatch, writes it. A run rejected after its child appended them writes them twice: a duplicate row, never a lost one; a child killed mid-row leaves a torn line, and the append script starts the retried rows on a line of their own.
         st.writeError = message(error);
-        const dropped = requeueRows(pending, rows);
+        const dropped = requeueRows(pending, rows, DECISION_HOLD_ROWS);
         if (dropped > 0) st.rowsDropped = { rows: (st.rowsDropped?.rows ?? 0) + dropped, error: message(error) };
         throw new DecisionWriteError(message(error), rows.length, dropped);
       }
@@ -263,7 +265,6 @@ async function readOptionEnv($: EngineInterface): Promise<Pick<OptionEnvironment
     readOptionVar('FORWARD_COMPACTION_SUBAGENT_NUDGE_START', () => $.env.get('FORWARD_COMPACTION_SUBAGENT_NUDGE_START')),
     readOptionVar('FORWARD_COMPACTION_SUBAGENT_NUDGE_EVERY', () => $.env.get('FORWARD_COMPACTION_SUBAGENT_NUDGE_EVERY')),
     readOptionVar('FORWARD_COMPACTION_CEILING_NATIVE', () => $.env.get('FORWARD_COMPACTION_CEILING_NATIVE')),
-    readOptionVar('FORWARD_COMPACTION_LOG_FILE', () => $.env.get('FORWARD_COMPACTION_LOG_FILE')),
     readOptionVar('FORWARD_COMPACTION_IGNORE_MODELS', () => $.env.get('FORWARD_COMPACTION_IGNORE_MODELS')),
     readOptionVar('FORWARD_COMPACTION_KEEP_SKILLS', () => $.env.get('FORWARD_COMPACTION_KEEP_SKILLS')),
     readOptionVar('FORWARD_COMPACTION_DEBUG', () => $.env.get('FORWARD_COMPACTION_DEBUG')),
@@ -290,12 +291,11 @@ function start(st: State, $: EngineInterface): Promise<void> {
     }
     st.pluginInitialized = true;
     st.pluginLogDir = pluginLogDir(override, home, 'forward-compaction');
-    if (st.pluginLogDir !== undefined) st.pluginLog = new PluginLogQueue(st.pluginLogDir, 'forward-compaction');
-    else show($, 'plugin log off: no PLUGIN_LOG_DIR and no HOME');
+    st.pluginLog = new PluginLogQueue(st.pluginLogDir, 'forward-compaction'); // with no directory its first flush says the log is off
     const env = await readOptionEnv($);
     st.config = resolveOptions({ pluginLogDir: override, home, ...env });
     const earlyRows = st.pluginRows.splice(0); // rows held before the level log had a home: debug ones only while the debug log is on
-    if (st.pluginLog !== undefined) for (const fields of earlyRows) if (fields.level !== 'debug' || st.config.debug) plog(st, $, fields);
+    for (const fields of earlyRows) if (fields.level !== 'debug' || st.config.debug) plog(st, $, fields);
     dbg(st, $, 'env', { HOME: home ?? null, PLUGIN_LOG_DIR: override ?? null, ...env.vars, readErrors: env.readErrors });
     const { errors: _, ...options } = st.config;
     dbg(st, $, 'options', options);

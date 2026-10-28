@@ -29,6 +29,11 @@ Every release of forward-compaction, named sub-agent-compact before 1.0.0. Versi
 - **Every error and warning row names its origin.** `where` is the function that raised it and `event` names what happened, never a bare `error` or `warning` (the compaction-window and ceiling warnings are `compact-window` and `ceiling-below-ask`).
 - **The frontier has no length cap.** `forward_compaction` no longer refuses a frontier over 20,000 characters; it is stored and installed whole.
 - **The person's words and the skills are never dropped from a wake.** The person's newest ten messages (main chat) or the brief (sub-agent), and every skill and command the party loaded, are carried whole, outside the wake budget; before, they shared a quarter of it and the whole of it, and the overflow was named as not carried.
+- **The level files are the shared plugin-log library.** `src/plugin-log.ts` is a vendored copy of the library every professor plugin ships, kept byte-identical by a sync check; this plugin's own decision log stays in `src/log.ts`. The `where` of a `log-capped` row is `src/plugin-log.ts#APPEND_SCRIPT`, a `plugin-log-rows-dropped` row's is `src/plugin-log.ts#PluginLogQueue`, and the failing-streak line says the rows are `kept for the next write`.
+
+### Removed
+
+- **`FORWARD_COMPACTION_LOG_FILE`.** The decision log lives in the plugin log directory, `decisions/{session}.jsonl` under `$PLUGIN_LOG_DIR/forward-compaction`, else under `~/.local/state/forward-compaction/logs`; no variable moves it. Migration: unset `FORWARD_COMPACTION_LOG_FILE`; it is no longer read, and logs it wrote elsewhere stay where they are.
 
 ### Removed
 

@@ -1,6 +1,8 @@
 // The decision log: one JSONL file per session, appended to on every write.
-// Chats share the configured logFile option, so each session writes its own
-// file beside it; a resumed session appends to the rows it wrote before.
+// Chats share the decisions folder in the plugin log directory, so each session writes its own
+// file there; a resumed session appends to the rows it wrote before.
+// The level files are the vendored plugin-log library's (./plugin-log.ts); this file keeps only what is this plugin's own.
+import { LOCK_FN, type PluginLogFields } from './plugin-log.ts';
 
 /** The session's own log path: the session id goes before the extension of `logFile`. */
 export function sessionLogPath(logFile: string, sessionId: string): string {
@@ -36,76 +38,6 @@ export const DECISION_LOG_CAP_BYTES = 8388608;
 /** Old sessions' logs beside this one are deleted past this age or past this count, newest kept. */
 export const DECISION_LOG_RETENTION = { days: 14, keep: 200 } as const;
 
-/**
- * A directory lock born with its holder's token (`pid epoch`) in `$lock/pid`: staged under a private name and
- * renamed into place, so the lock never exists without its token. A lock whose holder is gone, or whose token is
- * older than a minute (no append takes that long), is broken; a live one is waited on for `LOCK_WAIT_SECONDS`. A stage
- * or a broken lock (`$lock.{pid}`, `$lock.dead.{pid}`) whose writer is dead is cleared: a writer killed between its
- * mkdir and its rename leaves one behind.
- * Breaking and releasing first claim the token by renaming `$lock/pid` to a private name: only one mover wins that
- * rename, and the claimer removes the lock only when the token it took is the one it saw stale (or its own), so no
- * waiter removes a lock another has since broken and taken, and a holder outlived by an age break never removes its
- * successor's lock. A claimer's rename can hide the token from its new holder's check for a moment: the holder that
- * then reads its own token back owns the lock. A claimer that dies holding the token, or holds it past a minute,
- * has its claim put back by a waiter, so the lock is broken by the same rules; the claim's name carries its own
- * start time (`pid.claim.{epoch}.{pid}`), since the renamed token keeps the token's age, not the claim's.
- */
-/** A live holder is waited on this long: under the 15 s process bound, and past the few seconds contention reaches at a load around 80. */
-export const LOCK_WAIT_SECONDS = 10;
-const LOCK_FN = `lk_claim() {
-  lk_c="$lk_lock/pid.claim.$(date +%s).$$"
-  mv "$lk_lock/pid" "$lk_c" 2>/dev/null || return 1
-  if [ "$(cat "$lk_c" 2>/dev/null)" = "$1" ]; then
-    lk_gone="$lk_lock.dead.$$"
-    rm -rf "$lk_gone"
-    mv "$lk_lock" "$lk_gone" 2>/dev/null || return 1
-    rm -rf "$lk_gone" 2>/dev/null || :
-    return 0
-  fi
-  mv "$lk_c" "$lk_lock/pid" 2>/dev/null || :
-  return 1
-}
-lock() {
-  lk_lock=$1
-  lk_token="$$ $(date +%s)"
-  lk_until=$((\${lk_token#* } + ${LOCK_WAIT_SECONDS}))
-  lk_stage="$lk_lock.$$"
-  for lk_s in "$lk_lock".[0-9]* "$lk_lock".dead.[0-9]*; do
-    lk_p=\${lk_s##*.}
-    case $lk_p in ''|*[!0-9]*) continue ;; esac
-    if [ -d "$lk_s" ] && [ "$lk_p" != "$$" ] && ! kill -0 "$lk_p" 2>/dev/null; then rm -rf "$lk_s" 2>/dev/null || :; fi
-  done
-  while :; do
-    rm -rf "$lk_stage"
-    mkdir "$lk_stage" || fail "$lk_stage" 'cannot create the lock directory'
-    printf '%s\\n' "$lk_token" > "$lk_stage/pid"
-    if [ ! -e "$lk_lock" ] && mv "$lk_stage" "$lk_lock" 2>/dev/null && [ "$(cat "$lk_lock/pid" 2>/dev/null)" = "$lk_token" ]; then break; fi
-    # mv onto a lock that appeared meanwhile moves the stage into it.
-    rm -rf "$lk_stage" "$lk_lock/\${lk_stage##*/}"
-    [ "$(date +%s)" -le "$lk_until" ] || fail "$lk_lock" 'lock held by another writer'
-    holder=$(cat "$lk_lock/pid" 2>/dev/null) || holder=
-    # Our own token: our stage became the lock, and the check above read it while a claimer had it renamed aside.
-    if [ "$holder" = "$lk_token" ]; then break; fi
-    if [ -n "$holder" ] && { ! kill -0 "\${holder%% *}" 2>/dev/null || [ -n "$(find "$lk_lock/pid" -mmin +1 2>/dev/null)" ]; }; then
-      lk_claim "$holder" || :
-      continue
-    fi
-    # A claimer that died holding the token leaves the lock without one: put its claim back, so the rule above breaks it.
-    if [ -z "$holder" ]; then
-      for lk_o in "$lk_lock"/pid.claim.*; do
-        lk_t=\${lk_o##*/pid.claim.}; lk_t=\${lk_t%%.*}
-        if [ -e "$lk_o" ] && { ! kill -0 "\${lk_o##*.}" 2>/dev/null || case $lk_t in ''|*[!0-9]*) true ;; *) [ $(($(date +%s) - lk_t)) -gt 60 ] ;; esac; }; then
-          mv "$lk_o" "$lk_lock/pid" 2>/dev/null || :
-          break
-        fi
-      done
-    fi
-    sleep 0.05
-  done
-  trap 'lk_claim "$lk_token" || :' EXIT
-  trap 'exit 1' HUP INT TERM
-}`;
-
 /** Appends the rows on stdin to the session's log under its lock, moving a file past the cap aside first; no row is rewritten. */
 export const DECISION_APPEND_SCRIPT = `set -eu
 umask 077
@@ -133,14 +65,6 @@ export function decisionAppendArgv(path: string, cap: number = DECISION_LOG_CAP_
 
 /** At most this many unwritten decision rows are held for the next flush; past it the oldest go, counted. */
 export const DECISION_HOLD_ROWS = 2_000;
-
-/** A failed append's batch goes back to the front of the queue, order kept, for the next flush; past the hold the oldest go. Returns how many went. */
-export function requeueRows(pending: string[], rows: readonly string[], hold: number = DECISION_HOLD_ROWS): number {
-  pending.unshift(...rows);
-  const dropped = Math.max(0, pending.length - hold);
-  if (dropped > 0) pending.splice(0, dropped);
-  return dropped;
-}
 
 /** What a failed append's line says of its rows: kept for the next write unless it is the last one (session end), and the oldest the hold let go. */
 export function keptRowsText(rows: number, dropped: number, last: boolean, hold: number = DECISION_HOLD_ROWS): string {
@@ -282,182 +206,10 @@ function summary(streak: SkipStreak): DecisionRow {
   return { ts: streak.to, event: 'skips', party: streak.party, trigger: streak.trigger, count: streak.count, from: streak.from, to: streak.to, firstTokens: streak.firstTokens, lastTokens: streak.lastTokens };
 }
 
-export type PluginLogLevel = 'error' | 'warning' | 'info' | 'debug';
-
-export type PluginLogFields = { plugin: string; level: PluginLogLevel; event: string; msg: string; where: string; session?: string; detail?: Record<string, unknown>; /** The row's own time, when it is not the writing time: a folded `skips` row is stamped with its streak's. */ ts?: string };
-export const PLUGIN_LOG_CAP_BYTES = 20971520;
-/** Rotated generations each level log keeps (`.1` newest … `.5`): at the debug log's pace, about a day of step rows. */
-export const PLUGIN_LOG_KEEP = 5;
-export const ROW_MAX_BYTES = 4096;
-
-/** Resolve the level directory without changing the decision-log option. */
-export function pluginLogDir(override: string | undefined, home: string | undefined, plugin: string): string | undefined {
-  const base = override || (home ? `${home.replace(/\/+$/, '')}/.local/state` : undefined);
-  return base === undefined ? undefined : `${base.replace(/\/+$/, '')}/${plugin}${override ? '' : '/logs'}`;
-}
-
-/** Byte count in UTF-8, available in the function-hook sandbox without Node. */
-function pluginLogBytes(text: string): number {
-  let bytes = 0;
-  for (const char of text) { const point = char.codePointAt(0)!; bytes += point <= 0x7f ? 1 : point <= 0x7ff ? 2 : point <= 0xffff ? 3 : 4; }
-  return bytes;
-}
-
 /** Unexpected API values are reported by shape, never by their transcript bodies. */
-function pluginLogDiagnostic(text: string): string {
+export function pluginLogDiagnostic(text: string): string {
   return text.replace(/transcript: unreadable \([\[{"][\s\S]*\)/, 'transcript: unreadable (unexpected API shape)')
     .replace(/messages: [\[{"][\s\S]*?(?=; its install is unchecked|$)/, 'messages: unexpected API shape');
-}
-
-/** Format the supplied epoch only; the adapter owns the clock. */
-function pluginLogTimestamp(nowMs: number): string {
-  if (!Number.isFinite(nowMs) || Math.abs(nowMs) > 8640000000000000) throw new RangeError('invalid plugin log timestamp');
-  const epoch = Math.trunc(nowMs);
-  const parts = Object.fromEntries(new Intl.DateTimeFormat('en-US', {
-    calendar: 'gregory', numberingSystem: 'latn', timeZone: 'UTC', hourCycle: 'h23',
-    era: 'short', year: 'numeric', month: '2-digit', day: '2-digit',
-    hour: '2-digit', minute: '2-digit', second: '2-digit',
-  }).formatToParts(epoch).map(({ type, value }) => [type, value]));
-  const year = parts.era === 'BC' ? 1 - Number(parts.year) : Number(parts.year);
-  const isoYear = year >= 0 && year <= 9999 ? String(year).padStart(4, '0') : `${year < 0 ? '-' : '+'}${String(Math.abs(year)).padStart(6, '0')}`;
-  const ms = String(((epoch % 1000) + 1000) % 1000).padStart(3, '0');
-  return `${isoYear}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}:${parts.second}.${ms}Z`;
-}
-
-/** Ordered JSONL, bounded after serialization (including escapes and newline). */
-export function levelRow(fields: PluginLogFields, nowMs: number): string {
-  const own = fields.ts === undefined ? Number.NaN : Date.parse(fields.ts);
-  const row: PluginLogFields & { ts: string } = { ts: pluginLogTimestamp(Number.isFinite(own) ? own : nowMs), plugin: fields.plugin, level: fields.level, event: fields.event, msg: pluginLogDiagnostic(fields.msg), where: fields.where, ...(fields.session ? { session: fields.session } : {}), ...(fields.detail !== undefined ? { detail: fields.detail } : {}) };
-  const serialize = () => `${JSON.stringify(row)}\n`;
-  let text = serialize();
-  const bytes = pluginLogBytes(text);
-  if (bytes <= ROW_MAX_BYTES) return text;
-  row.detail = { truncated: true, bytes };
-  const chars = Array.from(row.msg);
-  let low = 0; let high = chars.length;
-  while (low < high) {
-    const at = Math.ceil((low + high) / 2);
-    row.msg = chars.slice(0, at).join('');
-    if (pluginLogBytes(serialize()) <= ROW_MAX_BYTES) low = at; else high = at - 1;
-  }
-  row.msg = chars.slice(0, low).join('');
-  text = serialize();
-  if (pluginLogBytes(text) > ROW_MAX_BYTES) throw new Error('plugin log row metadata exceeds 4096 bytes');
-  return text;
-}
-
-/** Positional arguments only; each builtin printf appends one complete row. */
-export const APPEND_SCRIPT = `set -eu
-umask 077
-dir=$1; plugin=$2; shift 2
-fail() { printf '%s: %s\\n' "$1" "$2" >&2; exit 1; }
-# No operand starts with '-': a relative directory is passed as ./dir, so no command reads it as an option.
-case $dir in /*) ;; *) dir=./$dir;; esac
-mkdir -p "$dir" || fail "$dir" 'cannot create the log directory'
-${LOCK_FN}
-# Cap, rotation and append happen under one lock: two writers never both move a full file aside.
-lock "$dir/.lock"
-cap() {
-  if [ -f "$1" ]; then
-    bytes=$(wc -c < "$1") || exit 1
-    bytes=$((bytes))
-    if [ "$bytes" -gt ${PLUGIN_LOG_CAP_BYTES} ]; then
-      n=${PLUGIN_LOG_KEEP}; while [ "$n" -gt 1 ]; do n=$((n - 1)); if [ -e "$1.$n" ]; then mv -f "$1.$n" "$1.$((n + 1))" || exit 1; fi; done
-      mv -f "$1" "$1.1" || exit 1; return 0
-    fi
-  fi
-  return 1
-}
-capped() {
-  msg='level file exceeded ${PLUGIN_LOG_CAP_BYTES} bytes; moved aside'
-  detail=$(printf '{"file":"%s"}' "$1")
-  truncated=false
-  while :; do
-    notice=$(printf '{"ts":"%s","plugin":"%s","level":"warning","event":"log-capped","msg":"%s","where":"src/log.ts#APPEND_SCRIPT"%s,"detail":%s}' "$ts" "$plugin" "$msg" "$session" "$detail")
-    # BSD wc pads its count with spaces, which would land in the row: arithmetic expansion drops them.
-    bytes=$(printf '%s\\n' "$notice" | wc -c) || exit 1
-    bytes=$((bytes))
-    [ "$bytes" -gt ${ROW_MAX_BYTES} ] || break
-    if [ "$truncated" = false ]; then
-      detail=$(printf '{"truncated":true,"bytes":%s}' "$bytes"); truncated=true
-    else
-      [ -n "$msg" ] || fail "$dir/warnings.jsonl" 'cap warning metadata exceeds ${ROW_MAX_BYTES} bytes'
-      msg=\${msg%?}
-    fi
-  done
-  printf '%s\\n' "$notice" >> "$dir/warnings.jsonl"
-}
-while [ "$#" -gt 0 ]; do
-  file=$1; row=$2; shift 2
-  case "$file" in errors.jsonl|warnings.jsonl|info.jsonl|debug.jsonl) ;; *) printf '%s: invalid level file: %s\\n' "$dir" "$file" >&2; exit 2;; esac
-  ts=\${row#*\\"ts\\":\\"}; ts=\${ts%%\\"*}
-  header=\${row%?}; header=\${header%?}; header=\${header%%,\\"detail\\":*}
-  case "$header" in *',"session":'*) session=',"session":'\${header##*,\\"session\\":};; *) session=;; esac
-  path=$dir/$file
-  if cap "$path"; then
-    if [ "$file" != warnings.jsonl ] && cap "$dir/warnings.jsonl"; then capped warnings.jsonl; fi
-    capped "$file"
-  fi
-  printf '%s' "$row" >> "$path"
-done`;
-
-/** One process receives at most 64 file/row pairs. */
-export function appendArgv(dir: string, plugin: string, rows: readonly string[]): string[][] {
-  const batches: string[][] = [];
-  for (let at = 0; at < rows.length; at += 64) {
-    const pairs = rows.slice(at, at + 64).flatMap((row) => {
-      const level: unknown = JSON.parse(row).level;
-      const file = level === 'error' ? 'errors.jsonl' : level === 'warning' ? 'warnings.jsonl' : level === 'info' ? 'info.jsonl' : level === 'debug' ? 'debug.jsonl' : undefined;
-      if (file === undefined) throw new Error(`plugin log invalid level: ${String(level)}`);
-      return [file, row];
-    });
-    batches.push(['/bin/sh', '-c', APPEND_SCRIPT, 'plugin-log', dir, plugin, ...pairs]);
-  }
-  return batches;
-}
-
-type PluginLogRun = (argv: string[]) => Promise<{ exitCode: number; stdout: string; stderr: string }>;
-/** `held`: rows still queued after a failed write; `lost`: rows the hold let go, reported once, by the first flush that writes. */
-export type FlushResult = { held: number; lost: number; error?: string };
-/** At most this many unwritten level rows are held for the next flush; past it the oldest go, counted. */
-export const PLUGIN_LOG_HOLD_ROWS = 2_000;
-
-/**
- * Serialized append batches; a success rearms the once-per-failing-streak notice. A batch that fails (or is killed
- * after writing part of it) goes back to the front of the queue whole, so a row may be written twice, never lost.
- */
-export class PluginLogQueue {
-  private rows: string[] = [];
-  private writing: Promise<unknown> = Promise.resolve();
-  private failing = false;
-  private lost = 0;
-  constructor(private readonly dir: string, private readonly plugin: string) {}
-  add(row: string): void { this.rows.push(row); }
-  flush(run: PluginLogRun): Promise<FlushResult> {
-    const pending = this.writing.then(async (): Promise<FlushResult> => {
-      const rows = this.rows.splice(0);
-      if (rows.length === 0) return { held: 0, lost: 0 };
-      let written = 0;
-      try {
-        for (const argv of appendArgv(this.dir, this.plugin, rows)) {
-          const out = await run(argv);
-          if (out.exitCode !== 0) throw new Error(out.stderr.split('\n')[0]?.trim() || `exit ${out.exitCode}`);
-          written += (argv.length - 6) / 2;
-          this.failing = false;
-        }
-        const lost = this.lost;
-        this.lost = 0;
-        return { held: 0, lost };
-      } catch (error) {
-        const report = !this.failing;
-        this.failing = true;
-        this.lost += requeueRows(this.rows, rows.slice(written), PLUGIN_LOG_HOLD_ROWS);
-        return { held: this.rows.length, lost: 0, ...(report ? { error: error instanceof Error ? error.message : String(error) } : {}) };
-      }
-    });
-    this.writing = pending;
-    return pending;
-  }
 }
 
 /** Decision rows that are never level rows: `say` writes its own line, and a plugin-log failure would recurse into the failing log. */
