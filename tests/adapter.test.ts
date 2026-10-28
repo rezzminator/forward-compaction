@@ -466,10 +466,10 @@ describe('ignored models: FORWARD_COMPACTION_IGNORE_MODELS, Haiku by default', (
 
 describe('a resumed sub-agent with no reading yet', () => {
   it('is held as no-reading at its first ask, gets no nudge, then is managed against its max context once its step reads', async () => {
-    const f = await begin({ agents: () => [{ id: A1, type: 'flights-foreman-sonnet', status: 'running', description: 'one' }], env: { FORWARD_COMPACTION_SUBAGENT_CEILING: '60%', FORWARD_COMPACTION_SUBAGENT_NUDGE_START: '15%', FORWARD_COMPACTION_SUBAGENT_NUDGE_EVERY: '5%' } });
+    const f = await begin({ agents: () => [{ id: A1, type: 'code-builder', status: 'running', description: 'one' }], env: { FORWARD_COMPACTION_SUBAGENT_CEILING: '60%', FORWARD_COMPACTION_SUBAGENT_NUDGE_START: '15%', FORWARD_COMPACTION_SUBAGENT_NUDGE_EVERY: '5%' } });
     const read = (id: string) => f.dispatch('tool.call', { tool: 'Read', tool_use_id: id, agentId: A1, file_path: '/x' }, async () => ({ result: 'file' }));
     const big = [...transcript('tu-none'), { role: 'user', text: 'z'.repeat(660_000), toolUses: [], handle: 'h5' }];
-    expect(await f.dispatch('session.compact', { trigger: 'auto', agentId: A1, messages: big }, async () => ({ skip: 'native ran' }))).toEqual({ skip: "forward-compaction: holding Claude Code's compaction for flights-foreman-sonnet a1b2c3: it has no reading yet, and its next reading decides" });
+    expect(await f.dispatch('session.compact', { trigger: 'auto', agentId: A1, messages: big }, async () => ({ skip: 'native ran' }))).toEqual({ skip: "forward-compaction: holding Claude Code's compaction for code-builder a1b2c3: it has no reading yet, and its next reading decides" });
     expect((await read('tu-1')).context ?? []).toEqual([]);
     await f.dispatch('turn.step', { turnId: 't1', index: 0, model: 'claude-sonnet-5-5', messageCount: 4, agentId: A1 }, async () => ({ turnId: 't1', index: 0, answer: '', toolUses: [], stopReason: 'tool_use', ...usage(189_000) }));
     expect((await read('tu-2')).context?.at(-1)).toContain('context 189k (19% of 1M)');
@@ -672,14 +672,14 @@ describe('audit r4: readings only, measured landed lines, the milestone nudge, t
     const [B, C] = ['b9c8d7e6f5', 'c1c2c3c4c5'];
     const f = await begin({ agents: () => [
       { id: A1, type: 'general-purpose', status: 'running', description: 'one' },
-      { id: B, type: 'flights-foreman-sonnet', status: 'running', description: 'sibling' },
+      { id: B, type: 'code-builder', status: 'running', description: 'sibling' },
       { id: C, type: 'collector', status: 'running', description: 'child', parentId: A1 },
     ] });
     const sub = (await installAgent(f)).messages[0].text;
     expect(sub).toContain(`## Agents, listed at install\n- ${C} collector running: child`);
     expect(sub).not.toContain(B);
     await step(f, 125_000);
-    expect((await ask(f, transcript())).messages[0].text).toContain(`## Agents, listed at install\n- ${A1} general-purpose running: one\n- ${B} flights-foreman-sonnet running: sibling\n- ${C} collector running: child`);
+    expect((await ask(f, transcript())).messages[0].text).toContain(`## Agents, listed at install\n- ${A1} general-purpose running: one\n- ${B} code-builder running: sibling\n- ${C} collector running: child`);
   });
 });
 

@@ -73,7 +73,7 @@ describe('resolveOptions', () => {
     expect(resolveOptions({ vars: {} }).ignoreModels).toEqual(['haiku']);
     expect(resolveOptions({ vars: { FORWARD_COMPACTION_IGNORE_MODELS: '' } }).ignoreModels).toEqual([]);
     expect(resolveOptions({ vars: { FORWARD_COMPACTION_IGNORE_MODELS: ' , ' } }).ignoreModels).toEqual([]);
-    expect(resolveOptions({ vars: { FORWARD_COMPACTION_KEEP_SKILLS: ' god-speed, pfm:Release ,,' } }).keepSkills).toEqual(['god-speed', 'pfm:Release']);
+    expect(resolveOptions({ vars: { FORWARD_COMPACTION_KEEP_SKILLS: ' god-speed, deploy:Release ,,' } }).keepSkills).toEqual(['god-speed', 'deploy:Release']);
   });
 
   it('reads the debug flag, on by default, and names a bad value by its variable', () => {
