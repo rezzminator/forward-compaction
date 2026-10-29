@@ -5,12 +5,18 @@
 **Compaction for Claude Code where the model writes its own frontier: the main chat and every sub-agent compact through one tool, and the newest messages after the call stay verbatim.**
 
 [![Claude Code plugin](https://img.shields.io/badge/Claude%20Code-plugin-D97757)](https://docs.claude.com/en/docs/claude-code/plugins)
-[![Version](https://img.shields.io/badge/version-2.2.1-blue)](./CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-2.2.2-blue)](./CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
 [![Tests](https://img.shields.io/badge/tests-608%20passing-brightgreen)](#development)
 [![Built with Professor](https://img.shields.io/badge/built%20with-Professor-8A2BE2)](https://github.com/rezzminator/professor)
 
 </div>
+
+<p align="center">
+  <img src="docs/assets/compaction.gif" width="830" alt="One main-chat compaction on two lanes, one clock. Claude Code's native compaction forks the chat: a second run re-reads all 214k tokens and paraphrases them while the chat waits, 54.9 s median. With forward-compaction the model that did the work writes its own frontier, 24.2 s median, then the plugin installs it in 0.085 s with no summarizer run, leaving 8.0k tokens of context instead of 18.6k at $0.16 instead of $0.25.">
+</p>
+
+<p align="center"><sub>Main chats, medians of 2,939 real compactions over 30 days to 2026-10-29; the clocks run 7.29× faster than real seconds. For sub-agents native is faster (21.5 s vs 28.7 s).</sub></p>
 
 ## 📊 Benchmark: forward-compaction vs Claude Code's native compaction
 
@@ -270,7 +276,7 @@ replaces the message that held it, and, like a mechanical wake's message,
 ends with the experimental line and where to note any trouble.
 
 The facts message opens with the plugin version that built the wake
-(`compacted by forward-compaction 2.2.1`), so a chat on an old build shows
+(`compacted by forward-compaction 2.2.2`), so a chat on an old build shows
 it. It holds, each section only when it has content:
 
 - the standing orders, first, under `## Standing orders — binding until the
