@@ -4,6 +4,7 @@ import { DEFAULT_TOOL, k as kilo } from './nudge.ts';
 import { keptSaid, PROMPTS_KEPT } from './ledger.ts';
 import { experimental, EXPERIMENTAL_OPENING } from './frontier.ts';
 import { ordersSection, type LiftedOrder, type StandingOrder } from './orders.ts';
+import type { WakePlan } from './plan.ts';
 
 /** A message in `session.compact`'s shape; a SessionMessage fits. */
 export type WakeMessage = {
@@ -34,7 +35,7 @@ const iso = (at: number): string => new Date(at).toISOString();
  */
 const SHARE = { arrived: 0.25, notices: 0.05, siblings: 0.1, commands: 0.05 } as const;
 /** The plugin version that builds a wake, named in its facts header so a chat on an old build is visible; tests/layout.test.ts pins it to plugin.json. */
-export const PLUGIN_VERSION = '2.1.0';
+export const PLUGIN_VERSION = '2.2.0';
 /** An image the person attached: a built wake message holds only text (`session.compact`'s messages), so each is named, never silently gone. */
 const IMAGE = /\[Image #\d+\]/g;
 const IMAGE_NOTE = '$& (image not carried: the wake cannot hold images)';
@@ -42,6 +43,8 @@ const IMAGE_NOTE = '$& (image not carried: the wake cannot hold images)';
 export const COMMANDS_KEPT = 20;
 /** The most files the Files section lists, newest touch first: a path list stays a glance, as the old carry's trail did. */
 export const FILES_MAX = 15;
+/** The files a mechanical wake re-reads from disk, newest touch first: Claude Code's own compaction restores its 5 most recent files because it fires uninvited, and so does a wake no frontier chose. */
+export const RECENT_FILES_KEPT = 5;
 /** The agents section's row cap: a design budget, enough for a coordinator's fleet, never the size of one. */
 export const AGENTS_MAX_ROWS = 50;
 /** One skill's carried text: Claude Code's own 5,000 tokens a skill after compaction, at its 4 characters a token; a design budget in characters, never a measured token count. */
@@ -155,6 +158,8 @@ export type WakeFacts = {
     tasks: readonly { id: string; type: string; status: string; description: string; command?: string }[];
     crons: readonly { id: string; schedule: string; recurring: boolean; prompt: string }[];
   };
+  /** Background commands started after `shells` was taken, which it cannot list. */
+  backgroundSince?: number;
   /** The files the party's finished calls touched, newest first, and its task list as last set. */
   work?: { files: readonly { path: string; tag: 'R' | 'E' | 'W' }[]; commands?: readonly { command: string; description?: string }[]; tasks: readonly string[] };
   startedAt?: number;
@@ -163,6 +168,13 @@ export type WakeFacts = {
 
 /** A load file, already read by the adapter: its content, or why it could not be read. */
 export type WakeFile = { path: string; lines?: string; why: string } & ({ content: string; problem?: undefined } | { problem: string; content?: undefined });
+/** One of the party's newest files, read by the adapter at a mechanical install (frontier.ts `sliceFile`): its content, or why it could not be read. */
+export type RecentFile = { path: string; lines?: string } & ({ content: string; problem?: undefined } | { problem: string; content?: undefined });
+
+/** The paths a mechanical wake re-reads: the RECENT_FILES_KEPT newest the party touched (`WakeFacts.work.files`, newest first, one row a path). */
+export function recentFiles(files: readonly { path: string }[]): string[] {
+  return files.slice(0, RECENT_FILES_KEPT).map((f) => f.path);
+}
 export type AgentRow = { id: string; type: string; status: string; description: string; parentId?: string };
 
 type Shared<M> = {
@@ -188,9 +200,17 @@ type Shared<M> = {
   logDir?: string;
   /** The party's standing orders, and the orders lifted since its last install, shown once; absent or empty, no section. */
   orders?: { standing: readonly StandingOrder[]; lifted?: readonly LiftedOrder[] };
+  /** Plan mode and the plan file, when the party's plan-mode attachments named them; absent, no section. */
+  plan?: WakePlan;
 };
 export type BuildWakeInput<M> = Shared<M> & { toolUseId: string; frontier: string; files?: readonly WakeFile[] };
-export type MechanicalWakeInput<M> = Shared<M> & { reason: { kind: 'ceiling'; ceiling: number } | { kind: 'reactive' } };
+export type MechanicalWakeInput<M> = Shared<M> & {
+  reason: { kind: 'ceiling'; ceiling: number } | { kind: 'reactive' };
+  /** The party's newest files, read at install (`recentFiles`); absent or empty, no section. */
+  recent?: readonly RecentFile[];
+  /** The required sections the party's stored frontier lacks, which is why it never installed; absent when none was stored. */
+  incomplete?: readonly string[];
+};
 
 export type Wake<M> = {
   /** [F, H, ...tail]: H is the last message built here; the tail is the input objects. */
@@ -229,12 +249,12 @@ function age(ms: number): string {
   return `${Math.round(s / 3600)}h`;
 }
 
-type Extras = { siblings: readonly Sibling[]; files: readonly WakeFile[] };
+type Extras = { siblings: readonly Sibling[]; files: readonly WakeFile[]; recent?: readonly RecentFile[]; mechanical?: boolean };
 
 type Rendered = { text: string; sections: number; sizes: Wake<never>['sizes']; carried: string[]; notCarried: string[] };
 
 /** F: every section with its cap; whole or not, never cut. With no measured ratio no section is capped. */
-function renderFacts<M>(input: Shared<M>, facts: WakeFacts, { siblings, files }: Extras): Rendered {
+function renderFacts<M>(input: Shared<M>, facts: WakeFacts, { siblings, files, recent = [], mechanical = false }: Extras): Rendered {
   const B = wakeBudget(input.askPoint);
   const room = (share: number): number => charsIn(B * share, input.charsPerToken);
   const filesCarried: string[] = [];
@@ -253,6 +273,12 @@ function renderFacts<M>(input: Shared<M>, facts: WakeFacts, { siblings, files }:
     sections.push(section(['## Arrived after you wrote your frontier: you have not read these yet', ...(left > 0 ? [`(${left} older not carried; look_back finds them)`] : []), ...shown].join('\n')));
   }
 
+  // Plan mode binds what the party may do, and the plan file is the work's own record: both whole, outside every budget, as Claude Code carries them.
+  const plan = input.plan;
+  if (plan?.mode) sections.push(section(`## Plan mode\nThe session is in plan mode: plan, never act, until the person approves the plan${plan.path === undefined ? '' : `; your plan file is ${plan.path}`}.`));
+  if (plan?.path !== undefined && plan.content !== undefined) sections.push(section(`## Plan file\n${plan.path}\n${plan.content}`));
+  else if (plan?.path !== undefined && plan.problem !== undefined) sections.push({ text: `## Plan file\n${plan.path}\n(could not be read: ${plan.problem})`, content: false });
+
   if (sub) {
     if (facts.brief === undefined) sections.push({ text: '## Your brief\n(not recorded: this agent was spawned before forward-compaction started in this process)', content: false });
     else sections.push(section(`## Your brief\n${facts.brief.text}`));
@@ -263,11 +289,13 @@ function renderFacts<M>(input: Shared<M>, facts: WakeFacts, { siblings, files }:
   } else {
     const shown = keptSaid(facts.person).map((p) => `### ${iso(p.at)}${p.answer === undefined ? '' : ' (the person answering your question)'}\n${p.text.replace(IMAGE, IMAGE_NOTE)}`);
     const count = facts.person.length;
+    const inTail = facts.personInTail ?? 0;
     const left = count - shown.length;
     const answers = facts.person.filter((p) => p.answer !== undefined).length;
     // `recorded`: the count is the plugin's own record, which a restart begins again; the transcript may hold older ones.
-    const carried = `${shown.length} of ${count} recorded${answers === 0 ? '' : `, ${answers} of them answering your questions`}`;
-    const heading = left === 0 ? `(${carried})` : `(${carried}; the ${left} oldest recorded are not carried: look_back finds them)`;
+    const carried = `${shown.length} of ${count + inTail} recorded${answers === 0 ? '' : `, ${answers} of them answering your questions`}`;
+    const notes = [...(left === 0 ? [] : [`the ${left} oldest recorded are not carried: look_back finds them`]), ...(inTail === 0 ? [] : [`${inTail} ${inTail === 1 ? 'is' : 'are'} in the messages below`])];
+    const heading = `(${[carried, ...notes].join('; ')})`;
     sections.push(section([`## The person's messages, oldest first ${heading}`, ...shown].join('\n')));
   }
 
@@ -327,7 +355,8 @@ function renderFacts<M>(input: Shared<M>, facts: WakeFacts, { siblings, files }:
       ...facts.shells.tasks.filter((t) => t.id !== input.self).map((t) => `- ${t.type} ${t.id} ${t.status}: ${t.command ?? t.description}`),
       ...facts.shells.crons.map((c) => `- cron ${c.id} ${c.schedule}${c.recurring ? ' recurring' : ''}: ${c.prompt}`),
     ];
-    const header = `## Background shells and crons (session-wide, from the Stop event ${age(input.now - facts.shells.at)} before install)`;
+    const since = facts.backgroundSince ?? 0;
+    const header = `## Background shells and crons (session-wide, from the Stop event ${age(input.now - facts.shells.at)} before install${since === 0 ? '' : `; ${since} background command${since === 1 ? '' : 's'} started since ${since === 1 ? 'is' : 'are'} not in this list`})`;
     sections.push({ text: [header, ...(rows.length > 0 ? rows : ['(none running)'])].join('\n'), content: rows.length > 0 });
   }
 
@@ -348,8 +377,17 @@ function renderFacts<M>(input: Shared<M>, facts: WakeFacts, { siblings, files }:
     if (dropped.length > 0) sections.push({ text: ['## Files not carried', ...dropped].join('\n'), content: false });
   }
 
+  if (recent.length > 0) {
+    // each already cut to LOAD_FILE_MAX_LINES (frontier.ts `sliceFile`); one that could not be read is named in place
+    const blocks = recent.map((f) => {
+      (f.problem === undefined ? filesCarried : filesNotCarried).push(f.path);
+      return f.problem === undefined ? `### ${f.path}${f.lines === undefined ? '' : ` lines ${f.lines}`}\n${f.content}` : `### ${f.path}\n(not carried: ${f.problem})`;
+    });
+    sections.push(section(['## Files you were working on, newest first, read at install', ...blocks].join('\n')));
+  }
+
   const resume = facts.startReason === 'resume' && facts.startedAt !== undefined ? [`The ledger started at ${iso(facts.startedAt)} when this process resumed; anything earlier is not recorded.`] : [];
-  const head = `[forward-compaction: facts] Your context was compacted by forward-compaction ${PLUGIN_VERSION}. These facts were recorded as they happened, never reconstructed. Your own frontier follows in the next message.`;
+  const head = `[forward-compaction: facts] Your context was compacted by forward-compaction ${PLUGIN_VERSION}. These facts were recorded as they happened, never reconstructed. ${mechanical ? 'You wrote no frontier: the note after these facts says what happened.' : 'Your own frontier follows in the next message.'}`;
   return {
     text: [[head, ...resume].join('\n'), ...sections.map((s) => s.text)].join('\n\n'),
     sections: sections.filter((s) => s.content).length,
@@ -428,8 +466,10 @@ export function buildWake<M extends WakeMessage>(input: BuildWakeInput<M>): Wake
 export function mechanicalWake<M extends WakeMessage>(input: MechanicalWakeInput<M>): Wake<M> {
   const why = input.reason.kind === 'ceiling' ? `, past the ${kilo(input.reason.ceiling)} ceiling` : ', and Claude Code reported your request too long';
   const source = input.party === 'main' ? "the person's messages" : 'your brief';
-  return assemble(input, input.messages, { siblings: [], files: [] }, ({ kept, dropped }) => experimental(
-    `[forward-compaction: no frontier written by the model] Your context reached ${input.tokens === undefined ? 'a size not measured yet' : `${kilo(input.tokens)} tokens`}${why}, and you had not called forward_compaction, so the plugin compacted it mechanically: the facts above and your newest ${kept} messages below, kept verbatim; ${dropped} older messages are gone (look_back finds an exact detail). No objective or next step was written. Re-establish them from ${source} and the messages below, then continue${within(input.orders)}; call ${input.tool ?? DEFAULT_TOOL} at your next milestone.`, input.logDir),
+  const missing = input.incomplete ?? [];
+  const call = missing.length === 0 ? 'you had not called forward_compaction, so' : `your last forward_compaction call was missing ${missing.length === 1 ? missing[0] : `${missing.slice(0, -1).join(', ')} and ${missing.at(-1)}`}, so it never installed and`;
+  return assemble(input, input.messages, { siblings: [], files: [], recent: input.recent ?? [], mechanical: true }, ({ kept, dropped }) => experimental(
+    `[forward-compaction: no frontier written by the model] Your context reached ${input.tokens === undefined ? 'a size not measured yet' : `${kilo(input.tokens)} tokens`}${why}, and ${call} the plugin compacted it mechanically: the facts above and your newest ${kept} messages below, kept verbatim; ${dropped} older messages are gone (look_back finds an exact detail). No objective or next step was written. Re-establish them from ${source} and the messages below, then continue${within(input.orders)}; call ${input.tool ?? DEFAULT_TOOL} at your next milestone.`, input.logDir),
   'none');
 }
 

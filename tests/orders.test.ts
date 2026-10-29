@@ -13,7 +13,7 @@ import { buildWake, mechanicalWake, type BuiltMessage, type WakeFacts, type Wake
 // and rendered above the frontier in every wake, the mechanical one included.
 
 const ORDER = { order: 'do not spawn more', at: '2026-10-27T14:53:00.000Z' };
-const valid = { objective: 'finish the round', done: 'round 1', remaining: 'round 2', next: 'wait for the chats' };
+const valid = { objective: 'finish the round', decisions: 'none', done: 'round 1', remaining: 'round 2', next: 'wait for the chats' };
 
 describe('parseFrontier: standing_orders and lifted', () => {
   const LATER = Date.parse(ORDER.at) + 60_000;
@@ -49,6 +49,15 @@ describe('parseFrontier: standing_orders and lifted', () => {
     const guessed = { order: 'Land it right on develop', at: '2026-10-28T03:00:00Z' };
     expect(parseFrontier({ ...valid, standing_orders: [guessed, ORDER] }, { remembered: [], said, party: 'main' }).standingOrders)
       .toEqual([{ order: guessed.order, at: '2026-10-28T03:08:02.143Z' }, ORDER]);
+  });
+
+  it("keeps an order whose time is missing or no ISO time when a message of the person's holds its words, stamped with that message's time", () => {
+    const said = [{ text: 'Standing order: never run any git command.\nWrite no files.', at: Date.parse('2026-10-28T23:32:52.903Z') }];
+    const orders = [{ order: 'never run any git command.', at: '2026-10-29' }, { order: 'Write no files.' }];
+    expect(parseFrontier({ ...valid, standing_orders: orders }, { remembered: [], said, party: 'main' })).toMatchObject({
+      standingOrders: [{ order: 'never run any git command.', at: '2026-10-28T23:32:52.903Z' }, { order: 'Write no files.', at: '2026-10-28T23:32:52.903Z' }],
+      notes: [],
+    });
   });
 
   it('skips every bad order entry and names it, one line each, never quoting the order', () => {

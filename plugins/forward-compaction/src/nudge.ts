@@ -27,5 +27,5 @@ export type NudgeInput = {
 /** What the model reads after a tool result once its context passes a nudge point: compact once the current step is done, never in the middle of one; the model picks the moment, not whether. */
 export function nudgeText({ tokens, window, ceiling, tool = DEFAULT_TOOL }: NudgeInput): string {
   const percent = Math.round((tokens / Math.max(1, window)) * 100);
-  return `forward-compaction: context ${k(tokens)} (${percent}% of ${k(window)}). Once your current step is done — never in the middle of one — call ${tool} with objective, done, remaining and next; skip it if only your final answer is left. At ${k(ceiling)} you are compacted mechanically. No such tool? Carry on.`;
+  return `forward-compaction: context ${k(tokens)} (${percent}% of ${k(window)}). Once your current step is done — never in the middle of one — call ${tool} with objective, decisions, done, remaining and next; skip it if only your final answer is left. At ${k(ceiling)} you are compacted mechanically. No such tool? Carry on.`;
 }

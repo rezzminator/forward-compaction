@@ -9,29 +9,34 @@ export { applyDrops, dropNote, pinnedBy } from './drop.ts';
 export const FORWARD_TOOL = 'forward_compaction';
 
 export const FORWARD_TOOL_DESCRIPTION =
-  'Compacts your context — at a clean milestone once context is large. Stores your frontier, one argument per section, any length, for yourself after a reset; at your next compaction it and recorded facts replace everything before this call, the newest later messages that fit stay verbatim, the rest named as not carried. The person\'s binding orders go in standing_orders, verbatim. Always stores; the receipt names any change. Example: forward_compaction({"objective": "…", "done": "…", "remaining": "…", "next": "…", "load_files": []}). Exact old detail later → look_back.';
+  'Compacts your context — at a clean milestone once context is large. Stores your frontier, one argument per section, any length, for yourself after a reset; at your next compaction it and recorded facts replace everything before this call, the newest later messages that fit stay verbatim, the rest named as not carried. The person\'s binding orders go in standing_orders, verbatim. Always stores; the receipt names any change. Example: forward_compaction({"objective": "…", "decisions": "…", "done": "…", "remaining": "…", "next": "…", "load_files": []}). Exact old detail later → look_back.';
 
-/** The frontier's sections in the order they are assembled: the argument, its heading, whether it is required, and what it holds. */
+/**
+ * The frontier's sections in the order they are assembled: the argument, its heading, whether it is required, and what it
+ * holds. A frontier missing a required one is stored but never installs (`missing`, parties.ts `installable`).
+ */
 const SECTIONS = [
-  { key: 'objective', heading: 'Objective', required: true, description: 'What the work is for and what done means.' },
-  { key: 'done', heading: 'Done', required: true, description: 'Finished pieces, each with how it was verified; every figure with the command that produced it.' },
-  { key: 'remaining', heading: 'Remaining', required: true, description: 'Every step left, in order.' },
-  { key: 'next', heading: 'Next', required: true, description: 'The first concrete action after the wake.' },
+  { key: 'objective', heading: 'Objective', required: true, description: 'MANDATORY: what the work is for and what done means.' },
+  { key: 'decisions', heading: 'Decisions', required: true, description: 'MANDATORY: every ruling the person gave on how something gets done, in the person\'s words, each with its undo when one exists; "none" when there are none. Rules binding the rest of the work go in standing_orders.' },
+  { key: 'done', heading: 'Done', required: true, description: 'MANDATORY: finished pieces, each with how it was verified; every figure with the command that produced it.' },
+  { key: 'remaining', heading: 'Remaining', required: true, description: 'MANDATORY: every step left, in order; "none" when nothing is left.' },
+  { key: 'next', heading: 'Next', required: true, description: 'MANDATORY: the first concrete action after the wake.' },
   { key: 'blocked', heading: 'Blocked', required: false, description: 'Optional: what waits on whom.' },
-  { key: 'findings', heading: 'Findings', required: false, description: 'Optional: decisions with why, errors verbatim, the commands and recipes you will need again.' },
+  { key: 'findings', heading: 'Findings', required: false, description: 'Optional: your own choices with why, errors verbatim, the commands and recipes you will need again.' },
 ] as const;
 
 export const FORWARD_INPUT_SCHEMA = {
   type: 'object',
   additionalProperties: false,
-  required: ['objective', 'done', 'remaining', 'next'],
+  required: ['objective', 'decisions', 'done', 'remaining', 'next'],
   properties: {
     objective: { type: 'string', description: SECTIONS[0].description },
-    done: { type: 'string', description: SECTIONS[1].description },
-    remaining: { type: 'string', description: SECTIONS[2].description },
-    next: { type: 'string', description: SECTIONS[3].description },
-    blocked: { type: 'string', description: SECTIONS[4].description },
-    findings: { type: 'string', description: SECTIONS[5].description },
+    decisions: { type: 'string', description: SECTIONS[1].description },
+    done: { type: 'string', description: SECTIONS[2].description },
+    remaining: { type: 'string', description: SECTIONS[3].description },
+    next: { type: 'string', description: SECTIONS[4].description },
+    blocked: { type: 'string', description: SECTIONS[5].description },
+    findings: { type: 'string', description: SECTIONS[6].description },
     load_files: {
       type: 'array',
       description: 'Files carried into the new context, read when it installs: each up to 250 lines; a longer file or range carries its first 250 and names where to Read the rest. Pass lines ranges to carry only what you need.',
@@ -58,10 +63,10 @@ export const FORWARD_INPUT_SCHEMA = {
       items: {
         type: 'object',
         additionalProperties: false,
-        required: ['order', 'at'],
+        required: ['order'],
         properties: {
           order: { type: 'string', description: "The person's words, verbatim." },
-          at: { type: 'string', description: "The ISO time of the person's message." },
+          at: { type: 'string', description: "The ISO time of the person's message, when you know it; the plugin takes it from the person's message that holds the words." },
         },
       },
     },
@@ -98,6 +103,8 @@ export type ParsedFrontier = {
   dropSkills: string[];
   standingOrders: StandingOrder[];
   lifted: LiftedOrder[];
+  /** The required sections absent, not a string or blank, in section order: while any is, the frontier is stored but never installs. */
+  missing: string[];
   /** One line per argument left out, skipped or carried by the plugin instead: the receipt names each, the model fixes nothing. */
   notes: string[];
 };
@@ -107,6 +114,44 @@ const num = (n: number): string => n.toLocaleString('en-US');
 const kind = (v: unknown): string => (v === null ? 'null' : Array.isArray(v) ? 'array' : typeof v);
 const isAbsolutePath = (p: string): boolean => /^(\/|[A-Za-z]:[\\/]|\\\\)/.test(p);
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
+
+const ARRAYS = ['load_files', 'drop_skills', 'standing_orders', 'lifted'];
+const FOLD = /<\/(\w+)>\s*<parameter name="(\w+)">/g;
+
+/**
+ * A section whose text holds its own closing tag and then `<parameter name="other">`: the model's call markup closed it
+ * early and folded the parameters after it into its text. Each folded one is taken back out as its own field (an
+ * array one parsed as JSON), one note each; one the call also sent keeps the sent value.
+ */
+function unfold(input: Record<string, unknown>): { fields: Record<string, unknown>; notes: string[] } {
+  const fields = { ...input };
+  const notes: string[] = [];
+  for (const key of FIELDS) {
+    const value = fields[key];
+    if (typeof value !== 'string') continue;
+    const parts = value.split(FOLD);
+    if (parts.length < 4 || parts[1] !== key) continue;
+    fields[key] = parts[0];
+    for (let i = 1; i + 2 < parts.length; i += 3) {
+      const name = parts[i + 1] ?? '';
+      const segment = parts[i + 2] ?? '';
+      const text = i + 3 < parts.length ? segment : segment.replace(new RegExp(`</${name}>\\s*$`), '');
+      const at = `${name} arrived inside ${key}, after "</${key}>"`;
+      if (!FIELDS.includes(name)) notes.push(`${at}, but ${name} is no field: dropped.`);
+      else if (input[name] !== undefined) notes.push(`${at}, but the call also sent ${name}: the text after "</${key}>" is dropped.`);
+      else if (!ARRAYS.includes(name)) (fields[name] = text, notes.push(`${at}: your call's markup closed ${key} early; taken back out as its own field.`));
+      else {
+        try {
+          fields[name] = JSON.parse(text);
+          notes.push(`${at}: your call's markup closed ${key} early; taken back out as its own field.`);
+        } catch (err) {
+          notes.push(`${at}, but it is not JSON (${(err as Error).message}): dropped.`);
+        }
+      }
+    }
+  }
+  return { fields, notes };
+}
 
 /** One line per section left out: a required one missing or blank, any one given but not a string; one per unknown field. */
 function argumentNotes(fields: Record<string, unknown>): string[] {
@@ -129,12 +174,12 @@ function argumentNotes(fields: Record<string, unknown>): string[] {
  * `$.fs.stat` checks (V12-V15) are the adapter's, through `loadFileNote`.
  */
 export function parseFrontier(input: unknown, memory?: OrderMemory): ParsedFrontier {
-  const fields = isObject(input) ? input : {};
-  const notes = argumentNotes(fields);
-  const frontier = SECTIONS.flatMap(({ key, heading }) => {
-    const text = fields[key];
-    return typeof text === 'string' && text.trim() !== '' ? [`## ${heading}\n${text}`] : [];
-  }).join('\n\n');
+  const unfolded = unfold(isObject(input) ? input : {});
+  const fields = unfolded.fields;
+  const notes = [...unfolded.notes, ...argumentNotes(fields)];
+  const given = (key: string): boolean => typeof fields[key] === 'string' && (fields[key] as string).trim() !== '';
+  const frontier = SECTIONS.flatMap(({ key, heading }) => (given(key) ? [`## ${heading}\n${fields[key] as string}`] : [])).join('\n\n');
+  const missing = SECTIONS.flatMap(({ key, required }) => (required && !given(key) ? [key] : []));
   const drops = fields.drop_skills;
   let dropSkills: string[] = [];
   if (drops !== undefined && !Array.isArray(drops)) notes.push('drop_skills must be an array of skill or command names: none dropped.');
@@ -158,7 +203,7 @@ export function parseFrontier(input: unknown, memory?: OrderMemory): ParsedFront
       else (loadFiles.push({ path, why, ...(ranges !== undefined ? { lines: ranges as string } : {}) }), loadAt.push(i));
     }
   }
-  return { frontier, dropSkills, standingOrders: orders.standing, lifted: orders.lifted, loadFiles, loadAt, notes };
+  return { frontier, dropSkills, standingOrders: orders.standing, lifted: orders.lifted, loadFiles, loadAt, missing, notes };
 }
 
 /** What the adapter learned from `$.fs.stat(path)` on one load file: its stat, or `absent` (ENOENT), or the error text of any other throw. */
@@ -173,21 +218,26 @@ export function loadFileNote(index: number, path: string, check: FileCheck): str
   return undefined;
 }
 
-/** The receipt's list of what the plugin left out, skipped or carried on for the model: empty when it changed nothing. */
-export function changesNote(notes: readonly string[]): string {
-  return notes.length === 0 ? '' : `Stored with ${notes.length} ${notes.length === 1 ? 'change' : 'changes'}:\n${notes.map((n) => `- ${n}`).join('\n')}`;
+/** The receipt's list of what the plugin left out, skipped or carried on for the model: empty when it changed nothing; with a required section `missing`, it ends with INCOMPLETE_NOTE. */
+export function changesNote(notes: readonly string[], missing: readonly string[] = []): string {
+  const list = notes.length === 0 ? '' : `Stored with ${notes.length} ${notes.length === 1 ? 'change' : 'changes'}:\n${notes.map((n) => `- ${n}`).join('\n')}`;
+  return missing.length === 0 ? list : `${list}\n${INCOMPLETE_NOTE}`;
 }
 
-/** `tokens`: the party's last reading, absent when it has none; it picks the sentence and is never printed, being a step behind the call. */
-export type ReceiptInput =
-  | { party: 'main'; chars: number; files: number; tokens?: number; askPoint?: number; replaced?: boolean }
-  | { party: 'subagent'; chars: number; files: number; tokens?: number; askPoint: number; replaced?: boolean };
+/** The last line of the changes list of a frontier missing a required section. */
+export const INCOMPLETE_NOTE = 'This frontier will not install until you call forward_compaction again with every MANDATORY section.';
 
-/** The tool result of a stored frontier: when it installs, true to the party's door (a sub-agent's only door is Claude Code's ask). */
+/** `tokens`: the party's last reading, absent when it has none; it picks the sentence and is never printed, being a step behind the call. `incomplete`: a required section is missing, so no door installs it. */
+export type ReceiptInput =
+  | { party: 'main'; chars: number; files: number; tokens?: number; askPoint?: number; replaced?: boolean; incomplete?: boolean }
+  | { party: 'subagent'; chars: number; files: number; tokens?: number; askPoint: number; replaced?: boolean; incomplete?: boolean };
+
+/** The tool result of a stored frontier: when it installs, true to the party's door (a sub-agent's only door is Claude Code's ask), or that it does not. */
 export function receipt(input: ReceiptInput): string {
+  const replaced = input.replaced ? ' It replaces the frontier you stored before.' : '';
+  if (input.incomplete) return `Frontier stored (${num(input.chars)} characters, ${input.files} files), but a MANDATORY section is missing, so it does not install: Claude Code's compaction stays held as if nothing were stored.${replaced}`;
   const stored = `Frontier stored (${num(input.chars)} characters, ${input.files} files).`;
   const behind = 'The newest messages after this call that fit are kept verbatim behind it, the rest named as not carried';
-  const replaced = input.replaced ? ' It replaces the frontier you stored before.' : '';
   if (input.party === 'main') return `${stored} It installs at the end of this turn, or at Claude Code's next compaction ask if one comes first. ${behind}, so finish the step in hand; you need not stop.${replaced}`;
   if (input.tokens !== undefined && input.tokens >= input.askPoint) return `${stored} It installs at Claude Code's next compaction ask, before your next request. ${behind}.${replaced}`;
   return `${stored} Claude Code has not asked to compact you yet: it installs at Claude Code's next ask, from about ${k(input.askPoint)} context. ${behind}. Carry on with your work.${replaced}`;

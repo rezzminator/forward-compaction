@@ -38,12 +38,15 @@ export function isPersonOrigin(kind: string | undefined): boolean {
   return kind !== undefined && PERSON_ORIGINS.has(kind);
 }
 
-/** The shells and crons of a Stop event's `background_tasks` and `session_crons`; anything that is not a list is none. */
-export function shellsOf(e: Record<string, unknown>): { tasks: ShellTask[]; crons: CronJob[] } {
+/**
+ * The shells and crons of a Stop event's `background_tasks` and `session_crons`; anything that is not a list is none.
+ * A SubagentStop still lists its own sub-agent running: `stopping`, its id, is left out, as it has stopped.
+ */
+export function shellsOf(e: Record<string, unknown>, stopping?: string): { tasks: ShellTask[]; crons: CronJob[] } {
   const list = (value: unknown): Record<string, unknown>[] => (Array.isArray(value) ? value : []);
   const tasks = list(e.background_tasks).map((t) => ({ id: String(t.id), type: String(t.type), status: String(t.status), description: String(t.description ?? ''), ...(typeof t.command === 'string' ? { command: t.command } : {}) }));
   const crons = list(e.session_crons).map((c) => ({ id: String(c.id), schedule: String(c.schedule), recurring: c.recurring === true, prompt: String(c.prompt ?? '') }));
-  return { tasks, crons };
+  return { tasks: tasks.filter((t) => t.id !== stopping), crons };
 }
 
 export function newLedger(): Ledger {
@@ -169,6 +172,8 @@ export type Facts = {
   skills: SkillEntry[];
   unattributedSkills: SkillEntry[];
   shells?: ShellsEntry;
+  /** Background commands any party started after `shells` was taken: a running shell the snapshot cannot list. */
+  backgroundSince: number;
   /** The files the party's calls touched and its task list, from its finished tool calls. */
   work: WorkSummary;
   startedAt?: number;
@@ -190,6 +195,7 @@ export function factsFor(ledger: Ledger, party: PartyKey, opts: { keptTexts: rea
   const arrived = delivered.filter((e) => !before(e) && e.text !== '' && fresh(e)).map((e) => ({ at: e.at, origin: e.kind === 'person' ? 'person' : e.origin, text: e.text }));
   const person = mine('person', party).filter(before);
   const kept = person.filter(fresh);
+  const shells = entries.find((e): e is ShellsEntry => e.kind === 'shells');
   return {
     person: kept,
     personInTail: person.length - kept.length,
@@ -199,7 +205,8 @@ export function factsFor(ledger: Ledger, party: PartyKey, opts: { keptTexts: rea
     received: mine('received', party).filter(before).filter(fresh),
     skills: newestFirst(party).filter(fresh),
     unattributedSkills: newestFirst('unknown').filter((s) => !carried.has(s.skill)).filter(fresh),
-    shells: entries.find((e): e is ShellsEntry => e.kind === 'shells'),
+    shells,
+    backgroundSince: shells === undefined ? 0 : entries.filter((e) => e.kind === 'work' && e.fact.kind === 'command' && e.fact.background === true && e.at > shells.at).length,
     work: workSummary(mine('work', party).map((e) => e.fact)),
     startedAt: ledger.startedAt,
     startReason: ledger.startReason,

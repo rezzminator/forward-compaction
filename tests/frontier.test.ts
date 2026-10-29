@@ -14,18 +14,20 @@ import {
   sliceFile,
   changesNote,
   toolInput,
+  INCOMPLETE_NOTE,
 } from '../plugins/forward-compaction/src/frontier.ts';
 
-const valid = { objective: 'ship it', done: 'parser, tested', remaining: 'the adapter', next: 'wire the hook' };
-const text = '## Objective\nship it\n\n## Done\nparser, tested\n\n## Remaining\nthe adapter\n\n## Next\nwire the hook';
+const valid = { objective: 'ship it', decisions: 'none', done: 'parser, tested', remaining: 'the adapter', next: 'wire the hook' };
+const text = '## Objective\nship it\n\n## Decisions\nnone\n\n## Done\nparser, tested\n\n## Remaining\nthe adapter\n\n## Next\nwire the hook';
 const notes = (input: unknown): string[] => parseFrontier(input).notes;
-const SECTIONS = ['objective', 'done', 'remaining', 'next', 'blocked', 'findings'];
+const SECTIONS = ['objective', 'decisions', 'done', 'remaining', 'next', 'blocked', 'findings'];
+const REQUIRED = ['objective', 'decisions', 'done', 'remaining', 'next'];
 
 describe('the forward_compaction tool as registered', () => {
   it('is named forward_compaction and its description is short and holds one example call with the section arguments (R17)', () => {
     expect(FORWARD_TOOL).toBe('forward_compaction');
     expect(FORWARD_TOOL_DESCRIPTION.length).toBeLessThanOrEqual(600);
-    expect(FORWARD_TOOL_DESCRIPTION).toContain('forward_compaction({"objective": "…", "done": "…", "remaining": "…", "next": "…", "load_files": []})');
+    expect(FORWARD_TOOL_DESCRIPTION).toContain('forward_compaction({"objective": "…", "decisions": "…", "done": "…", "remaining": "…", "next": "…", "load_files": []})');
     expect(FORWARD_TOOL_DESCRIPTION).not.toContain('"frontier"');
     expect(FORWARD_TOOL_DESCRIPTION).toContain('standing_orders');
     expect(FORWARD_TOOL_DESCRIPTION).toContain('the newest later messages that fit stay verbatim, the rest named as not carried');
@@ -38,37 +40,42 @@ describe('the forward_compaction tool as registered', () => {
     expect(FORWARD_INPUT_SCHEMA.properties.load_files.items.properties.why.maxLength).toBe(WHY_MAX_CHARS);
   });
 
-  it('closes the schema: four required sections, two optional ones, load_files each with a path and a why', () => {
-    expect(FORWARD_INPUT_SCHEMA).toMatchObject({ type: 'object', additionalProperties: false, required: ['objective', 'done', 'remaining', 'next'] });
+  it('closes the schema: five required sections, two optional ones, load_files each with a path and a why', () => {
+    expect(FORWARD_INPUT_SCHEMA).toMatchObject({ type: 'object', additionalProperties: false, required: REQUIRED });
     expect(Object.keys(FORWARD_INPUT_SCHEMA.properties)).toEqual([...SECTIONS, 'load_files', 'drop_skills', 'standing_orders', 'lifted']);
     for (const name of SECTIONS) expect(FORWARD_INPUT_SCHEMA.properties[name as 'objective']).toMatchObject({ type: 'string', description: expect.any(String) });
-    expect(FORWARD_INPUT_SCHEMA.properties.objective.description).toBe('What the work is for and what done means.');
-    expect(FORWARD_INPUT_SCHEMA.properties.findings.description).toBe('Optional: decisions with why, errors verbatim, the commands and recipes you will need again.');
-    expect(FORWARD_INPUT_SCHEMA.properties.done.description).toBe('Finished pieces, each with how it was verified; every figure with the command that produced it.');
+    for (const name of REQUIRED) expect(FORWARD_INPUT_SCHEMA.properties[name as 'objective'].description).toMatch(/^MANDATORY: /);
+    expect(FORWARD_INPUT_SCHEMA.properties.objective.description).toBe('MANDATORY: what the work is for and what done means.');
+    expect(FORWARD_INPUT_SCHEMA.properties.decisions.description).toBe("MANDATORY: every ruling the person gave on how something gets done, in the person's words, each with its undo when one exists; \"none\" when there are none. Rules binding the rest of the work go in standing_orders.");
+    expect(FORWARD_INPUT_SCHEMA.properties.done.description).toBe('MANDATORY: finished pieces, each with how it was verified; every figure with the command that produced it.');
+    expect(FORWARD_INPUT_SCHEMA.properties.remaining.description).toBe('MANDATORY: every step left, in order; "none" when nothing is left.');
+    expect(FORWARD_INPUT_SCHEMA.properties.next.description).toBe('MANDATORY: the first concrete action after the wake.');
+    expect(FORWARD_INPUT_SCHEMA.properties.findings.description).toBe('Optional: your own choices with why, errors verbatim, the commands and recipes you will need again.');
+    for (const name of SECTIONS.filter((n) => !REQUIRED.includes(n))) expect(FORWARD_INPUT_SCHEMA.properties[name as 'blocked'].description).toMatch(/^Optional: /);
     const files = FORWARD_INPUT_SCHEMA.properties.load_files;
     expect(files).toMatchObject({ type: 'array', items: { additionalProperties: false, required: ['path', 'why'], properties: { why: { maxLength: 200 } } } });
   });
 });
 
 describe('parseFrontier assembles the sections and keeps their text whole', () => {
-  it('assembles the four required sections in order, and no load files when none are given', () => {
-    expect(parseFrontier(valid)).toEqual({ frontier: text, loadFiles: [], loadAt: [], dropSkills: [], standingOrders: [], lifted: [], notes: [] });
+  it('assembles the five required sections in order, Decisions right after Objective, and no load files when none are given', () => {
+    expect(parseFrontier(valid)).toEqual({ frontier: text, loadFiles: [], loadAt: [], dropSkills: [], standingOrders: [], lifted: [], missing: [], notes: [] });
   });
 
   it('places the optional sections after them, Blocked before Findings, and leaves out an absent or blank one', () => {
-    expect(parseFrontier({ findings: 'f', ...valid, blocked: 'b' })).toEqual({ frontier: `${text}\n\n## Blocked\nb\n\n## Findings\nf`, loadFiles: [], loadAt: [], dropSkills: [], standingOrders: [], lifted: [], notes: [] });
-    expect(parseFrontier({ ...valid, findings: 'f' })).toEqual({ frontier: `${text}\n\n## Findings\nf`, loadFiles: [], loadAt: [], dropSkills: [], standingOrders: [], lifted: [], notes: [] });
-    expect(parseFrontier({ ...valid, blocked: '  ' })).toEqual({ frontier: text, loadFiles: [], loadAt: [], dropSkills: [], standingOrders: [], lifted: [], notes: [] });
+    expect(parseFrontier({ findings: 'f', ...valid, blocked: 'b' })).toEqual({ frontier: `${text}\n\n## Blocked\nb\n\n## Findings\nf`, loadFiles: [], loadAt: [], dropSkills: [], standingOrders: [], lifted: [], missing: [], notes: [] });
+    expect(parseFrontier({ ...valid, findings: 'f' })).toEqual({ frontier: `${text}\n\n## Findings\nf`, loadFiles: [], loadAt: [], dropSkills: [], standingOrders: [], lifted: [], missing: [], notes: [] });
+    expect(parseFrontier({ ...valid, blocked: '  ' })).toEqual({ frontier: text, loadFiles: [], loadAt: [], dropSkills: [], standingOrders: [], lifted: [], missing: [], notes: [] });
   });
 
   it('keeps a section\'s own headings, blank lines, trailing space and Windows line ends untouched', () => {
     const own = 'x  \r\n\r\n### Goal\r\n## Notes\r\n';
-    expect(parseFrontier({ ...valid, objective: own })).toEqual({ frontier: text.replace('ship it', own), loadFiles: [], loadAt: [], dropSkills: [], standingOrders: [], lifted: [], notes: [] });
+    expect(parseFrontier({ ...valid, objective: own })).toEqual({ frontier: text.replace('ship it', own), loadFiles: [], loadAt: [], dropSkills: [], standingOrders: [], lifted: [], missing: [], notes: [] });
   });
 
   it('keeps a load file as given, lines and why included', () => {
     const files = [{ path: '/a/b.ts', lines: '1-60,160-185', why: 'the parser' }, { path: 'C:\\a\\b.ts', why: 'win' }];
-    expect(parseFrontier({ ...valid, load_files: files })).toEqual({ frontier: text, loadFiles: files, loadAt: [0, 1], dropSkills: [], standingOrders: [], lifted: [], notes: [] });
+    expect(parseFrontier({ ...valid, load_files: files })).toEqual({ frontier: text, loadFiles: files, loadAt: [0, 1], dropSkills: [], standingOrders: [], lifted: [], missing: [], notes: [] });
   });
 
   it('takes a frontier of any length whole, never refused or trimmed for size', () => {
@@ -83,9 +90,26 @@ describe('parseFrontier assembles the sections and keeps their text whole', () =
 
 describe('parseFrontier stores whatever it is sent and names what it left out', () => {
   it('V1 an unknown field is ignored and named, the old frontier argument included (R14)', () => {
-    expect(notes({ ...valid, drop: [] })).toEqual(['unknown field "drop" ignored. The fields are objective, done, remaining, next, blocked, findings, load_files, drop_skills, standing_orders and lifted.']);
+    expect(notes({ ...valid, drop: [] })).toEqual(['unknown field "drop" ignored. The fields are objective, decisions, done, remaining, next, blocked, findings, load_files, drop_skills, standing_orders and lifted.']);
     expect(notes({ ...valid, frontier: text })[0]).toContain('unknown field "frontier"');
     expect(parseFrontier({ ...valid, frontier: text }).frontier).toBe(text);
+  });
+
+  it('takes back out the parameters a broken call folded into a section after its closing tag, naming each', () => {
+    const orders = [{ order: 'Write and edit no files.' }];
+    const { next, ...rest } = valid;
+    const folded = { ...rest, remaining: `the adapter</remaining>\n<parameter name="standing_orders">${JSON.stringify(orders)}</standing_orders>\n<parameter name="next">${next}` };
+    const out = parseFrontier(folded);
+    expect(out.frontier).toBe(text);
+    expect(out.missing).toEqual([]);
+    expect(out.notes).toEqual([
+      'standing_orders arrived inside remaining, after "</remaining>": your call\'s markup closed remaining early; taken back out as its own field.',
+      'next arrived inside remaining, after "</remaining>": your call\'s markup closed remaining early; taken back out as its own field.',
+      'standing_orders[0].at must be the ISO time of the person\'s message, like "2026-10-27T14:53:00Z": skipped.',
+    ]);
+    expect(parseFrontier({ ...valid, remaining: 'a</remaining>\n<parameter name="next">other' }).notes[0]).toBe('next arrived inside remaining, after "</remaining>", but the call also sent next: the text after "</remaining>" is dropped.');
+    expect(parseFrontier({ ...rest, remaining: `the adapter</remaining>\n<parameter name="next">${next}</next>\n` })).toMatchObject({ frontier: text, missing: [] });
+    expect(parseFrontier({ ...valid, remaining: 'a </b> <parameter name="next">x' }).frontier).toBe(text.replace('the adapter', 'a </b> <parameter name="next">x'));
   });
 
   it('V2 a required section that is missing, not a string or blank is left out, by name', () => {
@@ -93,7 +117,15 @@ describe('parseFrontier stores whatever it is sent and names what it left out', 
     expect(notes({ ...valid, done: undefined })).toEqual(['done was missing: your frontier is stored without it.']);
     expect(notes({ ...valid, remaining: null })).toEqual(['remaining must be a string; got null: your frontier is stored without it.']);
     expect(notes({ ...valid, next: ' \n ' })).toEqual(['next was blank: your frontier is stored without it.']);
-    expect(parseFrontier({ ...valid, done: undefined }).frontier).toBe('## Objective\nship it\n\n## Remaining\nthe adapter\n\n## Next\nwire the hook');
+    expect(parseFrontier({ ...valid, done: undefined }).frontier).toBe('## Objective\nship it\n\n## Decisions\nnone\n\n## Remaining\nthe adapter\n\n## Next\nwire the hook');
+  });
+
+  it('lists every required section that is absent, not a string or blank as missing, in section order; an optional one never', () => {
+    expect(parseFrontier(valid).missing).toEqual([]);
+    expect(parseFrontier({ ...valid, blocked: 3, findings: '' }).missing).toEqual([]);
+    expect(parseFrontier({ objective: 'cut off mid-wo' }).missing).toEqual(['decisions', 'done', 'remaining', 'next']);
+    expect(parseFrontier({ ...valid, decisions: undefined, next: ' \n ', done: 7 }).missing).toEqual(['decisions', 'done', 'next']);
+    expect(parseFrontier(null).missing).toEqual(['objective', 'decisions', 'done', 'remaining', 'next']);
   });
 
   it('V3 an optional section that is present but not a string is left out, by name', () => {
@@ -104,8 +136,9 @@ describe('parseFrontier stores whatever it is sent and names what it left out', 
 
   it('V4 names every bad argument, one line each, and stores an input with nothing in it', () => {
     expect(notes({ done: 'd', extra: 1, findings: {} })).toEqual([
-      'unknown field "extra" ignored. The fields are objective, done, remaining, next, blocked, findings, load_files, drop_skills, standing_orders and lifted.',
+      'unknown field "extra" ignored. The fields are objective, decisions, done, remaining, next, blocked, findings, load_files, drop_skills, standing_orders and lifted.',
       'objective was missing: your frontier is stored without it.',
+      'decisions was missing: your frontier is stored without it.',
       'remaining was missing: your frontier is stored without it.',
       'next was missing: your frontier is stored without it.',
       'findings must be a string; got object: your frontier is stored without it.',
@@ -188,6 +221,21 @@ describe('changesNote lists what the plugin changed in the call', () => {
     expect(changesNote([])).toBe('');
     expect(changesNote(['a'])).toBe('Stored with 1 change:\n- a');
     expect(changesNote(['a', 'b'])).toBe('Stored with 2 changes:\n- a\n- b');
+  });
+});
+
+describe('an incomplete frontier is stored and says it never installs', () => {
+  it('opens the receipt with what is stored and that it does not install, for every party and door', () => {
+    const text = 'Frontier stored (381 characters, 0 files), but a MANDATORY section is missing, so it does not install: Claude Code\'s compaction stays held as if nothing were stored.';
+    expect(receipt({ party: 'main', chars: 381, files: 0, incomplete: true })).toBe(text);
+    expect(receipt({ party: 'subagent', chars: 381, files: 0, tokens: 90_000, askPoint: 67_000, incomplete: true })).toBe(text);
+    expect(receipt({ party: 'main', chars: 381, files: 0, replaced: true, incomplete: true })).toBe(`${text} It replaces the frontier you stored before.`);
+  });
+
+  it('ends its changes list with the line saying how to make it install, only when a section is missing', () => {
+    expect(changesNote(['a'], [])).toBe('Stored with 1 change:\n- a');
+    expect(changesNote(['next was missing'], ['next'])).toBe(`Stored with 1 change:\n- next was missing\n${INCOMPLETE_NOTE}`);
+    expect(INCOMPLETE_NOTE).toBe('This frontier will not install until you call forward_compaction again with every MANDATORY section.');
   });
 });
 

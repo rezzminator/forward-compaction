@@ -23,15 +23,20 @@ const holds = (said: string, words: string): boolean => plain(said).includes(pla
 const isIsoTime = (v: unknown): v is string => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(v) && !Number.isNaN(Date.parse(v));
 
 /** The `standing_orders` entries and `lifted` entries that are well formed, and one note per bad entry or non-array, naming its place and never its text. */
-function wellFormed(standing: unknown, lifted: unknown): { standing: StandingOrder[]; asked: { order: string; by: string }[]; notes: string[] } {
+function wellFormed(standing: unknown, lifted: unknown, said: readonly SaidText[]): { standing: StandingOrder[]; asked: { order: string; by: string }[]; notes: string[] } {
   const notes: string[] = [];
   const kept = { standing: [] as StandingOrder[], asked: [] as { order: string; by: string }[] };
   if (standing !== undefined && !Array.isArray(standing)) notes.push('standing_orders must be an array of {order, at}: none read from it.');
   else for (const [i, o] of (standing ?? []).entries()) {
     const { order, at } = isObject(o) ? o : ({} as Record<string, unknown>);
     if (blank(order)) notes.push(`standing_orders[${i}].order must be a non-blank string, the person's words verbatim: skipped.`);
-    else if (!isIsoTime(at)) notes.push(`standing_orders[${i}].at must be the ISO time of the person's message, like "2026-10-27T14:53:00Z": skipped.`);
-    else kept.standing.push({ order: order as string, at });
+    else if (isIsoTime(at)) kept.standing.push({ order: order as string, at });
+    // The model never sees a message's time before its first wake: the person's message that holds the words gives it.
+    else {
+      const first = said.find((m) => holds(m.text, order as string));
+      if (first === undefined) notes.push(`standing_orders[${i}].at must be the ISO time of the person's message, like "2026-10-27T14:53:00Z": skipped.`);
+      else kept.standing.push({ order: order as string, at: new Date(first.at).toISOString() });
+    }
   }
   if (lifted !== undefined && !Array.isArray(lifted)) notes.push('lifted must be an array of {order, by}: none read from it.');
   else for (const [i, l] of (lifted ?? []).entries()) {
@@ -50,7 +55,7 @@ function wellFormed(standing: unknown, lifted: unknown): { standing: StandingOrd
  * order binding, and an order the frontier left out is carried on, each named in the notes. A lift naming no order is ignored.
  */
 export function carryOrders(memory: OrderMemory, standing: unknown, lifted: unknown): { standing: StandingOrder[]; lifted: LiftedOrder[]; notes: string[] } {
-  const read = wellFormed(standing, lifted);
+  const read = wellFormed(standing, lifted, memory.said);
   const notes = read.notes;
   const known = new Map<string, StandingOrder>();
   // An order's time is the person's first message that holds it, when one does: the model's `at` is a guess, a remembered one's included.

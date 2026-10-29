@@ -5,16 +5,31 @@
 **Compaction for Claude Code where the model writes its own frontier: the main chat and every sub-agent compact through one tool, and the newest messages after the call stay verbatim.**
 
 [![Claude Code plugin](https://img.shields.io/badge/Claude%20Code-plugin-D97757)](https://docs.claude.com/en/docs/claude-code/plugins)
-[![Version](https://img.shields.io/badge/version-2.1.0-blue)](./CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-2.2.0-blue)](./CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
-[![Tests](https://img.shields.io/badge/tests-579%20passing-brightgreen)](#development)
+[![Tests](https://img.shields.io/badge/tests-607%20passing-brightgreen)](#development)
 [![Built with Professor](https://img.shields.io/badge/built%20with-Professor-8A2BE2)](https://github.com/rezzminator/professor)
 
 </div>
 
+## 📊 Benchmark: forward-compaction vs Claude Code's native compaction
+
+Measured on 2,939 real compactions in one heavy user's Claude Code transcripts over 30 days (2026-09-29 → 2026-10-29): 1,357 by Claude Code's native summarizer and 804 by forward-compaction, main chats and sub-agents alike. Each figure is read from the compaction's own boundary record (duration, tokens before and after) or from the frontier call's API usage, never estimated, except where marked.
+
+| Median (p90) | Native compaction | forward-compaction |
+| --- | --- | --- |
+| Main chat: time to compact | 54.9 s (94.6 s) | **24.2 s** (36.0 s): the model writes its frontier in its own turn, then a 0.085 s install |
+| Sub-agent: time to compact | **21.5 s** (59.9 s) | 28.7 s (43.8 s): writing the frontier, then a 0.12 s install |
+| Main chat: context left after | 18.6k tokens (32.8k) | **8.0k tokens** (17.5k) |
+| Sub-agent: context left after | 12.1k tokens (18.3k) | **8.8k tokens** (13.1k) |
+| Text written per compaction | ~3.0k tokens of summary (estimated from its length) | 3.2k tokens of frontier (4.5k) in a main chat, 3.7k (6.1k) in a sub-agent |
+| Cost of one main-chat compaction, Opus 5.5 | $0.25 | **$0.16** (−36%) |
+
+Cost is one read of the context being compacted ($0.20/M cached), the text written ($20/M output) and the cache write of the context left after ($8/M, 1-hour cache), at the medians above. The native summarizer re-reads a larger context (214k vs 167k, since forward-compaction compacts at the model's own milestone) and leaves over twice the context behind, which every later request then carries.
+
 ```text
 forward_compaction({
-  "objective": "…", "done": "…", "remaining": "…", "next": "…",
+  "objective": "…", "decisions": "…", "done": "…", "remaining": "…", "next": "…",
   "load_files": [{ "path": "/abs/plan.md", "why": "the plan I am executing" }]
 })
 ```
@@ -33,9 +48,10 @@ still holds the context, and builds the rest from facts the plugin recorded
 as they happened.
 
 - ✍️ **The model writes the frontier.** `forward_compaction` takes one
-  argument per section — `objective`, `done`, `remaining` and `next` — and
-  assembles them into one markdown frontier. It is stored, never summarized,
-  and installed verbatim.
+  argument per section — `objective`, `decisions`, `done`, `remaining` and
+  `next`, each MANDATORY — and assembles them into one markdown frontier. It
+  is stored, never summarized, and installed verbatim; one missing a
+  MANDATORY section is stored but never installed.
 - 🧾 **Facts are recorded, never reconstructed.** The person's messages (main
   chat) or the brief (sub-agent), the messages delivered to it, the skills
   loaded, the agents and the background shells come from typed hook events as
@@ -62,11 +78,6 @@ as they happened.
 - 📜 **Every decision logged** to a JSONL file per session, and every step
   to a debug log, with the numbers as Claude Code's API gave them.
 
-## 📊 Benchmark
-
-No benchmark of forward-compaction has been measured yet. The figures the
-earlier plugin of this repository published measured a different mechanism
-(a summarizer run at a milestone) and are not claimed for this one.
 
 ## 🚀 Quick start
 
@@ -138,7 +149,9 @@ and no ceiling, and an automatic ask from it with nothing stored is held as
    `mcp__forward-compaction__forward_compaction`). The plugin stores the frontier
    in memory for that party and never refuses the call: an argument it cannot
    use is left out or skipped, and the receipt names it. A later call
-   replaces the stored one.
+   replaces the stored one. A frontier missing a MANDATORY section is stored
+   but never installs: every door treats it as nothing stored, until a later
+   call with every MANDATORY section replaces it.
 3. **Installing.** The stored frontier installs at the next door Claude Code
    opens: for the main chat at the end of the turn (the plugin asks Claude
    Code to compact) or at an automatic ask if one comes first; for a
@@ -150,19 +163,30 @@ and no ceiling, and an automatic ask from it with nothing stored is held as
 
 ### The tool
 
-`forward_compaction({objective, done, remaining, next, blocked, findings, load_files, drop_skills, standing_orders, lifted})`,
+`forward_compaction({objective, decisions, done, remaining, next, blocked, findings, load_files, drop_skills, standing_orders, lifted})`,
 with its schema in the prompt's tool list (not deferred), so a nudged model
 needs no ToolSearch.
 
-- `objective`, `done`, `remaining`, `next` (required): non-blank strings —
-  what the work is for and what done means; the finished pieces, each with
-  how it was verified, every figure with the command that produced it; every
-  step left, in order; the first concrete action after the wake.
-- `blocked`, `findings` (optional): strings — what waits on whom; decisions
-  with why, errors verbatim, the commands and recipes the party will need
-  again. Absent or blank, the section is left out.
-- The plugin assembles the frontier as `## Objective`, `## Done`,
-  `## Remaining`, `## Next`, then `## Blocked` and `## Findings` when given,
+- `objective`, `decisions`, `done`, `remaining`, `next` (required, each
+  description opening `MANDATORY:`): non-blank strings — what the work is for
+  and what done means; every ruling the person gave on how something gets
+  done, in the person's words, each with its undo when one exists, `none`
+  when there are none; the finished pieces, each with how it was verified,
+  every figure with the command that produced it; every step left, in order,
+  `none` when nothing is left; the first concrete action after the wake.
+  `decisions` holds how a thing gets done ("the result is `already_sent`, not
+  `sent`"); a rule that binds the rest of the work goes in `standing_orders`.
+- A frontier missing a required section (absent, not a string, or blank) is
+  stored, never refused, but never installs: Claude Code's asks stay held as
+  if nothing were stored (until the ceiling's mechanical wake), and the main
+  chat's turn end does not install it. The decision log's `stored` row names
+  the sections as `incomplete`. A later call with every required section
+  replaces it and installs as usual.
+- `blocked`, `findings` (optional): strings — what waits on whom; the party's
+  own choices with why, errors verbatim, the commands and recipes the party
+  will need again. Absent or blank, the section is left out.
+- The plugin assembles the frontier as `## Objective`, `## Decisions`,
+  `## Done`, `## Remaining`, `## Next`, then `## Blocked` and `## Findings` when given,
   each heading followed by its argument verbatim and a blank line between
   sections. The frontier has no length cap: it is stored and installed
   whole, never trimmed.
@@ -188,7 +212,9 @@ needs no ToolSearch.
   was dropped, waits for the next frontier, is pinned, or was never loaded.
 - `standing_orders` (optional): the person's orders that bind the rest of the
   work (a prohibition, a limit, a rule), each `{order, at}`: `order` the
-  person's words verbatim, `at` the ISO time of the message that gave it. The
+  person's words verbatim, `at` the ISO time of the message that gave it,
+  optional: an order with no `at` or a malformed one is kept when a recorded
+  message of the person's holds its words, and skipped otherwise. The
   model names them; the plugin never guesses one from the person's wording.
   When a recorded message of the person's holds the order's words, the plugin
   stamps `at` from the first such message, never the model's guess, a
@@ -220,7 +246,15 @@ missing, blank or not a string, a bad `drop_skills` name, a bad
 (carried on), a lift whose words no recorded message sent after the order holds
 (the order still binding), a lift of no remembered order, a `load_files` entry
 that is bad, absent, not a regular file or could not be checked,
-and a call with no `tool_use_id`, which the wake cannot place.
+a call with no `tool_use_id`, which the wake cannot place, and a field taken
+back out of a section that holds its own closing tag then
+`<parameter name="…">` (the model's call markup closed the section early; an
+array field is read as JSON, and a field the call also sent keeps the sent
+value). A frontier
+missing a required section opens its receipt with `but a MANDATORY section is
+missing, so it does not install`, names each missing section in that list,
+and ends it with `This frontier will not install until you call
+forward_compaction again with every MANDATORY section.`
 
 Every answer ends with one line saying the
 plugin is experimental and asking the model to append a short note of any
@@ -236,7 +270,7 @@ replaces the message that held it, and, like a mechanical wake's message,
 ends with the experimental line and where to note any trouble.
 
 The facts message opens with the plugin version that built the wake
-(`compacted by forward-compaction 2.1.0`), so a chat on an old build shows
+(`compacted by forward-compaction 2.2.0`), so a chat on an old build shows
 it. It holds, each section only when it has content:
 
 - the standing orders, first, under `## Standing orders — binding until the
@@ -249,6 +283,14 @@ it. It holds, each section only when it has content:
 - what arrived after the frontier and the kept messages lack: every
   notification, message from the person or the coordinator, and message that
   resumed a sub-agent, verbatim, first;
+- plan mode and the plan file, when the party's plan-mode attachments
+  (Claude Code's `prompt.attachment` rows `plan_mode`, `plan_mode_reentry`,
+  `plan_mode_exit`) named them, as Claude Code's own compaction carries them:
+  `## Plan mode` while the party is in plan mode, naming its plan file, and
+  `## Plan file` with the file's path and its content read whole at install,
+  in plan mode or after it ended; a plan file not written yet is left out,
+  one that could not be read is named. Both are carried whole, outside the
+  budget;
 - the brief (sub-agent), verbatim, or the person's newest ten typed messages
   and every answer they gave to an AskUserQuestion, however old (main chat),
   oldest first, always carried whole, whatever their size. An answer, which
@@ -296,7 +338,15 @@ it. It holds, each section only when it has content:
 - the task list as last set, from `TodoWrite` or `TaskCreate`/`TaskUpdate`,
   whichever moved last, carried whole, never fitted;
 - the files the frontier asked to carry, each at most 250 lines, and the ones
-  not carried with why.
+  not carried with why;
+- in a mechanical wake only, under `## Files you were working on, newest
+  first, read at install`: the 5 newest files the party touched, read from
+  disk at install, each at most 250 lines with the same `[N more lines not
+  carried: …]` line, as Claude Code's own compaction restores its 5 most
+  recent files because it fires uninvited. One that could not be read is
+  named in place with why. A frontier's wake carries only the files the
+  frontier asked for, and the wake an error falls back to, built without
+  any read, carries neither these files nor the plan file.
 
 Its size is held to a budget of half Claude Code's ask point (the
 `autoCompactThreshold` that `$.session.usage` reports, held at or below the
@@ -311,8 +361,8 @@ tokens past the base, or outside 1 to 8 characters a token, and unmeasured
 nothing is fitted: a frontier's wake carries the facts, the files and every
 message after the call, and a mechanical wake keeps no earlier message. The standing orders, the brief or the person's newest ten typed messages and every answer,
 and the task list are carried whole, outside the budget; the skills and
-commands within their own limits above, and the files each within 250 lines,
-are outside it too. Every other section has a share — what arrived after the frontier 25%,
+commands within their own limits above, the plan file whole, and the files
+each within 250 lines, are outside it too. Every other section has a share — what arrived after the frontier 25%,
 delivered messages or notifications 5%, sibling results 10%, the shell
 commands 5% — and is carried whole or named as
 not carried, never cut. The room left goes to the messages after the call: the
@@ -322,7 +372,8 @@ how many were dropped.
 The frontier message carries the frontier verbatim, tells the model to
 continue from its `## Next`, and says how many later messages
 follow. A mechanical wake replaces it with a message saying no frontier was
-written, how many of the newest messages were kept and how many are gone,
+written (or that the stored one never installed, naming the sections it
+lacked), how many of the newest messages were kept and how many are gone,
 and to re-establish the objective from the person's messages or the brief.
 
 Each install writes one line, measured: it waits for the party's first
@@ -564,29 +615,7 @@ npm run validate:plugin
 npm run replay:record # records a live replay fixture (a paid Claude Code session)
 ```
 
-The replay test (`tests/replay.test.ts`) drives a recorded live session through the current plugin and pins what carries format risk, never the plugin's own call sequence. Hook events and their payloads replay exactly as recorded. A read of engine state (`agent.list`, `env.get`, `fs.read`, `fs.stat`, `session.usage`, `session.messages`, `session.compact`) takes its recorded answer: the same call's when the arguments match, else the latest answer recorded for that path (for `env.get`, `fs.read` and `fs.stat`, for the same variable or file) at that point of the timeline; one the recording never holds fails as `unrecorded $ call {path}`, and the fixture is re-recorded. Utility and effect calls are the harness's: `session.id` and `clock.now` give the recorded id and time, `ui.log` is captured, `tool.register` gives the recorded registration, `clock.after` never fires, and `process.run` really runs the plugin's argv in a temporary sandbox standing in for the recorded home, refusing any path outside it. The table is `ANSWERS` in `tests/fakes/replay-engine.ts`.
-
-The live replay fixture exercises every replay invariant but two, which the replay test names: I2, a precompute ask (Claude Code 2.1.309 sent none; `tests/decide.test.ts` covers C2), and I11, tail handles shared by two chained installs (a chained frontier's call comes after everything the install before it kept, so the two tails share no message).
-
-Work lands on `develop`; `main` holds only releases. Merging the `develop → main` pull request is the release: [`release.yml`](./.github/workflows/release.yml) tags the merge commit `forward-compaction--vX.Y.Z` and publishes its notes from [CHANGELOG.md](./CHANGELOG.md). `make release-check` runs that pull request's checks locally first. Pull requests go to `develop`.
-
-`plugins/forward-compaction/hooks/forward-compaction.ts` is a thin adapter over `plugins/forward-compaction/src/`:
-
-| Module | Role |
-| --- | --- |
-| `options.ts` | Sizes, flags and the `FORWARD_COMPACTION_*` variables, resolved with their defaults |
-| `window.ts` | Claude Code's ask point from `$.session.usage`, the ignore list, each party's marks against its max context, the measured characters per token, the load-file room |
-| `ledger.ts` | The facts recorded from typed hook events, per party |
-| `frontier.ts` | The tool's description and schema, its validation (nothing is refused) and the receipt |
-| `wake.ts` | The split at the call, the budget, the facts and frontier messages, the tail that fits, the landed lines |
-| `decide.ts` | The decision for one compaction ask, and a party's reading |
-| `nudge.ts` | Nudge levels and text |
-| `parties.ts` | Per-party state: readings, the stored frontier, nudges sent |
-| `unseen.ts` | A context fall no compaction of this plugin explains |
-| `look-back.ts` | The `look_back` tool |
-| `log.ts` | The decision log and the level logs |
-| `bounded.ts` | Bounds a promise with a timer passed in: tool registration holds a turn at most 5s |
-| `register.ts` | Which tools still need a registration try, up to three each |
+The replay test drives a recorded live Claude Code session through the current plugin and checks what the wake carries. Work lands on `develop`; `main` holds only releases, and merging the `develop → main` pull request publishes one. `make release-check` runs that pull request's checks locally. Pull requests go to `develop`.
 
 ## 🎓 Built with Professor
 

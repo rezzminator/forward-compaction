@@ -17,7 +17,7 @@ afterEach(() => {
 
 const FORWARD = 'mcp__forward-compaction__forward_compaction';
 const LOOK_BACK = 'mcp__forward-compaction__look_back';
-const SECTIONS = { objective: 'Fix the audit.', done: 'Item 20.', remaining: 'Item 21.', next: 'Write its test.' };
+const SECTIONS = { objective: 'Fix the audit.', decisions: 'none', done: 'Item 20.', remaining: 'Item 21.', next: 'Write its test.' };
 const A1 = 'a1b2c3d4e5';
 
 async function begin(script: Script = {}): Promise<Fake> {
@@ -102,6 +102,48 @@ describe('M2 + M4: the wake carries the commands the party ran', () => {
     const wake = (await f.dispatch('session.compact', { trigger: 'auto', agentId: A1, messages }, async () => ({ skip: 'native ran' }))).messages[0].text;
     expect(wake).toContain("## Shell commands you ran, newest first\n### Run the S6 test\nnpx vitest run fixes.test.ts -t 'S6'\n### Build the plugin\nnpm run build");
     expect(wake).not.toContain('OUTPUT-NEVER-CARRIED');
+  });
+});
+
+describe("a sub-agent's own stop: it is no longer running", () => {
+  it("leaves the stopping sub-agent out of the shells its SubagentStop lists, keeping every other task", async () => {
+    const f = await begin();
+    await spawn(f);
+    await step(f, 64_000);
+    const tasks = [
+      { id: A1, type: 'subagent', status: 'running', description: 'List hook events' },
+      { id: 'b7', type: 'local_bash', status: 'running', command: 'sleep 1800' },
+    ];
+    await f.dispatch('classic.SubagentStop', { agent_id: A1, background_tasks: tasks }, async () => ({}));
+    await f.dispatch('tool.call', { tool: FORWARD, tool_use_id: 'tu-m', ...SECTIONS }, async () => ({ result: 'not ours' }));
+    const messages = [
+      { role: 'user', text: 'go', toolUses: [], handle: 'h0' },
+      { role: 'assistant', text: 'storing', toolUses: [{ tool_use_id: 'tu-m', tool: FORWARD, input: SECTIONS }], handle: 'h1' },
+      { role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: 'tu-m', text: 'Frontier stored' }], handle: 'h2' },
+    ];
+    const wake = (await f.dispatch('session.compact', { trigger: 'auto', messages }, async () => ({ skip: 'native ran' }))).messages[0].text;
+    expect(wake).toContain('- local_bash b7 running: sleep 1800');
+    expect(wake).not.toContain(`subagent ${A1} running`);
+  });
+});
+
+describe('a background shell started after the last Stop snapshot', () => {
+  it('is named in the shells heading as left out of the list, never read as none running', async () => {
+    const f = await begin();
+    await spawn(f);
+    await step(f, 64_000);
+    await f.dispatch('classic.SubagentStop', { agent_id: A1, background_tasks: [] }, async () => ({}));
+    f.advance(30_000);
+    await f.dispatch('tool.call', { tool: 'Bash', tool_use_id: 'tu-s', command: 'sleep 900', description: 'Sleep', run_in_background: true }, async () => ({ result: 'Command running in background with ID: bz1' }));
+    await f.dispatch('tool.call', { tool: 'Bash', tool_use_id: 'tu-l', command: 'ls', description: 'List' }, async () => ({ result: 'a' }));
+    await f.dispatch('tool.call', { tool: FORWARD, tool_use_id: 'tu-m', ...SECTIONS }, async () => ({ result: 'not ours' }));
+    const messages = [
+      { role: 'user', text: 'go', toolUses: [], handle: 'h0' },
+      { role: 'assistant', text: 'storing', toolUses: [{ tool_use_id: 'tu-m', tool: FORWARD, input: SECTIONS }], handle: 'h1' },
+      { role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: 'tu-m', text: 'Frontier stored' }], handle: 'h2' },
+    ];
+    const wake = (await f.dispatch('session.compact', { trigger: 'auto', messages }, async () => ({ skip: 'native ran' }))).messages[0].text;
+    expect(wake).toContain('## Background shells and crons (session-wide, from the Stop event 30s before install; 1 background command started since is not in this list)\n(none running)');
   });
 });
 

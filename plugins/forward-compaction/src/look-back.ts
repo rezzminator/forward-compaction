@@ -197,7 +197,7 @@ export function parseEntries(stdout: string): LookBackEntry[] {
   });
 }
 /**
- * Entry types Claude Code writes for its own bookkeeping, never part of the conversation (read off 2.1.300 transcripts):
+ * Entry types Claude Code writes for its own bookkeeping, never part of the conversation (read off 2.1.300 transcripts; `tools-used`, the tools a session used, off 2.1.312):
  * a queue operation other than an enqueued prompt (a dequeue, removal or pop repeats or empties it), a copy of a request
  * sent, titles, modes, links, file history and cost. Skipped without a note; a `system` entry without text is too.
  */
@@ -205,6 +205,7 @@ const BOOKKEEPING = new Set([
   'queue-operation', 'api-request', 'api-request-blob', 'api-request-shape', 'last-prompt', 'mode', 'permission-mode',
   'atis-latch', 'ai-title', 'custom-title', 'agent-name', 'bridge-session', 'history-suppression', 'frame-link', 'pr-link',
   'file-history-snapshot', 'file-history-delta', 'cost-state', 'artifact-comment-monitor', 'artifact-autoreact-ledger',
+  'tools-used',
 ]);
 /**
  * An `attachment` entry: what Claude Code put into the conversation beside the messages. A task notification (a child's

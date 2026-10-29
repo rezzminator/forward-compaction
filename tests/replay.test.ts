@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { ANSWERS, loadFixture, invocations, replay, recordSynthetic, type Invocation } from './fakes/replay-engine.ts';
-import { ENV_NAMES, PATHS, PART_CHARS, RECORDED, rowFiles, type Row } from '../scripts/replay/recorder.ts';
+import { ENV_NAMES, PATHS, PART_CHARS, RECORDED, STATE_KEYS, rowFiles, type Row } from '../scripts/replay/recorder.ts';
 import { contextTokens } from '../plugins/forward-compaction/src/decide.ts';
 import { parseFrontier } from '../plugins/forward-compaction/src/frontier.ts';
 import { resolveOptions, subagentMaxContext } from '../plugins/forward-compaction/src/options.ts';
@@ -30,7 +30,7 @@ const wakeOf = (inv: Invocation): any[] | undefined => (inv.hook === 'session.co
 const texts = (messages: readonly any[]): string => messages.map((m) => [m.text ?? '', ...(m.toolResults ?? []).map((r: any) => r.text ?? '')].join('\n')).join('\n');
 const nextWake = (view: View, key: string, after: number): Invocation | undefined => view.find((c) => c.seq > after && party(c.input) === key && wakeOf(c) !== undefined);
 /** The frontier the plugin assembled from the call's section arguments, or undefined when the call carried none. */
-const SECTION_KEYS = ['objective', 'done', 'remaining', 'next', 'blocked', 'findings'];
+const SECTION_KEYS = ['objective', 'decisions', 'done', 'remaining', 'next', 'blocked', 'findings'];
 const frontierOf = (call: Invocation): string | undefined => {
   const args = call.input?.objective !== undefined ? call.input : call.input?.input ?? {};
   const out = parseFrontier(Object.fromEntries(SECTION_KEYS.filter((key) => key in args).map((key) => [key, args[key]])));
@@ -142,7 +142,8 @@ export const INVARIANTS: Record<Name, (view: View, recorded: boolean) => Verdict
       subjects++;
       const wake = texts(wakeOf(c)!);
       // the woken sub-agent is not its own background task: its wake leaves it out (CHANGELOG 1.0.0-dev.2)
-      for (const t of stop.input?.background_tasks ?? []) if (t.id !== c.input?.agentId && (!wake.includes(String(t.id)) || (typeof t.command === 'string' && !wake.includes(t.command)))) failures.push(`I8 ${at(c)}: shell ${t.id} of ${stop.hook} #${stop.id} is not in the wake`);
+      // a SubagentStop lists its own sub-agent running though it stopped: the wake leaves it out
+      for (const t of stop.input?.background_tasks ?? []) if (t.id !== c.input?.agentId && !(stop.hook === 'classic.SubagentStop' && t.id === stop.input?.agent_id) && (!wake.includes(String(t.id)) || (typeof t.command === 'string' && !wake.includes(t.command)))) failures.push(`I8 ${at(c)}: shell ${t.id} of ${stop.hook} #${stop.id} is not in the wake`);
     }
     return { subjects, failures };
   },
@@ -319,7 +320,8 @@ describe('replay gate (D19)', { timeout: 60_000 }, () => {
     const rows = LIVE();
     const firstNow = rows.find((r) => r.phase === 'call' && r.path === 'clock.now');
     const stripped = rows.filter((r) => !(r.phase === 'call' && (r.path === 'process.run' || (r.path === 'clock.now' && r !== firstNow))));
-    expect(await gate(stripped, LIVE_EXERCISES)).toEqual([]);
+    // The recorded landed line lives in the process.run rows stripped here; I10 holds on both sides in the full-fixture gate above.
+    expect((await gate(stripped, LIVE_EXERCISES)).filter((f) => !f.startsWith('recorded: I10 '))).toEqual([]);
   });
 
   it('process.run really runs the log appends in the sandbox, under the recorded home', async () => {
@@ -426,11 +428,12 @@ describe('the recorder', () => {
     expect(JSON.parse(parts.map((p) => p.text).join('')).input.text.length).toBe(PART_CHARS * 2 + 5);
   });
 
-  it('wraps every event and $ path the adapter uses, and every variable it reads, spelled as Claude Code requires', () => {
+  it('wraps every event and $ path the adapter uses, every variable it reads and every state key it uses, spelled as Claude Code requires', () => {
     const adapter = readFileSync(join(ROOT, 'plugins/forward-compaction/hooks/forward-compaction.ts'), 'utf8');
     expect(new Set(adapter.match(/(?<=\bon\(')[^']+/g))).toEqual(new Set(RECORDED));
     expect(new Set(adapter.match(/(?<=\$\.)[a-z]+\.[a-zA-Z]+/g))).toEqual(new Set(PATHS));
     expect(new Set(adapter.match(/(?<=\$\.env\.get\(')[^']+/g))).toEqual(new Set(ENV_NAMES));
+    expect(new Set(adapter.match(/(?<=\$\.state\.(?:get|set)\(\{ plugin: 'forward-compaction', key: ')[^']+/g))).toEqual(new Set(STATE_KEYS));
   });
 });
 

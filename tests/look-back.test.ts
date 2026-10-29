@@ -144,6 +144,7 @@ describe('look_back readable transcript entries (R4)', () => {
     { type: 'cost-state', totalCostUSD: 1, modelUsage: { needle: {} } },
     { type: 'artifact-comment-monitor', v: 1, artifacts: { needle: {} } },
     { type: 'artifact-autoreact-ledger', v: 1, artifacts: { needle: {} } },
+    { type: 'tools-used', tools: ['needle'], sessionId: 's1' },
     { type: 'system', subtype: 'stop_hook_summary', hookCount: 1, hookInfos: [{ command: 'needle' }], level: 'suggestion' },
     { type: 'system', subtype: 'turn_duration', durationMs: 5, messageCount: 2, isMeta: false, note: 'needle' },
     { type: 'system', subtype: 'agents_killed', isMeta: false, note: 'needle' },

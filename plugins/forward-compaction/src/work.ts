@@ -6,7 +6,7 @@
 export type FileTag = 'R' | 'E' | 'W';
 export type WorkFact =
   | { kind: 'file'; path: string; tag: FileTag }
-  | { kind: 'command'; command: string; description?: string }
+  | { kind: 'command'; command: string; description?: string; background?: true }
   | { kind: 'todos'; lines: string[] }
   | { kind: 'task-create'; id?: string; subject: string }
   | { kind: 'task-update'; id: string; status?: string; subject?: string };
@@ -21,7 +21,7 @@ const mark = (status: unknown): string => MARK[String(status)] ?? '[ ]';
 /** The facts a finished call records, none for a call that was denied, errored (a command excepted: the one to rerun) or touches no file, command or task. */
 export function workOf(tool: string, input: Record<string, unknown>, answer: CallAnswer): WorkFact[] {
   if (answer.deny !== undefined) return [];
-  if (tool === 'Bash') return str(input.command) === undefined ? [] : [{ kind: 'command', command: str(input.command)!, ...(str(input.description) !== undefined ? { description: str(input.description) } : {}) }]; // never its output
+  if (tool === 'Bash') return str(input.command) === undefined ? [] : [{ kind: 'command', command: str(input.command)!, ...(str(input.description) !== undefined ? { description: str(input.description) } : {}), ...(input.run_in_background === true ? { background: true as const } : {}) }]; // never its output
   if (answer.isError === true) return [];
   const file = (path: string | undefined, tag: FileTag): WorkFact[] => (path === undefined ? [] : [{ kind: 'file', path, tag }]);
   switch (tool) {
