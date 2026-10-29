@@ -50,6 +50,13 @@ describe('a decision log that cannot be written, through the adapter', () => {
     expect(failures(cc.texts())).toEqual([`writing the decision log for ${PATH} failed: EACCES: permission denied; its 1 row is kept and written with the next`]);
   });
 
+  it('keeps an aborted dispatch\'s write off the screen: its row is kept for the next write', async () => {
+    const cc = engine(() => 'forward-compaction: $.process.run(/bin/sh) aborted');
+    await cc.start();
+    for (let i = 0; i < 2; i++) await cc.ask();
+    expect(failures(cc.texts())).toEqual([]);
+  });
+
   it('tells the person once when the same failure carries a varying number', async () => {
     let size = 4_194_304;
     const cc = engine(() => `EFBIG: ${size++} bytes, over the 4 MiB limit`);

@@ -2,7 +2,7 @@
 // Chats share the decisions folder in the plugin log directory, so each session writes its own
 // file there; a resumed session appends to the rows it wrote before.
 // The level files are the vendored plugin-log library's (./plugin-log.ts); this file keeps only what is this plugin's own.
-import { LOCK_FN, type PluginLogFields } from './plugin-log.ts';
+import { LOCK_FN, runAborted, type PluginLogFields } from './plugin-log.ts';
 
 /** The session's own log path: the session id goes before the extension of `logFile`. */
 export function sessionLogPath(logFile: string, sessionId: string): string {
@@ -77,10 +77,13 @@ export function keptRowsText(rows: number, dropped: number, last: boolean, hold:
  * A failed decision-log write's line, and its once-per-failure key: numbers dropped, so a failure whose text carries a varying
  * size is said once; the first drop past the hold is told even when its failure already was (the session-end line counts all).
  */
-export function decisionFailure(named: string, error: unknown, last: boolean): { line: string; key: string } {
-  const failed = `forward-compaction: writing the decision log for ${named} failed: ${error instanceof Error ? error.message : String(error)}`;
+export function decisionFailure(named: string, error: unknown, last: boolean): { line: string; key: string; quiet: boolean } {
+  const cause = error instanceof Error ? error.message : String(error);
+  const failed = `forward-compaction: writing the decision log for ${named} failed: ${cause}`;
   const kept = error instanceof DecisionWriteError ? keptRowsText(error.rows, error.dropped, last) : '';
-  return { line: `${failed}${kept}`, key: `${failed}${error instanceof DecisionWriteError && error.dropped > 0 ? ' (hold)' : ''}`.replace(/\d+/g, '#') };
+  // quiet: an abandoned dispatch's run lost nothing, its rows wait for the next flush; at session end or past the hold they are lost, and said.
+  const quiet = !last && runAborted(cause) && !(error instanceof DecisionWriteError && error.dropped > 0);
+  return { line: `${failed}${kept}`, key: `${failed}${error instanceof DecisionWriteError && error.dropped > 0 ? ' (hold)' : ''}`.replace(/\d+/g, '#'), quiet };
 }
 
 /** The session-end line for the decision rows no append wrote: those still held, and those the hold dropped. */

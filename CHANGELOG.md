@@ -2,6 +2,16 @@
 
 Every release of forward-compaction, named sub-agent-compact before 1.0.0. Versions follow [semantic versioning](https://semver.org); each release is the `main` commit tagged `forward-compaction--v<version>` (`sub-agent-compact--v<version>` before 1.0.0), with a GitHub release carrying the section below.
 
+## [2.2.1] — 2026-10-29
+
+### Changed
+
+- **The repository is renamed `forward-compaction`.** It moves from `github.com/rezzminator/sub-agent-compact` to `github.com/rezzminator/forward-compaction`, matching the plugin's name; the manifest's `repository` and `homepage` follow. GitHub redirects the old address, so existing clones and installs keep working; `git remote set-url origin https://github.com/rezzminator/forward-compaction.git` points a clone at the new one.
+
+### Fixed
+
+- **A cancelled log write no longer shows on screen.** When Claude Code abandons a hook mid-write (an interrupt, a compaction landing), the log append is aborted and its rows wait for the next write, so nothing is lost; that used to print a "plugin log … failed" or "writing the decision log … failed" line. It now goes to the debug log only. A real write failure, a cancel at session end, or rows dropped past the hold are still said.
+
 ## [2.2.0] — 2026-10-29
 
 ### Added

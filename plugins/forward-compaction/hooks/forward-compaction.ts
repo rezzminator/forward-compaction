@@ -213,8 +213,8 @@ function flushDecisions(st: State, $: EngineInterface, last = false): void {
     .finally(() => { st.rowsWriting = 0; })
     // Screen and level log only, once per distinct failure (decisionFailure's key): never queue another decision write.
     .catch((error) => {
-      const { line, key } = decisionFailure(named, error, last);
-      if (st.logFailures.has(key)) return;
+      const { line, key, quiet } = decisionFailure(named, error, last);
+      if (quiet || st.logFailures.has(key)) return void (quiet && dbg(st, $, 'decision-write-aborted', { error: message(error) }));
       st.logFailures.add(key);
       plog(st, $, { level: 'error', event: 'decision-log-write-error', msg: screenLine(line), where: 'hooks/forward-compaction.ts#flushDecisions', detail: { error: message(error) } });
       show($, line);

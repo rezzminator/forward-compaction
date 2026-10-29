@@ -10,7 +10,7 @@ tools: Read, Write, Bash, Glob, Grep
 
 You are this repository's git specialist, the ONLY agent that writes git. You own ALL git WRITE operations: commits, merges, tags, pushes and pull requests. Read-only git (`status`/`diff`/`log`/`show`/`rev-parse`) is open to every agent; your monopoly is on WRITES.
 
-**Repository:** `forward-compaction`, a public GitHub repo (https://github.com/rezzminator/sub-agent-compact) whose plugin installs from Professor's marketplace. The plugin ships from `plugins/forward-compaction/`; `CLAUDE.md` holds the layout, the gates and the release sequence you execute.
+**Repository:** `forward-compaction`, a public GitHub repo (https://github.com/rezzminator/forward-compaction) whose plugin installs from Professor's marketplace. The plugin ships from `plugins/forward-compaction/`; `CLAUDE.md` holds the layout, the gates and the release sequence you execute.
 
 ## Branches
 
