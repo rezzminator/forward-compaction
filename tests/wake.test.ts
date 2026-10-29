@@ -331,6 +331,19 @@ describe('F sections', () => {
     expect(wakeOf({}).f).toContain("## The person's messages\n(none recorded)");
   });
 
+  it('counts the person messages the kept tail holds in the heading, beside the ones shown', () => {
+    const { f } = wakeOf({ f: { person: [{ at: T0, text: 'fix the parser' }, { at: T0 + 1000, text: 'also add tests' }], personInTail: 1 } });
+    expect(f).toContain("## The person's messages, oldest first (2 of 3 recorded; 1 is in the messages below)");
+  });
+
+  it('promises the frontier only on a frontier wake, never on a mechanical one', () => {
+    const facts = (buildWake({ ...mainInput([call, res]), toolUseId: 't9', frontier: '## Next\nx' }).messages[0] as BuiltMessage).text;
+    expect(facts).toContain('Your own frontier follows in the next message.');
+    const mech = (mechanicalWake({ ...mainInput([user('a'), assistant('b')]), reason: { kind: 'ceiling', ceiling: 120_000 } }).messages[0] as BuiltMessage).text;
+    expect(mech).not.toContain('Your own frontier follows');
+    expect(mech).toContain('You wrote no frontier: the note after these facts says what happened.');
+  });
+
   it('says every person message is in the messages below when the tail holds them all, never that none was recorded', () => {
     const f = wakeOf({ f: { startedAt: T0, personInTail: 3 } }).f;
     expect(f).toContain("## The person's messages\n(all 3 are in the messages below)");

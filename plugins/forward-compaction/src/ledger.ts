@@ -38,12 +38,15 @@ export function isPersonOrigin(kind: string | undefined): boolean {
   return kind !== undefined && PERSON_ORIGINS.has(kind);
 }
 
-/** The shells and crons of a Stop event's `background_tasks` and `session_crons`; anything that is not a list is none. */
-export function shellsOf(e: Record<string, unknown>): { tasks: ShellTask[]; crons: CronJob[] } {
+/**
+ * The shells and crons of a Stop event's `background_tasks` and `session_crons`; anything that is not a list is none.
+ * A SubagentStop still lists its own sub-agent running: `stopping`, its id, is left out, as it has stopped.
+ */
+export function shellsOf(e: Record<string, unknown>, stopping?: string): { tasks: ShellTask[]; crons: CronJob[] } {
   const list = (value: unknown): Record<string, unknown>[] => (Array.isArray(value) ? value : []);
   const tasks = list(e.background_tasks).map((t) => ({ id: String(t.id), type: String(t.type), status: String(t.status), description: String(t.description ?? ''), ...(typeof t.command === 'string' ? { command: t.command } : {}) }));
   const crons = list(e.session_crons).map((c) => ({ id: String(c.id), schedule: String(c.schedule), recurring: c.recurring === true, prompt: String(c.prompt ?? '') }));
-  return { tasks, crons };
+  return { tasks: tasks.filter((t) => t.id !== stopping), crons };
 }
 
 export function newLedger(): Ledger {

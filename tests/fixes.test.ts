@@ -105,6 +105,28 @@ describe('M2 + M4: the wake carries the commands the party ran', () => {
   });
 });
 
+describe("a sub-agent's own stop: it is no longer running", () => {
+  it("leaves the stopping sub-agent out of the shells its SubagentStop lists, keeping every other task", async () => {
+    const f = await begin();
+    await spawn(f);
+    await step(f, 64_000);
+    const tasks = [
+      { id: A1, type: 'subagent', status: 'running', description: 'List hook events' },
+      { id: 'b7', type: 'local_bash', status: 'running', command: 'sleep 1800' },
+    ];
+    await f.dispatch('classic.SubagentStop', { agent_id: A1, background_tasks: tasks }, async () => ({}));
+    await f.dispatch('tool.call', { tool: FORWARD, tool_use_id: 'tu-m', ...SECTIONS }, async () => ({ result: 'not ours' }));
+    const messages = [
+      { role: 'user', text: 'go', toolUses: [], handle: 'h0' },
+      { role: 'assistant', text: 'storing', toolUses: [{ tool_use_id: 'tu-m', tool: FORWARD, input: SECTIONS }], handle: 'h1' },
+      { role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: 'tu-m', text: 'Frontier stored' }], handle: 'h2' },
+    ];
+    const wake = (await f.dispatch('session.compact', { trigger: 'auto', messages }, async () => ({ skip: 'native ran' }))).messages[0].text;
+    expect(wake).toContain('- local_bash b7 running: sleep 1800');
+    expect(wake).not.toContain(`subagent ${A1} running`);
+  });
+});
+
 describe('S (brief 45k): a resumed sub-agent keeps its brief', () => {
   it("records the resuming message as a delivered message, never as the agent's brief", async () => {
     const f = await begin();

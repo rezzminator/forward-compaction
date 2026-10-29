@@ -7,10 +7,25 @@
 [![Claude Code plugin](https://img.shields.io/badge/Claude%20Code-plugin-D97757)](https://docs.claude.com/en/docs/claude-code/plugins)
 [![Version](https://img.shields.io/badge/version-2.1.0-blue)](./CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
-[![Tests](https://img.shields.io/badge/tests-600%20passing-brightgreen)](#development)
+[![Tests](https://img.shields.io/badge/tests-606%20passing-brightgreen)](#development)
 [![Built with Professor](https://img.shields.io/badge/built%20with-Professor-8A2BE2)](https://github.com/rezzminator/professor)
 
 </div>
+
+## 📊 Benchmark: forward-compaction vs Claude Code's native compaction
+
+Measured on 2,939 real compactions in one heavy user's Claude Code transcripts over 30 days (2026-09-29 → 2026-10-29): 1,357 by Claude Code's native summarizer and 804 by forward-compaction, main chats and sub-agents alike. Each figure is read from the compaction's own boundary record (duration, tokens before and after) or from the frontier call's API usage, never estimated, except where marked.
+
+| Median (p90) | Native compaction | forward-compaction |
+| --- | --- | --- |
+| Main chat: time to compact | 54.9 s (94.6 s) | **24.2 s** (36.0 s): the model writes its frontier in its own turn, then a 0.085 s install |
+| Sub-agent: time to compact | **21.5 s** (59.9 s) | 28.7 s (43.8 s): writing the frontier, then a 0.12 s install |
+| Main chat: context left after | 18.6k tokens (32.8k) | **8.0k tokens** (17.5k) |
+| Sub-agent: context left after | 12.1k tokens (18.3k) | **8.8k tokens** (13.1k) |
+| Text written per compaction | ~3.0k tokens of summary (estimated from its length) | 3.2k tokens of frontier (4.5k) in a main chat, 3.7k (6.1k) in a sub-agent |
+| Cost of one main-chat compaction, Opus 5.5 | $0.25 | **$0.16** (−36%) |
+
+Cost is one read of the context being compacted ($0.20/M cached), the text written ($20/M output) and the cache write of the context left after ($8/M, 1-hour cache), at the medians above. The native summarizer re-reads a larger context (214k vs 167k, since forward-compaction compacts at the model's own milestone) and leaves over twice the context behind, which every later request then carries.
 
 ```text
 forward_compaction({
@@ -63,11 +78,6 @@ as they happened.
 - 📜 **Every decision logged** to a JSONL file per session, and every step
   to a debug log, with the numbers as Claude Code's API gave them.
 
-## 📊 Benchmark
-
-No benchmark of forward-compaction has been measured yet. The figures the
-earlier plugin of this repository published measured a different mechanism
-(a summarizer run at a milestone) and are not claimed for this one.
 
 ## 🚀 Quick start
 
@@ -202,7 +212,9 @@ needs no ToolSearch.
   was dropped, waits for the next frontier, is pinned, or was never loaded.
 - `standing_orders` (optional): the person's orders that bind the rest of the
   work (a prohibition, a limit, a rule), each `{order, at}`: `order` the
-  person's words verbatim, `at` the ISO time of the message that gave it. The
+  person's words verbatim, `at` the ISO time of the message that gave it,
+  optional: an order with no `at` or a malformed one is kept when a recorded
+  message of the person's holds its words, and skipped otherwise. The
   model names them; the plugin never guesses one from the person's wording.
   When a recorded message of the person's holds the order's words, the plugin
   stamps `at` from the first such message, never the model's guess, a
@@ -234,7 +246,11 @@ missing, blank or not a string, a bad `drop_skills` name, a bad
 (carried on), a lift whose words no recorded message sent after the order holds
 (the order still binding), a lift of no remembered order, a `load_files` entry
 that is bad, absent, not a regular file or could not be checked,
-and a call with no `tool_use_id`, which the wake cannot place. A frontier
+a call with no `tool_use_id`, which the wake cannot place, and a field taken
+back out of a section that holds its own closing tag then
+`<parameter name="…">` (the model's call markup closed the section early; an
+array field is read as JSON, and a field the call also sent keeps the sent
+value). A frontier
 missing a required section opens its receipt with `but a MANDATORY section is
 missing, so it does not install`, names each missing section in that list,
 and ends it with `This frontier will not install until you call
@@ -599,29 +615,7 @@ npm run validate:plugin
 npm run replay:record # records a live replay fixture (a paid Claude Code session)
 ```
 
-The replay test (`tests/replay.test.ts`) drives a recorded live session through the current plugin and pins what carries format risk, never the plugin's own call sequence. Hook events and their payloads replay exactly as recorded. A read of engine state (`agent.list`, `env.get`, `fs.read`, `fs.stat`, `session.usage`, `session.messages`, `session.compact`) takes its recorded answer: the same call's when the arguments match, else the latest answer recorded for that path (for `env.get`, `fs.read` and `fs.stat`, for the same variable or file) at that point of the timeline; one the recording never holds fails as `unrecorded $ call {path}`, and the fixture is re-recorded. Utility and effect calls are the harness's: `session.id` and `clock.now` give the recorded id and time, `ui.log` is captured, `tool.register` gives the recorded registration, `clock.after` never fires, and `process.run` really runs the plugin's argv in a temporary sandbox standing in for the recorded home, refusing any path outside it. The table is `ANSWERS` in `tests/fakes/replay-engine.ts`.
-
-The live replay fixture exercises every replay invariant but two, which the replay test names: I2, a precompute ask (Claude Code 2.1.309 sent none; `tests/decide.test.ts` covers C2), and I11, tail handles shared by two chained installs (a chained frontier's call comes after everything the install before it kept, so the two tails share no message).
-
-Work lands on `develop`; `main` holds only releases. Merging the `develop → main` pull request is the release: [`release.yml`](./.github/workflows/release.yml) tags the merge commit `forward-compaction--vX.Y.Z` and publishes its notes from [CHANGELOG.md](./CHANGELOG.md). `make release-check` runs that pull request's checks locally first. Pull requests go to `develop`.
-
-`plugins/forward-compaction/hooks/forward-compaction.ts` is a thin adapter over `plugins/forward-compaction/src/`:
-
-| Module | Role |
-| --- | --- |
-| `options.ts` | Sizes, flags and the `FORWARD_COMPACTION_*` variables, resolved with their defaults |
-| `window.ts` | Claude Code's ask point from `$.session.usage`, the ignore list, each party's marks against its max context, the measured characters per token, the load-file room |
-| `ledger.ts` | The facts recorded from typed hook events, per party |
-| `frontier.ts` | The tool's description and schema, its validation (nothing is refused) and the receipt |
-| `wake.ts` | The split at the call, the budget, the facts and frontier messages, the tail that fits, the landed lines |
-| `decide.ts` | The decision for one compaction ask, and a party's reading |
-| `nudge.ts` | Nudge levels and text |
-| `parties.ts` | Per-party state: readings, the stored frontier, nudges sent |
-| `unseen.ts` | A context fall no compaction of this plugin explains |
-| `look-back.ts` | The `look_back` tool |
-| `log.ts` | The decision log and the level logs |
-| `bounded.ts` | Bounds a promise with a timer passed in: tool registration holds a turn at most 5s |
-| `register.ts` | Which tools still need a registration try, up to three each |
+The replay test drives a recorded live Claude Code session through the current plugin and checks what the wake carries. Work lands on `develop`; `main` holds only releases, and merging the `develop → main` pull request publishes one. `make release-check` runs that pull request's checks locally. Pull requests go to `develop`.
 
 ## 🎓 Built with Professor
 

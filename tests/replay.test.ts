@@ -142,7 +142,8 @@ export const INVARIANTS: Record<Name, (view: View, recorded: boolean) => Verdict
       subjects++;
       const wake = texts(wakeOf(c)!);
       // the woken sub-agent is not its own background task: its wake leaves it out (CHANGELOG 1.0.0-dev.2)
-      for (const t of stop.input?.background_tasks ?? []) if (t.id !== c.input?.agentId && (!wake.includes(String(t.id)) || (typeof t.command === 'string' && !wake.includes(t.command)))) failures.push(`I8 ${at(c)}: shell ${t.id} of ${stop.hook} #${stop.id} is not in the wake`);
+      // a SubagentStop lists its own sub-agent running though it stopped: the wake leaves it out
+      for (const t of stop.input?.background_tasks ?? []) if (t.id !== c.input?.agentId && !(stop.hook === 'classic.SubagentStop' && t.id === stop.input?.agent_id) && (!wake.includes(String(t.id)) || (typeof t.command === 'string' && !wake.includes(t.command)))) failures.push(`I8 ${at(c)}: shell ${t.id} of ${stop.hook} #${stop.id} is not in the wake`);
     }
     return { subjects, failures };
   },

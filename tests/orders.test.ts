@@ -51,6 +51,15 @@ describe('parseFrontier: standing_orders and lifted', () => {
       .toEqual([{ order: guessed.order, at: '2026-10-28T03:08:02.143Z' }, ORDER]);
   });
 
+  it("keeps an order whose time is missing or no ISO time when a message of the person's holds its words, stamped with that message's time", () => {
+    const said = [{ text: 'Standing order: never run any git command.\nWrite no files.', at: Date.parse('2026-10-28T23:32:52.903Z') }];
+    const orders = [{ order: 'never run any git command.', at: '2026-10-29' }, { order: 'Write no files.' }];
+    expect(parseFrontier({ ...valid, standing_orders: orders }, { remembered: [], said, party: 'main' })).toMatchObject({
+      standingOrders: [{ order: 'never run any git command.', at: '2026-10-28T23:32:52.903Z' }, { order: 'Write no files.', at: '2026-10-28T23:32:52.903Z' }],
+      notes: [],
+    });
+  });
+
   it('skips every bad order entry and names it, one line each, never quoting the order', () => {
     const out = parseFrontier({ ...valid, standing_orders: [{ order: ' ', at: 'yesterday' }, { order: 'x', at: 'yesterday' }, ORDER], lifted: [{ order: 'x' }] });
     expect(out.notes).toEqual([

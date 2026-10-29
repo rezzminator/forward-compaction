@@ -4,6 +4,10 @@ A Claude Code function-hooks plugin: the model writes its own frontier through
 one tool, and the plugin installs it at Claude Code's compaction. `README.md`
 is the behavioural spec.
 
+## Function
+
+Claude Code's own compaction has a separate call summarize the transcript. Here the working model, main chat or sub-agent, writes its own frontier at a milestone it picks, and the plugin installs it with the person's words and standing orders verbatim and the facts it recorded as they happened, so the party continues with no decision, order or open thread lost.
+
 ## Spine
 
 `model works -> plugin nudges as its context grows -> model picks its milestone and calls forward_compaction -> frontier stored -> Claude Code's next compaction ask -> plugin installs the frontier -> model wakes`
@@ -38,6 +42,19 @@ is the behavioural spec.
 - Only what the model can find again is fitted to a budget: the kept tail, the notifications and delivered messages, sibling results, the shell commands run (verbatim, each with its description), and the files and agents lists. The task list is carried whole; each `load_files` file carries up to `LOAD_FILE_MAX_LINES` lines, a longer one naming where to Read the rest, with no room and no count cap, never refused for size. Each one left out is named as not carried, never silently gone.
 - Plan mode and the plan file, as Claude Code's plan-mode attachments name them for the party, are carried into every wake, the plan file read whole at install; the plugin API exposes no active goal, so the wake carries none.
 - A mechanical wake re-reads the `RECENT_FILES_KEPT` newest files the party touched from disk, each within `LOAD_FILE_MAX_LINES`, as Claude Code's own compaction does because it fires uninvited; a frontier wake carries only its `load_files`.
+
+## A run, as expected
+
+Each step names what an audit of the transcript and the plugin's log rows sees.
+
+1. Below its first nudge level the party works undisturbed: each Claude Code ask logs `compact` with decision `skip`, why `waiting`, and nothing reaches the model.
+2. At each nudge level the model reads one nudge with a tool result, logged `nudge` with its level; no level nudges twice.
+3. The model finishes its step, then calls `forward_compaction` with every MANDATORY section: the receipt opens "Frontier stored" and a `stored` row records its chars, files and orders. A call missing a section gets a receipt naming each and ending "This frontier will not install until you call forward_compaction again with every MANDATORY section."
+4. The next ask installs it (main also at its own turn end): `compact` with decision `install`, why `stored`, then `landed` with `before` above `after`; the transcript holds one compact boundary per install.
+5. The wake is the facts message (`[forward-compaction: facts]`), the frontier message (`[forward-compaction: frontier]`, the frontier verbatim), then the kept tail. The facts run in this order, an empty section left out or saying why it is empty: standing orders; messages arrived after the frontier; plan mode and plan file; the brief (sub-agent) or the person's messages (main); notifications or delivered messages; results of the calls beside the frontier; skills in force and skills not carried; files touched; shell commands run; tasks; agents; background shells and crons; the `load_files`, or on a mechanical wake the files being worked on.
+6. Every fact is true of the woken party: nothing another party read, loaded, ran or started appears as its own, and a fact the plugin cannot tie to a party says so.
+7. After the wake the party continues from its `next`, obeys every standing order and ruling, redoes nothing its `done` lists, and finishes its task correctly.
+8. The run writes no `errors.jsonl` or `warnings.jsonl` row for the party, and every number in a nudge, receipt or wake has its API source (§ Rules).
 
 ## Layout
 

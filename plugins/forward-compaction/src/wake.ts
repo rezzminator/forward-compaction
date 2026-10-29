@@ -247,12 +247,12 @@ function age(ms: number): string {
   return `${Math.round(s / 3600)}h`;
 }
 
-type Extras = { siblings: readonly Sibling[]; files: readonly WakeFile[]; recent?: readonly RecentFile[] };
+type Extras = { siblings: readonly Sibling[]; files: readonly WakeFile[]; recent?: readonly RecentFile[]; mechanical?: boolean };
 
 type Rendered = { text: string; sections: number; sizes: Wake<never>['sizes']; carried: string[]; notCarried: string[] };
 
 /** F: every section with its cap; whole or not, never cut. With no measured ratio no section is capped. */
-function renderFacts<M>(input: Shared<M>, facts: WakeFacts, { siblings, files, recent = [] }: Extras): Rendered {
+function renderFacts<M>(input: Shared<M>, facts: WakeFacts, { siblings, files, recent = [], mechanical = false }: Extras): Rendered {
   const B = wakeBudget(input.askPoint);
   const room = (share: number): number => charsIn(B * share, input.charsPerToken);
   const filesCarried: string[] = [];
@@ -287,11 +287,13 @@ function renderFacts<M>(input: Shared<M>, facts: WakeFacts, { siblings, files, r
   } else {
     const shown = keptSaid(facts.person).map((p) => `### ${iso(p.at)}${p.answer === undefined ? '' : ' (the person answering your question)'}\n${p.text.replace(IMAGE, IMAGE_NOTE)}`);
     const count = facts.person.length;
+    const inTail = facts.personInTail ?? 0;
     const left = count - shown.length;
     const answers = facts.person.filter((p) => p.answer !== undefined).length;
     // `recorded`: the count is the plugin's own record, which a restart begins again; the transcript may hold older ones.
-    const carried = `${shown.length} of ${count} recorded${answers === 0 ? '' : `, ${answers} of them answering your questions`}`;
-    const heading = left === 0 ? `(${carried})` : `(${carried}; the ${left} oldest recorded are not carried: look_back finds them)`;
+    const carried = `${shown.length} of ${count + inTail} recorded${answers === 0 ? '' : `, ${answers} of them answering your questions`}`;
+    const notes = [...(left === 0 ? [] : [`the ${left} oldest recorded are not carried: look_back finds them`]), ...(inTail === 0 ? [] : [`${inTail} ${inTail === 1 ? 'is' : 'are'} in the messages below`])];
+    const heading = `(${[carried, ...notes].join('; ')})`;
     sections.push(section([`## The person's messages, oldest first ${heading}`, ...shown].join('\n')));
   }
 
@@ -382,7 +384,7 @@ function renderFacts<M>(input: Shared<M>, facts: WakeFacts, { siblings, files, r
   }
 
   const resume = facts.startReason === 'resume' && facts.startedAt !== undefined ? [`The ledger started at ${iso(facts.startedAt)} when this process resumed; anything earlier is not recorded.`] : [];
-  const head = `[forward-compaction: facts] Your context was compacted by forward-compaction ${PLUGIN_VERSION}. These facts were recorded as they happened, never reconstructed. Your own frontier follows in the next message.`;
+  const head = `[forward-compaction: facts] Your context was compacted by forward-compaction ${PLUGIN_VERSION}. These facts were recorded as they happened, never reconstructed. ${mechanical ? 'You wrote no frontier: the note after these facts says what happened.' : 'Your own frontier follows in the next message.'}`;
   return {
     text: [[head, ...resume].join('\n'), ...sections.map((s) => s.text)].join('\n\n'),
     sections: sections.filter((s) => s.content).length,
@@ -463,7 +465,7 @@ export function mechanicalWake<M extends WakeMessage>(input: MechanicalWakeInput
   const source = input.party === 'main' ? "the person's messages" : 'your brief';
   const missing = input.incomplete ?? [];
   const call = missing.length === 0 ? 'you had not called forward_compaction, so' : `your last forward_compaction call was missing ${missing.length === 1 ? missing[0] : `${missing.slice(0, -1).join(', ')} and ${missing.at(-1)}`}, so it never installed and`;
-  return assemble(input, input.messages, { siblings: [], files: [], recent: input.recent ?? [] }, ({ kept, dropped }) => experimental(
+  return assemble(input, input.messages, { siblings: [], files: [], recent: input.recent ?? [], mechanical: true }, ({ kept, dropped }) => experimental(
     `[forward-compaction: no frontier written by the model] Your context reached ${input.tokens === undefined ? 'a size not measured yet' : `${kilo(input.tokens)} tokens`}${why}, and ${call} the plugin compacted it mechanically: the facts above and your newest ${kept} messages below, kept verbatim; ${dropped} older messages are gone (look_back finds an exact detail). No objective or next step was written. Re-establish them from ${source} and the messages below, then continue${within(input.orders)}; call ${input.tool ?? DEFAULT_TOOL} at your next milestone.`, input.logDir),
   'none');
 }

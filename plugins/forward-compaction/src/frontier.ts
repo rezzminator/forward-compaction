@@ -63,10 +63,10 @@ export const FORWARD_INPUT_SCHEMA = {
       items: {
         type: 'object',
         additionalProperties: false,
-        required: ['order', 'at'],
+        required: ['order'],
         properties: {
           order: { type: 'string', description: "The person's words, verbatim." },
-          at: { type: 'string', description: "The ISO time of the person's message." },
+          at: { type: 'string', description: "The ISO time of the person's message, when you know it; the plugin takes it from the person's message that holds the words." },
         },
       },
     },
@@ -115,6 +115,44 @@ const kind = (v: unknown): string => (v === null ? 'null' : Array.isArray(v) ? '
 const isAbsolutePath = (p: string): boolean => /^(\/|[A-Za-z]:[\\/]|\\\\)/.test(p);
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 
+const ARRAYS = ['load_files', 'drop_skills', 'standing_orders', 'lifted'];
+const FOLD = /<\/(\w+)>\s*<parameter name="(\w+)">/g;
+
+/**
+ * A section whose text holds its own closing tag and then `<parameter name="other">`: the model's call markup closed it
+ * early and folded the parameters after it into its text. Each folded one is taken back out as its own field (an
+ * array one parsed as JSON), one note each; one the call also sent keeps the sent value.
+ */
+function unfold(input: Record<string, unknown>): { fields: Record<string, unknown>; notes: string[] } {
+  const fields = { ...input };
+  const notes: string[] = [];
+  for (const key of FIELDS) {
+    const value = fields[key];
+    if (typeof value !== 'string') continue;
+    const parts = value.split(FOLD);
+    if (parts.length < 4 || parts[1] !== key) continue;
+    fields[key] = parts[0];
+    for (let i = 1; i + 2 < parts.length; i += 3) {
+      const name = parts[i + 1] ?? '';
+      const segment = parts[i + 2] ?? '';
+      const text = i + 3 < parts.length ? segment : segment.replace(new RegExp(`</${name}>\\s*$`), '');
+      const at = `${name} arrived inside ${key}, after "</${key}>"`;
+      if (!FIELDS.includes(name)) notes.push(`${at}, but ${name} is no field: dropped.`);
+      else if (input[name] !== undefined) notes.push(`${at}, but the call also sent ${name}: the text after "</${key}>" is dropped.`);
+      else if (!ARRAYS.includes(name)) (fields[name] = text, notes.push(`${at}: your call's markup closed ${key} early; taken back out as its own field.`));
+      else {
+        try {
+          fields[name] = JSON.parse(text);
+          notes.push(`${at}: your call's markup closed ${key} early; taken back out as its own field.`);
+        } catch (err) {
+          notes.push(`${at}, but it is not JSON (${(err as Error).message}): dropped.`);
+        }
+      }
+    }
+  }
+  return { fields, notes };
+}
+
 /** One line per section left out: a required one missing or blank, any one given but not a string; one per unknown field. */
 function argumentNotes(fields: Record<string, unknown>): string[] {
   const unknown = Object.keys(fields).filter((key) => !FIELDS.includes(key)).map((key) => `unknown field "${key}" ignored. The fields are ${FIELDS.slice(0, -1).join(', ')} and ${FIELDS.at(-1)}.`);
@@ -136,8 +174,9 @@ function argumentNotes(fields: Record<string, unknown>): string[] {
  * `$.fs.stat` checks (V12-V15) are the adapter's, through `loadFileNote`.
  */
 export function parseFrontier(input: unknown, memory?: OrderMemory): ParsedFrontier {
-  const fields = isObject(input) ? input : {};
-  const notes = argumentNotes(fields);
+  const unfolded = unfold(isObject(input) ? input : {});
+  const fields = unfolded.fields;
+  const notes = [...unfolded.notes, ...argumentNotes(fields)];
   const given = (key: string): boolean => typeof fields[key] === 'string' && (fields[key] as string).trim() !== '';
   const frontier = SECTIONS.flatMap(({ key, heading }) => (given(key) ? [`## ${heading}\n${fields[key] as string}`] : [])).join('\n\n');
   const missing = SECTIONS.flatMap(({ key, required }) => (required && !given(key) ? [key] : []));

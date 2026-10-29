@@ -799,9 +799,9 @@ async function noteSpawn(st: State, $: EngineInterface, e: AgentSpawnInput, r: A
   await keepKept(st, $, key); // its brief, and its preloaded skills filed under the spawn until now
 }
 
-/** The shells and crons running at a stop: the latest snapshot is a fact of every wake. */
-async function noteShells(st: State, $: EngineInterface, e: Record<string, unknown>): Promise<void> {
-  st.ledger = addEntry(st.ledger, { kind: 'shells', at: await $.clock.now(), ...shellsOf(e) });
+/** The shells and crons running at a stop, the stopping sub-agent left out: the latest snapshot is a fact of every wake. */
+async function noteShells(st: State, $: EngineInterface, e: Record<string, unknown>, stopping?: string): Promise<void> {
+  st.ledger = addEntry(st.ledger, { kind: 'shells', at: await $.clock.now(), ...shellsOf(e, stopping) });
 }
 
 export const register: Register = (on: On, options: PluginOptions) => {
@@ -908,7 +908,7 @@ export const register: Register = (on: On, options: PluginOptions) => {
   });
 
   on('classic.SubagentStop', async ($, e, next) => {
-    await guard(st, $, 'classic.SubagentStop', () => (land(st, $, keyOf(e.agent_id), st.parties.takeLanding(keyOf(e.agent_id))), noteShells(st, $, e as Record<string, unknown>)), e);
+    await guard(st, $, 'classic.SubagentStop', () => (land(st, $, keyOf(e.agent_id), st.parties.takeLanding(keyOf(e.agent_id))), noteShells(st, $, e as Record<string, unknown>, typeof e.agent_id === 'string' ? e.agent_id : undefined)), e);
     return next(e);
   });
 

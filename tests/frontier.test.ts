@@ -95,6 +95,23 @@ describe('parseFrontier stores whatever it is sent and names what it left out', 
     expect(parseFrontier({ ...valid, frontier: text }).frontier).toBe(text);
   });
 
+  it('takes back out the parameters a broken call folded into a section after its closing tag, naming each', () => {
+    const orders = [{ order: 'Write and edit no files.' }];
+    const { next, ...rest } = valid;
+    const folded = { ...rest, remaining: `the adapter</remaining>\n<parameter name="standing_orders">${JSON.stringify(orders)}</standing_orders>\n<parameter name="next">${next}` };
+    const out = parseFrontier(folded);
+    expect(out.frontier).toBe(text);
+    expect(out.missing).toEqual([]);
+    expect(out.notes).toEqual([
+      'standing_orders arrived inside remaining, after "</remaining>": your call\'s markup closed remaining early; taken back out as its own field.',
+      'next arrived inside remaining, after "</remaining>": your call\'s markup closed remaining early; taken back out as its own field.',
+      'standing_orders[0].at must be the ISO time of the person\'s message, like "2026-10-27T14:53:00Z": skipped.',
+    ]);
+    expect(parseFrontier({ ...valid, remaining: 'a</remaining>\n<parameter name="next">other' }).notes[0]).toBe('next arrived inside remaining, after "</remaining>", but the call also sent next: the text after "</remaining>" is dropped.');
+    expect(parseFrontier({ ...rest, remaining: `the adapter</remaining>\n<parameter name="next">${next}</next>\n` })).toMatchObject({ frontier: text, missing: [] });
+    expect(parseFrontier({ ...valid, remaining: 'a </b> <parameter name="next">x' }).frontier).toBe(text.replace('the adapter', 'a </b> <parameter name="next">x'));
+  });
+
   it('V2 a required section that is missing, not a string or blank is left out, by name', () => {
     expect(notes({ ...valid, objective: 5 })).toEqual(['objective must be a string; got number: your frontier is stored without it.']);
     expect(notes({ ...valid, done: undefined })).toEqual(['done was missing: your frontier is stored without it.']);
