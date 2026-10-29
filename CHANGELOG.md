@@ -2,6 +2,12 @@
 
 Every release of forward-compaction, named sub-agent-compact before 1.0.0. Versions follow [semantic versioning](https://semver.org); each release is the `main` commit tagged `forward-compaction--v<version>` (`sub-agent-compact--v<version>` before 1.0.0), with a GitHub release carrying the section below.
 
+## [2.2.2] — 2026-10-30
+
+### Changed
+
+- **The README opens with an animated comparison.** One main-chat compaction on two lanes and one clock: Claude Code's native compaction forks the chat and a second run re-reads and paraphrases it, 54.9 s median; forward-compaction has the model write its own frontier, 24.2 s, then installs it in 0.085 s with no summarizer run. The figures are the benchmark's medians; for sub-agents native stays faster, and the caption says so.
+
 ## [2.2.1] — 2026-10-29
 
 ### Changed
