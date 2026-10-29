@@ -172,6 +172,8 @@ export type Facts = {
   skills: SkillEntry[];
   unattributedSkills: SkillEntry[];
   shells?: ShellsEntry;
+  /** Background commands any party started after `shells` was taken: a running shell the snapshot cannot list. */
+  backgroundSince: number;
   /** The files the party's calls touched and its task list, from its finished tool calls. */
   work: WorkSummary;
   startedAt?: number;
@@ -193,6 +195,7 @@ export function factsFor(ledger: Ledger, party: PartyKey, opts: { keptTexts: rea
   const arrived = delivered.filter((e) => !before(e) && e.text !== '' && fresh(e)).map((e) => ({ at: e.at, origin: e.kind === 'person' ? 'person' : e.origin, text: e.text }));
   const person = mine('person', party).filter(before);
   const kept = person.filter(fresh);
+  const shells = entries.find((e): e is ShellsEntry => e.kind === 'shells');
   return {
     person: kept,
     personInTail: person.length - kept.length,
@@ -202,7 +205,8 @@ export function factsFor(ledger: Ledger, party: PartyKey, opts: { keptTexts: rea
     received: mine('received', party).filter(before).filter(fresh),
     skills: newestFirst(party).filter(fresh),
     unattributedSkills: newestFirst('unknown').filter((s) => !carried.has(s.skill)).filter(fresh),
-    shells: entries.find((e): e is ShellsEntry => e.kind === 'shells'),
+    shells,
+    backgroundSince: shells === undefined ? 0 : entries.filter((e) => e.kind === 'work' && e.fact.kind === 'command' && e.fact.background === true && e.at > shells.at).length,
     work: workSummary(mine('work', party).map((e) => e.fact)),
     startedAt: ledger.startedAt,
     startReason: ledger.startReason,

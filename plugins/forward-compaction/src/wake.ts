@@ -158,6 +158,8 @@ export type WakeFacts = {
     tasks: readonly { id: string; type: string; status: string; description: string; command?: string }[];
     crons: readonly { id: string; schedule: string; recurring: boolean; prompt: string }[];
   };
+  /** Background commands started after `shells` was taken, which it cannot list. */
+  backgroundSince?: number;
   /** The files the party's finished calls touched, newest first, and its task list as last set. */
   work?: { files: readonly { path: string; tag: 'R' | 'E' | 'W' }[]; commands?: readonly { command: string; description?: string }[]; tasks: readonly string[] };
   startedAt?: number;
@@ -353,7 +355,8 @@ function renderFacts<M>(input: Shared<M>, facts: WakeFacts, { siblings, files, r
       ...facts.shells.tasks.filter((t) => t.id !== input.self).map((t) => `- ${t.type} ${t.id} ${t.status}: ${t.command ?? t.description}`),
       ...facts.shells.crons.map((c) => `- cron ${c.id} ${c.schedule}${c.recurring ? ' recurring' : ''}: ${c.prompt}`),
     ];
-    const header = `## Background shells and crons (session-wide, from the Stop event ${age(input.now - facts.shells.at)} before install)`;
+    const since = facts.backgroundSince ?? 0;
+    const header = `## Background shells and crons (session-wide, from the Stop event ${age(input.now - facts.shells.at)} before install${since === 0 ? '' : `; ${since} background command${since === 1 ? '' : 's'} started since ${since === 1 ? 'is' : 'are'} not in this list`})`;
     sections.push({ text: [header, ...(rows.length > 0 ? rows : ['(none running)'])].join('\n'), content: rows.length > 0 });
   }
 
