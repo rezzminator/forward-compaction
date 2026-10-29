@@ -13,10 +13,13 @@
 </div>
 
 <p align="center">
-  <img src="docs/assets/compaction.gif" width="830" alt="One main-chat compaction on two lanes, one clock. Claude Code's native compaction forks the chat: a second run re-reads all 214k tokens and paraphrases them while the chat waits, 54.9 s median. With forward-compaction the model that did the work writes its own frontier, 24.2 s median, then the plugin installs it in 0.085 s with no summarizer run, leaving 8.0k tokens of context instead of 18.6k at $0.16 instead of $0.25.">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/compaction-dark.gif">
+    <img src="docs/assets/compaction-light.gif" width="830" alt="One main-chat compaction on two lanes, one clock, both starting at the same moment. Claude Code's native compaction forks the chat: a second run re-reads all 214k tokens and paraphrases them while the chat waits, 54.9 s median. With forward-compaction the model that did the work writes its own frontier, 24.2 s median, then the plugin installs it in 0.085 s with no summarizer run, leaving 8.0k tokens of context instead of 18.6k at $0.16 instead of $0.25.">
+  </picture>
 </p>
 
-<p align="center"><sub>Main chats, medians of 2,939 real compactions over 30 days to 2026-10-29; the clocks run 7.29× faster than real seconds. For sub-agents native is faster (21.5 s vs 28.7 s).</sub></p>
+<p align="center"><sub>Main chats, medians of 2,939 real compactions over 30 days to 2026-10-29; the clocks run 7.5× faster than real seconds. For sub-agents native is faster (21.5 s vs 28.7 s).</sub></p>
 
 ## 📊 Benchmark: forward-compaction vs Claude Code's native compaction
 
