@@ -2,7 +2,7 @@
 
 Every release of forward-compaction, named sub-agent-compact before 1.0.0. Versions follow [semantic versioning](https://semver.org); each release is the `main` commit tagged `forward-compaction--v<version>` (`sub-agent-compact--v<version>` before 1.0.0), with a GitHub release carrying the section below.
 
-## [Unreleased]
+## [2.2.0] — 2026-10-29
 
 ### Added
 
@@ -12,10 +12,17 @@ Every release of forward-compaction, named sub-agent-compact before 1.0.0. Versi
 
 ### Changed
 
+- **The README opens with a benchmark against Claude Code's native compaction**, measured on 2,939 real compactions: time, context left after, text written and cost per compaction. The list of internal source files is gone from it.
 - **The section arguments say MANDATORY.** The descriptions of `objective`, `decisions`, `done`, `remaining` and `next` each open with `MANDATORY:` and say what goes in it; `remaining` says `none` when nothing is left, `findings` now holds the party's own choices with why. The nudge names `decisions` among the sections.
 
 ### Fixed
 
+- **A standing order is never dropped for its time.** An order with no `at`, or an `at` that is no ISO time (a date alone), is kept when a recorded message of the person's holds its words, stamped with that message's time; `at` is optional in the schema. Before, the first frontier of a chat dropped every order: the model sees no message time before its first wake.
+- **A section a broken call folded another into is split back.** When a section's text holds its own closing tag and then `<parameter name="…">` (the model's call markup closed it early), each folded parameter is taken back out as its own field, an array one read as JSON, and named in the receipt; one the call also sent keeps the sent value. Before, the frontier was stored without them and the model retried the same broken call.
+- **`look_back` reads Claude Code's `tools-used` entries** as bookkeeping. Before, every search that touched one failed.
+- **A sub-agent's own stop no longer lists it as running.** Its `SubagentStop` still names it among the session's background tasks; that snapshot now leaves it out, so the next wake's shells section does not show a finished sub-agent running.
+- **The shells heading names what its snapshot cannot list.** It counts the background commands any party started after the Stop event it was taken from (`…; 1 background command started since is not in this list`). Before, a wake read `(none running)` while such a shell ran.
+- **The person-messages heading counts the ones in the kept tail** beside those it shows, and a mechanical wake no longer says the party's own frontier follows.
 - **A frontier missing a MANDATORY section never installs.** A call cut off mid-way (absent, non-string or blank `objective`, `decisions`, `done`, `remaining` or `next`) is still stored, never refused, but every door treats it as nothing stored: Claude Code's asks stay held until the ceiling's mechanical wake, and the main chat's turn end does not install it. Its receipt says it does not install, names each missing section, and ends with `This frontier will not install until you call forward_compaction again with every MANDATORY section.`; the `stored` decision row names them as `incomplete`; a later complete call replaces it and installs as usual. A mechanical wake after one says which sections it lacked. Before, a frontier ending mid-word with no `remaining` and no `next` was installed.
 
 ## [2.1.0] — 2026-10-28

@@ -1,6 +1,6 @@
 {
   "name": "forward-compaction",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "private": true,
   "description": "The model writes its own frontier through one tool and the plugin installs it at Claude Code's compaction, with facts recorded from typed events and every later message kept verbatim.",
   "type": "module",
