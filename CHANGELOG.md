@@ -2,6 +2,12 @@
 
 Every release of forward-compaction, named sub-agent-compact before 1.0.0. Versions follow [semantic versioning](https://semver.org); each release is the `main` commit tagged `forward-compaction--v<version>` (`sub-agent-compact--v<version>` before 1.0.0), with a GitHub release carrying the section below.
 
+## [2.2.3] — 2026-10-30
+
+### Changed
+
+- **The README is a page for users.** It covers why, what you get, the benchmark, install, how it works, the tools, configuration, limits and an FAQ, and its comparison animation now follows the reader's light or dark theme. The full behaviour reference (what a compaction keeps, the tool, the wake, look back, windows, contexts and state on disk) moves to `docs/spec.md`.
+
 ## [2.2.2] — 2026-10-30
 
 ### Changed
