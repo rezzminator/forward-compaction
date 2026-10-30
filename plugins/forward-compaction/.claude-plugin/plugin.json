@@ -1,6 +1,6 @@
 {
   "name": "forward-compaction",
-  "version": "2.2.2",
+  "version": "2.2.3",
   "description": "The model writes its own frontier through one tool and the plugin installs it at Claude Code's compaction, with facts recorded from typed events and every later message kept verbatim.",
   "license": "MIT",
   "types": "./contract.d.ts",

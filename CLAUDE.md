@@ -1,7 +1,7 @@
 # forward-compaction
 
 A Claude Code function-hooks plugin: the model writes its own frontier through
-one tool, and the plugin installs it at Claude Code's compaction. `README.md`
+one tool, and the plugin installs it at Claude Code's compaction. `docs/spec.md`
 is the behavioural spec.
 
 ## Function
