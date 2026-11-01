@@ -5,9 +5,9 @@
 **Claude Code compaction without the wait. The model writes its own handoff while it still remembers everything, so your exact words carry through.**
 
 [![Claude Code plugin](https://img.shields.io/badge/Claude%20Code-plugin-D97757)](https://docs.claude.com/en/docs/claude-code/plugins)
-[![Version](https://img.shields.io/badge/version-2.2.3-blue)](./CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-2.2.4-blue)](./CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
-[![Tests](https://img.shields.io/badge/tests-608%20passing-brightgreen)](#development)
+[![Tests](https://img.shields.io/badge/tests-615%20passing-brightgreen)](#development)
 [![Built with Professor](https://img.shields.io/badge/built%20with-Professor-8A2BE2)](https://github.com/rezzminator/professor)
 
 </div>
@@ -77,14 +77,14 @@ Or, in the `env` block of `~/.claude/settings.json`:
 }
 ```
 
-**2. Add the Professor marketplace and install the plugin:**
+**2. Add the marketplace and install the plugin:**
 
 ```sh
-claude plugin marketplace add rezzminator/professor
+claude plugin marketplace add rezzminator/forward-compaction
 claude plugin install forward-compaction@professor
 ```
 
-Inside a chat, the same two steps are `/plugin marketplace add rezzminator/professor` and `/plugin install forward-compaction@professor`.
+Inside a chat, the same two steps are `/plugin marketplace add rezzminator/forward-compaction` and `/plugin install forward-compaction@professor`.
 
 **3. Start a new Claude Code session**, so the variables and the plugin are both loaded.
 

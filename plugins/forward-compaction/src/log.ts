@@ -1,7 +1,7 @@
 // The decision log: one JSONL file per session, appended to on every write.
 // Chats share the decisions folder in the plugin log directory, so each session writes its own
 // file there; a resumed session appends to the rows it wrote before.
-// The level files are the vendored plugin-log library's (./plugin-log.ts); this file keeps only what is this plugin's own.
+// The level files are the plugin's own logging module's (./plugin-log.ts); this file keeps only what is this plugin's own.
 import { LOCK_FN, runAborted, type PluginLogFields } from './plugin-log.ts';
 
 /** The session's own log path: the session id goes before the extension of `logFile`. */

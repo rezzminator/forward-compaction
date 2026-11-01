@@ -2,6 +2,13 @@
 
 Every release of forward-compaction, named sub-agent-compact before 1.0.0. Versions follow [semantic versioning](https://semver.org); each release is the `main` commit tagged `forward-compaction--v<version>` (`sub-agent-compact--v<version>` before 1.0.0), with a GitHub release carrying the section below.
 
+## [2.2.4] — 2026-11-01
+
+### Changed
+
+- **The plugin repository is its own marketplace.** It ships a marketplace named `professor`, so `claude plugin marketplace add rezzminator/forward-compaction` then `claude plugin install forward-compaction@professor` installs it without adding the Professor marketplace first; the README's install steps say so.
+- **The logging module is the plugin's own.** Its log files, levels and on-screen behaviour are unchanged; it is no longer a vendored copy kept in sync with other plugins, and its row bounds, level check and retry queue now have their own tests.
+
 ## [2.2.3] — 2026-10-30
 
 ### Changed
