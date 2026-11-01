@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { installable, Parties, type StoredFrontier } from '../plugins/forward-compaction/src/parties.ts';
+import { Parties, type StoredFrontier } from '../plugins/forward-compaction/src/parties.ts';
 import { nudgeLevel } from '../plugins/forward-compaction/src/nudge.ts';
 
 const LANDING = { kind: 'frontier' as const, label: 'main', before: 70_000, chars: 10, facts: 1, kept: 0, dropped: 0 };
@@ -106,10 +106,11 @@ describe('nudgeDue (R30)', () => {
     expect(parties.nudgeDue('main', 5)).toBe(false);
   });
 
-  it('still nudges while the stored frontier is missing a MANDATORY section: it counts as nothing stored', () => {
+  it('owes no nudge while a frontier missing a MANDATORY section is stored: it installs like any other', () => {
     const parties = new Parties();
+    expect(parties.nudgeDue('main', 4)).toBe(true);
     parties.store('main', { ...frontier('t1'), missing: ['next'] });
-    expect(parties.nudgeDue('main', 5)).toBe(true);
+    expect(parties.nudgeDue('main', 5)).toBe(false);
   });
 
   it('keeps each party\'s levels apart', () => {
@@ -374,14 +375,5 @@ describe('the ratio base (window.ts charsPerToken)', () => {
     parties.rebase('agent:gone', { chars: 1, tokens: 1 });
     expect(parties.takeLandings()).toEqual([]);
     expect(parties.get('agent:gone').base).toBeUndefined();
-  });
-});
-
-describe('installable: only a frontier with every MANDATORY section installs', () => {
-  it('is false with nothing stored or a section missing, true for a complete one', () => {
-    expect(installable(undefined)).toBe(false);
-    expect(installable({ ...frontier('t1'), seq: 1, missing: ['decisions'] })).toBe(false);
-    expect(installable({ ...frontier('t1'), seq: 1, missing: [] })).toBe(true);
-    expect(installable({ ...frontier('t1'), seq: 1 })).toBe(true);
   });
 });

@@ -1,6 +1,6 @@
 // The wake: what a compaction installs. [facts] [frontier] [tail…] — the facts and the frontier are built here from typed values,
 // the tail is the engine's own messages returned untouched. Pure: files, agents and the clock arrive as inputs.
-import { DEFAULT_TOOL, k as kilo } from './nudge.ts';
+import { andList, DEFAULT_TOOL, k as kilo } from './nudge.ts';
 import { keptSaid, PROMPTS_KEPT } from './ledger.ts';
 import { experimental, EXPERIMENTAL_OPENING } from './frontier.ts';
 import { ordersSection, type LiftedOrder, type StandingOrder } from './orders.ts';
@@ -35,7 +35,7 @@ const iso = (at: number): string => new Date(at).toISOString();
  */
 const SHARE = { arrived: 0.25, notices: 0.05, siblings: 0.1, commands: 0.05 } as const;
 /** The plugin version that builds a wake, named in its facts header so a chat on an old build is visible; tests/layout.test.ts pins it to plugin.json. */
-export const PLUGIN_VERSION = '2.2.4';
+export const PLUGIN_VERSION = '2.2.5';
 /** An image the person attached: a built wake message holds only text (`session.compact`'s messages), so each is named, never silently gone. */
 const IMAGE = /\[Image #\d+\]/g;
 const IMAGE_NOTE = '$& (image not carried: the wake cannot hold images)';
@@ -167,7 +167,7 @@ export type WakeFacts = {
 };
 
 /** A load file, already read by the adapter: its content, or why it could not be read. */
-export type WakeFile = { path: string; lines?: string; why: string } & ({ content: string; problem?: undefined } | { problem: string; content?: undefined });
+export type WakeFile = { path: string; lines?: string; why?: string } & ({ content: string; problem?: undefined } | { problem: string; content?: undefined });
 /** One of the party's newest files, read by the adapter at a mechanical install (frontier.ts `sliceFile`): its content, or why it could not be read. */
 export type RecentFile = { path: string; lines?: string } & ({ content: string; problem?: undefined } | { problem: string; content?: undefined });
 
@@ -203,13 +203,12 @@ type Shared<M> = {
   /** Plan mode and the plan file, when the party's plan-mode attachments named them; absent, no section. */
   plan?: WakePlan;
 };
-export type BuildWakeInput<M> = Shared<M> & { toolUseId: string; frontier: string; files?: readonly WakeFile[] };
+/** `missing`: the required sections the frontier lacks (frontier.ts `ParsedFrontier.missing`), each named in the head. */
+export type BuildWakeInput<M> = Shared<M> & { toolUseId: string; frontier: string; files?: readonly WakeFile[]; missing?: readonly string[] };
 export type MechanicalWakeInput<M> = Shared<M> & {
   reason: { kind: 'ceiling'; ceiling: number } | { kind: 'reactive' };
   /** The party's newest files, read at install (`recentFiles`); absent or empty, no section. */
   recent?: readonly RecentFile[];
-  /** The required sections the party's stored frontier lacks, which is why it never installed; absent when none was stored. */
-  incomplete?: readonly string[];
 };
 
 export type Wake<M> = {
@@ -371,7 +370,7 @@ function renderFacts<M>(input: Shared<M>, facts: WakeFacts, { siblings, files, r
         continue;
       }
       filesCarried.push(f.path);
-      carried.push(`### ${f.path}${f.lines === undefined ? '' : ` lines ${f.lines}`} — ${f.why}\n${f.content}`);
+      carried.push(`### ${f.path}${f.lines === undefined ? '' : ` lines ${f.lines}`}${f.why === undefined ? '' : ` — ${f.why}`}\n${f.content}`);
     }
     if (carried.length > 0) sections.push(section(['## Files you asked to carry', ...carried].join('\n')));
     if (dropped.length > 0) sections.push({ text: ['## Files not carried', ...dropped].join('\n'), content: false });
@@ -443,33 +442,41 @@ function assemble<M extends WakeMessage>(
 
 /** The head's clause when standing orders bind: the next step is taken within them. */
 const within = (orders: Shared<never>['orders']): string => ((orders?.standing.length ?? 0) > 0 ? ', within the standing orders above' : '');
+/** Where a woken party finds what its frontier did not say: the person's messages (main) or its brief. */
+const sourceOf = (party: 'main' | 'subagent'): string => (party === 'main' ? "the person's messages" : 'your brief');
 
-/** The wake for a stored frontier: facts, the frontier verbatim, then every message after the `forward_compaction` call. Throws when the call is not in `messages`. */
+/**
+ * The wake for a stored frontier: facts, the frontier verbatim, then every message after the `forward_compaction` call.
+ * A call not in `messages` (compacted by something else, or one with no id) cannot be placed: the frontier is carried
+ * with the newest messages that fit, as a mechanical wake keeps them, and the head says so.
+ */
 export function buildWake<M extends WakeMessage>(input: BuildWakeInput<M>): Wake<M> {
   const split = splitAtCall(input.messages, input.toolUseId);
-  if (split === undefined) throw new Error(`forward-compaction: call ${input.toolUseId} is not in the transcript to compact`);
-  return assemble(input, split.tail, { siblings: split.siblings, files: input.files ?? [] }, ({ kept, dropped }) => {
+  const missing = input.missing ?? [];
+  return assemble(input, split?.tail ?? input.messages, { siblings: split?.siblings ?? [], files: input.files ?? [] }, ({ kept, dropped }) => {
     const lines = [
       `[forward-compaction: frontier] Below is the frontier you wrote with forward_compaction: continue from its ## Next${within(input.orders)}.`,
       `=== frontier ===\n${input.frontier}\n=== end of frontier ===`,
     ];
+    if (missing.length > 0) lines.push(`Your frontier was missing ${andList(missing)}: re-establish ${missing.length === 1 ? 'it' : 'them'} from ${sourceOf(input.party)} and the messages below.`);
     // The receipt's own experimental line moves to the wake's end, where it is read last.
-    if (split.own !== undefined) lines.push(`Your forward_compaction call returned:\n${split.own.split(`\n${EXPERIMENTAL_OPENING}`)[0]}`);
-    if (kept > 0) lines.push(`The ${kept} messages after this one are what happened after you wrote it, kept verbatim. Continue from where they leave off.`);
-    if (dropped > 0) lines.push(`${dropped} older messages after your frontier did not fit and are gone (look_back finds an exact detail); call ${input.tool ?? DEFAULT_TOOL} again at your next milestone.`);
-    if (kept === 0) lines.push('Nothing happened after you wrote it. Continue from ## Next.');
+    if (split?.own !== undefined) lines.push(`Your forward_compaction call returned:\n${split.own.split(`\n${EXPERIMENTAL_OPENING}`)[0]}`);
+    if (split === undefined) lines.push(`Your forward_compaction call is not in the transcript, so which messages came after it is unknown: ${kept > 0 ? `the newest ${kept} are kept verbatim after this one, some perhaps from before your frontier` : 'none is kept'}${dropped > 0 ? `; ${dropped} older did not fit and are gone (look_back finds an exact detail)` : ''}. Continue from ## Next.`);
+    else {
+      if (kept > 0) lines.push(`The ${kept} messages after this one are what happened after you wrote it, kept verbatim. Continue from where they leave off.`);
+      if (dropped > 0) lines.push(`${dropped} older messages after your frontier did not fit and are gone (look_back finds an exact detail); call ${input.tool ?? DEFAULT_TOOL} again at your next milestone.`);
+      if (kept === 0) lines.push('Nothing happened after you wrote it. Continue from ## Next.');
+    }
     return experimental(lines.join('\n\n'), input.logDir);
-  }, 'all');
+  }, split === undefined ? 'none' : 'all');
 }
 
 /** The wake for a party with no frontier: the same facts, then the newest messages of `messages` that fit. */
 export function mechanicalWake<M extends WakeMessage>(input: MechanicalWakeInput<M>): Wake<M> {
   const why = input.reason.kind === 'ceiling' ? `, past the ${kilo(input.reason.ceiling)} ceiling` : ', and Claude Code reported your request too long';
-  const source = input.party === 'main' ? "the person's messages" : 'your brief';
-  const missing = input.incomplete ?? [];
-  const call = missing.length === 0 ? 'you had not called forward_compaction, so' : `your last forward_compaction call was missing ${missing.length === 1 ? missing[0] : `${missing.slice(0, -1).join(', ')} and ${missing.at(-1)}`}, so it never installed and`;
+  const source = sourceOf(input.party);
   return assemble(input, input.messages, { siblings: [], files: [], recent: input.recent ?? [], mechanical: true }, ({ kept, dropped }) => experimental(
-    `[forward-compaction: no frontier written by the model] Your context reached ${input.tokens === undefined ? 'a size not measured yet' : `${kilo(input.tokens)} tokens`}${why}, and ${call} the plugin compacted it mechanically: the facts above and your newest ${kept} messages below, kept verbatim; ${dropped} older messages are gone (look_back finds an exact detail). No objective or next step was written. Re-establish them from ${source} and the messages below, then continue${within(input.orders)}; call ${input.tool ?? DEFAULT_TOOL} at your next milestone.`, input.logDir),
+    `[forward-compaction: no frontier written by the model] Your context reached ${input.tokens === undefined ? 'a size not measured yet' : `${kilo(input.tokens)} tokens`}${why}, and you had not called forward_compaction, so the plugin compacted it mechanically: the facts above and your newest ${kept} messages below, kept verbatim; ${dropped} older messages are gone (look_back finds an exact detail). No objective or next step was written. Re-establish them from ${source} and the messages below, then continue${within(input.orders)}; call ${input.tool ?? DEFAULT_TOOL} at your next milestone.`, input.logDir),
   'none');
 }
 

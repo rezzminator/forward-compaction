@@ -2,9 +2,7 @@ import type { Landing } from './wake.ts';
 import { ignoredBy, type RatioBase } from './window.ts';
 import { keptOrders, type LiftedOrder, type StandingOrder } from './orders.ts';
 import type { PlanSeen } from './plan.ts';
-
-/** A file the model asked the wake to carry (the tool's `load_files` entry). */
-export type LoadFile = { path: string; lines?: string; why: string };
+import type { LoadFile } from './frontier.ts';
 
 /** A frontier the model wrote, held in memory until a door installs it. */
 export type StoredFrontier = {
@@ -20,16 +18,11 @@ export type StoredFrontier = {
   standingOrders?: StandingOrder[];
   /** The orders lifted since the last install: its own `lifted`, plus a replaced frontier's still unshown, each shown once in its wake. */
   lifted?: LiftedOrder[];
-  /** The required sections it lacks (frontier.ts `ParsedFrontier.missing`): while any is, it never installs. */
+  /** The required sections it lacks (frontier.ts `ParsedFrontier.missing`): it installs without them, its wake naming each. */
   missing?: string[];
   /** Store order across all parties. */
   seq: number;
 };
-
-/** Whether a door may install the stored frontier: one is stored and it lacks no required section. One that lacks one counts as nothing stored. */
-export function installable(stored: StoredFrontier | undefined): boolean {
-  return stored !== undefined && (stored.missing?.length ?? 0) === 0;
-}
 
 /** What the party's last `session.compact` ask ended in (the decision row's `decision`). */
 export type AskDecision = 'skip' | 'install' | 'mechanical' | 'native' | 'pass' | 'foreign' | 'dropped' | 'error';
@@ -242,14 +235,14 @@ export class Parties {
   }
 
   /**
-   * Whether a nudge goes out now, recorded as sent: once per level while nothing installable is stored. None goes between an
+   * Whether a nudge goes out now, recorded as sent: once per level while nothing is stored. None goes between an
    * install and the party's next reading: until then no size is measured. After a wake none goes until the reading
    * (`tokens`) has grown by `every` past the first one after it: a first reading just under a level boundary would
    * otherwise be nudged again a few thousand tokens later.
    */
   nudgeDue(key: string, level: number, tokens?: number, every?: number): boolean {
     const state = this.get(key);
-    if (installable(state.stored) || state.absorbNext || level <= state.nudgeLevel) return false;
+    if (state.stored !== undefined || state.absorbNext || level <= state.nudgeLevel) return false;
     if (state.wokeAt !== undefined && tokens !== undefined && every !== undefined && tokens < state.wokeAt + every) return false;
     state.nudgeLevel = level;
     return true;

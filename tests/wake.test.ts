@@ -159,8 +159,16 @@ describe('buildWake (R20)', () => {
     expect(h.text).not.toContain('messages after this one');
   });
 
-  it('throws when the call is not in the transcript, naming it', () => {
-    expect(() => buildWake({ ...mainInput([user('a')]), toolUseId: 't9', frontier })).toThrow('t9');
+  it('carries the frontier with the newest messages that fit when its call is not in the transcript, saying so', () => {
+    const filler = [user('a'), ...Array.from({ length: 10 }, (_, i) => assistant(`${i}`.repeat(1000), [], `e${i}`))];
+    const wake = buildWake({ ...mainInput(filler), askPoint: 4000, toolUseId: 't9', frontier });
+    expect([wake.kept > 0, wake.dropped > 0, wake.kept + wake.dropped]).toEqual([true, true, 11]);
+    expect(wake.messages.slice(2)).toEqual(filler.slice(wake.dropped));
+    const h = wake.messages[1] as BuiltMessage;
+    expect(h.text).toContain(`=== frontier ===\n${frontier}\n=== end of frontier ===`);
+    expect(h.text).toContain(`Your forward_compaction call is not in the transcript, so which messages came after it is unknown: the newest ${wake.kept} are kept verbatim after this one, some perhaps from before your frontier; ${wake.dropped} older did not fit and are gone (look_back finds an exact detail). Continue from ## Next.`);
+    const unmeasured = buildWake({ ...mainInput(filler), charsPerToken: undefined, toolUseId: 't9', frontier });
+    expect([unmeasured.kept, unmeasured.dropped]).toEqual([0, 11]);
   });
 
   it('drops the oldest tail messages that do not fit, states how many in H, and keeps the whole output within the budget', () => {
@@ -644,11 +652,13 @@ describe("the mechanical wake re-places the party's newest files, as Claude Code
     expect(wake.text).not.toContain('## Files you were working on');
   });
 
-  it('says a stored frontier missing a MANDATORY section never installed, instead of no call', () => {
-    const head = (incomplete?: string[]) => (mechanicalWake({ ...mainInput([user('a')]), ...(incomplete ? { incomplete } : {}), reason: { kind: 'ceiling', ceiling: 120_000 } }).messages[1] as BuiltMessage).text;
-    expect(head(['decisions', 'next'])).toContain('your last forward_compaction call was missing decisions and next, so it never installed');
-    expect(head(['decisions', 'next'])).not.toContain('you had not called');
-    expect(head()).toContain('you had not called forward_compaction');
+  it('names each MANDATORY section a stored frontier lacks, to re-establish from the person or the brief', () => {
+    const call = assistant('writing', [{ id: 't9', tool: 'mcp__forward-compaction__forward_compaction' }]);
+    const head = (party: 'main' | 'subagent', missing?: string[]) => (buildWake({ ...mainInput([call, results(['t9', 'ok'])]), party, toolUseId: 't9', frontier: '## Objective\nx', ...(missing ? { missing } : {}) }).messages[1] as BuiltMessage).text;
+    expect(head('main', ['decisions', 'done', 'next'])).toContain("Your frontier was missing decisions, done and next: re-establish them from the person's messages and the messages below.");
+    expect(head('subagent', ['next'])).toContain('Your frontier was missing next: re-establish it from your brief and the messages below.');
+    expect(head('main')).toContain('Nothing happened after you wrote it. Continue from ## Next.');
+    expect(head('main')).not.toContain('Your frontier was missing');
   });
 });
 

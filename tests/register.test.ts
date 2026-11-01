@@ -8,23 +8,40 @@ import { register } from '../plugins/forward-compaction/hooks/forward-compaction
 import { FORWARD_INPUT_SCHEMA, FORWARD_TOOL_DESCRIPTION } from '../plugins/forward-compaction/src/frontier.ts';
 import { LOOK_BACK_DESCRIPTION, LOOK_BACK_INPUT_SCHEMA } from '../plugins/forward-compaction/src/look-back.ts';
 import { OPTION_ENV } from '../plugins/forward-compaction/src/options.ts';
-import { toolsToRegister } from '../plugins/forward-compaction/src/register.ts';
+import { holdPending, nextTry, PENDING_BEFORE_CONFIG, REGISTER_BACKOFF_MAX_MS, REGISTER_BACKOFF_MS, REGISTER_TRIES, toolsToRegister } from '../plugins/forward-compaction/src/register.ts';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const none = { forward_compaction: false, look_back: false };
 const nothing = { forward_compaction: 0, look_back: 0 };
 
 describe('toolsToRegister', () => {
-  it('names each enabled tool that is not registered yet and has tries left', () => {
-    const both = { forward_compaction: true, look_back: true };
-    expect(toolsToRegister(both, none, { forward_compaction: 2, look_back: 0 }, 3)).toEqual(['forward_compaction', 'look_back']);
-    expect(toolsToRegister({ ...none, look_back: true }, none, nothing, 3)).toEqual(['look_back']);
+  const both = { forward_compaction: true, look_back: true };
+  it('names each enabled tool that is not registered yet and whose next try is due, at the boundary and either side', () => {
+    expect(toolsToRegister(both, none, nothing, 0)).toEqual(['forward_compaction', 'look_back']);
+    expect(toolsToRegister({ ...none, look_back: true }, none, nothing, 0)).toEqual(['look_back']);
+    const due = { forward_compaction: 5_000, look_back: 0 };
+    expect([4_999, 5_000, 5_001].map((now) => toolsToRegister(both, none, due, now))).toEqual([['look_back'], ['forward_compaction', 'look_back'], ['forward_compaction', 'look_back']]);
   });
 
-  it('leaves out a registered tool and one whose tries are spent, so nothing is left to wait on', () => {
-    const both = { forward_compaction: true, look_back: true };
-    expect(toolsToRegister(both, { forward_compaction: true, look_back: false }, { forward_compaction: 1, look_back: 3 }, 3)).toEqual([]);
-    expect(toolsToRegister(none, none, nothing, 3)).toEqual([]);
+  it('leaves out a registered tool and a disabled one', () => {
+    expect(toolsToRegister(both, { forward_compaction: true, look_back: false }, nothing, 0)).toEqual(['look_back']);
+    expect(toolsToRegister(none, none, nothing, 0)).toEqual([]);
+  });
+});
+
+describe('nextTry: when a tool whose registration failed is tried again', () => {
+  it('at the next hook for the first REGISTER_TRIES tries, then after a wait doubling up to its cap, for the rest of the session', () => {
+    expect([REGISTER_TRIES, REGISTER_BACKOFF_MS, REGISTER_BACKOFF_MAX_MS]).toEqual([3, 30_000, 900_000]);
+    expect([1, 2, 3, 4, 5, 7, 8, 40].map((tries) => nextTry(tries, 1_000))).toEqual([1_000, 1_000, 31_000, 61_000, 121_000, 481_000, 901_000, 901_000]);
+  });
+});
+
+describe('holdPending: the rows held while the environment layer is read', () => {
+  it('holds rows up to PENDING_BEFORE_CONFIG and counts every one past it', () => {
+    const pending = Array.from({ length: PENDING_BEFORE_CONFIG - 1 }, (_, i) => `r${i}`);
+    expect(holdPending(pending, ['a', 'b', 'c'])).toBe(2);
+    expect([pending.length, pending.at(-1)]).toEqual([PENDING_BEFORE_CONFIG, 'a']);
+    expect(holdPending([], ['a'])).toBe(0);
   });
 });
 

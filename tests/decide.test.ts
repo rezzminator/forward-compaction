@@ -30,10 +30,6 @@ describe('decide: plugin trigger (C3-C5, R28)', () => {
     expect(ask({ trigger: 'plugin', party: 'main', stored: false })).toMatchObject({ action: 'next', decision: 'pass' });
   });
 
-  it('C4 drops a stored frontier whose call left the transcript', () => {
-    expect(ask({ trigger: 'plugin', party: 'main', stored: false, storedMissing: true })).toMatchObject({ action: 'next', decision: 'pass', dropStored: true });
-  });
-
   it('C5 passes a plugin request for a sub-agent or a foreign party, whatever it holds', () => {
     for (const party of ['subagent', 'foreign'] as const) {
       expect(ask({ trigger: 'plugin', party, stored: true })).toMatchObject({ action: 'next', decision: 'pass' });
@@ -55,14 +51,6 @@ describe('decide: automatic ask (C6-C10, R26-R28)', () => {
 
   it('C7 installs when reactive too', () => {
     expect(ask({ stored: true, reactive: true })).toMatchObject({ action: 'install' });
-  });
-
-  it('C8 drops a stored frontier whose call is not in the messages, then goes on as if none were stored (skip)', () => {
-    expect(ask({ stored: false, storedMissing: true, tokens: 80_000 })).toMatchObject({ action: 'skip', dropStored: true });
-  });
-
-  it('C8 drops it and goes on to a mechanical wake at the ceiling', () => {
-    expect(ask({ stored: false, storedMissing: true, tokens: 100_000 })).toMatchObject({ action: 'mechanical', dropStored: true });
   });
 
   it('C9 skips below the ceiling with nothing stored, names the party, and asks for no nudge of its own', () => {
@@ -204,6 +192,5 @@ describe('decide: no reading', () => {
   it('still installs a stored frontier and still goes mechanical on a reactive ask with no reading', () => {
     expect(decide({ trigger: 'auto', party: 'subagent', stored: true })).toMatchObject({ action: 'install' });
     expect(decide({ trigger: 'auto', party: 'main', ceiling: 120_000, reactive: true })).toMatchObject({ action: 'mechanical', why: 'reactive' });
-    expect(decide({ trigger: 'auto', party: 'main', ceiling: 120_000, storedMissing: true })).toMatchObject({ why: 'no-reading', dropStored: true });
   });
 });

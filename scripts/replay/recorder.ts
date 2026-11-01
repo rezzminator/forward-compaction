@@ -114,7 +114,7 @@ const given = (...args: unknown[]): unknown[] => {
  * this list to the adapter's. Each call is answered by the engine and written with its path, arguments and outcome;
  * a path missing here is written as an error row and throws, so the recording shows it.
  */
-export const PATHS = ['agent.list', 'clock.after', 'clock.now', 'env.get', 'fs.read', 'fs.stat', 'process.run', 'session.compact', 'session.id', 'session.messages', 'session.usage', 'state.get', 'state.set', 'tool.register', 'ui.log'] as const;
+export const PATHS = ['agent.list', 'clock.after', 'clock.now', 'env.get', 'fs.read', 'fs.stat', 'process.run', 'session.compact', 'session.cwd', 'session.id', 'session.messages', 'session.usage', 'state.get', 'state.set', 'tool.register', 'ui.log'] as const;
 
 function engineFor($: EngineInterface, id: number): any {
   const call = (path: string, args: unknown[], run: () => unknown): unknown => {
@@ -152,6 +152,7 @@ function engineFor($: EngineInterface, id: number): any {
     process: { run: (argv: string[], init?: any) => call('process.run', given(argv, init), () => $.process.run(argv, init)) },
     session: {
       compact: (args?: any) => call('session.compact', given(args), () => (args === undefined ? $.session.compact() : $.session.compact(args))),
+      cwd: () => call('session.cwd', [], () => $.session.cwd()),
       id: () => call('session.id', [], () => $.session.id()),
       messages: (args?: any) => call('session.messages', given(args), () => (args === undefined ? $.session.messages() : $.session.messages(args))),
       usage: (args?: any) => call('session.usage', given(args), () => (args === undefined ? $.session.usage() : $.session.usage(args))),

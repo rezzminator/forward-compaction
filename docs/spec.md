@@ -8,7 +8,8 @@ This is the full behaviour of the plugin: every rule, limit and edge case the co
   argument per section — `objective`, `decisions`, `done`, `remaining` and
   `next`, each MANDATORY — and assembles them into one markdown frontier. It
   is stored, never summarized, and installed verbatim; one missing a
-  MANDATORY section is stored but never installed.
+  MANDATORY section is stored and installs as it is, its wake naming each
+  section it lacks.
 - 🧾 **Facts are recorded, never reconstructed.** The person's messages (main
   chat) or the brief (sub-agent), the messages delivered to it, the skills
   loaded, the agents and the background shells come from typed hook events as
@@ -80,8 +81,7 @@ and no ceiling, and an automatic ask from it with nothing stored is held as
    in memory for that party and never refuses the call: an argument it cannot
    use is left out or skipped, and the receipt names it. A later call
    replaces the stored one. A frontier missing a MANDATORY section is stored
-   but never installs: every door treats it as nothing stored, until a later
-   call with every MANDATORY section replaces it.
+   and installs like a complete one, its wake naming each section it lacks.
 3. **Installing.** The stored frontier installs at the next door Claude Code
    opens: for the main chat at the end of the turn (the plugin asks Claude
    Code to compact) or at an automatic ask if one comes first; for a
@@ -107,11 +107,12 @@ needs no ToolSearch.
   `decisions` holds how a thing gets done ("the result is `already_sent`, not
   `sent`"); a rule that binds the rest of the work goes in `standing_orders`.
 - A frontier missing a required section (absent, not a string, or blank) is
-  stored, never refused, but never installs: Claude Code's asks stay held as
-  if nothing were stored (until the ceiling's mechanical wake), and the main
-  chat's turn end does not install it. The decision log's `stored` row names
-  the sections as `incomplete`. A later call with every required section
-  replaces it and installs as usual.
+  stored, never refused, and installs at the same doors as a complete one:
+  the frontier message names each missing section and says to re-establish it
+  from the person's messages (main) or the brief (sub-agent), and a warning
+  row names them. The decision log's `stored` row and the installing
+  `compact` row name the sections as `incomplete`. A later call with every
+  required section replaces it.
 - `blocked`, `findings` (optional): strings — what waits on whom; the party's
   own choices with why, errors verbatim, the commands and recipes the party
   will need again. Absent or blank, the section is left out.
@@ -120,9 +121,13 @@ needs no ToolSearch.
   each heading followed by its argument verbatim and a blank line between
   sections. The frontier has no length cap: it is stored and installed
   whole, never trimmed.
-- `load_files` (optional): `{path, lines?, why}` entries, as many as the
-  party needs, each an absolute path to a regular file, `why` 1–200
-  characters, `lines` a range like `10-40` or `1-60,160-185`. Their size never
+- `load_files` (optional): `{path, lines?, why?}` entries, as many as the
+  party needs, each a path to a regular file, `lines` a range like `10-40` or
+  `1-60,160-185`, `why` one line. A relative path is resolved against the
+  session's directory (`$.session.cwd()`), or carried as given when that read
+  fails; a `why` past 200 characters is cut to 200, and a missing one carries
+  the file without it; `lines` that are no range carry the file from line 1.
+  Only an entry with no path is skipped. Their size never
   refuses the frontier: it is always stored. Each file is read when the
   frontier installs and carries at most 250 lines: of its `lines` ranges when
   given, else from line 1. When lines are left past the 250th, the file's
@@ -141,50 +146,47 @@ needs no ToolSearch.
   it is cut and fitted to the skills' limits like any other. The receipt says, per name, whether it
   was dropped, waits for the next frontier, is pinned, or was never loaded.
 - `standing_orders` (optional): the person's orders that bind the rest of the
-  work (a prohibition, a limit, a rule), each `{order, at}`: `order` the
-  person's words verbatim, `at` the ISO time of the message that gave it,
-  optional: an order with no `at` or a malformed one is kept when a recorded
-  message of the person's holds its words, and skipped otherwise. The
-  model names them; the plugin never guesses one from the person's wording.
-  When a recorded message of the person's holds the order's words, the plugin
-  stamps `at` from the first such message, never the model's guess, a
-  remembered order's included. Words match across spacing and letter case: a
-  model that rejoins the person's lines or re-cases a word still quotes them.
-  The plugin remembers the standing orders of each party's last stored
+  work (a prohibition, a limit, a rule), each `{order}`: the person's words
+  verbatim. Every entry with a non-blank `order` is kept, whatever else it
+  holds; no message is looked up to keep it. The model names them; the plugin
+  never guesses one from the person's wording. The plugin remembers the standing orders of each party's last stored
   frontier, across installs, the mechanical wake, the person's own `/compact`
   and a plugin reload. The party's next frontier carries each one again with the
   same `order` text, or lifts it; an order it leaves out is carried on by the
   plugin from that memory, and the receipt names it.
 - `lifted` (optional): the orders the person has lifted, each `{order, by}`:
   `order` exactly the text the last frontier carried, `by` the person's words
-  that lifted it, verbatim (spacing and letter case aside). A lift counts only when `by` is found in a message
-  the plugin recorded for the party and sent after the order's `at`: the
-  person's messages for the main chat, its brief or a message delivered to it
-  for a sub-agent. Words said before the order was given lift nothing. Only a
-  lift clears a remembered order; a lift whose words no such message holds
-  leaves the order binding, and the receipt names it. A lift of a text that is
-  no remembered order is ignored.
+  that lifted it, verbatim. A lift counts only when `by` is found in a message
+  the plugin recorded for the party: the person's messages for the main
+  chat, its brief or a message delivered to it for a sub-agent. Words match
+  across spacing and letter case: a model that rejoins the person's lines or
+  re-cases a word still quotes them. Only a lift clears a remembered order; a
+  lift whose words no such message holds leaves the order binding, the
+  receipt names it, and the wake shows the claimed words beside the order. A
+  lift of a text that is no remembered order is ignored.
 
 The result is a receipt saying when the frontier installs — for the main chat
 at the end of this turn, for a sub-agent at Claude Code's next ask (with
 where that ask comes) — and, when it replaced one, that it did. It prints no
 context size: the plugin measures none for that moment. A call is always stored. When the plugin left
 something out, skipped it or carried it on, the receipt ends with
-`Stored with N changes:` and one line each: an unknown field, a section that is
-missing, blank or not a string, a bad `drop_skills` name, a bad
-`standing_orders` or `lifted` entry, a standing order the frontier left out
-(carried on), a lift whose words no recorded message sent after the order holds
-(the order still binding), a lift of no remembered order, a `load_files` entry
-that is bad, absent, not a regular file or could not be checked,
-a call with no `tool_use_id`, which the wake cannot place, and a field taken
-back out of a section that holds its own closing tag then
+`Stored with N changes:` and one line each: an unknown field (carried under
+`## Findings` with its name), a section that is missing, blank or not a
+string, a bad `drop_skills` name, a bad `standing_orders` or `lifted` entry, a
+standing order the frontier left out (carried on), a lift whose words no
+recorded message holds (the order still binding), a lift of no remembered
+order, a `load_files` entry with no path, resolved from a relative path, with
+a cut or bad `why` or bad `lines`, absent, not a regular file or that could not
+be checked, a call with no `tool_use_id`, which the wake cannot place, and a
+field taken back out of a section that holds its own closing tag then
 `<parameter name="…">` (the model's call markup closed the section early; an
-array field is read as JSON, and a field the call also sent keeps the sent
-value). A frontier
-missing a required section opens its receipt with `but a MANDATORY section is
-missing, so it does not install`, names each missing section in that list,
-and ends it with `This frontier will not install until you call
-forward_compaction again with every MANDATORY section.`
+array field is read as JSON). A folded field that cannot be taken out (no
+field, one the call also sent, or an array field that is not JSON) stays in
+the section it arrived in, under `[{name}, as it arrived inside {section}]`. A
+frontier missing a required section opens its receipt with `missing a
+MANDATORY section: the wake will name each one it lacks`, names each missing
+section in that list, and ends it with `Call forward_compaction again with
+every MANDATORY section to replace it before it installs.`
 
 Every answer ends with one line saying the
 plugin is experimental and asking the model to append a short note of any
@@ -200,11 +202,12 @@ replaces the message that held it, and, like a mechanical wake's message,
 ends with the experimental line and where to note any trouble.
 
 The facts message opens with the plugin version that built the wake
-(`compacted by forward-compaction 2.2.4`), so a chat on an old build shows
+(`compacted by forward-compaction 2.2.5`), so a chat on an old build shows
 it. It holds, each section only when it has content:
 
 - the standing orders, first, under `## Standing orders — binding until the
-  person lifts them`: each order the frontier carried with its time, carried
+  person lifts them`: each order the frontier carried on its own list line, with a
+  lift no recorded message proves shown beside it, carried
   whole, outside the budget; then each order lifted since the last install,
   once, with the person's lifting words, and never again. A mechanical wake
   carries the party's remembered orders the same way, and the frontier
@@ -323,8 +326,10 @@ end, with after said as unknown, never guessed.
 - A message the person sends after the call does not cancel a stored frontier:
   it is among the messages kept after the call.
 - A stored frontier whose call is no longer in the party's transcript
-  (something else compacted it) is dropped and said on screen; the ask is
-  then judged as if nothing were stored.
+  (something else compacted it), or that came with no `tool_use_id`, still
+  installs: it is carried with the newest messages that fit, as a mechanical
+  wake keeps them (none when no ratio is measured), the frontier message says
+  which messages followed the call is unknown, and a warning row names it.
 - An engine loop that is not one of the session's sub-agents (a fork Claude
   Code runs itself) is left to Claude Code.
 - A `precompute` ask is skipped: it is never used.
@@ -419,8 +424,8 @@ With the defaults, on the 200k sub-agent max context:
 
 | Path | What | Retention |
 | --- | --- | --- |
-| `~/.local/state/forward-compaction/logs/decisions/{session}.jsonl` (`$PLUGIN_LOG_DIR/forward-compaction/decisions/` when set) | decision rows: every frontier stored (with `orders` and `lifted`, its counts of standing orders carried and lifted, and `notes`, the count of changes its receipt named), every nudge, every compaction decision, every `landed` row (`{party, kind, before, after, line}`, `kind` being `frontier` or `mechanical`, `before` and `after` the measured readings or `null`, written with the landed line), every `ignore` row (`{party, label, model, judged, matched}`, `judged` being `managed`, `ignored` or `unknown`, `matched` the ignore-list entry or `null`, written when a party's judgement is first made or changes); a held-ask streak is one folded `skips` row, written when the streak closes and stamped with its last ask's time, so it can follow later rows | a file over 8 MiB moves to `.1`; other sessions' files older than 14 days, then all but the newest 200, are deleted |
-| `~/.local/state/forward-compaction/logs/{errors,warnings,info}.jsonl` (`$PLUGIN_LOG_DIR/forward-compaction/` when set) | the plugin's errors, warnings and info: every decision event lands at its level — errors and warnings in their files, every other operational event (nudge, stored, each compaction decision, party, skill, tool-registered, look-back, the lines said) in `info.jsonl`, a held-ask streak folded into its first row and one `skips` row. Each row's `event` names what happened (never a bare `error` or `warning`), and an error or warning row's `where` names the function that raised it. One failure is one row: a tool that fails to register writes one error row and one screen line. Rows a write could not append (the lock held past its 10-second wait, the writer killed at its 15-second bound, any failure) stay queued, order kept, and are retried with the next write: a row may be written twice, never lost or torn. Only past 2,000 held rows are the oldest dropped, and their count goes to `errors.jsonl` (`plugin-log-rows-dropped`) once a write succeeds. A lock stage or broken lock whose writer died is cleared | a level file over 20 MiB moves to `.1`, the older ones to `.2` … `.5`, the oldest of five deleted |
+| `~/.local/state/forward-compaction/logs/decisions/{session}.jsonl` (`$PLUGIN_LOG_DIR/forward-compaction/decisions/` when set) | decision rows: every frontier stored (with `orders` and `lifted`, its counts of standing orders carried and lifted, and `notes`, the count of changes its receipt named), every nudge, every compaction decision, every `landed` row (`{party, kind, before, after, line}`, `kind` being `frontier` or `mechanical`, `before` and `after` the measured readings or `null`, written with the landed line), every `ignore` row (`{party, label, model, judged, matched}`, `judged` being `managed`, `ignored` or `unknown`, `matched` the ignore-list entry or `null`, written when a party's judgement is first made or changes); a held-ask streak is one folded `skips` row, written when the streak closes and stamped with its last ask's time, so it can follow later rows; rows past the first 500 that come before the environment layer is read are counted in one `rows-lost` row | a file over 8 MiB moves to `.1`; other sessions' files older than 14 days, then all but the newest 200, are deleted |
+| `~/.local/state/forward-compaction/logs/{errors,warnings,info}.jsonl` (`$PLUGIN_LOG_DIR/forward-compaction/` when set) | the plugin's errors, warnings and info: every decision event lands at its level — errors and warnings in their files, every other operational event (nudge, stored, each compaction decision, party, skill, tool-registered, look-back, the lines said) in `info.jsonl`, a held-ask streak folded into its first row and one `skips` row. Each row's `event` names what happened (never a bare `error` or `warning`), and an error or warning row's `where` names the function that raised it. One failure is one row: a tool that fails to register writes one error row and one screen line, and is tried again at each `turn.start`: at once for its first three tries, then after a wait of 30 seconds that doubles with each failure, up to 15 minutes, for the rest of the session. Rows a write could not append (the lock held past its 10-second wait, the writer killed at its 15-second bound, any failure) stay queued, order kept, and are retried with the next write: a row may be written twice, never lost or torn. Only past 2,000 held rows are the oldest dropped, and their count goes to `errors.jsonl` (`plugin-log-rows-dropped`) once a write succeeds. A lock stage or broken lock whose writer died is cleared | a level file over 20 MiB moves to `.1`, the older ones to `.2` … `.5`, the oldest of five deleted |
 | `debug.jsonl` in the same directory (with `FORWARD_COMPACTION_DEBUG` on) | a row at every step: each hook entry (hook, party, trigger, model), each `$` answer the plugin decides on (`session.usage` figures, the `agent.list` count, each `turn.step` reading with its four counts and model, `fs.stat` results), the options and variables resolved, each ratio base and each ratio, measured or not and why, with the base's characters and tokens and the characters and reading now, each wake's section sizes and files, each nudge sent or withheld and why, and every decision row whole; numbers as the API gave them | as the level files: `.1` … `.5` |
 | `issues.md` in the same directory | notes a model appends when the plugin gave it trouble, as each tool answer asks | not managed by the plugin |
 | anything else | none: the recorded facts and the stored frontiers live in memory only | — |

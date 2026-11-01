@@ -2,6 +2,21 @@
 
 Every release of forward-compaction, named sub-agent-compact before 1.0.0. Versions follow [semantic versioning](https://semver.org); each release is the `main` commit tagged `forward-compaction--v<version>` (`sub-agent-compact--v<version>` before 1.0.0), with a GitHub release carrying the section below.
 
+## [2.2.5] — 2026-11-01
+
+### Changed
+
+- **A standing order carries no time.** `standing_orders` entries are `{order}`: every non-blank order is kept, whatever else its entry holds, and no message is looked up to keep it. A lift counts when its words are in any recorded message of the person's (a sub-agent's brief or delivered messages); one whose words are not found leaves the order binding, and the wake shows the claimed lift beside it. The wake lists each order without a time. Orders kept by an older version with an `at` load as before, the `at` unread.
+- **A frontier missing a MANDATORY section installs.** It installs at the same doors as a complete one, its wake naming each missing section and the decision log's `compact` row listing them as `incomplete`, with a warning row; a complete call sent before then replaces it.
+- **A frontier whose call cannot be placed installs.** A stored frontier whose call left the transcript, or that came with no `tool_use_id`, installs with the newest messages that fit instead of being dropped, its wake saying which messages followed the call is unknown, with a warning row.
+
+### Fixed
+
+- **`load_files` keeps the file.** A relative path is resolved against the session's directory; a `why` past 200 characters is cut and a missing one is optional; `lines` that are no range carry the file from line 1. Only an entry with no path is skipped, and the receipt names each change.
+- **Nothing the model sent is dropped.** An unknown argument rides under `## Findings` with its name; a folded parameter that cannot be taken back out (no field, sent twice, or an array that is not JSON) stays in the section it arrived in, under its name.
+- **A tool that failed to register comes back.** Registration is tried again at each turn start: at once for the first three tries, then after a wait doubling from 30 seconds up to 15 minutes, for the rest of the session.
+- **Rows lost before the environment layer is read are counted.** Past the first 500, they are counted in one `rows-lost` decision row.
+
 ## [2.2.4] — 2026-11-01
 
 ### Changed

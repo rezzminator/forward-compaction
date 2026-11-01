@@ -5,9 +5,9 @@
 **Claude Code compaction without the wait. The model writes its own handoff while it still remembers everything, so your exact words carry through.**
 
 [![Claude Code plugin](https://img.shields.io/badge/Claude%20Code-plugin-D97757)](https://docs.claude.com/en/docs/claude-code/plugins)
-[![Version](https://img.shields.io/badge/version-2.2.4-blue)](./CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-2.2.5-blue)](./CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
-[![Tests](https://img.shields.io/badge/tests-615%20passing-brightgreen)](#development)
+[![Tests](https://img.shields.io/badge/tests-612%20passing-brightgreen)](#development)
 [![Built with Professor](https://img.shields.io/badge/built%20with-Professor-8A2BE2)](https://github.com/rezzminator/professor)
 
 </div>
@@ -154,7 +154,7 @@ forward_compaction({
 | `load_files` | no | Files to read back in after the compaction, up to 250 lines each. |
 | `drop_skills` | no | Skills no longer needed, dropped once two handoffs in a row name them. |
 
-The call is never refused. The reply says when the handoff will install and names anything it left out. A handoff missing a required section is stored but does not install until a complete one replaces it.
+The call is never refused. The reply says when the handoff will install and names anything it left out. A handoff missing a required section is stored and installs as it is, the compaction naming each section it lacks; a complete one sent later replaces it.
 
 ### `look_back`
 

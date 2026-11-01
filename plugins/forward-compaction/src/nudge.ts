@@ -7,6 +7,11 @@ export function k(tokens: number): string {
   return thousands < 1000 ? `${thousands}k` : `${Math.round(tokens / 100_000) / 10}M`;
 }
 
+/** Names as prose: `a`, `a and b`, `a, b and c`. */
+export function andList(names: readonly string[]): string {
+  return names.length < 2 ? (names[0] ?? '') : `${names.slice(0, -1).join(', ')} and ${names.at(-1)}`;
+}
+
 /** 0 below `start`, 1 at it, and one more per `every` tokens past it. */
 export function nudgeLevel(tokens: number, start: number, every: number): number {
   if (tokens < start) return 0;

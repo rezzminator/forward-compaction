@@ -14,7 +14,7 @@ Claude Code's own compaction has a separate call summarize the transcript. Here 
 
 - The model always chooses when to compact: the plugin only nudges, as a party's context crosses its nudge levels, and a nudge says to pick the milestone, not whether.
 - The plugin holds Claude Code's compaction. `CLAUDE_CODE_AUTO_COMPACT_WINDOW=100000` exists only so Claude Code asks early, about every request from about 63k; it is never the compaction point.
-- Each ask is skipped until a frontier with every MANDATORY section is stored, and that ask installs it; or until the party reaches its ceiling, and it gets the mechanical wake: recorded facts, no frontier from the model. A frontier missing a MANDATORY section is stored but never installs: every door treats it as nothing stored. Main also installs a stored complete frontier at its own turn end, through `$.session.compact()`.
+- Each ask is skipped until a frontier is stored, complete or not, and that ask installs it; or until the party reaches its ceiling, and it gets the mechanical wake: recorded facts, no frontier from the model. Main also installs a stored frontier at its own turn end, through `$.session.compact()`.
 - The exceptions to "the model chooses" are only these:
   - the ceiling: the mechanical wake, or Claude Code's own summary under `FORWARD_COMPACTION_CEILING_NATIVE`;
   - a request too long (an ask following a held ask in the same turn that no request completed): the mechanical wake at once, below the ceiling;
@@ -31,13 +31,13 @@ Claude Code's own compaction has a separate call summarize the transcript. Here 
 
 - The wake exists to carry content: a woken party continues with everything it needs, and no size budget outranks a rule in this section.
 - The frontier has no length cap: it is stored and installed whole, never refused, trimmed or summarized for its size.
-- The frontier's MANDATORY sections are `objective`, `decisions`, `done`, `remaining` and `next`; a frontier with one absent, not a string or blank is stored, never refused, but never installs, its receipt naming each missing section, until a later complete call replaces it.
+- The frontier's MANDATORY sections are `objective`, `decisions`, `done`, `remaining` and `next`; a frontier with one absent, not a string or blank is stored, never refused, and installs as it is, its receipt and its wake naming each missing section, unless a later complete call replaces it first.
 - `decisions` carries every ruling the person gave on how something gets done, in the person's words, each with its undo when one exists; a rule that binds the rest of the work is a standing order.
 - Every skill and command the party loaded is carried into every wake within Claude Code's own post-compaction limits: newest loaded first, each cut past `SKILL_MAX_CHARS` to its head and Claude Code's own truncation marker, all together within `SKILLS_MAX_CHARS`, and one that does not fit what is left named as not carried with the call that loads it again. One leaves by name only when two frontiers in a row name it in `drop_skills`; one pinned by its frontmatter's `forward-compaction-keep: true` or by `FORWARD_COMPACTION_KEEP_SKILLS` never does, and is cut and fitted like the rest.
 - The person's ten newest typed messages (`PROMPTS_KEPT`, main) and every answer they gave to the model's AskUserQuestion, however old, or the brief (sub-agent), are carried whole into every wake, whatever their size; the heading counts the answers and the older typed messages left out.
 - A standing order is the person's order that binds the rest of the work (a prohibition, a limit, a rule); it survives every wake, the mechanical one included, until the person lifts it.
-- The frontier carries each standing order verbatim, with the time of the person's message, in its own `standing_orders` argument; the plugin replaces that time with the person's first recorded message holding the order, when one does.
-- A frontier that leaves out a standing order is stored, and the plugin carries the order on from the party's remembered orders; it leaves only on a lift quoting the person's words from a message sent after the order's time, and a lift without those words leaves it binding, named in the receipt.
+- The frontier carries each standing order verbatim in its own `standing_orders` argument; every non-blank order is kept, and no lookup in the person's messages decides whether it is.
+- A frontier that leaves out a standing order is stored, and the plugin carries the order on from the party's remembered orders; it leaves only on a lift quoting the person's words from any message the plugin recorded for the party, and a lift without those words leaves it binding, named in the receipt and shown beside the order in the wake.
 - The wake renders the standing orders above the frontier, marked binding.
 - Only what the model can find again is fitted to a budget: the kept tail, the notifications and delivered messages, sibling results, the shell commands run (verbatim, each with its description), and the files and agents lists. The task list is carried whole; each `load_files` file carries up to `LOAD_FILE_MAX_LINES` lines, a longer one naming where to Read the rest, with no room and no count cap, never refused for size. Each one left out is named as not carried, never silently gone.
 - Plan mode and the plan file, as Claude Code's plan-mode attachments name them for the party, are carried into every wake, the plan file read whole at install; the plugin API exposes no active goal, so the wake carries none.
@@ -49,7 +49,7 @@ Each step names what an audit of the transcript and the plugin's log rows sees.
 
 1. Below its first nudge level the party works undisturbed: each Claude Code ask logs `compact` with decision `skip`, why `waiting`, and nothing reaches the model.
 2. At each nudge level the model reads one nudge with a tool result, logged `nudge` with its level; no level nudges twice.
-3. The model finishes its step, then calls `forward_compaction` with every MANDATORY section: the receipt opens "Frontier stored" and a `stored` row records its chars, files and orders. A call missing a section gets a receipt naming each and ending "This frontier will not install until you call forward_compaction again with every MANDATORY section."
+3. The model finishes its step, then calls `forward_compaction` with every MANDATORY section: the receipt opens "Frontier stored" and a `stored` row records its chars, files and orders. A call missing a section gets a receipt naming each and ending "Call forward_compaction again with every MANDATORY section to replace it before it installs."; its `stored` row, and the `compact` row that installs it, carry `incomplete`.
 4. The next ask installs it (main also at its own turn end): `compact` with decision `install`, why `stored`, then `landed` with `before` above `after`; the transcript holds one compact boundary per install.
 5. The wake is the facts message (`[forward-compaction: facts]`), the frontier message (`[forward-compaction: frontier]`, the frontier verbatim), then the kept tail. The facts run in this order, an empty section left out or saying why it is empty: standing orders; messages arrived after the frontier; plan mode and plan file; the brief (sub-agent) or the person's messages (main); notifications or delivered messages; results of the calls beside the frontier; skills in force and skills not carried; files touched; shell commands run; tasks; agents; background shells and crons; the `load_files`, or on a mechanical wake the files being worked on.
 6. Every fact is true of the woken party: nothing another party read, loaded, ran or started appears as its own, and a fact the plugin cannot tie to a party says so.
@@ -67,7 +67,7 @@ Each step names what an audit of the transcript and the plugin's log rows sees.
 
 ## Commands
 
-`npm test`, `npm run typecheck` and `npm run validate:plugin` all pass before a commit. `make release-check` runs every check the release workflow runs on a `develop → main` pull request, the same make targets (`check`, `release`) under Node 22. A live check loads the checkout with `--plugin-dir plugins/forward-compaction`: the installed copy is disabled in the same `--settings`.
+`npm test`, `npm run typecheck` and `npm run validate:plugin` all pass before a commit. `make release-check` runs every check `ci.yml` runs on a `develop → main` pull request, the same make targets (`check`, `release`) under Node 22. A live check loads the checkout with `--plugin-dir plugins/forward-compaction`: the installed copy is disabled in the same `--settings`.
 
 Refresh the installed copy with `claude plugin marketplace update` as written, never under a `CLAUDE_CONFIG_DIR` override pointing at `~/.claude`: `claude` then writes `.claude.json` and `backups/` into the shared store.
 
@@ -92,13 +92,13 @@ Refresh the installed copy with `claude plugin marketplace update` as written, n
 
 ## Branches and releases
 
-- `develop` is the default branch: every change lands there, by a commit or a pull request, and no CI runs on a push. `.github/workflows/release.yml` runs on the `develop → main` pull request only. `develop` is protected by the ruleset `develop keeps its history`: never force-push or delete it.
-- `main` is release-only (ruleset `main is release-only`). It moves only by merging the `develop → main` pull request, with a merge commit and never a squash, so both branches share one history, and only after `check` and `release` pass: never a direct push, never an admin override. Professor's marketplace installs the plugin from `main` (`git-subdir`, `ref: main`), so users only ever get a released version.
+- `develop` is the default branch: every change lands there, by a commit or a pull request, and no CI runs on a push. `.github/workflows/ci.yml` runs on the `develop → main` pull request only, and `.github/workflows/publish.yml` on its merge. `develop` is protected by the ruleset `develop keeps its history`: never force-push or delete it.
+- `main` is release-only (ruleset `main is release-only`). It moves only by merging the `develop → main` pull request, with a merge commit and never a squash, so both branches share one history, and only after its `ci` check passes: never a direct push, never an admin override. Professor's marketplace installs the plugin from `main` (`git-subdir`, `ref: main`), so users only ever get a released version.
 - A release, in order:
   1. On `develop`: bump the version in all four places, and move `## [Unreleased]` in `CHANGELOG.md` to `## [X.Y.Z] — date`. Every merge into `main` publishes, so a pre-release suffix (`-dev.N`, `-alpha`) becomes the real release version here.
   2. `make release-check` passes, after `git fetch origin main`.
-  3. Open the `develop → main` pull request. Its `check` and `release` checks run the same make targets; `release` requires the version to have moved past `main`'s and the CHANGELOG section to yield notes.
-  4. Merge once both are green. The merge is the release: `release.yml`'s `publish` job tags the merge commit `forward-compaction--vX.Y.Z` and publishes the GitHub release from the CHANGELOG section. No tag is pushed by hand.
+  3. Open the `develop → main` pull request. Its `ci.yml` runs the same make targets, `check` on Linux and macOS and `release`, and its `ci` job passes only when every one succeeded; `release` requires the version to have moved past `main`'s and the CHANGELOG section to yield notes.
+  4. Merge once `ci` is green. The merge is the release: `publish.yml`'s `publish` job tags the merge commit `forward-compaction--vX.Y.Z` and publishes the GitHub release from the CHANGELOG section. No tag is pushed by hand.
 - Semantic versioning: a fix is a patch; a new option or behaviour is a minor; a renamed or removed option is a major, and its CHANGELOG entry says how to migrate.
 - Publishing: README and marketing changes on `develop` are pushed as soon as they are committed. Code is pushed, and a release is cut, only when the owner asks.
 - Git writes go through this repo's gitter, `.claude/agents/gitter.md`.
