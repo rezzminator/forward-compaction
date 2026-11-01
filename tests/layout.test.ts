@@ -36,7 +36,7 @@ function engineOutsideAdapter(list: readonly File[]): string[] {
 function untestedSources(sources: readonly string[], tests: readonly string[]): string[] {
   return enumerated(sources)
     .map((path) => /([^/]+)\.ts$/.exec(path)![1])
-    .filter((stem) => stem !== 'plugin-log' && !tests.includes(`tests/${stem}.test.ts`)) // the vendored plugin-log copy is tested in its canonical source
+    .filter((stem) => !tests.includes(`tests/${stem}.test.ts`))
     .map((stem) => `${PLUGIN}/src/${stem}.ts`);
 }
 // Built from parts, so this file does not match itself. D2: the GitHub slug keeps the old name in this flight.
