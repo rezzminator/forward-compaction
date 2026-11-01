@@ -4,6 +4,7 @@ import { spawnSync } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { setImmediate as macrotask } from 'node:timers/promises';
 import { register } from '../../plugins/forward-compaction/hooks/forward-compaction.ts';
 
 type Fn = (...args: any[]) => any;
@@ -114,6 +115,16 @@ export function fakeEngine(script: Script = {}) {
 
   /** Runs one hook with `impl` as everything beneath it; a hook the plugin does not register passes straight to `impl`. `signal` is the dispatch's abort. */
   async function dispatch(event: string, e: unknown, impl: Fn = async (x) => x, signal: AbortSignal = new AbortController().signal): Promise<any> {
+    try {
+      return await invoke(event, e, impl, signal);
+    } finally {
+      // Hand the event loop a turn: a file of dispatches is otherwise one microtask chain, and vitest's worker reads its
+      // RPC replies only on a turn, so a file past 60 s failed with `Timeout calling "onTaskUpdate"`.
+      await macrotask();
+    }
+  }
+
+  async function invoke(event: string, e: unknown, impl: Fn, signal: AbortSignal): Promise<any> {
     const hook = hooks.get(event);
     if (event === 'turn.step') {
       const next = Object.assign(async function* (x: unknown) { return await impl(x); }, { signal });

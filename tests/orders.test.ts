@@ -234,7 +234,9 @@ async function rows(f: Fake): Promise<Record<string, unknown>[]> {
 }
 const A = { standing_orders: [ORDER] };
 
-describe('the dropped standing order, replayed', () => {
+// Each case drives several frontier cycles over a 200k-character transcript through the hooks:
+// CPU-bound seconds that a loaded host stretches past vitest's 5 s default.
+describe('the dropped standing order, replayed', { timeout: 30_000 }, () => {
   it('stores frontier B without the order and carries it on, keeps it binding on a lift nobody said, and lifts it in the words the person sent', async () => {
     const f = await begin();
     await say(f, 'Alright, do not spawn more, let these finish and finilize it');

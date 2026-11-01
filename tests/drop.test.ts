@@ -68,7 +68,9 @@ afterEach(() => {
   }
 });
 
-describe('drop_skills through the hooks', () => {
+// Each case drives several frontier cycles over a 200k-character transcript through the hooks:
+// CPU-bound seconds that a loaded host stretches past vitest's 5 s default.
+describe('drop_skills through the hooks', { timeout: 30_000 }, () => {
   async function begin(env: Record<string, string> = {}): Promise<Fake> {
     const f = fakeEngine({ window: 1_000_000, env: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '100000', ...env } });
     fakes.push(f);
