@@ -1,3 +1,5 @@
+import { andList } from './nudge.ts';
+
 export type Trigger = 'manual' | 'auto' | 'plugin' | 'precompute';
 
 const TRIGGERS: readonly Trigger[] = ['auto', 'manual', 'plugin', 'precompute'];
@@ -28,10 +30,8 @@ export type PartyKind = 'main' | 'subagent' | 'foreign';
 export type DecideInput = {
   trigger: Trigger;
   party: PartyKind;
-  /** A frontier is stored and its `forward_compaction` call is in `e.messages`. */
+  /** A frontier is stored for the party, whether or not its `forward_compaction` call is still in `e.messages`. */
   stored?: boolean;
-  /** A frontier is stored but its call is not in `e.messages`: something else compacted the party since. */
-  storedMissing?: boolean;
   /** The party's last reading; undefined when it has none (none yet, or none since an install): no ceiling is reached then. */
   tokens?: number;
   /** The context at which a party with no frontier gets a mechanical wake. Left out, it is never reached. */
@@ -51,9 +51,9 @@ export type DecideInput = {
 /** The decision row's `decision` for the action. */
 export type Action =
   | { action: 'next'; decision: 'native' | 'pass' | 'foreign'; why: 'manual' | 'plugin' | 'foreign' | 'ceiling' | 'reactive'; dropStored?: true }
-  | { action: 'skip'; decision: 'skip'; why: 'precompute' | 'waiting' | 'no-reading' | 'ignored-model'; reason: string; dropStored?: true }
+  | { action: 'skip'; decision: 'skip'; why: 'precompute' | 'waiting' | 'no-reading' | 'ignored-model'; reason: string }
   | { action: 'install'; decision: 'install'; why: 'stored' }
-  | { action: 'mechanical'; decision: 'mechanical'; why: 'ceiling' | 'reactive'; dropStored?: true };
+  | { action: 'mechanical'; decision: 'mechanical'; why: 'ceiling' | 'reactive' };
 
 /**
  * One `session.compact` ask (rows C1-C10 of the decision table). A manual ask runs Claude Code's own summary and
@@ -63,27 +63,26 @@ export type Action =
  * gets a mechanical wake, or Claude Code's own summary when the ceiling is native. A foreign party (the engine's own
  * fork) is never ours: its automatic ask passes. A party whose model is on the ignore list with nothing stored has its ask
  * held as `ignored-model` until the ceiling; its stored frontier installs like any other's. An automatic ask from any other party with no reading and nothing stored is
- * held as `no-reading`: the next reading decides. A stored frontier whose call left the transcript is dropped, and the ask goes on as if none were stored.
+ * held as `no-reading`: the next reading decides.
  */
-export function decide({ trigger, party, stored = false, storedMissing = false, tokens, ceiling = Number.POSITIVE_INFINITY, reactive = false, ceilingNative = false, label = 'main', ignored = false, windowUnknown = false }: DecideInput): Action {
-  const drop = storedMissing ? ({ dropStored: true } as const) : {};
+export function decide({ trigger, party, stored = false, tokens, ceiling = Number.POSITIVE_INFINITY, reactive = false, ceilingNative = false, label = 'main', ignored = false, windowUnknown = false }: DecideInput): Action {
   if (trigger === 'manual') return { action: 'next', decision: 'native', why: 'manual', dropStored: true };
   if (trigger === 'precompute') return { action: 'skip', decision: 'skip', why: 'precompute', reason: 'forward-compaction: precompute is never used' };
   if (trigger === 'plugin') {
     if (party === 'main' && stored) return { action: 'install', decision: 'install', why: 'stored' };
-    return { action: 'next', decision: 'pass', why: 'plugin', ...(party === 'main' ? drop : {}) };
+    return { action: 'next', decision: 'pass', why: 'plugin' };
   }
   if (party === 'foreign') return { action: 'next', decision: 'foreign', why: 'foreign' };
   if (stored) return { action: 'install', decision: 'install', why: 'stored' };
   const atCeiling = !windowUnknown && tokens !== undefined && tokens >= ceiling;
   if (atCeiling || reactive) {
     const why = atCeiling ? 'ceiling' : 'reactive';
-    if (ceilingNative) return { action: 'next', decision: 'native', why, ...drop };
-    return { action: 'mechanical', decision: 'mechanical', why, ...drop };
+    if (ceilingNative) return { action: 'next', decision: 'native', why };
+    return { action: 'mechanical', decision: 'mechanical', why };
   }
-  if (ignored) return { action: 'skip', decision: 'skip', why: 'ignored-model', reason: `forward-compaction: holding Claude Code's compaction for ${label}: its model is on the ignore list, so it is compacted mechanically at its ceiling`, ...drop };
-  if (tokens === undefined) return { action: 'skip', decision: 'skip', why: 'no-reading', reason: `forward-compaction: holding Claude Code's compaction for ${label}: it has no reading yet, and its next reading decides`, ...drop };
-  return { action: 'skip', decision: 'skip', why: 'waiting', reason: `forward-compaction: holding Claude Code's compaction for ${label} until its frontier is stored or the ceiling is reached`, ...drop };
+  if (ignored) return { action: 'skip', decision: 'skip', why: 'ignored-model', reason: `forward-compaction: holding Claude Code's compaction for ${label}: its model is on the ignore list, so it is compacted mechanically at its ceiling` };
+  if (tokens === undefined) return { action: 'skip', decision: 'skip', why: 'no-reading', reason: `forward-compaction: holding Claude Code's compaction for ${label}: it has no reading yet, and its next reading decides` };
+  return { action: 'skip', decision: 'skip', why: 'waiting', reason: `forward-compaction: holding Claude Code's compaction for ${label} until its frontier is stored or the ceiling is reached` };
 }
 
 export type TurnEndInput = {
@@ -105,4 +104,12 @@ export function turnEndDoor({ main, reason, stored, installedThisTurn }: TurnEnd
   if (!stored) return { compact: false, why: 'nothing-stored' };
   if (installedThisTurn) return { compact: false, why: 'installed-this-turn' };
   return { compact: true };
+}
+
+/** The warning rows of an install the person should know of: a frontier missing a MANDATORY section, and one whose call is not in the messages compacted (`placed` false), carried with the newest messages that fit. */
+export function installWarnings(label: string, toolUseId: string, missing: readonly string[], placed: boolean): { line: string; row: Record<string, unknown> }[] {
+  return [
+    ...(missing.length === 0 ? [] : [{ line: `forward-compaction: ${label}'s frontier installed without ${andList(missing)}, the MANDATORY ${missing.length === 1 ? 'section' : 'sections'} it lacked.`, row: { event: 'install-incomplete', missing } }]),
+    ...(placed ? [] : [{ line: `forward-compaction: ${label}'s forward_compaction call ${toolUseId || '(no tool_use_id)'} is not in its transcript: its frontier installed with the newest messages that fit instead of every message after the call.`, row: { event: 'install-unplaced', toolUseId } }]),
+  ];
 }

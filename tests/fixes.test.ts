@@ -196,4 +196,18 @@ describe('L8 + L9: one row per registration failure, and every error and warning
     expect(warnings.map((r) => [r.event, r.where])).toContainEqual(['compact-window', 'hooks/forward-compaction.ts#sessionBegins']);
     expect([...errors, ...warnings].filter((r) => r.event === 'error' || r.event === 'warning' || r.where === 'hooks/forward-compaction.ts#record')).toEqual([]);
   });
+
+  it('tries a failed registration again on a later hook once its wait is over, past REGISTER_TRIES, so the tool comes back', async () => {
+    let failing = true;
+    const f = await begin({ registerError: () => (failing ? 'no tools yet' : undefined) });
+    const call = () => f.dispatch('tool.call', { tool: FORWARD, tool_use_id: 'tu-r', ...SECTIONS }, async () => ({ result: 'not ours' }));
+    const turn = () => f.dispatch('turn.start', { text: '', turnId: 't1' }, async () => ({}));
+    for (let i = 0; i < 3; i++) await turn();
+    failing = false;
+    await turn();
+    expect((await call()).result).toBe('not ours');
+    f.advance(30_000);
+    await turn();
+    expect((await call()).result).toMatch(/^Frontier stored/);
+  });
 });

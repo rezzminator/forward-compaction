@@ -43,6 +43,8 @@ export const ANSWERS: Record<(typeof PATHS)[number], { from: 'recorded'; subject
   'session.messages': { from: 'recorded', subject: true },
   // an effect, but the plugin reads its answer (a skip reason or the compaction's), so its shape is engine format
   'session.compact': { from: 'recorded' },
+  // the session's directory, read for a relative load file: world state
+  'session.cwd': { from: 'recorded' },
   'session.id': { from: 'harness' },
   'clock.now': { from: 'harness' },
   'clock.after': { from: 'harness', sync: true },

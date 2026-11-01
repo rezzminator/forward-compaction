@@ -26,8 +26,8 @@ export type Script = {
   run?: (argv: string[]) => { exitCode: number; stdout: string; stderr: string } | undefined;
   /** `$` calls that never settle. */
   hang?: ('session.id' | 'tool.register')[];
-  /** `$.tool.register` rejects with this message (a session run with `--tools ""`). */
-  registerError?: string;
+  /** `$.tool.register` rejects with this message (a session run with `--tools ""`); a function is asked at each call, undefined letting it succeed. */
+  registerError?: string | (() => string | undefined);
   /** The host's session state (`$.state`); pass one map to two fakes to model a plugin reload in one session. */
   state?: Map<string, { value: unknown; version: number }>;
 };
@@ -38,6 +38,7 @@ export function fakeEngine(script: Script = {}) {
   const screen: ScreenCall[] = [];
   const unscripted: string[] = [];
   const compactCalls: unknown[][] = [];
+  const registerFailure = (): string | undefined => (typeof script.registerError === 'function' ? script.registerError() : script.registerError);
   const hooks = new Map<string, Fn>();
   let now = script.now ?? Date.UTC(2026, 9, 23, 12, 0, 0);
   const never = new Promise<never>(() => {});
@@ -94,7 +95,7 @@ export function fakeEngine(script: Script = {}) {
         return { isSet: true, version };
       },
     },
-    tool: { register: (spec: { name: string }) => (hangs('tool.register') ? never : script.registerError !== undefined ? Promise.reject(new Error(script.registerError)) : Promise.resolve({ tool: `mcp__forward-compaction__${spec.name}` })) },
+    tool: { register: (spec: { name: string }) => (hangs('tool.register') ? never : registerFailure() !== undefined ? Promise.reject(new Error(registerFailure())) : Promise.resolve({ tool: `mcp__forward-compaction__${spec.name}` })) },
   };
 
   const proxy = (target: Record<string, unknown>, path: string): any =>

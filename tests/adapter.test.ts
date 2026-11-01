@@ -99,7 +99,7 @@ describe('forward_compaction tool answers (R31)', () => {
   it('stores a frontier missing a section and names what it lacks', async () => {
     const f = await begin();
     const r = await f.dispatch('tool.call', { tool: FORWARD, tool_use_id: 'tu-x', objective: 'x' }, async () => ({ result: 'not ours' }));
-    expect(r.result).toMatch(/^Frontier stored \(\d+ characters, 0 files\), but a MANDATORY section is missing/);
+    expect(r.result).toMatch(/^Frontier stored \(\d+ characters, 0 files\), missing a MANDATORY section: the wake will name each one it lacks\./);
     expect(r.result).toContain('Stored with 4 changes:\n- decisions was missing: your frontier is stored without it.\n- done was missing: your frontier is stored without it.');
   });
 
@@ -107,11 +107,11 @@ describe('forward_compaction tool answers (R31)', () => {
     const f = await begin({ files: { '/work/b.ts': { content: 'b' } } });
     const r = await f.dispatch('tool.call', { tool: FORWARD, tool_use_id: 'tu-x', ...SECTIONS, load_files: [{ path: 'rel.ts', why: 'x' }, { path: '/work/b.ts', why: 'x' }, { path: '/work/gone.ts', why: 'x' }] }, async () => ({ result: 'not ours' }));
     expect(r.result).toContain(', 1 files).');
-    expect(r.result).toContain('- load_files[0].path must be an absolute path; got "rel.ts": skipped.');
+    expect(r.result).toContain(`- load_files[0].path "rel.ts" is relative: carried as ${f.home}/rel.ts, in the session's directory.\n- load_files[0] ${f.home}/rel.ts: no such file: skipped.`);
     expect(r.result).toContain('- load_files[2] /work/gone.ts: no such file: skipped.');
     const bare = await f.dispatch('tool.call', { tool: FORWARD, ...SECTIONS }, async () => ({ result: 'not ours' }));
     expect(bare.result).toContain('Frontier stored');
-    expect(bare.result).toContain('the call has no tool_use_id, so the wake cannot place it');
+    expect(bare.result).toContain('- the call has no tool_use_id, so the wake cannot place it: at the install your frontier is carried with the newest messages that fit, not every message after this call.');
   });
 });
 
@@ -209,13 +209,14 @@ describe('session.compact', () => {
     expect(f.texts()).toContain("/compact ran Claude Code's own summary; main's stored frontier was dropped.");
   });
 
-  it('drops a stored frontier whose call left the transcript (C8)', async () => {
+  it('installs a stored frontier whose call left the transcript, with the newest messages that fit, and warns (C8)', async () => {
     const f = await begin();
     await step(f, 64_000);
     await store(f, undefined, 'tu-old');
     const r = await f.dispatch('session.compact', { trigger: 'auto', messages: transcript('tu-other') }, async () => ({ skip: 'native ran' }));
-    expect(r).toEqual({ skip: "forward-compaction: holding Claude Code's compaction for main until its frontier is stored or the ceiling is reached" });
-    expect(f.texts()).toContain("main's stored frontier is no longer in its transcript (compacted by something else); it was dropped.");
+    expect(r.messages[1].text).toContain('=== frontier ===\n## Objective\nShip U5.');
+    expect(r.messages[1].text).toContain('Your forward_compaction call is not in the transcript, so which messages came after it is unknown');
+    expect((await rows(f)).filter((row) => row.event === 'said').map((row) => row.line)).toContain("main's forward_compaction call tu-old is not in its transcript: its frontier installed with the newest messages that fit instead of every message after the call.");
   });
 
   it('installs a mechanical wake at the ceiling with no frontier (C10)', async () => {

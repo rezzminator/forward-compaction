@@ -293,9 +293,9 @@ describe('the prompts kept across a plugin reload', () => {
     expect(back.entries[0]).toMatchObject({ kind: 'person', text: 'Which quote?\nAnswer: Segment', answer: 'Segment' });
   });
 
-  it("lifts and stamps orders with only the person's own words of an answer, never the question the model wrote", () => {
+  it("lifts orders with only the person's own words of an answer, never the question the model wrote", () => {
     const l = build({ kind: 'person', party: 'main', at: 5, text: 'Shall I push?\nAnswer: Not yet', answer: 'Not yet' }, person('typed', 6));
-    expect(liftSources(l, 'main')).toEqual([{ text: 'Not yet', at: 5 }, { text: 'typed', at: 6 }]);
+    expect(liftSources(l, 'main')).toEqual(['Not yet', 'typed']);
   });
 });
 

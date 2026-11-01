@@ -1,20 +1,20 @@
 import type { EngineInterface, On, PluginOptions, Register, SessionCompactInput, SessionCompactResult, ToolCallResult, TurnStartInput, TurnStepInput, TurnStepResult, TurnCompleteInput, PromptSubmitInput, SessionReceiveInput, SkillPromptInput, AgentSpawnInput, AgentSpawnResult } from 'claude-code';
 import { bounded, unlessAborted } from '../src/bounded.ts';
-import { applyDrops, dropNote, changesNote, pinnedBy, experimental, parseFrontier, loadFileNote, receipt, parseLineRanges, sliceFile, toolInput, type FileCheck, type LoadFile } from '../src/frontier.ts';
+import { applyDrops, dropNote, changesNote, pinnedBy, experimental, isAbsolutePath, parseFrontier, loadFileNote, receipt, parseLineRanges, sliceFile, toolInput, type FileCheck, type LoadFile } from '../src/frontier.ts';
 import { answersOf, workOf, type CallAnswer } from '../src/work.ts';
 import { newLedger, markStart, addEntry, resolveSpawn, attributeSkill, shellsOf, factsFor, promptsKept, restorePrompts, skillsKept, restoreSkills, liftSources, isPersonOrigin, keyOf, originKind, type Ledger, type PartyKey } from '../src/ledger.ts';
 import { splitAtCall, buildWake, mechanicalWake, landedLine, recentFiles, type WakeFile, type AgentRow, type Landing } from '../src/wake.ts';
 import { planFrom, planRead, PLAN_ROWS, type WakePlan } from '../src/plan.ts';
-import { decide, turnEndDoor, readingTokens, knownTrigger } from '../src/decide.ts';
+import { decide, installWarnings, turnEndDoor, readingTokens, knownTrigger } from '../src/decide.ts';
 import { k, nudgeLevel, nudgeText } from '../src/nudge.ts';
-import { installable, Parties, type Judging } from '../src/parties.ts';
+import { Parties, type Judging } from '../src/parties.ts';
 import { askPointOf, charsPerToken, partyMarks, startWarnings, apiChars, type AskPoint, type Marks, type UsageBreakdown } from '../src/window.ts';
 import { unseenCompaction } from '../src/unseen.ts';
 import { parseLookBack, boundaryArgv, boundaryLine, searchArgv, entryArgv, namesArgv, processOutput, parseEntries, toolNames, resultIds, searchResults, entryResult, manualTranscriptCall, lookBackNotice, findTranscriptArgv, firstFound, type LookBackResult } from '../src/look-back.ts';
 import { DecisionWriteError, hookRow, sessionLogPath, runCwd, decisionAppendArgv, retentionArgv, DECISION_HOLD_ROWS, decisionFailure, endReport, SkipFold, pluginLogEvent, pluginLogDiagnostic } from '../src/log.ts';
 import { levelRow, onScreen, pluginLogDir, PluginLogQueue, requeueRows, type PluginLogLevel, type PluginLogFields } from '../src/plugin-log.ts';
 import { resolveOptions, subagentMaxContext, type OptionEnvironment, type ResolvedOptions } from '../src/options.ts';
-import { TOOLS, toolsToRegister, ENSURE_TOOLS_TIMEOUT_MS, END_CORE_RESERVE_MS, REGISTER_TRIES, PENDING_BEFORE_CONFIG, type ToolKind } from '../src/register.ts';
+import { TOOLS, toolsToRegister, ENSURE_TOOLS_TIMEOUT_MS, END_CORE_RESERVE_MS, PENDING_BEFORE_CONFIG, nextTry, holdPending, type ToolKind } from '../src/register.ts';
 
 // Thin adapter: every decision lives in src/. Each hook catches its own failures, logs them with context and lets the compaction through.
 
@@ -38,11 +38,11 @@ type State = {
   configDir?: string; // The Claude config directory, where transcripts are found.
   sessionId?: Promise<string>; // Cached session id for the transcript lookup; no process runs.
   restored: Set<PartyKey>; // Parties whose kept prompts and skills were put back this process (restoreKept).
-  toolTries: Record<ToolKind, number>; // How many times registering each tool was tried.
+  toolTries: Record<ToolKind, number>; toolDue: Record<ToolKind, number>; // How many times registering each tool was tried, and when ($.clock ms) each unregistered one is next tried (register.ts `nextTry`; 0 before any try).
   registering?: Promise<void>; // The registration in progress: hooks that need a tool wait on it, so none registers twice.
   toolsAbandoned?: boolean; // Registering the tools has not finished within ENSURE_TOOLS_TIMEOUT_MS: no hook waits on it until it settles, and a late finish still names the tools.
-  toolsSettled?: boolean; // Every tool is registered or out of tries: no hook registers or sets a timer again.
-  warned: Set<string>; pending: string[];
+  toolsSettled?: boolean; // Every tool is registered: no hook registers or sets a timer again.
+  warned: Set<string>; pending: string[]; pendingLost: number; // pendingLost: rows that found no room while the environment layer was read (register.ts `holdPending`), counted in one row once it is.
   logFailures: Set<string>; // The log-write failures already shown: a log that cannot be written fails every flush the same way, and the person hears each failure once.
   rowsWriting: number; // Rows the decision append in flight carries; 0 when none is.
   levelRowsWriting: number; // Level-log rows queued or being written: what a cut end flush may lose from the level log.
@@ -129,7 +129,7 @@ function record(st: State, $: EngineInterface, row: Row, levelRow = true): void 
   if (levelRow) for (const diagnostic of st.levelSkips.add({ ts, ...row }).map(pluginLogEvent)) if (diagnostic !== undefined) plog(st, $, diagnostic);
   // The decision log's file may come from the environment, which `start` reads: a row before that waits, so the session's one file is chosen from the full config. `settleConfig` writes what waited.
   if (!st.configured) {
-    for (const out of st.skips.add({ ts, ...row })) if (st.pending.length < PENDING_BEFORE_CONFIG) st.pending.push(JSON.stringify(out));
+    st.pendingLost += holdPending(st.pending, st.skips.add({ ts, ...row }).map((out) => JSON.stringify(out)));
     return;
   }
   if (!st.config.logFile) return;
@@ -160,7 +160,8 @@ function settleConfig(st: State, $: EngineInterface): void {
     st.pending.length = 0;
     st.skips.drain();
   } else {
-    for (const out of st.skips.drain()) if (st.pending.length < PENDING_BEFORE_CONFIG) st.pending.push(JSON.stringify(out));
+    st.pendingLost += holdPending(st.pending, st.skips.drain().map((out) => JSON.stringify(out)));
+    if (st.pendingLost > 0) st.pending.push(JSON.stringify({ ts: new Date().toISOString(), event: 'rows-lost', rows: st.pendingLost, why: `more than ${PENDING_BEFORE_CONFIG} rows came before the environment layer was read` }));
     if (st.pending.length > 0) flushDecisions(st, $);
   }
 }
@@ -327,10 +328,10 @@ async function registerTool(st: State, $: EngineInterface, kind: ToolKind): Prom
     st.toolNames[kind] = tool;
     record(st, $, { event: 'tool-registered', tool });
   } catch (error) {
-    const row = { event: 'tool-register-failed', where: 'registerTool', tool: spec.name, error: message(error), tries: st.toolTries[kind] };
+    const row = { event: 'tool-register-failed', where: 'registerTool', tool: spec.name, error: message(error), tries: st.toolTries[kind], next: (st.toolDue[kind] = nextTry(st.toolTries[kind], await $.clock.now())) };
     if (st.warned.has(`register-failed:${kind}`)) return record(st, $, row); // a retry's failure: its row, the person told once
     st.warned.add(`register-failed:${kind}`);
-    say(st, $, `forward-compaction: registering the ${spec.name} tool failed: ${message(error)}; ${lost}`, 'error', row);
+    say(st, $, `forward-compaction: registering the ${spec.name} tool failed: ${message(error)}; ${lost} until a later hook registers it`, 'error', row);
   }
 }
 
@@ -402,10 +403,12 @@ function afterOrNever(st: State, $: EngineInterface, ms: number, fn: () => void,
   }
 }
 
-/** Registers each tool that is not registered yet, up to REGISTER_TRIES hook calls each: `session.start` may not fire (a plugin loaded mid-session) or may run before the session can take a tool. Hooks that need a tool wait on it. */
+/** Registers each tool that is not registered yet and is due (register.ts `nextTry`), at `session.start` and each `turn.start`: `session.start` may not fire (a plugin loaded mid-session) or may run before the session can take a tool. Hooks that need a tool wait on it. */
 async function ensureTools(st: State, $: EngineInterface, signal?: AbortSignal): Promise<void> {
   if (st.toolsAbandoned || st.toolsSettled) return;
-  const left = () => toolsToRegister({ forward_compaction: true, look_back: true }, { forward_compaction: st.toolNames.forward_compaction !== undefined, look_back: st.toolNames.look_back !== undefined }, st.toolTries, REGISTER_TRIES);
+  const now = Object.values(st.toolDue).some((due) => due > 0) ? await $.clock.now() : 0, have = () => ({ forward_compaction: st.toolNames.forward_compaction !== undefined, look_back: st.toolNames.look_back !== undefined });
+  const left = () => toolsToRegister({ forward_compaction: true, look_back: true }, have(), st.toolDue, now); // the clock is read only once a try has failed
+  if (left().length === 0 && st.registering !== undefined) return; // a try that is not due yet waits for a later hook
   const began = Date.now();
   const names = () => Object.values(st.toolNames);
   const had = new Set(names());
@@ -420,7 +423,7 @@ async function ensureTools(st: State, $: EngineInterface, signal?: AbortSignal):
       })
       .catch((error) => say(st, $, `forward-compaction: registering the tools failed: ${message(error)}`, 'error', { event: 'tools-register-failed', where: 'ensureTools', error: message(error) }));
     await st.registering;
-    if (left().length === 0) st.toolsSettled = true;
+    if (Object.values(have()).every(Boolean)) st.toolsSettled = true;
   })();
   // A hang here would hold every turn of every chat: past the limit the turn goes on, and the person is told. The dispatch's abort ends the wait too: its timer may never fire, and a hook that waits on past its abort starves the hooks worker.
   const outcome = await bounded(registered, ENSURE_TOOLS_TIMEOUT_MS, (ms, fn) => afterOrNever(st, $, ms, fn, 'registering the tools'), signal);
@@ -487,7 +490,9 @@ async function answerForward(st: State, $: EngineInterface, e: Record<string, un
   try {
     await start(st, $);
     await restoreKept(st, $, key); // a skill and the orders kept across a plugin reload are back before the drop check and any drop
-    const parsed = parseFrontier(toolInput(e), { remembered: st.parties.get(key).orders ?? [], said: liftSources(st.ledger, key), party: key === 'main' ? 'main' : 'subagent' });
+    const input = toolInput(e), memory = { remembered: st.parties.get(key).orders ?? [], said: liftSources(st.ledger, key), party: key === 'main' ? ('main' as const) : ('subagent' as const) };
+    let parsed = parseFrontier(input, memory);
+    if (parsed.loadFiles.some((file) => !isAbsolutePath(file.path))) parsed = parseFrontier(input, memory, await Promise.resolve().then(() => $.session.cwd()).catch((error: unknown) => (dbg(st, $, 'session.cwd-failed', { error: message(error) }), undefined))); // the session's directory, read only for a relative load file; unknown when the read fails
     const m = marks(st, key);
     const notes = [...parsed.notes];
     const carried: typeof parsed.loadFiles = [];
@@ -497,15 +502,14 @@ async function answerForward(st: State, $: EngineInterface, e: Record<string, un
       else notes.push(note);
     }
     parsed.loadFiles = carried;
-    const toolUseId = typeof e.tool_use_id === 'string' ? e.tool_use_id : '';
-    if (toolUseId === '') notes.push('the call has no tool_use_id, so the wake cannot place it: at the install this frontier is dropped and you get the mechanical wake.');
+    const toolUseId = typeof e.tool_use_id === 'string' ? e.tool_use_id : ''; if (toolUseId === '') notes.push('the call has no tool_use_id, so the wake cannot place it: at the install your frontier is carried with the newest messages that fit, not every message after this call.');
     const tokens = st.parties.get(key).reading; // the last reading: the call's own context is measured only by the next request
-    await $.state.set({ plugin: 'forward-compaction', key: 'orders', id: `${await (st.sessionId ??= $.session.id())}/${key}` }, parsed.standingOrders); // kept before the store: a failed write stores nothing
+    await $.state.set({ plugin: 'forward-compaction', key: 'orders', id: `${await (st.sessionId ??= $.session.id())}/${key}` }, parsed.standingOrders.map(({ order }) => ({ order }))); // kept before the store: a failed write stores nothing
     const replaced = st.parties.store(key, { text: parsed.frontier, loadFiles: parsed.loadFiles, toolUseId, storedAtTokens: tokens, since: st.ledger.nextSeq, standingOrders: parsed.standingOrders, lifted: parsed.lifted, missing: parsed.missing });
     const drop = applyDrops(st.ledger, key, parsed.dropSkills, st.parties.get(key).dropAsked); (st.ledger = drop.ledger), (st.parties.get(key).dropAsked = drop.outcome.pending); // a frontier naming nothing resets the count
     if (parsed.dropSkills.length > 0) (record(st, $, { event: 'drop', party: key, ...drop.outcome }), await keepKept(st, $, key));
     const files = parsed.loadFiles.length;
-    const incomplete = parsed.missing.length > 0; // stored, never installed: every door treats it as nothing stored (parties.ts `installable`)
+    const incomplete = parsed.missing.length > 0; // installs as it is: its wake names each missing section
     record(st, $, { event: 'stored', party: key, chars: parsed.frontier.length, files, orders: parsed.standingOrders.length, lifted: parsed.lifted.length, notes: notes.length, tokens: tokens ?? null, ...(replaced !== undefined ? { replaced: replaced.storedAtTokens ?? null } : {}), ...(incomplete ? { incomplete: parsed.missing } : {}) });
     return [key === 'main' ? receipt({ party: 'main', chars: parsed.frontier.length, files, tokens, askPoint: m?.askPoint, replaced: replaced !== undefined, incomplete }) : receipt({ party: 'subagent', chars: parsed.frontier.length, files, tokens, askPoint: m!.askPoint, replaced: replaced !== undefined, incomplete }), dropNote(drop.outcome), changesNote(notes, parsed.missing)].filter(Boolean).join(' ');
   } catch (error) {
@@ -598,17 +602,12 @@ async function compactAsk(st: State, $: EngineInterface, e: SessionCompactInput,
   const kind = key === 'main' ? 'main' : await partyKind(st, $, e.agentId!);
   await judge(st, $, key); const party = st.parties.get(key);
   const { label, stored: held } = party;
-  const ready = installable(held); // one missing a MANDATORY section counts as nothing stored, at every door
-  const found = ready && splitAtCall(e.messages, held!.toolUseId) !== undefined;
   const tokens = party.reading; // measured only; none since an install, or yet, is unknown
   const m = marks(st, key);
   const matched = st.parties.ignored(key, st.config.ignoreModels);
-  const action = decide({ trigger, party: kind, stored: found, storedMissing: ready && !found, tokens, ceiling: m?.ceiling, reactive: st.parties.reactive(key), ceilingNative: st.config.ceilingNative, label, ignored: matched !== undefined, windowUnknown: st.parties.windowUnknown(key, judging(st).mainKnown) });
+  const action = decide({ trigger, party: kind, stored: held !== undefined, tokens, ceiling: m?.ceiling, reactive: st.parties.reactive(key), ceilingNative: st.config.ceilingNative, label, ignored: matched !== undefined, windowUnknown: st.parties.windowUnknown(key, judging(st).mainKnown) });
   const row: Row = { event: 'compact', party: key, trigger, decision: action.decision, why: action.why, tokens: tokens ?? null, ceiling: m?.ceiling ?? null, askPoint: m?.askPoint ?? null, ...(matched !== undefined ? { matched } : {}) };
-  if ('dropStored' in action && action.dropStored && held !== undefined) {
-    st.parties.takeStored(key);
-    say(st, $, action.why === 'manual' ? `forward-compaction: /compact ran Claude Code's own summary; ${label}'s stored frontier was dropped.` : `forward-compaction: ${label}'s stored frontier is no longer in its transcript (compacted by something else); it was dropped.`, 'error', { event: 'dropped', where: 'compactAsk', party: key, why: action.why });
-  }
+  if ('dropStored' in action && action.dropStored && held !== undefined) (st.parties.takeStored(key), say(st, $, `forward-compaction: /compact ran Claude Code's own summary; ${label}'s stored frontier was dropped.`, 'error', { event: 'dropped', where: 'compactAsk', party: key, why: action.why }));
   if (action.action === 'next') {
     if (kind === 'foreign') st.parties.forget(key);
     else (st.parties.asked(key, action.decision), st.installedSince.add(key)); // Claude Code's own summary: its fall is seen
@@ -624,11 +623,12 @@ async function compactAsk(st: State, $: EngineInterface, e: SessionCompactInput,
   }
   const shared = { messages: e.messages, party: kind === 'main' ? ('main' as const) : ('subagent' as const), tokens, askPoint: m?.askPoint ?? 0, charsPerToken: ratioOf(st, $, key, 'compact', await partyChars(st, $, key, e.agentId), m), now: await $.clock.now(), facts: (kept: readonly string[]) => factsFor(st.ledger, key, { keptTexts: kept, ...(action.action === 'install' ? { since: held!.since } : {}) }), agents: await agentRows($), logDir: st.pluginLogDir, orders: action.action === 'install' ? { standing: held!.standingOrders ?? [], lifted: held!.lifted ?? [] } : { standing: party.orders ?? [] }, plan: await readPlan(st, $, key), ...(e.agentId !== undefined ? { self: e.agentId } : {}) };
   const wake = action.action === 'install'
-    ? buildWake({ ...shared, toolUseId: held!.toolUseId, frontier: held!.text, tool: st.toolNames.forward_compaction, files: await readLoadFiles($, held!.loadFiles) })
-    : mechanicalWake({ ...shared, tool: st.toolNames.forward_compaction, recent: await readLoadFiles($, recentFiles(factsFor(st.ledger, key, { keptTexts: [] }).work?.files ?? []).map((path) => ({ path, why: 'recent' }))), incomplete: held?.missing, reason: action.why === 'ceiling' ? { kind: 'ceiling', ceiling: m!.ceiling } : { kind: 'reactive' } });
+    ? buildWake({ ...shared, toolUseId: held!.toolUseId, frontier: held!.text, tool: st.toolNames.forward_compaction, files: await readLoadFiles($, held!.loadFiles), ...(held!.missing !== undefined ? { missing: held!.missing } : {}) })
+    : mechanicalWake({ ...shared, tool: st.toolNames.forward_compaction, recent: await readLoadFiles($, recentFiles(factsFor(st.ledger, key, { keptTexts: [] }).work?.files ?? []).map((path) => ({ path }))), reason: action.why === 'ceiling' ? { kind: 'ceiling', ceiling: m!.ceiling } : { kind: 'reactive' } });
   dbg(st, $, 'wake', { party: key, kind: action.action, ratio: shared.charsPerToken ?? null, askPoint: shared.askPoint, sizes: wake.sizes, headChars: wake.headChars, carried: wake.carried, notCarried: wake.notCarried, kept: wake.kept, dropped: wake.dropped });
   installed(st, $, key, action.action === 'install' ? { kind: 'frontier', label, before: tokens, chars: held!.text.length, facts: wake.facts, kept: wake.kept, dropped: wake.dropped } : { kind: 'mechanical', label, before: tokens, tokens, ceiling: m?.ceiling ?? 0 }, signal);
-  record(st, $, { ...row, facts: wake.facts, kept: wake.kept, dropped: wake.dropped });
+  if (action.action === 'install') for (const w of installWarnings(label, held!.toolUseId, held!.missing ?? [], splitAtCall(e.messages, held!.toolUseId) !== undefined)) say(st, $, w.line, 'warning', { ...w.row, where: 'compactAsk', party: key });
+  record(st, $, { ...row, facts: wake.facts, kept: wake.kept, dropped: wake.dropped, ...(action.action === 'install' && (held!.missing?.length ?? 0) > 0 ? { incomplete: held!.missing } : {}) });
   return { messages: wake.messages, ...(tokens !== undefined ? { tokensBefore: tokens } : {}) }; // tokensAfter: the next reading measures it (M2)
 }
 
@@ -709,7 +709,7 @@ async function turnEnds(st: State, $: EngineInterface, e: TurnCompleteInput): Pr
   const key = keyOf(e.agentId);
   if (key !== 'main') return land(st, $, key, st.parties.takeLanding(key));
   const party = st.parties.get('main');
-  const door = turnEndDoor({ main: true, reason: e.reason, stored: installable(party.stored), installedThisTurn: party.installedThisTurn });
+  const door = turnEndDoor({ main: true, reason: e.reason, stored: party.stored !== undefined, installedThisTurn: party.installedThisTurn });
   st.parties.turnEnded('main');
   if (!door.compact) return;
   try {
@@ -809,7 +809,7 @@ export const register: Register = (on: On, options: PluginOptions) => {
     config: resolveOptions(),
     ignoredOptions: options !== null && typeof options === 'object' ? Object.keys(options) : [],
     pluginRows: [], pluginInitialized: false, pluginWriting: Promise.resolve(), pluginFailing: false,
-    toolNames: {}, toolTries: { forward_compaction: 0, look_back: 0 },
+    toolNames: {}, toolTries: { forward_compaction: 0, look_back: 0 }, toolDue: { forward_compaction: 0, look_back: 0 }, pendingLost: 0,
     warned: new Set(), logFailures: new Set(),
     pending: [], rowsWriting: 0, levelRowsWriting: 0, levelLinks: 0, levelBatched: 0, skips: new SkipFold(), levelSkips: new SkipFold(), writing: Promise.resolve(),
     parties: new Parties(), ledger: newLedger(), restored: new Set(),
@@ -859,7 +859,7 @@ export const register: Register = (on: On, options: PluginOptions) => {
   });
 
   on('turn.start', async ($, e, next) => {
-    await guard(st, $, 'turn.start', () => noteRun(st, $, e), e);
+    await ensureTools(st, $, next.signal), await guard(st, $, 'turn.start', () => noteRun(st, $, e), e); // a tool that failed to register is tried again once due
     return next(e);
   });
 

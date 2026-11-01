@@ -13,7 +13,7 @@ export const FORWARD_TOOL_DESCRIPTION =
 
 /**
  * The frontier's sections in the order they are assembled: the argument, its heading, whether it is required, and what it
- * holds. A frontier missing a required one is stored but never installs (`missing`, parties.ts `installable`).
+ * holds. A frontier missing a required one is stored and installs as it is, its wake naming each one it lacks (`missing`).
  */
 const SECTIONS = [
   { key: 'objective', heading: 'Objective', required: true, description: 'MANDATORY: what the work is for and what done means.' },
@@ -43,11 +43,11 @@ export const FORWARD_INPUT_SCHEMA = {
       items: {
         type: 'object',
         additionalProperties: false,
-        required: ['path', 'why'],
+        required: ['path'],
         properties: {
           path: { type: 'string', description: 'Absolute path.' },
           lines: { type: 'string', description: 'Line ranges, like "10-40" or "1-60,160-185".' },
-          why: { type: 'string', maxLength: 200, description: 'What you need it for.' },
+          why: { type: 'string', description: 'What you need it for, one line; past 200 characters it is cut.' },
         },
       },
     },
@@ -60,13 +60,12 @@ export const FORWARD_INPUT_SCHEMA = {
     standing_orders: {
       type: 'array',
       description: "Every order of the person's that binds the rest of the work (a prohibition, a limit, a rule), each in every frontier until the person lifts it.",
+      // Open, so an entry still carrying a key an older schema had (`at`) is read for its order, never refused.
       items: {
         type: 'object',
-        additionalProperties: false,
         required: ['order'],
         properties: {
           order: { type: 'string', description: "The person's words, verbatim." },
-          at: { type: 'string', description: "The ISO time of the person's message, when you know it; the plugin takes it from the person's message that holds the words." },
         },
       },
     },
@@ -89,11 +88,11 @@ export const FORWARD_INPUT_SCHEMA = {
 // Format caps: design budgets on what the model may send, never a measured size.
 /** Lines one load file carries: a plan, a spec or a module in hand reads whole, and a longer one names where to Read the rest. */
 export const LOAD_FILE_MAX_LINES = 250;
-/** A load file's `why`: one line saying what it is for. */
+/** A load file's `why`: one line saying what it is for; a longer one is cut to it. */
 export const WHY_MAX_CHARS = 200;
 
-/** One file the model asked to carry into the wake; every field is the model's own text, kept verbatim. */
-export type LoadFile = { path: string; lines?: string; why: string };
+/** One file the model asked to carry into the wake: its path, absolute or resolved against the session's directory; `lines` and `why` the model's own text, `why` cut to WHY_MAX_CHARS. */
+export type LoadFile = { path: string; lines?: string; why?: string };
 
 export type ParsedFrontier = {
   frontier: string;
@@ -103,7 +102,7 @@ export type ParsedFrontier = {
   dropSkills: string[];
   standingOrders: StandingOrder[];
   lifted: LiftedOrder[];
-  /** The required sections absent, not a string or blank, in section order: while any is, the frontier is stored but never installs. */
+  /** The required sections absent, not a string or blank, in section order: the wake names each, and the receipt says so. */
   missing: string[];
   /** One line per argument left out, skipped or carried by the plugin instead: the receipt names each, the model fixes nothing. */
   notes: string[];
@@ -112,7 +111,10 @@ export type ParsedFrontier = {
 const FIELDS = [...SECTIONS.map((section) => section.key), 'load_files', 'drop_skills', 'standing_orders', 'lifted'];
 const num = (n: number): string => n.toLocaleString('en-US');
 const kind = (v: unknown): string => (v === null ? 'null' : Array.isArray(v) ? 'array' : typeof v);
-const isAbsolutePath = (p: string): boolean => /^(\/|[A-Za-z]:[\\/]|\\\\)/.test(p);
+/** Whether `p` is absolute, POSIX or Windows. */
+export const isAbsolutePath = (p: string): boolean => /^(\/|[A-Za-z]:[\\/]|\\\\)/.test(p);
+/** `path` in `dir`: the session's directory, its trailing separators and the path's leading `./` dropped. */
+const inDir = (dir: string, path: string): string => `${dir.replace(/[\\/]+$/, '')}/${path.replace(/^(\.[\\/])+/, '')}`;
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 
 const ARRAYS = ['load_files', 'drop_skills', 'standing_orders', 'lifted'];
@@ -121,7 +123,8 @@ const FOLD = /<\/(\w+)>\s*<parameter name="(\w+)">/g;
 /**
  * A section whose text holds its own closing tag and then `<parameter name="other">`: the model's call markup closed it
  * early and folded the parameters after it into its text. Each folded one is taken back out as its own field (an
- * array one parsed as JSON), one note each; one the call also sent keeps the sent value.
+ * array one parsed as JSON), one note each. One that cannot be (no field, one the call also sent, or an array one
+ * that is not JSON) stays in the section it arrived in, under its name, so no text the model sent is lost.
  */
 function unfold(input: Record<string, unknown>): { fields: Record<string, unknown>; notes: string[] } {
   const fields = { ...input };
@@ -131,31 +134,33 @@ function unfold(input: Record<string, unknown>): { fields: Record<string, unknow
     if (typeof value !== 'string') continue;
     const parts = value.split(FOLD);
     if (parts.length < 4 || parts[1] !== key) continue;
-    fields[key] = parts[0];
+    const kept = [parts[0]];
     for (let i = 1; i + 2 < parts.length; i += 3) {
       const name = parts[i + 1] ?? '';
       const segment = parts[i + 2] ?? '';
       const text = i + 3 < parts.length ? segment : segment.replace(new RegExp(`</${name}>\\s*$`), '');
       const at = `${name} arrived inside ${key}, after "</${key}>"`;
-      if (!FIELDS.includes(name)) notes.push(`${at}, but ${name} is no field: dropped.`);
-      else if (input[name] !== undefined) notes.push(`${at}, but the call also sent ${name}: the text after "</${key}>" is dropped.`);
+      const keep = (why: string): void => void (kept.push(`[${name}, as it arrived inside ${key}]\n${text}`), notes.push(`${at}, but ${why}: kept in ${key} as it arrived.`));
+      if (!FIELDS.includes(name)) keep(`${name} is no field`);
+      else if (input[name] !== undefined) keep(`the call also sent ${name}`);
       else if (!ARRAYS.includes(name)) (fields[name] = text, notes.push(`${at}: your call's markup closed ${key} early; taken back out as its own field.`));
       else {
         try {
           fields[name] = JSON.parse(text);
           notes.push(`${at}: your call's markup closed ${key} early; taken back out as its own field.`);
         } catch (err) {
-          notes.push(`${at}, but it is not JSON (${(err as Error).message}): dropped.`);
+          keep(`it is not JSON (${(err as Error).message})`);
         }
       }
     }
+    fields[key] = kept.join('\n\n');
   }
   return { fields, notes };
 }
 
-/** One line per section left out: a required one missing or blank, any one given but not a string; one per unknown field. */
+/** One line per section left out: a required one missing or blank, any one given but not a string; one per unknown field, carried under findings (`carryUnknown`). */
 function argumentNotes(fields: Record<string, unknown>): string[] {
-  const unknown = Object.keys(fields).filter((key) => !FIELDS.includes(key)).map((key) => `unknown field "${key}" ignored. The fields are ${FIELDS.slice(0, -1).join(', ')} and ${FIELDS.at(-1)}.`);
+  const unknown = Object.keys(fields).filter((key) => !FIELDS.includes(key)).map((key) => `unknown field "${key}" carried under findings. The fields are ${FIELDS.slice(0, -1).join(', ')} and ${FIELDS.at(-1)}.`);
   const sections = SECTIONS.flatMap(({ key, required }) => {
     const value = fields[key];
     if (typeof value === 'string' && value.trim() !== '') return [];
@@ -165,18 +170,28 @@ function argumentNotes(fields: Record<string, unknown>): string[] {
   return [...unknown, ...sections];
 }
 
+/** The fields with every unknown one's content appended to `findings` under its name: the model sent it, so the wake carries it. A `findings` that is no string is left out, as its note says. */
+function carryUnknown(fields: Record<string, unknown>): Record<string, unknown> {
+  const unknown = Object.keys(fields).filter((key) => !FIELDS.includes(key));
+  if (unknown.length === 0) return fields;
+  const own = typeof fields.findings === 'string' && fields.findings.trim() !== '' ? [fields.findings] : [];
+  const carried = unknown.map((key) => `[${key}, an argument forward_compaction does not take]\n${typeof fields[key] === 'string' ? fields[key] : JSON.stringify(fields[key])}`);
+  return { ...fields, findings: [...own, ...carried].join('\n\n') };
+}
+
 /**
  * Reads the model's tool input into a frontier that is always stored: nothing is refused. Each bad argument is left
- * out (a section) or skipped (one `load_files`, `drop_skills`, `standing_orders` or `lifted` entry) and named in `notes`
- * for the receipt, the sections' text and the files coming back exactly as sent. With `memory`, the party's remembered
- * standing orders, the plugin carries every one the frontier left out and keeps every one a lift did not prove
- * (orders.ts `carryOrders`).
+ * out (a section) or skipped (one `drop_skills`, `standing_orders` or `lifted` entry, or a `load_files` entry with no
+ * path) and named in `notes` for the receipt, the sections' text and the files coming back as sent; an unknown argument
+ * rides under findings. A load file's relative path is resolved against `cwd`, the session's directory, when known.
+ * With `memory`, the party's remembered standing orders, the plugin carries every one the frontier left out and keeps
+ * every one a lift did not prove (orders.ts `carryOrders`).
  * `$.fs.stat` checks (V12-V15) are the adapter's, through `loadFileNote`.
  */
-export function parseFrontier(input: unknown, memory?: OrderMemory): ParsedFrontier {
+export function parseFrontier(input: unknown, memory?: OrderMemory, cwd?: string): ParsedFrontier {
   const unfolded = unfold(isObject(input) ? input : {});
-  const fields = unfolded.fields;
-  const notes = [...unfolded.notes, ...argumentNotes(fields)];
+  const notes = [...unfolded.notes, ...argumentNotes(unfolded.fields)];
+  const fields = carryUnknown(unfolded.fields);
   const given = (key: string): boolean => typeof fields[key] === 'string' && (fields[key] as string).trim() !== '';
   const frontier = SECTIONS.flatMap(({ key, heading }) => (given(key) ? [`## ${heading}\n${fields[key] as string}`] : [])).join('\n\n');
   const missing = SECTIONS.flatMap(({ key, required }) => (required && !given(key) ? [key] : []));
@@ -195,12 +210,21 @@ export function parseFrontier(input: unknown, memory?: OrderMemory): ParsedFront
   if (files !== undefined && !Array.isArray(files)) notes.push('load_files must be an array of {path, lines?, why}: none carried.');
   else {
     for (const [i, entry] of (files ?? []).entries()) {
-      const { path, why, lines: ranges } = isObject(entry) ? entry : ({} as Record<string, unknown>);
-      const whyLength = typeof why === 'string' ? why.length : 0;
-      if (typeof path !== 'string' || !isAbsolutePath(path)) notes.push(`load_files[${i}].path must be an absolute path; got "${String(path)}": skipped.`);
-      else if (typeof why !== 'string' || why.trim() === '' || whyLength > WHY_MAX_CHARS) notes.push(`load_files[${i}].why must be 1\u2013${WHY_MAX_CHARS} characters; it is ${whyLength}: ${path} skipped.`);
-      else if (ranges !== undefined && (typeof ranges !== 'string' || parseLineRanges(ranges) === undefined)) notes.push(`load_files[${i}].lines "${String(ranges)}" is not a range like "10-40" or "1-60,160-185": ${path} skipped.`);
-      else (loadFiles.push({ path, why, ...(ranges !== undefined ? { lines: ranges as string } : {}) }), loadAt.push(i));
+      const { path: sent, why, lines: ranges } = isObject(entry) ? entry : ({} as Record<string, unknown>);
+      if (typeof sent !== 'string' || sent.trim() === '') {
+        notes.push(`load_files[${i}].path must be a non-blank string; got ${kind(sent)}: skipped.`);
+        continue;
+      }
+      let path = sent;
+      if (!isAbsolutePath(sent) && cwd === undefined) notes.push(`load_files[${i}].path "${sent}" is relative and the session's directory is unknown: carried as given.`);
+      else if (!isAbsolutePath(sent)) (path = inDir(cwd!, sent)), notes.push(`load_files[${i}].path "${sent}" is relative: carried as ${path}, in the session's directory.`);
+      const file: LoadFile = { path };
+      if (ranges !== undefined && (typeof ranges !== 'string' || parseLineRanges(ranges) === undefined)) notes.push(`load_files[${i}].lines "${String(ranges)}" is not a range like "10-40" or "1-60,160-185": ${path} carried from line 1.`);
+      else if (ranges !== undefined) file.lines = ranges as string;
+      if (why !== undefined && typeof why !== 'string') notes.push(`load_files[${i}].why must be a string; got ${kind(why)}: ${path} carried without it.`);
+      else if (why !== undefined && why.length > WHY_MAX_CHARS) (file.why = why.slice(0, WHY_MAX_CHARS)), notes.push(`load_files[${i}].why is ${why.length} characters, over ${WHY_MAX_CHARS}: cut to its first ${WHY_MAX_CHARS}.`);
+      else if (why !== undefined && why.trim() !== '') file.why = why;
+      loadFiles.push(file), loadAt.push(i);
     }
   }
   return { frontier, dropSkills, standingOrders: orders.standing, lifted: orders.lifted, loadFiles, loadAt, missing, notes };
@@ -225,18 +249,17 @@ export function changesNote(notes: readonly string[], missing: readonly string[]
 }
 
 /** The last line of the changes list of a frontier missing a required section. */
-export const INCOMPLETE_NOTE = 'This frontier will not install until you call forward_compaction again with every MANDATORY section.';
+export const INCOMPLETE_NOTE = 'Call forward_compaction again with every MANDATORY section to replace it before it installs.';
 
-/** `tokens`: the party's last reading, absent when it has none; it picks the sentence and is never printed, being a step behind the call. `incomplete`: a required section is missing, so no door installs it. */
+/** `tokens`: the party's last reading, absent when it has none; it picks the sentence and is never printed, being a step behind the call. `incomplete`: a required section is missing, which its wake names. */
 export type ReceiptInput =
   | { party: 'main'; chars: number; files: number; tokens?: number; askPoint?: number; replaced?: boolean; incomplete?: boolean }
   | { party: 'subagent'; chars: number; files: number; tokens?: number; askPoint: number; replaced?: boolean; incomplete?: boolean };
 
-/** The tool result of a stored frontier: when it installs, true to the party's door (a sub-agent's only door is Claude Code's ask), or that it does not. */
+/** The tool result of a stored frontier: when it installs, true to the party's door (a sub-agent's only door is Claude Code's ask), and what it lacks. */
 export function receipt(input: ReceiptInput): string {
   const replaced = input.replaced ? ' It replaces the frontier you stored before.' : '';
-  if (input.incomplete) return `Frontier stored (${num(input.chars)} characters, ${input.files} files), but a MANDATORY section is missing, so it does not install: Claude Code's compaction stays held as if nothing were stored.${replaced}`;
-  const stored = `Frontier stored (${num(input.chars)} characters, ${input.files} files).`;
+  const stored = `Frontier stored (${num(input.chars)} characters, ${input.files} files)${input.incomplete ? ', missing a MANDATORY section: the wake will name each one it lacks' : ''}.`;
   const behind = 'The newest messages after this call that fit are kept verbatim behind it, the rest named as not carried';
   if (input.party === 'main') return `${stored} It installs at the end of this turn, or at Claude Code's next compaction ask if one comes first. ${behind}, so finish the step in hand; you need not stop.${replaced}`;
   if (input.tokens !== undefined && input.tokens >= input.askPoint) return `${stored} It installs at Claude Code's next compaction ask, before your next request. ${behind}.${replaced}`;
