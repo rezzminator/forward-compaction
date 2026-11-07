@@ -27,7 +27,7 @@ describe('the forward_compaction tool as registered', () => {
   it('is named forward_compaction and its description is short and holds one example call with the section arguments (R17)', () => {
     expect(FORWARD_TOOL).toBe('forward_compaction');
     expect(FORWARD_TOOL_DESCRIPTION.length).toBeLessThanOrEqual(600);
-    expect(FORWARD_TOOL_DESCRIPTION).toContain('forward_compaction({"objective": "…", "decisions": "…", "done": "…", "remaining": "…", "next": "…", "load_files": []})');
+    expect(FORWARD_TOOL_DESCRIPTION).toContain('forward_compaction({"objective": "…", "decisions": "…", "done": "…", "remaining": "…", "next": "…", "load_files": [{"path": "…"}]})');
     expect(FORWARD_TOOL_DESCRIPTION).not.toContain('"frontier"');
     expect(FORWARD_TOOL_DESCRIPTION).toContain('standing_orders');
     expect(FORWARD_TOOL_DESCRIPTION).toContain('the newest later messages that fit stay verbatim, the rest named as not carried');

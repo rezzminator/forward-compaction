@@ -19,7 +19,7 @@ describe('nudgeLevel (R29)', () => {
 describe('nudgeText (R29)', () => {
   it('asks to compact once the current step is done, never in the middle of one, with the exact text', () => {
     expect(nudgeText({ tokens: 55_400, window: 200_000, ceiling: 120_000 })).toBe(
-      'forward-compaction: context 55k (28% of 200k). Once your current step is done — never in the middle of one — call mcp__forward-compaction__forward_compaction with objective, decisions, done, remaining and next; skip it if only your final answer is left. At 120k you are compacted mechanically. No such tool? Carry on.',
+      'forward-compaction: context 55k (28% of 200k). Once your current step is done — never in the middle of one — call mcp__forward-compaction__forward_compaction with objective, decisions, done, remaining and next, and in load_files the files you will read again; skip it if only your final answer is left. At 120k you are compacted mechanically. No such tool? Carry on.',
     );
   });
 

@@ -9,7 +9,7 @@ export { applyDrops, dropNote, pinnedBy } from './drop.ts';
 export const FORWARD_TOOL = 'forward_compaction';
 
 export const FORWARD_TOOL_DESCRIPTION =
-  'Compacts your context — at a clean milestone once context is large. Stores your frontier, one argument per section, any length, for yourself after a reset; at your next compaction it and recorded facts replace everything before this call, the newest later messages that fit stay verbatim, the rest named as not carried. The person\'s binding orders go in standing_orders, verbatim. Always stores; the receipt names any change. Example: forward_compaction({"objective": "…", "decisions": "…", "done": "…", "remaining": "…", "next": "…", "load_files": []}). Exact old detail later → look_back.';
+  'Compacts your context at a clean milestone once it is large. Stores your frontier, one argument per section, any length, for yourself after a reset; at your next compaction it and recorded facts replace everything before this call, the newest later messages that fit stay verbatim, the rest named as not carried. The person\'s binding orders go in standing_orders, verbatim. Always stores; the receipt names any change. Example: forward_compaction({"objective": "…", "decisions": "…", "done": "…", "remaining": "…", "next": "…", "load_files": [{"path": "…"}]}). Exact old detail later → look_back.';
 
 /**
  * The frontier's sections in the order they are assembled: the argument, its heading, whether it is required, and what it

@@ -655,7 +655,7 @@ describe('audit r4: readings only, measured landed lines, the milestone nudge, l
   it('M3 nudges with the milestone wording, verbatim', async () => {
     const f = await begin();
     await step(f, 51_000);
-    expect((await read(f, 'tu-1')).context?.at(-1)).toBe('forward-compaction: context 51k (5% of 1M). Once your current step is done — never in the middle of one — call mcp__forward-compaction__forward_compaction with objective, decisions, done, remaining and next; skip it if only your final answer is left. At 120k you are compacted mechanically. No such tool? Carry on.');
+    expect((await read(f, 'tu-1')).context?.at(-1)).toBe('forward-compaction: context 51k (5% of 1M). Once your current step is done — never in the middle of one — call mcp__forward-compaction__forward_compaction with objective, decisions, done, remaining and next, and in load_files the files you will read again; skip it if only your final answer is left. At 120k you are compacted mechanically. No such tool? Carry on.');
   });
 
   it("L6 stores and carries every load file, with no room and no count cap, each up to 250 lines with where to Read the rest", async () => {
