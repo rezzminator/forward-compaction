@@ -103,7 +103,9 @@ needs no ToolSearch.
   done, in the person's words, each with its undo when one exists, `none`
   when there are none; the finished pieces, each with how it was verified,
   every figure with the command that produced it; every step left, in order,
-  `none` when nothing is left; the first concrete action after the wake.
+  `none` when nothing is left, or the path of a plan file the party updates at
+  each milestone, carried in `load_files`; the first concrete action after the
+  wake.
   `decisions` holds how a thing gets done ("the result is `already_sent`, not
   `sent`"); a rule that binds the rest of the work goes in `standing_orders`.
 - A frontier missing a required section (absent, not a string, or blank) is
