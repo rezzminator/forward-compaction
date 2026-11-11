@@ -130,7 +130,7 @@ describe('layout gates (D22)', () => {
     const row = (name: string, def: string): string => `| \`${name}\` | size | \`${def}\` | x |`;
     const cells: [string, string][] = [
       ['MAIN_MAX_CONTEXT', 'window'], ['MAIN_CEILING', '70%'], ['MAIN_NUDGE_START', '15%'],
-      ['SUBAGENT_MAX_CONTEXT', 'model'], ['SUBAGENT_CEILING', '80%'], ['SUBAGENT_NUDGE_START', '40%'], ['SUBAGENT_NUDGE_EVERY', '20%'],
+      ['SUBAGENT_MAX_CONTEXT', 'model'], ['SUBAGENT_CEILING', '80%'], ['SUBAGENT_NUDGE_START', '80k'], ['SUBAGENT_NUDGE_EVERY', '20%'],
       ['CEILING_NATIVE', '0'], ['IGNORE_MODELS', 'haiku'], ['KEEP_SKILLS', 'none'], ['DEBUG', '1'], ['EXTRA', '1'],
     ];
     const table = cells.map(([name, def]) => row(`FORWARD_COMPACTION_${name}`, def)).join('\n');

@@ -59,7 +59,7 @@ type State = {
   pendingCommand?: string; // The command main typed, until its first step: a skill it expands is main's.
   pendingSpawns: Set<string>; // agent.spawn calls running now: a skill loaded meanwhile is a preload of the one spawn.
   knownAgents: Map<string, string>; // Sub-agents spawned here, id to type: an ask for any other agent id is the engine's own (C6).
-  mainWindow?: number; // Main's window as `$.session.usage()` last reported it: main's max context unless FORWARD_COMPACTION_MAIN_MAX_CONTEXT is set.
+  mainModel?: string; mainWindow?: number; // Main's model as its last step named it (a sub-agent on that model id is measured against main's window), and its window as `$.session.usage()` last reported it: main's max context unless FORWARD_COMPACTION_MAIN_MAX_CONTEXT is set.
   apiAsk?: AskPoint; breakdown?: UsageBreakdown; // Claude Code's ask point and the breakdown it was read from, at session start and each main-window read.
   installedSince: Set<string>; // Parties this plugin compacted since their last reading: a fall in that reading is no unseen compaction.
 };
@@ -453,9 +453,9 @@ async function guard(st: State, $: EngineInterface, where: string, work: () => u
   }
 }
 
-/** A party's token marks against its max context (main's option or reported window, a sub-agent's option or its model's; `agent:` alone, no model, is the 200k one); undefined while main's is not known. */
+/** A party's token marks against its max context (main's option or reported window, a sub-agent's option or its model's, main's window for one on main's model; `agent:` alone, no model, is the 200k one); undefined while main's is not known. */
 function marks(st: State, key: string): Marks | undefined {
-  return key === 'main' ? partyMarks(st.config.main, st.config.main.maxContext ?? st.mainWindow, st.apiAsk?.tokens) : partyMarks(st.config.subagent, subagentMaxContext(st.config.subagent.maxContext, key === 'agent:' ? undefined : st.parties.get(key).model), st.apiAsk?.tokens);
+  return key === 'main' ? partyMarks(st.config.main, st.config.main.maxContext ?? st.mainWindow, st.apiAsk?.tokens) : partyMarks(st.config.subagent, subagentMaxContext(st.config.subagent.maxContext, key === 'agent:' ? undefined : st.parties.get(key).model, { model: st.mainModel, window: st.mainWindow }), st.apiAsk?.tokens);
 }
 
 /** After a /clear or a resume: no party, fact or call of the old conversation carries into the new one. */
@@ -527,7 +527,7 @@ async function nudged(st: State, $: EngineInterface, key: PartyKey, result: Tool
     const tokens = party.reading; // measured only: a step late at worst, never an estimate
     const m = marks(st, key);
     const level = tokens === undefined || m === undefined ? 0 : nudgeLevel(tokens, m.start, m.every);
-    const withheld = tokens === undefined ? 'no-reading' : m === undefined ? 'window-unknown' : level === 0 ? 'below-start' : st.parties.ignored(key, st.config.ignoreModels) !== undefined ? 'ignored-model' : !st.parties.nudgeDue(key, level, tokens!, m!.every) ? 'not-due' : undefined;
+    const withheld = tokens === undefined ? 'no-reading' : m === undefined ? 'window-unknown' : level === 0 ? 'below-start' : st.parties.ignored(key, st.config.ignoreModels) !== undefined ? 'ignored-model' : !st.parties.nudgeDue(key, level, tokens!, m!) ? 'not-due' : undefined;
     if (withheld !== undefined) return (dbg(st, $, 'nudge-withheld', { party: key, why: withheld, tokens: tokens ?? null, level, start: m?.start ?? null, every: m?.every ?? null }), result);
     record(st, $, { event: 'nudge', party: key, level, tokens, start: m!.start, every: m!.every });
     return { ...result, context: [...(result.context ?? []), nudgeText({ tokens: tokens!, tool: st.toolNames.forward_compaction })] };
@@ -683,8 +683,8 @@ async function readStep(st: State, $: EngineInterface, e: TurnStepInput, r: Turn
   const key = keyOf(e.agentId);
   const u = r?.usage;
   dbg(st, $, 'turn.step', { party: key, model: e.model ?? null, input_tokens: u?.input_tokens ?? null, cache_read_input_tokens: u?.cache_read_input_tokens ?? null, cache_creation_input_tokens: u?.cache_creation_input_tokens ?? null, output_tokens: u?.output_tokens ?? null, usageModel: u?.model ?? null });
-  if (key === 'main' && e.model !== undefined && (st.mainWindow === undefined || (st.parties.get(key).model ?? e.model) !== e.model)) await readMainWindow(st, $, e.model); // not read yet, or after /model
-  st.parties.describe(key, { model: e.model }); await judge(st, $, key);
+  if (key === 'main' && e.model !== undefined && (st.mainWindow === undefined || (st.mainModel ?? e.model) !== e.model)) await readMainWindow(st, $, e.model); // not read yet, or after /model
+  if (key === 'main') st.mainModel = e.model ?? st.mainModel; st.parties.describe(key, { model: e.model }); await judge(st, $, key);
   if (key === 'main') st.pendingCommand = undefined;
   const tokens = readingTokens(u);
   if (tokens === undefined) return st.parties.answered(key);

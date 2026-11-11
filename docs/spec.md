@@ -60,7 +60,8 @@ and no ceiling, and an automatic ask from it with nothing stored is held as
 
 1. **Nudges.** After a tool result, once a party's context passes its nudge
    start (`FORWARD_COMPACTION_MAIN_NUDGE_START` or
-   `FORWARD_COMPACTION_SUBAGENT_NUDGE_START`, a share of its max context), the
+   `FORWARD_COMPACTION_SUBAGENT_NUDGE_START`: a share of the main chat's max
+   context, a token count for a sub-agent), the
    model reads one line saying how large its context is, in tokens. One more
    follows every `FORWARD_COMPACTION_{MAIN|SUBAGENT}_NUDGE_EVERY`. The line
    asks it to wrap up to its first milestone and call `forward_compaction`
@@ -70,9 +71,12 @@ and no ceiling, and an automatic ask from it with nothing stored is held as
    compaction ask adds no nudge of its own. After an install, the first
    reading's level is absorbed silently (a sub-agent's floor of system
    prompt, tools and skills is already 55-60k), so the next nudge goes only
-   when the context crosses the level above it and has grown by at least
-   one `NUDGE_EVERY` past that first reading: a first reading just under a
-   level brings no nudge a few thousand tokens later. A model on the ignore list
+   when the context crosses the level above it and has grown by its working
+   room past that first reading: one `NUDGE_START`, held to two `NUDGE_EVERY`
+   below the ceiling so a nudge still comes before the mechanical wake, and
+   never under one `NUDGE_EVERY`. A wake lands near or above the nudge start,
+   and a nudge a few thousand tokens later makes the party compact in a loop.
+   No nudge goes within one `NUDGE_EVERY` of the last one. A model on the ignore list
    gets no nudge.
    No call is ever refused or held back: a party that does not compact is
    compacted mechanically at its ceiling.
@@ -383,15 +387,18 @@ this rule. It is requested upstream in
 
 ### Max contexts
 
-Sizes are percentages of each party's max context. The main chat's is the
+Sizes are percentages of each party's max context or token counts; a
+sub-agent's nudge sizes default to token counts (80k, then every 20k), the
+same on every max context. The main chat's max context is the
 window Claude Code reports through `$.session.usage()`, read at session
 start, at the main chat's first request when not read yet, and again when its
 model changes (`/model`); `FORWARD_COMPACTION_MAIN_MAX_CONTEXT` sets it
 instead. Until it is known (set, or reported) the main chat gets no nudge and
 no ceiling. Claude Code's API reports only the main chat's window, so a
 sub-agent's comes from the model id its steps report: one carrying the API's
-own `[1m]` context marker is measured against 1,000,000, every other (and one
-no step has named yet) against 200,000. The marker is the id's literal, never
+own `[1m]` context marker is measured against 1,000,000, one on the model id
+the main chat's last request named against the main chat's reported window,
+every other (and one no step has named yet) against 200,000. The marker is the id's literal, never
 a table of model names. `FORWARD_COMPACTION_SUBAGENT_MAX_CONTEXT`, when set,
 is every sub-agent's max context instead. An ignored (Haiku) sub-agent's
 ceiling comes from the same per-model max context.

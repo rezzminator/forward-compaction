@@ -307,7 +307,7 @@ describe('nudges (R37)', () => {
     expect((await read('tu-2')).context ?? []).toEqual([]);
   });
 
-  it('absorbs the first reading after an install: an agent installed, read at 61k, is nudged next once it grew by every (10k) past it, at 71k', async () => {
+  it('absorbs the first reading after an install: an agent installed, read at 61k, is nudged next once it grew by its working room (the 30k start) past it, at 91k', async () => {
     const f = await begin();
     const read = (id: string) => f.dispatch('tool.call', { tool: 'Read', tool_use_id: id, agentId: A1, file_path: '/x' }, async () => ({ result: 'file' }));
     await spawn(f);
@@ -319,10 +319,10 @@ describe('nudges (R37)', () => {
     expect((await read('tu-1')).context ?? []).toEqual([]);
     await step(f, 66_000, A1);
     expect((await read('tu-2')).context ?? []).toEqual([]);
-    await step(f, 70_000, A1);
+    await step(f, 90_000, A1);
     expect((await read('tu-3')).context ?? []).toEqual([]);
-    await step(f, 71_000, A1);
-    expect((await read('tu-4')).context?.at(-1)).toContain('context 71k and increasing.');
+    await step(f, 91_000, A1);
+    expect((await read('tu-4')).context?.at(-1)).toContain('context 91k and increasing.');
   });
 });
 
@@ -410,7 +410,7 @@ describe('ignored models: FORWARD_COMPACTION_IGNORE_MODELS, Haiku by default', (
   const read = (f: Fake, id: string, agentId?: string) => f.dispatch('tool.call', { tool: 'Read', tool_use_id: id, file_path: '/x', ...(agentId ? { agentId } : {}) }, async () => ({ result: 'file' }));
   const haikuStep = (f: Fake, tokens: number, agentId = A1) =>
     f.dispatch('turn.step', { turnId: 't1', index: 0, model: 'claude-haiku-4-5-20251001', messageCount: 4, ...(agentId ? { agentId } : {}) }, async () => ({ turnId: 't1', index: 0, answer: '', toolUses: [], stopReason: 'tool_use', ...usage(tokens) }));
-  /** The shipped sub-agent sizes: a 200k max context, the ceiling at 80%, nudges from 40% every 10%. */
+  /** The shipped sub-agent sizes: a 200k max context, the ceiling at 80%, nudges from 80k every 20k. */
   const defaults = { FORWARD_COMPACTION_SUBAGENT_MAX_CONTEXT: '', FORWARD_COMPACTION_SUBAGENT_CEILING: '', FORWARD_COMPACTION_SUBAGENT_NUDGE_START: '', FORWARD_COMPACTION_SUBAGENT_NUDGE_EVERY: '' };
 
   it('holds a Haiku sub-agent Claude Code asks at 64k, never compacting it there, and gives it the mechanical wake at the 160k sub-agent ceiling', async () => {

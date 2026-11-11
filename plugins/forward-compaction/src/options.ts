@@ -6,16 +6,21 @@ export type Size = { tokens: number } | { percent: number };
 /** Each party's sizes: the ceiling (with no frontier stored, the context at which a mechanical wake is installed), where the first nudge goes out and the growth between nudges, each a token count or a percentage of the party's max context. */
 export type PartySizes = { ceiling: Size; nudgeStart: Size; nudgeEvery: Size };
 export const DEFAULT_MAIN: PartySizes = { ceiling: { percent: 60 }, nudgeStart: { percent: 15 }, nudgeEvery: { percent: 5 } };
-/** 160k on the 200k sub-agent max context; the first nudge at 80k sits above the floor a sub-agent's wake lands at. */
-export const DEFAULT_SUBAGENT: PartySizes = { ceiling: { percent: 80 }, nudgeStart: { percent: 40 }, nudgeEvery: { percent: 10 } };
-/** A sub-agent's max context when its model id has no `[1m]` marker: Claude Code's API reports no sub-agent's window. Main's defaults to the window `$.session.usage()` reports. */
+/** The ceiling is a share of the sub-agent's max context (160k on 200k, 800k on 1m); the nudges are token counts, the same on every max context: the first at 80k sits above the floor a sub-agent's wake lands at. */
+export const DEFAULT_SUBAGENT: PartySizes = { ceiling: { percent: 80 }, nudgeStart: { tokens: 80_000 }, nudgeEvery: { tokens: 20_000 } };
+/** A sub-agent's max context when its model id has no `[1m]` marker and is not main's model: Claude Code's API reports no sub-agent's window. Main's defaults to the window `$.session.usage()` reports. */
 export const DEFAULT_SUBAGENT_MAX_CONTEXT = 200_000;
 /** A sub-agent's max context when its model id carries the API's own `[1m]` context marker. */
 export const MARKED_SUBAGENT_MAX_CONTEXT = 1_000_000;
 
-/** A sub-agent's max context: the set variable for every sub-agent, else 1m for a model id carrying `[1m]` and 200k for every other (and while no step has named its model). */
-export function subagentMaxContext(set: number | undefined, model: string | undefined): number {
-  return set ?? (model?.includes('[1m]') ? MARKED_SUBAGENT_MAX_CONTEXT : DEFAULT_SUBAGENT_MAX_CONTEXT);
+/** Main's model as its last step named it, with the window Claude Code reports for main. */
+export type MainWindow = { model?: string; window?: number };
+
+/** A sub-agent's max context: the set variable for every sub-agent, else 1m for a model id carrying `[1m]`, main's reported window for a sub-agent on main's own model id, and 200k for every other (and while no step has named its model). */
+export function subagentMaxContext(set: number | undefined, model: string | undefined, main: MainWindow = {}): number {
+  if (set !== undefined) return set;
+  if (model?.includes('[1m]')) return MARKED_SUBAGENT_MAX_CONTEXT;
+  return model !== undefined && model === main.model && main.window !== undefined ? main.window : DEFAULT_SUBAGENT_MAX_CONTEXT;
 }
 /** Mechanical wakes, not native summaries, at the ceiling. */
 export const DEFAULT_CEILING_NATIVE = false;

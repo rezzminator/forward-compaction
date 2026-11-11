@@ -160,16 +160,31 @@ describe('the first reading after an install (no re-nudge)', () => {
     expect(parties.nudgeDue('main', 5)).toBe(true);
   });
 
-  it('sends no nudge loop after a wake (S2, decisions 0f3e8b92 rows 20-25): the next one only once the context grew by every past the first reading', () => {
-    // start 40k, every 20k: woken, the first reading 66,560 is level 2, just under the 80k boundary.
+  it('sends no nudge loop after a wake (S2, decisions 0f3e8b92 rows 20-25): the next one only once the context grew by its working room past the first reading', () => {
+    // start 80k, every 20k: the first reading after each wake, the ceiling, and the first reading that is nudged again.
+    const cases: [woke: number, ceiling: number, due: number][] = [
+      [78_000, 800_000, 158_000], // far from the ceiling: the start's 80k of room
+      [66_560, 160_000, 120_000], // held to two every below the ceiling
+      [110_000, 160_000, 130_000], // already past that hold: one every
+    ];
+    for (const [woke, ceiling, first] of cases) {
+      const marks = { start: 80_000, every: 20_000, ceiling };
+      const at = (tokens: number) => nudgeLevel(tokens, marks.start, marks.every);
+      const parties = new Parties();
+      parties.nudgeDue('agent:a1', at(85_000), 85_000, marks);
+      parties.installed('agent:a1');
+      parties.read('agent:a1', woke, at(woke));
+      const due = (tokens: number) => (parties.read('agent:a1', tokens, at(tokens)), parties.nudgeDue('agent:a1', at(tokens), tokens, marks));
+      expect([woke + 1_000, first - 1, first].map(due), `woke at ${woke}, ceiling ${ceiling}`).toEqual([false, false, true]);
+    }
+  });
+
+  it('sends no nudge within every of the last one: a nudge held back to just under a level boundary is not followed by the next level\'s', () => {
+    const marks = { start: 80_000, every: 20_000, ceiling: 800_000 };
+    const at = (tokens: number) => nudgeLevel(tokens, marks.start, marks.every);
     const parties = new Parties();
-    const at = (tokens: number) => nudgeLevel(tokens, 40_000, 20_000);
-    parties.nudgeDue('agent:a1', at(85_000), 85_000, 20_000);
-    parties.installed('agent:a1');
-    parties.read('agent:a1', 66_560, at(66_560));
-    const due = (tokens: number) => (parties.read('agent:a1', tokens, at(tokens)), parties.nudgeDue('agent:a1', at(tokens), tokens, 20_000));
-    expect([72_000, 79_000, 81_000, 86_559].map(due)).toEqual([false, false, false, false]); // 81k crossed a level boundary 14k after the wake
-    expect(due(86_560)).toBe(true);
+    const due = (tokens: number) => (parties.read('agent:a1', tokens, at(tokens)), parties.nudgeDue('agent:a1', at(tokens), tokens, marks));
+    expect([158_000, 161_000, 177_999, 178_000].map(due)).toEqual([true, false, false, true]); // 161k is the next level, 3k later
   });
 
   it('absorbs nothing for a party never installed', () => {

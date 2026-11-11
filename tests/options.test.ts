@@ -32,6 +32,14 @@ describe('subagentMaxContext (L5, S1, S5)', () => {
     expect(subagentMaxContext(400_000, 'claude-opus-5-5[1m]')).toBe(400_000);
     expect(subagentMaxContext(400_000, 'claude-sonnet-5-5')).toBe(400_000);
   });
+  it("measures a sub-agent on main's own model id against main's reported window, and no other against it", () => {
+    const main = { model: 'claude-fable-5-2', window: 1_000_000 };
+    expect(subagentMaxContext(undefined, 'claude-fable-5-2', main)).toBe(1_000_000);
+    expect(subagentMaxContext(undefined, 'claude-sonnet-5-5', main)).toBe(200_000);
+    expect(subagentMaxContext(undefined, undefined, main)).toBe(200_000);
+    expect(subagentMaxContext(undefined, 'claude-fable-5-2', { model: 'claude-fable-5-2' })).toBe(200_000);
+    expect(subagentMaxContext(400_000, 'claude-fable-5-2', main)).toBe(400_000);
+  });
 });
 
 describe('parseEnvFlag', () => {
@@ -45,7 +53,7 @@ describe('resolveOptions', () => {
   it('holds the defaults with nothing set', () => {
     expect(resolveOptions()).toEqual({
       main: { ceiling: { percent: 60 }, nudgeStart: { percent: 15 }, nudgeEvery: { percent: 5 } },
-      subagent: { ceiling: { percent: 80 }, nudgeStart: { percent: 40 }, nudgeEvery: { percent: 10 } },
+      subagent: { ceiling: { percent: 80 }, nudgeStart: { tokens: 80_000 }, nudgeEvery: { tokens: 20_000 } },
       ceilingNative: false, ignoreModels: ['haiku'], keepSkills: [], debug: true, errors: [],
     });
   });
@@ -133,7 +141,7 @@ describe('resolveOptions', () => {
 
   it('names a nudge start that is not below the ceiling in the same unit, and passes across units', () => {
     expect(resolveOptions({ vars: { FORWARD_COMPACTION_MAIN_CEILING: '40k', FORWARD_COMPACTION_MAIN_NUDGE_START: '50k' } }).errors).toEqual(['forward-compaction: env FORWARD_COMPACTION_MAIN_NUDGE_START 50000 is not below FORWARD_COMPACTION_MAIN_CEILING 40000; no nudge goes out before the ceiling']);
-    expect(resolveOptions({ vars: { FORWARD_COMPACTION_SUBAGENT_CEILING: '40%' } }).errors).toEqual(['forward-compaction: env FORWARD_COMPACTION_SUBAGENT_NUDGE_START 40% is not below FORWARD_COMPACTION_SUBAGENT_CEILING 40%; no nudge goes out before the ceiling']);
+    expect(resolveOptions({ vars: { FORWARD_COMPACTION_SUBAGENT_CEILING: '80k' } }).errors).toEqual(['forward-compaction: env FORWARD_COMPACTION_SUBAGENT_NUDGE_START 80000 is not below FORWARD_COMPACTION_SUBAGENT_CEILING 80000; no nudge goes out before the ceiling']);
     expect(resolveOptions({ vars: { FORWARD_COMPACTION_MAIN_CEILING: '40k', FORWARD_COMPACTION_MAIN_NUDGE_START: '20k' } }).errors).toEqual([]);
     expect(resolveOptions({ vars: { FORWARD_COMPACTION_MAIN_CEILING: '30%' } }).errors).toEqual([]);
   });

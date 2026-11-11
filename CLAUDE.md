@@ -12,7 +12,7 @@ Claude Code's own compaction has a separate call summarize the transcript. Here 
 
 `model works -> plugin nudges as its context grows -> model picks its milestone and calls forward_compaction -> frontier stored -> Claude Code's next compaction ask -> plugin installs the frontier -> model wakes`
 
-- The model always chooses when to compact: the plugin only nudges, as a party's context crosses its nudge levels, and a nudge names the context's size and asks for a frontier at the first milestone, skipped when the work can finish soon; it names no max context and no ceiling.
+- The model always chooses when to compact: the plugin only nudges, as a party's context crosses its nudge levels (after a wake, from one nudge-start past its first reading, bounded by `roomAfterWake`; never within one nudge-every of the last), and a nudge names the context's size and asks for a frontier at the first milestone, skipped when the work can finish soon; it names no max context and no ceiling.
 - The plugin holds Claude Code's compaction. `CLAUDE_CODE_AUTO_COMPACT_WINDOW=100000` exists only so Claude Code asks early, about every request from about 63k; it is never the compaction point.
 - Each ask is skipped until a frontier is stored, complete or not, and that ask installs it; or until the party reaches its ceiling, and it gets the mechanical wake: recorded facts, no frontier from the model. Main also installs a stored frontier at its own turn end, through `$.session.compact()`.
 - The exceptions to "the model chooses" are only these:
@@ -76,7 +76,7 @@ Refresh the installed copy with `claude plugin marketplace update` as written, n
 - forward-compaction NEVER blocks, refuses, delays or holds back any operation of any agent or of the main chat. Every tool call runs. The plugin only nudges, and compacts mechanically at a party's ceiling.
 - Every number the plugin decides on or reports comes from Claude Code's plugin API, as far as it reaches: `$.session.usage()` (window, auto-compact threshold), `turn.step` usage (each party's reading), `session.compact`'s `tokensBefore`/`tokensAfter`, `$.agent.list()`, `$.session.messages()`.
 - No guessed, estimated or invented number: no character-count token estimates, no hard-coded model-window tables; the `[1m]` context marker in the model id a step reports is the API's own literal, not a model-name table.
-- Where the API gives nothing, a value a user tunes (a max context, ceiling or nudge level) is a named option with its default, a sub-agent's max context with two, picked by that marker; a design budget (the wake's section shares, the skills' character limits, a format cap such as `WHY_MAX_CHARS` or `LOAD_FILE_MAX_LINES`) is a named constant whose one-line comment says why, and is never reported as a measured size.
+- Where the API gives nothing, a value a user tunes (a max context, ceiling or nudge level) is a named option with its default, a sub-agent's max context with two, picked by that marker, or main's reported window when its model id is the one main last named; a design budget (the wake's section shares, the skills' character limits, a format cap such as `WHY_MAX_CHARS` or `LOAD_FILE_MAX_LINES`) is a named constant whose one-line comment says why, and is never reported as a measured size.
 - A number with no source is unknown and is said as unknown.
 - Every step writes a debug row (`debug.jsonl`), so any decision traces back to its inputs.
 - A new behaviour lands in `plugins/forward-compaction/src/` as a pure function with a test watched failing first; the adapter only wires it.

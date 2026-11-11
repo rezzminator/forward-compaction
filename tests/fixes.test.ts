@@ -72,16 +72,30 @@ describe('L10 + L11: one ignore row per judgement, across a step with no model a
 describe("L5 + S1 + S5: each sub-agent is measured against its own model's max context", () => {
   const unset = { FORWARD_COMPACTION_SUBAGENT_MAX_CONTEXT: '', FORWARD_COMPACTION_SUBAGENT_CEILING: '', FORWARD_COMPACTION_SUBAGENT_NUDGE_START: '', FORWARD_COMPACTION_SUBAGENT_NUDGE_EVERY: '' };
   const read = (f: Fake, id: string, agentId: string) => f.dispatch('tool.call', { tool: 'Read', tool_use_id: id, file_path: '/x', agentId }, async () => ({ result: 'file' }));
-  it('nudges a 200k sub-agent at 100k (past its 80k start) and leaves a [1m] one at 100k alone (its start is 400k)', async () => {
+  const ask = (f: Fake, agentId: string) => f.dispatch('session.compact', { trigger: 'auto', agentId, messages: [{ role: 'user', text: 'Brief for agent one', toolUses: [], handle: 'h0' }] }, async () => ({ skip: 'native ran' }));
+  it('nudges a 200k sub-agent and a [1m] one alike at 100k (the start is 80k on every max context), and at 170k wakes only the 200k one mechanically (its ceiling is 160k, the other 800k)', async () => {
     const f = await begin({ env: unset });
     await spawn(f, 'b1b1b1b1b1');
     await step(f, 100_000, 'b1b1b1b1b1', 'claude-sonnet-5-5');
     expect(((await read(f, 'tu-r1', 'b1b1b1b1b1')).context ?? []).join('\n')).toMatch(/context 100k /);
     await spawn(f, 'c2c2c2c2c2');
     await step(f, 100_000, 'c2c2c2c2c2', 'claude-opus-5-5[1m]');
-    expect((await read(f, 'tu-r2', 'c2c2c2c2c2')).context ?? []).toEqual([]);
-    await step(f, 400_000, 'c2c2c2c2c2', 'claude-opus-5-5[1m]');
-    expect(((await read(f, 'tu-r3', 'c2c2c2c2c2')).context ?? []).join('\n')).toMatch(/context 400k /);
+    expect(((await read(f, 'tu-r2', 'c2c2c2c2c2')).context ?? []).join('\n')).toMatch(/context 100k /);
+    await step(f, 170_000, 'b1b1b1b1b1', 'claude-sonnet-5-5');
+    await step(f, 170_000, 'c2c2c2c2c2', 'claude-opus-5-5[1m]');
+    expect(await ask(f, 'b1b1b1b1b1')).toHaveProperty('messages');
+    expect(await ask(f, 'c2c2c2c2c2')).toHaveProperty('skip');
+  });
+
+  it("measures a sub-agent on main's model id against main's 1M window: at 170k it is held, where one on another model is woken mechanically", async () => {
+    const f = await begin({ env: unset });
+    await step(f, 40_000, undefined, 'claude-fable-5-2');
+    await spawn(f, 'b1b1b1b1b1');
+    await step(f, 170_000, 'b1b1b1b1b1', 'claude-fable-5-2');
+    await spawn(f, 'c2c2c2c2c2');
+    await step(f, 170_000, 'c2c2c2c2c2', 'claude-sonnet-5-5');
+    expect(await ask(f, 'b1b1b1b1b1')).toHaveProperty('skip');
+    expect(await ask(f, 'c2c2c2c2c2')).toHaveProperty('messages');
   });
 });
 

@@ -61,8 +61,10 @@ export type PartyState = {
   nudgeLevel: number;
   /** True from an install until the party's next reading, whose nudge level is then absorbed silently. */
   absorbNext: boolean;
-  /** The party's first reading after its last install: its next nudge waits until the context has grown by `every` past it. */
+  /** The party's first reading after its last install: its next nudge waits until the context has grown by its working room past it (`roomAfterWake`). */
   wokeAt?: number;
+  /** The reading the party's last nudge went out at, since its last install: the next one waits until the context has grown by `every` past it. */
+  nudgedAt?: number;
   /** The party's completed requests. */
   requests: number;
   installs: number;
@@ -77,6 +79,17 @@ export type PartyState = {
 };
 
 /** Per-party state, memory only, keyed "main" or "agent:{id}". A party is created on first touch. */
+/** The marks a nudge is timed by, in tokens. */
+export type NudgeMarks = { start: number; every: number; ceiling: number };
+
+/**
+ * The growth a party gets after a wake before its next nudge: as much as it had before its first nudge (`start`),
+ * held to two `every` below its ceiling so a nudge still comes before the mechanical wake, and never under one `every`.
+ */
+export function roomAfterWake(wokeAt: number, { start, every, ceiling }: NudgeMarks): number {
+  return Math.max(every, Math.min(start, ceiling - 2 * every - wokeAt));
+}
+
 export class Parties {
   private readonly states = new Map<string, PartyState>();
   private seq = 0;
@@ -237,14 +250,19 @@ export class Parties {
   /**
    * Whether a nudge goes out now, recorded as sent: once per level while nothing is stored. None goes between an
    * install and the party's next reading: until then no size is measured. After a wake none goes until the reading
-   * (`tokens`) has grown by `every` past the first one after it: a first reading just under a level boundary would
-   * otherwise be nudged again a few thousand tokens later.
+   * (`tokens`) has grown by the party's working room (`roomAfterWake`) past the first one after it: a wake lands
+   * near or above the nudge start, and a nudge a few thousand tokens later makes the party compact in a loop. None
+   * goes within `every` of the last one either: a nudge held back past a level boundary is not followed by the next level's.
    */
-  nudgeDue(key: string, level: number, tokens?: number, every?: number): boolean {
+  nudgeDue(key: string, level: number, tokens?: number, marks?: NudgeMarks): boolean {
     const state = this.get(key);
     if (state.stored !== undefined || state.absorbNext || level <= state.nudgeLevel) return false;
-    if (state.wokeAt !== undefined && tokens !== undefined && every !== undefined && tokens < state.wokeAt + every) return false;
+    if (tokens !== undefined && marks !== undefined) {
+      if (state.wokeAt !== undefined && tokens < state.wokeAt + roomAfterWake(state.wokeAt, marks)) return false;
+      if (state.nudgedAt !== undefined && tokens < state.nudgedAt + marks.every) return false;
+    }
     state.nudgeLevel = level;
+    state.nudgedAt = tokens;
     return true;
   }
 
@@ -261,6 +279,7 @@ export class Parties {
       nudgeLevel: 0,
       absorbNext: true,
       wokeAt: undefined,
+      nudgedAt: undefined,
       reading: undefined,
       base: undefined,
       landing,
