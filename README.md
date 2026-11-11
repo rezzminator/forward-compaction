@@ -151,7 +151,7 @@ forward_compaction({
 | `blocked`, `findings` | no | What waits on whom; the model's own notes, errors and commands it will need again. |
 | `standing_orders` | no | Your orders that bind the rest of the work, in your exact words. The plugin keeps them across compactions until you lift them. |
 | `lifted` | no | Orders you have lifted, with the words you lifted them with. |
-| `load_files` | no | Files to read back in after the compaction, up to 250 lines each. |
+| `load_files` | no | Files to read back in after the compaction, up to 250 lines each; a binary file is named, never carried. |
 | `drop_skills` | no | Skills no longer needed, dropped once two handoffs in a row name them. |
 
 The call is never refused. The reply says when the handoff will install and names anything it left out. A handoff missing a required section is stored and installs as it is, the compaction naming each section it lacks; a complete one sent later replaces it.

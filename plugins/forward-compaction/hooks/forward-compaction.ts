@@ -1,6 +1,6 @@
 import type { EngineInterface, On, PluginOptions, Register, SessionCompactInput, SessionCompactResult, ToolCallResult, TurnStartInput, TurnStepInput, TurnStepResult, TurnCompleteInput, PromptSubmitInput, SessionReceiveInput, SkillPromptInput, AgentSpawnInput, AgentSpawnResult } from 'claude-code';
 import { bounded, unlessAborted } from '../src/bounded.ts';
-import { applyDrops, dropNote, changesNote, pinnedBy, experimental, isAbsolutePath, parseFrontier, loadFileNote, receipt, parseLineRanges, sliceFile, toolInput, type FileCheck, type LoadFile } from '../src/frontier.ts';
+import { applyDrops, dropNote, changesNote, pinnedBy, experimental, isAbsolutePath, parseFrontier, loadFileNote, receipt, parseLineRanges, sliceFile, LOAD_FILE_MAX_CHARS, toolInput, type FileCheck, type LoadFile } from '../src/frontier.ts';
 import { answersOf, workOf, type CallAnswer } from '../src/work.ts';
 import { newLedger, markStart, addEntry, resolveSpawn, attributeSkill, shellsOf, factsFor, promptsKept, restorePrompts, skillsKept, restoreSkills, liftSources, isPersonOrigin, keyOf, originKind, type Ledger, type PartyKey } from '../src/ledger.ts';
 import { splitAtCall, buildWake, mechanicalWake, landedLine, recentFiles, type WakeFile, type AgentRow, type Landing } from '../src/wake.ts';
@@ -560,11 +560,11 @@ async function agentRows($: EngineInterface): Promise<AgentRow[] | { error: stri
   return 'error' in list ? list : list.map((a) => ({ id: a.id, type: a.type, status: a.status, description: a.description, ...(a.parentId !== undefined ? { parentId: a.parentId } : {}) }));
 }
 
-/** Each load file read now, whole or by its lines; one that cannot be read is carried as its problem. */
-async function readLoadFiles($: EngineInterface, files: readonly LoadFile[]): Promise<WakeFile[]> {
+/** Each load file read now, whole or by its lines, cut at `maxChars` when given; one that cannot be read is carried as its problem. */
+async function readLoadFiles($: EngineInterface, files: readonly LoadFile[], maxChars?: number): Promise<WakeFile[]> {
   return Promise.all(files.map(async (file): Promise<WakeFile> => {
     try {
-      const sliced = sliceFile(file.path, await $.fs.read(file.path), file.lines === undefined ? undefined : parseLineRanges(file.lines));
+      const sliced = sliceFile(file.path, await $.fs.read(file.path), file.lines === undefined ? undefined : parseLineRanges(file.lines), maxChars);
       return 'body' in sliced ? { ...file, ...(sliced.shown ? { lines: sliced.shown } : {}), content: sliced.body } : { ...file, problem: sliced.problem };
     } catch (error) {
       return { ...file, problem: message(error) };
@@ -624,7 +624,7 @@ async function compactAsk(st: State, $: EngineInterface, e: SessionCompactInput,
   const shared = { messages: e.messages, party: kind === 'main' ? ('main' as const) : ('subagent' as const), tokens, askPoint: m?.askPoint ?? 0, charsPerToken: ratioOf(st, $, key, 'compact', await partyChars(st, $, key, e.agentId), m), now: await $.clock.now(), facts: (kept: readonly string[]) => factsFor(st.ledger, key, { keptTexts: kept, ...(action.action === 'install' ? { since: held!.since } : {}) }), agents: await agentRows($), logDir: st.pluginLogDir, orders: action.action === 'install' ? { standing: held!.standingOrders ?? [], lifted: held!.lifted ?? [] } : { standing: party.orders ?? [] }, plan: await readPlan(st, $, key), ...(e.agentId !== undefined ? { self: e.agentId } : {}) };
   const wake = action.action === 'install'
     ? buildWake({ ...shared, toolUseId: held!.toolUseId, frontier: held!.text, tool: st.toolNames.forward_compaction, files: await readLoadFiles($, held!.loadFiles), ...(held!.missing !== undefined ? { missing: held!.missing } : {}) })
-    : mechanicalWake({ ...shared, tool: st.toolNames.forward_compaction, recent: await readLoadFiles($, recentFiles(factsFor(st.ledger, key, { keptTexts: [] }).work?.files ?? []).map((path) => ({ path }))), reason: action.why === 'ceiling' ? { kind: 'ceiling', ceiling: m!.ceiling } : { kind: 'reactive' } });
+    : mechanicalWake({ ...shared, tool: st.toolNames.forward_compaction, recent: await readLoadFiles($, recentFiles(factsFor(st.ledger, key, { keptTexts: [] }).work?.files ?? []).map((path) => ({ path })), LOAD_FILE_MAX_CHARS), reason: action.why === 'ceiling' ? { kind: 'ceiling', ceiling: m!.ceiling } : { kind: 'reactive' } });
   dbg(st, $, 'wake', { party: key, kind: action.action, ratio: shared.charsPerToken ?? null, askPoint: shared.askPoint, sizes: wake.sizes, headChars: wake.headChars, carried: wake.carried, notCarried: wake.notCarried, kept: wake.kept, dropped: wake.dropped });
   installed(st, $, key, action.action === 'install' ? { kind: 'frontier', label, before: tokens, chars: held!.text.length, facts: wake.facts, kept: wake.kept, dropped: wake.dropped } : { kind: 'mechanical', label, before: tokens, tokens, ceiling: m?.ceiling ?? 0 }, signal);
   if (action.action === 'install') for (const w of installWarnings(label, held!.toolUseId, held!.missing ?? [], splitAtCall(e.messages, held!.toolUseId) !== undefined)) say(st, $, w.line, 'warning', { ...w.row, where: 'compactAsk', party: key });

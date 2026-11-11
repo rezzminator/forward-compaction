@@ -88,6 +88,8 @@ export const FORWARD_INPUT_SCHEMA = {
 // Format caps: design budgets on what the model may send, never a measured size.
 /** Lines one load file carries: a plan, a spec or a module in hand reads whole, and a longer one names where to Read the rest. */
 export const LOAD_FILE_MAX_LINES = 250;
+/** The most characters one file the plugin picked carries at a mechanical install: 250 lines of 160. A file of few, enormous lines is cut here, where the line cap never bites. */
+export const LOAD_FILE_MAX_CHARS = 40_000;
 /** A load file's `why`: one line saying what it is for; a longer one is cut to it. */
 export const WHY_MAX_CHARS = 200;
 
@@ -306,16 +308,19 @@ const span = (r: { from: number; to: number }): string => (r.from === r.to ? `${
  * line. Lines asked for past the cap are counted, and the body ends with one line naming where to Read them. `shown` is
  * the ranges that loaded, clipped to the file and the cap ('' for a whole file). A range past the file's end, or clipped
  * by it, is a `problem`, and an empty load is one too: a slice of nothing never reaches the wake as a Load block that says nothing.
+ * A file holding a NUL character is binary and is a `problem`, never a body; with `maxChars`, a body past it is cut there and says so.
  */
-export function sliceFile(path: string, text: string, ranges: readonly { from: number; to: number }[] | undefined): { body: string; shown: string; problem?: string } | { problem: string } {
+export function sliceFile(path: string, text: string, ranges: readonly { from: number; to: number }[] | undefined, maxChars?: number): { body: string; shown: string; problem?: string } | { problem: string } {
+  if (text.includes('\u0000')) return { problem: 'not a text file' };
+  const capped = (body: string): string => (maxChars === undefined || body.length <= maxChars ? body : `${body.slice(0, maxChars)}\n[cut at ${maxChars} characters: Read ${path} for the rest]`);
   const lines = text.split('\n');
   if (lines.length > 0 && lines[lines.length - 1] === '') lines.pop();
   const count = lines.length;
   const more = (left: number, from: number): string => `[${left} more lines not carried: Read ${path} from line ${from}]`;
   if (ranges === undefined) {
     if (text.trim() === '') return { problem: 'the file is empty' };
-    if (count <= LOAD_FILE_MAX_LINES) return { body: text, shown: '' };
-    return { body: [...lines.slice(0, LOAD_FILE_MAX_LINES), more(count - LOAD_FILE_MAX_LINES, LOAD_FILE_MAX_LINES + 1)].join('\n'), shown: `1-${LOAD_FILE_MAX_LINES}` };
+    if (count <= LOAD_FILE_MAX_LINES) return { body: capped(text), shown: '' };
+    return { body: capped([...lines.slice(0, LOAD_FILE_MAX_LINES), more(count - LOAD_FILE_MAX_LINES, LOAD_FILE_MAX_LINES + 1)].join('\n')), shown: `1-${LOAD_FILE_MAX_LINES}` };
   }
   const parts: string[] = [];
   const shown: { from: number; to: number }[] = [];
@@ -358,6 +363,6 @@ export function sliceFile(path: string, text: string, ranges: readonly { from: n
   if (shown.length === 0) return { problem: problem ?? 'no lines asked for' };
   if (!held) return { problem: [problem, `lines ${shown.map(span).join(',')}: only blank lines`].filter((p) => p !== undefined).join('; ') };
   if (left > 0) parts.push(more(left, next!));
-  return { body: parts.join('\n'), shown: shown.map(span).join(','), ...(problem !== undefined ? { problem } : {}) };
+  return { body: capped(parts.join('\n')), shown: shown.map(span).join(','), ...(problem !== undefined ? { problem } : {}) };
 }
 

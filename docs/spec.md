@@ -136,7 +136,8 @@ needs no ToolSearch.
   Only an entry with no path is skipped. Their size never
   refuses the frontier: it is always stored. Each file is read when the
   frontier installs and carries at most 250 lines: of its `lines` ranges when
-  given, else from line 1. When lines are left past the 250th, the file's
+  given, else from line 1. A file holding a NUL character is binary: it is
+  named as `not a text file` and never carried. When lines are left past the 250th, the file's
   block ends with one line, `[N more lines not carried: Read {path} from line
   L]`, N the lines left in the ranges or the file and L the next one. There is
   no room for the files together. A file that is missing, or whose ranges
@@ -281,7 +282,8 @@ it. It holds, each section only when it has content:
 - in a mechanical wake only, under `## Files you were working on, newest
   first, read at install`: the 5 newest files the party touched, read from
   disk at install, each at most 250 lines with the same `[N more lines not
-  carried: …]` line, as Claude Code's own compaction restores its 5 most
+  carried: …]` line and at most 40,000 characters, a longer one ending `[cut
+  at 40000 characters: Read {path} for the rest]`, as Claude Code's own compaction restores its 5 most
   recent files because it fires uninvited. One that could not be read is
   named in place with why. A frontier's wake carries only the files the
   frontier asked for, and the wake an error falls back to, built without

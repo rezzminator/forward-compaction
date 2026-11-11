@@ -305,6 +305,11 @@ describe('parseLineRanges and sliceFile (copied from the old carry module)', () 
     expect(sliceFile('/f', file, [{ from: 148, to: 200 }])).toEqual({ body: 'line 148\nline 149', shown: '148-149', problem: 'lines 148-200: the file ends at line 149' });
     expect(sliceFile('/f', file, [{ from: 1, to: 1 }, { from: 160, to: 170 }])).toEqual({ body: 'line 1', shown: '1', problem: 'lines 160-170: past the end of the file, which has 149 lines' });
     expect(sliceFile('/f', '', undefined)).toEqual({ problem: 'the file is empty' });
+    expect(sliceFile('/f.png', 'PNG\u0000IHDR', undefined)).toEqual({ problem: 'not a text file' });
+    expect(sliceFile('/f', 'x'.repeat(40_000), undefined, 40_000)).toEqual({ body: 'x'.repeat(40_000), shown: '' });
+    expect(sliceFile('/f', 'x'.repeat(40_001), undefined)).toEqual({ body: 'x'.repeat(40_001), shown: '' });
+    expect(sliceFile('/f', 'x'.repeat(40_001), undefined, 40_000)).toEqual({ body: `${'x'.repeat(40_000)}\n[cut at 40000 characters: Read /f for the rest]`, shown: '' });
+    expect(sliceFile('/f', `a\n${'x'.repeat(40_001)}`, [{ from: 2, to: 2 }], 40_000)).toEqual({ body: `${'x'.repeat(40_000)}\n[cut at 40000 characters: Read /f for the rest]`, shown: '2' });
     expect(sliceFile('/f', 'x\n', undefined)).toEqual({ body: 'x\n', shown: '' });
   });
 
