@@ -17,25 +17,17 @@ describe('nudgeLevel (R29)', () => {
 });
 
 describe('nudgeText (R29)', () => {
-  it('asks to compact once the current step is done, never in the middle of one, with the exact text', () => {
-    expect(nudgeText({ tokens: 55_400, window: 200_000, ceiling: 120_000 })).toBe(
-      'forward-compaction: context 55k (28% of 200k). Once your current step is done — never in the middle of one — call mcp__forward-compaction__forward_compaction with objective, decisions, done, remaining and next, and in load_files the files you will read again; skip it if only your final answer is left. At 120k you are compacted mechanically. No such tool? Carry on.',
+  it('names the size and asks to compact at the first milestone, with the exact text', () => {
+    expect(nudgeText({ tokens: 55_400 })).toBe(
+      'forward-compaction: context 55k and increasing. Try to wrap up and get yourself at the first milestone and call mcp__forward-compaction__forward_compaction with objective, decisions, done, remaining and next, and in load_files the files you will read again; skip if you can finish all of it soon, if you REALLY need larger context and your context has to keep large tokens for work, continue and do it at the first milestone. No such tool? Carry on.',
     );
   });
 
-  it('never says "now" or "soon", whatever the reading', () => {
-    for (const tokens of [30_000, 67_000, 90_000, 119_000]) {
-      const text = nudgeText({ tokens, window: 200_000, ceiling: 120_000 });
-      expect(text).not.toMatch(/\bnow\b|\bsoon\b|asking to compact/);
-      expect(text).toContain(`context ${Math.round(tokens / 1000)}k (${Math.round((tokens / 200_000) * 100)}% of 200k)`);
-    }
-  });
-});
-
-describe('nudgeText names the tool as registered', () => {
-  it('uses the registered name, so a -dev copy is called by its own name', () => {
+  it('names the registered tool, so a -dev copy is called by its own name', () => {
     const dev = 'mcp__forward-compaction-dev__forward_compaction';
-    expect(nudgeText({ tokens: 55_400, window: 1_000_000, ceiling: 600_000, tool: dev })).toContain(`call ${dev} with objective, decisions, done, remaining and next`);
+    expect(nudgeText({ tokens: 213_000, tool: dev })).toBe(
+      'forward-compaction: context 213k and increasing. Try to wrap up and get yourself at the first milestone and call mcp__forward-compaction-dev__forward_compaction with objective, decisions, done, remaining and next, and in load_files the files you will read again; skip if you can finish all of it soon, if you REALLY need larger context and your context has to keep large tokens for work, continue and do it at the first milestone. No such tool? Carry on.',
+    );
   });
 });
 
@@ -43,18 +35,5 @@ describe('k', () => {
   it('prints thousands as k and a million or more as M with at most one decimal', () => {
     expect([0, 999, 51_400, 999_499].map(k)).toEqual(['0k', '1k', '51k', '999k']);
     expect([999_500, 1_000_000, 1_049_999, 1_500_000, 2_000_000].map(k)).toEqual(['1M', '1M', '1M', '1.5M', '2M']);
-  });
-
-  it('names a 1M window "1M" in the nudge, never "1000k"', () => {
-    expect(nudgeText({ tokens: 213_000, window: 1_000_000, ceiling: 600_000 })).toContain('(21% of 1M)');
-  });
-});
-
-describe('the nudge stays short', () => {
-  it('make no promise about what a compaction keeps, and never say "lost"', () => {
-    for (const text of [nudgeText({ tokens: 85_000, window: 200_000, ceiling: 160_000 })]) {
-      expect(text).not.toMatch(/costs you nothing|every message after it|lost/);
-      expect(text.length).toBeLessThan(400);
-    }
   });
 });

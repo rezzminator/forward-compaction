@@ -21,16 +21,11 @@ export function nudgeLevel(tokens: number, start: number, every: number): number
 export type NudgeInput = {
   /** The party's last measured reading. */
   tokens: number;
-  /** The party's model window, which the nudge percentages are taken against. */
-  window: number;
-  /** The context at which the plugin compacts the party mechanically. */
-  ceiling: number;
   /** The registered `forward_compaction` name; DEFAULT_TOOL when absent. */
   tool?: string;
 };
 
-/** What the model reads after a tool result once its context passes a nudge point: compact once the current step is done, never in the middle of one; the model picks the moment, not whether. */
-export function nudgeText({ tokens, window, ceiling, tool = DEFAULT_TOOL }: NudgeInput): string {
-  const percent = Math.round((tokens / Math.max(1, window)) * 100);
-  return `forward-compaction: context ${k(tokens)} (${percent}% of ${k(window)}). Once your current step is done — never in the middle of one — call ${tool} with objective, decisions, done, remaining and next, and in load_files the files you will read again; skip it if only your final answer is left. At ${k(ceiling)} you are compacted mechanically. No such tool? Carry on.`;
+/** What the model reads after a tool result once its context passes a nudge point: its size, and to compact at its first milestone; it may skip when it can finish soon, and keep going to that milestone when the work needs the larger context. It names no window and no ceiling. */
+export function nudgeText({ tokens, tool = DEFAULT_TOOL }: NudgeInput): string {
+  return `forward-compaction: context ${k(tokens)} and increasing. Try to wrap up and get yourself at the first milestone and call ${tool} with objective, decisions, done, remaining and next, and in load_files the files you will read again; skip if you can finish all of it soon, if you REALLY need larger context and your context has to keep large tokens for work, continue and do it at the first milestone. No such tool? Carry on.`;
 }

@@ -7,7 +7,7 @@
 [![Claude Code plugin](https://img.shields.io/badge/Claude%20Code-plugin-D97757)](https://docs.claude.com/en/docs/claude-code/plugins)
 [![Version](https://img.shields.io/badge/version-2.2.5-blue)](./CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
-[![Tests](https://img.shields.io/badge/tests-612%20passing-brightgreen)](#development)
+[![Tests](https://img.shields.io/badge/tests-609%20passing-brightgreen)](#development)
 [![Built with Professor](https://img.shields.io/badge/built%20with-Professor-8A2BE2)](https://github.com/rezzminator/professor)
 
 </div>
@@ -105,7 +105,7 @@ Coming from this repository's earlier plugin? The [CHANGELOG](./CHANGELOG.md) en
 flowchart LR
     A[Model works] --> B{Context past<br/>a nudge point?}
     B -- no --> A
-    B -- yes --> C[Nudge: write your handoff<br/>once this step is done]
+    B -- yes --> C[Nudge: write your handoff<br/>at your first milestone]
     C --> D[Model calls forward_compaction:<br/>handoff stored]
     D --> E[Next compaction:<br/>facts + handoff + later messages]
     E --> A
@@ -113,7 +113,7 @@ flowchart LR
     F --> A
 ```
 
-1. **Nudge.** After a tool result, once the context passes 15% of the main chat's window (40% for a sub-agent), the model reads one line saying how full it is and asking it to write its handoff once its current step is done. Another line follows every 5% (10% for a sub-agent).
+1. **Nudge.** After a tool result, once the context passes 15% of the main chat's window (40% for a sub-agent), the model reads one line saying how large its context is and asking it to write its handoff at its first milestone; it may skip that when it can finish soon, and keep going to the milestone when its work needs the larger context. Another line follows every 5% (10% for a sub-agent).
 2. **Handoff.** The model calls `forward_compaction`. The plugin stores the handoff and changes nothing yet; a later call replaces it.
 3. **Install.** The main chat's handoff installs at the end of its turn, and a sub-agent's at Claude Code's next compaction ask. Everything before the call is replaced by the facts the plugin recorded and the handoff, and the messages after the call are kept, as many as fit.
 4. **Ceiling.** A chat that reaches 60% of its window with no handoff (80% for a sub-agent) is compacted automatically, keeping the recorded facts, its newest messages and a note that no handoff was written.

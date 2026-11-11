@@ -530,7 +530,7 @@ async function nudged(st: State, $: EngineInterface, key: PartyKey, result: Tool
     const withheld = tokens === undefined ? 'no-reading' : m === undefined ? 'window-unknown' : level === 0 ? 'below-start' : st.parties.ignored(key, st.config.ignoreModels) !== undefined ? 'ignored-model' : !st.parties.nudgeDue(key, level, tokens!, m!.every) ? 'not-due' : undefined;
     if (withheld !== undefined) return (dbg(st, $, 'nudge-withheld', { party: key, why: withheld, tokens: tokens ?? null, level, start: m?.start ?? null, every: m?.every ?? null }), result);
     record(st, $, { event: 'nudge', party: key, level, tokens, start: m!.start, every: m!.every });
-    return { ...result, context: [...(result.context ?? []), nudgeText({ tokens: tokens!, window: m!.maxContext, ceiling: m!.ceiling, tool: st.toolNames.forward_compaction })] };
+    return { ...result, context: [...(result.context ?? []), nudgeText({ tokens: tokens!, tool: st.toolNames.forward_compaction })] };
   } catch (error) {
     say(st, $, `forward-compaction: nudging ${key} failed: ${message(error)}`, 'error', { event: 'nudge-error', where: 'nudged', party: key, error: message(error) });
     return result;

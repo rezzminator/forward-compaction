@@ -277,7 +277,7 @@ describe('nudges (R37)', () => {
     const f = await begin();
     await step(f, 51_000);
     const first = await f.dispatch('tool.call', { tool: 'Read', tool_use_id: 'tu-1', file_path: '/x' }, async () => ({ result: 'file', context: ['other'] }));
-    expect(first.context.at(-1)).toMatch(/^forward-compaction: context 51k \(5% of 1M\)\. Once your current step is done — never in the middle of one — call /);
+    expect(first.context.at(-1)).toMatch(/^forward-compaction: context 51k and increasing\. Try to wrap up and get yourself at the first milestone and call /);
     expect(first.context[0]).toBe('other');
     await step(f, 52_000);
     const second = await f.dispatch('tool.call', { tool: 'Read', tool_use_id: 'tu-2', file_path: '/x' }, async () => ({ result: 'file' }));
@@ -290,18 +290,18 @@ describe('nudges (R37)', () => {
     await step(f, 59_000);
     expect((await read('tu-1')).context ?? []).toEqual([]);
     await step(f, 60_000);
-    expect((await read('tu-2')).context?.at(-1)).toContain('context 60k (15% of 400k)');
+    expect((await read('tu-2')).context?.at(-1)).toContain('context 60k and increasing.');
     await step(f, 79_000);
     expect((await read('tu-3')).context ?? []).toEqual([]);
     await step(f, 80_000);
-    expect((await read('tu-4')).context?.at(-1)).toContain('context 80k (20% of 400k)');
+    expect((await read('tu-4')).context?.at(-1)).toContain('context 80k and increasing.');
   });
 
   it('a held ask adds no nudge of its own: the level already delivered is not repeated', async () => {
     const f = await begin();
     const read = (id: string) => f.dispatch('tool.call', { tool: 'Read', tool_use_id: id, file_path: '/x' }, async () => ({ result: 'file' }));
     await step(f, 64_000);
-    expect((await read('tu-1')).context?.at(-1)).toContain('context 64k (');
+    expect((await read('tu-1')).context?.at(-1)).toContain('context 64k and increasing.');
     await f.dispatch('session.compact', { trigger: 'auto', messages: transcript('tu-none') }, async () => ({ skip: 'native ran' }));
     await step(f, 65_000);
     expect((await read('tu-2')).context ?? []).toEqual([]);
@@ -322,7 +322,7 @@ describe('nudges (R37)', () => {
     await step(f, 70_000, A1);
     expect((await read('tu-3')).context ?? []).toEqual([]);
     await step(f, 71_000, A1);
-    expect((await read('tu-4')).context?.at(-1)).toContain('context 71k (');
+    expect((await read('tu-4')).context?.at(-1)).toContain('context 71k and increasing.');
   });
 });
 
@@ -466,7 +466,7 @@ describe('ignored models: FORWARD_COMPACTION_IGNORE_MODELS, Haiku by default', (
     expect(await unread.dispatch('session.compact', { trigger: 'auto', messages: transcript() }, async () => ({ skip: 'native ran' }))).toMatchObject({ skip: expect.stringContaining('holding') });
     const set = await begin({ window: () => { throw new Error('usage unavailable'); }, env: { FORWARD_COMPACTION_MAIN_MAX_CONTEXT: '400k' } });
     await step(set, 51_000);
-    expect((await read(set, 'tu-1')).context?.at(-1)).toContain('context 51k (13% of 400k)');
+    expect((await read(set, 'tu-1')).context?.at(-1)).toContain('context 51k and increasing.');
   });
 });
 
@@ -478,7 +478,7 @@ describe('a resumed sub-agent with no reading yet', () => {
     expect(await f.dispatch('session.compact', { trigger: 'auto', agentId: A1, messages: big }, async () => ({ skip: 'native ran' }))).toEqual({ skip: "forward-compaction: holding Claude Code's compaction for code-builder a1b2c3: it has no reading yet, and its next reading decides" });
     expect((await read('tu-1')).context ?? []).toEqual([]);
     await f.dispatch('turn.step', { turnId: 't1', index: 0, model: 'claude-sonnet-5-5', messageCount: 4, agentId: A1 }, async () => ({ turnId: 't1', index: 0, answer: '', toolUses: [], stopReason: 'tool_use', ...usage(189_000) }));
-    expect((await read('tu-2')).context?.at(-1)).toContain('context 189k (19% of 1M)');
+    expect((await read('tu-2')).context?.at(-1)).toContain('context 189k and increasing.');
     expect((await read('tu-2')).context ?? []).toEqual([]);
     expect(await f.dispatch('session.compact', { trigger: 'auto', agentId: A1, messages: big }, async () => ({ skip: 'native ran' }))).toMatchObject({ skip: expect.stringContaining('until its frontier is stored') });
     const compacts = (await rows(f)).filter((row) => row.event === 'compact');
@@ -492,7 +492,7 @@ describe("a reading includes the response's own output (H1)", () => {
     const f = await begin({ env: { FORWARD_COMPACTION_MAIN_NUDGE_START: '150000', FORWARD_COMPACTION_MAIN_NUDGE_EVERY: '50000', FORWARD_COMPACTION_MAIN_CEILING: '600000' } });
     await step(f, 147_000, undefined, 12_878);
     const nudged = await f.dispatch('tool.call', { tool: 'Read', tool_use_id: 'tu-1', file_path: '/x' }, async () => ({ result: 'ok' }));
-    expect(nudged.context?.at(-1)).toContain('context 160k (');
+    expect(nudged.context?.at(-1)).toContain('context 160k and increasing.');
     await store(f);
     await f.dispatch('session.compact', { trigger: 'auto', messages: transcript('tu-none') }, async () => ({ skip: 'native ran' }));
     const logged = await rows(f);
@@ -590,7 +590,7 @@ describe('audit r4: readings only, measured landed lines, the milestone nudge, l
     expect((await read(f, 'tu-1', 70_000)).context ?? []).toEqual([]);
     expect((await read(f, 'tu-2', 77_000)).context ?? []).toEqual([]);
     await step(f, 173_100);
-    expect((await read(f, 'tu-3')).context?.at(-1)).toContain('context 173k (17% of 1M)');
+    expect((await read(f, 'tu-3')).context?.at(-1)).toContain('context 173k and increasing.');
     expect((await rows(f)).filter((r) => r.event === 'nudge')).toEqual([expect.objectContaining({ level: 1, tokens: 173_100 })]);
   });
 
@@ -655,7 +655,7 @@ describe('audit r4: readings only, measured landed lines, the milestone nudge, l
   it('M3 nudges with the milestone wording, verbatim', async () => {
     const f = await begin();
     await step(f, 51_000);
-    expect((await read(f, 'tu-1')).context?.at(-1)).toBe('forward-compaction: context 51k (5% of 1M). Once your current step is done — never in the middle of one — call mcp__forward-compaction__forward_compaction with objective, decisions, done, remaining and next, and in load_files the files you will read again; skip it if only your final answer is left. At 120k you are compacted mechanically. No such tool? Carry on.');
+    expect((await read(f, 'tu-1')).context?.at(-1)).toBe('forward-compaction: context 51k and increasing. Try to wrap up and get yourself at the first milestone and call mcp__forward-compaction__forward_compaction with objective, decisions, done, remaining and next, and in load_files the files you will read again; skip if you can finish all of it soon, if you REALLY need larger context and your context has to keep large tokens for work, continue and do it at the first milestone. No such tool? Carry on.');
   });
 
   it("L6 stores and carries every load file, with no room and no count cap, each up to 250 lines with where to Read the rest", async () => {

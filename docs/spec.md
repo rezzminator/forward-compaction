@@ -61,12 +61,12 @@ and no ceiling, and an automatic ask from it with nothing stored is held as
 1. **Nudges.** After a tool result, once a party's context passes its nudge
    start (`FORWARD_COMPACTION_MAIN_NUDGE_START` or
    `FORWARD_COMPACTION_SUBAGENT_NUDGE_START`, a share of its max context), the
-   model reads one line saying how large its context is, as tokens and as a
-   share of its max context. One more follows every
-   `FORWARD_COMPACTION_{MAIN|SUBAGENT}_NUDGE_EVERY`. The line asks it to call
-   `forward_compaction` once its current step is done, never in the middle of
-   one, and to skip it only when nothing is left but its final answer; it
-   names the ceiling. A held
+   model reads one line saying how large its context is, in tokens. One more
+   follows every `FORWARD_COMPACTION_{MAIN|SUBAGENT}_NUDGE_EVERY`. The line
+   asks it to wrap up to its first milestone and call `forward_compaction`
+   there, to skip it when it can finish all of its work soon, and to keep
+   going to that milestone when its work needs the larger context; it names
+   no max context and no ceiling. A held
    compaction ask adds no nudge of its own. After an install, the first
    reading's level is absorbed silently (a sub-agent's floor of system
    prompt, tools and skills is already 55-60k), so the next nudge goes only

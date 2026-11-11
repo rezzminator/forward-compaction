@@ -12,7 +12,7 @@ Claude Code's own compaction has a separate call summarize the transcript. Here 
 
 `model works -> plugin nudges as its context grows -> model picks its milestone and calls forward_compaction -> frontier stored -> Claude Code's next compaction ask -> plugin installs the frontier -> model wakes`
 
-- The model always chooses when to compact: the plugin only nudges, as a party's context crosses its nudge levels, and a nudge says to pick the milestone, not whether.
+- The model always chooses when to compact: the plugin only nudges, as a party's context crosses its nudge levels, and a nudge names the context's size and asks for a frontier at the first milestone, skipped when the work can finish soon; it names no max context and no ceiling.
 - The plugin holds Claude Code's compaction. `CLAUDE_CODE_AUTO_COMPACT_WINDOW=100000` exists only so Claude Code asks early, about every request from about 63k; it is never the compaction point.
 - Each ask is skipped until a frontier is stored, complete or not, and that ask installs it; or until the party reaches its ceiling, and it gets the mechanical wake: recorded facts, no frontier from the model. Main also installs a stored frontier at its own turn end, through `$.session.compact()`.
 - The exceptions to "the model chooses" are only these:
