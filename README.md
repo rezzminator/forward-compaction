@@ -113,7 +113,7 @@ flowchart LR
     F --> A
 ```
 
-1. **Nudge.** After a tool result, once the context passes 15% of the main chat's window (80k for a sub-agent), the model reads one line saying how large its context is and asking it to write its handoff at its first milestone; it may skip that when it can finish soon, and keep going to the milestone when its work needs the larger context. Another line follows every 5% (20k for a sub-agent). After a compaction the next line waits until the context has grown by as much as the first one waited for: 80k for a sub-agent, 15% of its window for the main chat.
+1. **Nudge.** After a tool result, once the context passes 15% of the main chat's window (165k for a sub-agent), the model reads one line saying how large its context is and asking it to write its handoff at its first milestone; it may skip that when it can finish soon, and keep going to the milestone when its work needs the larger context. Another line follows every 5% (65k for a sub-agent). After a compaction the next line waits until the context has grown by as much as the first one waited for: 80k for a sub-agent, 15% of its window for the main chat.
 2. **Handoff.** The model calls `forward_compaction`. The plugin stores the handoff and changes nothing yet; a later call replaces it.
 3. **Install.** The main chat's handoff installs at the end of its turn, and a sub-agent's at Claude Code's next compaction ask. Everything before the call is replaced by the facts the plugin recorded and the handoff, and the messages after the call are kept, as many as fit.
 4. **Ceiling.** A chat that reaches 60% of its window with no handoff (80% for a sub-agent) is compacted automatically, keeping the recorded facts, its newest messages and a note that no handoff was written.
@@ -176,8 +176,8 @@ A **size** is a token count (`100000`), a number with a k or m suffix (`100k`, `
 | `FORWARD_COMPACTION_MAIN_NUDGE_EVERY` | size | `5%` | How much the main chat's context grows between nudges. |
 | `FORWARD_COMPACTION_SUBAGENT_MAX_CONTEXT` | max context | `model` | Every sub-agent's max context when set; unset, each sub-agent's own: 1M for a model id carrying `[1m]`, the main chat's window for a sub-agent on the main chat's model, 200k for any other ([Max contexts](./docs/spec.md#max-contexts)). |
 | `FORWARD_COMPACTION_SUBAGENT_CEILING` | size | `80%` | With no handoff stored, a sub-agent's context at which it is compacted automatically (160k on 200k, 800k on 1M). |
-| `FORWARD_COMPACTION_SUBAGENT_NUDGE_START` | size | `80k` | A sub-agent's first nudge, above the 55-60k a sub-agent starts at after a compaction; after a compaction the next nudge waits for this much growth, so a handoff never loops. |
-| `FORWARD_COMPACTION_SUBAGENT_NUDGE_EVERY` | size | `20k` | How much a sub-agent's context grows between nudges. |
+| `FORWARD_COMPACTION_SUBAGENT_NUDGE_START` | size | `165k` | A sub-agent's first nudge; on a 200k max context it lies past the 160k ceiling, so that sub-agent is never nudged and wakes mechanically; after a compaction the next nudge waits for this much growth, so a handoff never loops. |
+| `FORWARD_COMPACTION_SUBAGENT_NUDGE_EVERY` | size | `65k` | How much a sub-agent's context grows between nudges. |
 | `FORWARD_COMPACTION_CEILING_NATIVE` | flag | `0` | `1`: at the ceiling with no handoff, Claude Code's own summary runs instead of the automatic compaction. |
 | `FORWARD_COMPACTION_IGNORE_MODELS` | model list | `haiku` | Models that get no nudge and are compacted automatically at their ceiling; a handoff they write still installs ([Ignored models](./docs/spec.md#ignored-models)). |
 | `FORWARD_COMPACTION_KEEP_SKILLS` | name list | `none` | Skills and commands never dropped after a compaction, comma-separated; a skill file's `forward-compaction-keep: true` frontmatter does the same. |

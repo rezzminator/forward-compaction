@@ -390,7 +390,7 @@ this rule. It is requested upstream in
 ### Max contexts
 
 Sizes are percentages of each party's max context or token counts; a
-sub-agent's nudge sizes default to token counts (80k, then every 20k), the
+sub-agent's nudge sizes default to token counts (165k, then every 65k), the
 same on every max context. The main chat's max context is the
 window Claude Code reports through `$.session.usage()`, read at session
 start, at the main chat's first request when not read yet, and again when its
@@ -428,7 +428,7 @@ With the defaults, on the 200k sub-agent max context:
 
 | Sub-agent | Nudges | Held | Mechanical wake |
 | --- | --- | --- | --- |
-| Sonnet or Opus | at 80k, 100k, 120k and 140k | every ask below 160k with nothing stored | at 160k |
+| Sonnet or Opus | none: the first is due at 165k, past the ceiling | every ask below 160k with nothing stored | at 160k |
 | Haiku (ignored) | none | every ask below 160k, Claude Code's 63k ask included | at 160k |
 
 ### State on disk

@@ -18,7 +18,7 @@ afterEach(() => {
 
 async function begin(script: Script = {}): Promise<Fake> {
   const env = { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '100000', FORWARD_COMPACTION_MAIN_CEILING: '120000', FORWARD_COMPACTION_MAIN_NUDGE_START: '30000', FORWARD_COMPACTION_MAIN_NUDGE_EVERY: '10000' };
-  const f = fakeEngine({ window: 1_000_000, ...script, env });
+  const f = fakeEngine({ window: 1_000_000, ...script, env: { ...env, ...script.env } });
   fakes.push(f);
   await f.dispatch('session.start', { reason: 'startup' }, async () => ({}));
   return f;
@@ -117,7 +117,7 @@ describe('a sub-agent far past its nudges', () => {
   const write = (f: Fake) => f.dispatch('tool.call', { tool: 'Write', tool_use_id: 'w', file_path: '/w/a.ts', content: 'x', agentId: A }, async () => ({ result: {}, text: 'body' }));
 
   it('has every call run, below its ceiling, and no nudge says any call waits', async () => {
-    const f = await begin();
+    const f = await begin({ env: { FORWARD_COMPACTION_SUBAGENT_NUDGE_START: '80k', FORWARD_COMPACTION_SUBAGENT_NUDGE_EVERY: '20k' } });
     await f.dispatch('agent.spawn', { tool_use_id: 'tu-spawn', prompt: 'Brief', description: 'one', subagentType: 'general-purpose', provider: { kind: 'local' } }, async () => ({ model: 'sonnet', agentId: A }));
     const nudges: string[] = [];
     for (const tokens of [85_000, 105_000, 125_000, 150_000]) {

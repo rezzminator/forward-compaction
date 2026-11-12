@@ -73,16 +73,13 @@ describe("L5 + S1 + S5: each sub-agent is measured against its own model's max c
   const unset = { FORWARD_COMPACTION_SUBAGENT_MAX_CONTEXT: '', FORWARD_COMPACTION_SUBAGENT_CEILING: '', FORWARD_COMPACTION_SUBAGENT_NUDGE_START: '', FORWARD_COMPACTION_SUBAGENT_NUDGE_EVERY: '' };
   const read = (f: Fake, id: string, agentId: string) => f.dispatch('tool.call', { tool: 'Read', tool_use_id: id, file_path: '/x', agentId }, async () => ({ result: 'file' }));
   const ask = (f: Fake, agentId: string) => f.dispatch('session.compact', { trigger: 'auto', agentId, messages: [{ role: 'user', text: 'Brief for agent one', toolUses: [], handle: 'h0' }] }, async () => ({ skip: 'native ran' }));
-  it('nudges a 200k sub-agent and a [1m] one alike at 100k (the start is 80k on every max context), and at 170k wakes only the 200k one mechanically (its ceiling is 160k, the other 800k)', async () => {
+  it('nudges a [1m] sub-agent at 170k (the start is 165k on every max context), where a 200k one is already past its 160k ceiling and is woken mechanically', async () => {
     const f = await begin({ env: unset });
     await spawn(f, 'b1b1b1b1b1');
-    await step(f, 100_000, 'b1b1b1b1b1', 'claude-sonnet-5-5');
-    expect(((await read(f, 'tu-r1', 'b1b1b1b1b1')).context ?? []).join('\n')).toMatch(/context 100k /);
     await spawn(f, 'c2c2c2c2c2');
-    await step(f, 100_000, 'c2c2c2c2c2', 'claude-opus-5-5[1m]');
-    expect(((await read(f, 'tu-r2', 'c2c2c2c2c2')).context ?? []).join('\n')).toMatch(/context 100k /);
     await step(f, 170_000, 'b1b1b1b1b1', 'claude-sonnet-5-5');
     await step(f, 170_000, 'c2c2c2c2c2', 'claude-opus-5-5[1m]');
+    expect(((await read(f, 'tu-r2', 'c2c2c2c2c2')).context ?? []).join('\n')).toMatch(/context 170k /);
     expect(await ask(f, 'b1b1b1b1b1')).toHaveProperty('messages');
     expect(await ask(f, 'c2c2c2c2c2')).toHaveProperty('skip');
   });
