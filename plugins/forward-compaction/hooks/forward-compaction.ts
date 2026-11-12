@@ -13,7 +13,8 @@ import { unseenCompaction } from '../src/unseen.ts';
 import { parseLookBack, boundaryArgv, boundaryLine, searchArgv, entryArgv, namesArgv, processOutput, parseEntries, toolNames, resultIds, searchResults, entryResult, manualTranscriptCall, lookBackNotice, findTranscriptArgv, firstFound, type LookBackResult } from '../src/look-back.ts';
 import { DecisionWriteError, hookRow, sessionLogPath, runCwd, decisionAppendArgv, retentionArgv, DECISION_HOLD_ROWS, decisionFailure, endReport, SkipFold, pluginLogEvent, pluginLogDiagnostic } from '../src/log.ts';
 import { levelRow, onScreen, pluginLogDir, PluginLogQueue, requeueRows, type PluginLogLevel, type PluginLogFields } from '../src/plugin-log.ts';
-import { resolveOptions, subagentMaxContext, type OptionEnvironment, type ResolvedOptions } from '../src/options.ts';
+import { resolveOptions, subagentWindow, type OptionEnvironment, type ResolvedOptions, type SubagentWindow } from '../src/options.ts';
+import { ModelWindows } from '../src/model-window.ts';
 import { TOOLS, toolsToRegister, ENSURE_TOOLS_TIMEOUT_MS, END_CORE_RESERVE_MS, PENDING_BEFORE_CONFIG, nextTry, holdPending, type ToolKind } from '../src/register.ts';
 
 // Thin adapter: every decision lives in src/. Each hook catches its own failures, logs them with context and lets the compaction through.
@@ -25,12 +26,8 @@ const message = (error: unknown): string => (error instanceof Error ? error.mess
 type State = {
   config: ResolvedOptions;
   ignoredOptions: string[]; // The names of the options handed to `register`: none is read, the environment is the only home of an option.
-  pluginLog?: PluginLogQueue;
-  pluginInitialized: boolean;
-  pluginRows: Omit<PluginLogFields, 'plugin' | 'session'>[];
-  pluginLogDir?: string;
-  pluginWriting: Promise<void>;
-  pluginFailing: boolean;
+  pluginLog?: PluginLogQueue; pluginLogDir?: string; pluginInitialized: boolean;
+  pluginRows: Omit<PluginLogFields, 'plugin' | 'session'>[]; pluginWriting: Promise<void>; pluginFailing: boolean;
   started?: Promise<void>;
   configured?: boolean; // True once `start` has applied the environment layer to `config`: before it, `config` holds the defaults alone.
   home?: string; // The home directory, for the log directories.
@@ -60,6 +57,7 @@ type State = {
   pendingSpawns: Set<string>; // agent.spawn calls running now: a skill loaded meanwhile is a preload of the one spawn.
   knownAgents: Map<string, string>; // Sub-agents spawned here, id to type: an ask for any other agent id is the engine's own (C6).
   mainModel?: string; mainWindow?: number; // Main's model as its last step named it (a sub-agent on that model id is measured against main's window), and its window as `$.session.usage()` last reported it: main's max context unless FORWARD_COMPACTION_MAIN_MAX_CONTEXT is set.
+  windows: ModelWindows; // Every other sub-agent model's window, as the Models API stated it this session.
   apiAsk?: AskPoint; breakdown?: UsageBreakdown; // Claude Code's ask point and the breakdown it was read from, at session start and each main-window read.
   installedSince: Set<string>; // Parties this plugin compacted since their last reading: a fall in that reading is no unseen compaction.
 };
@@ -247,8 +245,7 @@ function warnOnce(st: State, $: EngineInterface, where: string, key: string, lin
 
 /** The environment variable of each option, by name. Claude Code reads only a name spelled as a string literal, so each is written out twice here (the key and the call); a test holds them to `OPTION_ENV`. */
 async function readOptionEnv($: EngineInterface): Promise<Pick<OptionEnvironment, 'vars' | 'readErrors'>> {
-  const vars: Record<string, string> = {};
-  const readErrors: string[] = [];
+  const vars: Record<string, string> = {}, readErrors: string[] = [];
   const readOptionVar = async (name: string, get: () => Promise<string | undefined>): Promise<void> => {
     try {
       const value = await get();
@@ -280,8 +277,7 @@ function start(st: State, $: EngineInterface): Promise<void> {
     const early: { line: string; level: PluginLogLevel; event: string }[] = [];
     let home: string | undefined;
     try {
-      home = await $.env.get('HOME');
-      st.home = home;
+      home = st.home = await $.env.get('HOME');
     } catch (error) {
       early.push({ line: `forward-compaction: reading HOME failed: ${message(error)}; the logs have no home directory`, level: 'error', event: 'home-read-failed' });
     }
@@ -303,13 +299,8 @@ function start(st: State, $: EngineInterface): Promise<void> {
     dbg(st, $, 'options', options);
     settleConfig(st, $);
     for (const { line, level, event } of early) say(st, $, line, level, { event, where: 'start', line });
-    for (const line of st.config.errors) {
-      say(st, $, line, 'error', { event: 'option-error', where: 'start', line });
-    }
-    if (st.ignoredOptions.length > 0) {
-      const line = `forward-compaction: options ${st.ignoredOptions.join(', ')} are not read; set FORWARD_COMPACTION_* environment variables instead (README, Options); their values are not applied`;
-      warnOnce(st, $, 'start', 'options-ignored', line, 'error');
-    }
+    for (const line of st.config.errors) say(st, $, line, 'error', { event: 'option-error', where: 'start', line });
+    if (st.ignoredOptions.length > 0) warnOnce(st, $, 'start', 'options-ignored', `forward-compaction: options ${st.ignoredOptions.join(', ')} are not read; set FORWARD_COMPACTION_* environment variables instead (README, Options); their values are not applied`, 'error');
     try {
       st.configDir = (await $.env.get('CLAUDE_CONFIG_DIR')) || (home ? `${home}/.claude` : undefined);
     } catch (error) {
@@ -453,19 +444,25 @@ async function guard(st: State, $: EngineInterface, where: string, work: () => u
   }
 }
 
-/** A party's token marks against its max context (main's option or reported window, a sub-agent's option or its model's, main's window for one on main's model; `agent:` alone, no model, is the 200k one); undefined while main's is not known. */
+/** The max context of a sub-agent on `model`, with its source (options.ts `subagentWindow`); no model named is the fallback. */
+const windowOf = (st: State, model: string | undefined): SubagentWindow => subagentWindow(st.config.subagent.maxContext, model, { model: st.mainModel, window: st.mainWindow }, st.windows.get(model));
+
+/** A party's token marks against its max context (main's option or reported window, a sub-agent's `windowOf`; `agent:` alone names no model); undefined while main's is not known. */
 function marks(st: State, key: string): Marks | undefined {
-  return key === 'main' ? partyMarks(st.config.main, st.config.main.maxContext ?? st.mainWindow, st.apiAsk?.tokens) : partyMarks(st.config.subagent, subagentMaxContext(st.config.subagent.maxContext, key === 'agent:' ? undefined : st.parties.get(key).model, { model: st.mainModel, window: st.mainWindow }), st.apiAsk?.tokens);
+  return key === 'main' ? partyMarks(st.config.main, st.config.main.maxContext ?? st.mainWindow, st.apiAsk?.tokens) : partyMarks(st.config.subagent, windowOf(st, key === 'agent:' ? undefined : st.parties.get(key).model).maxContext, st.apiAsk?.tokens);
+}
+
+/** A sub-agent's step names a model whose window nothing here knows: the Models API is asked beside the step, never ahead of it, once per model id and again after a failure's wait (model-window.ts); `readStep` reads the answer. */
+function lookUpWindow(st: State, $: EngineInterface, e: TurnStepInput): void {
+  if (e.agentId === undefined || e.model === undefined || windowOf(st, e.model).source !== 'fallback') return;
+  void st.windows.look(e.model, { authorize: () => $.session.authorize(), fetch: (url, init) => $.http.fetch(url, init) }, (ms, fn) => afterOrNever(st, $, ms, fn, 'a model window lookup'))?.then((answer) => dbg(st, $, 'model-window', { model: e.model, ...answer }));
 }
 
 /** After a /clear or a resume: no party, fact or call of the old conversation carries into the new one. */
 async function conversationStartsOver(st: State, $: EngineInterface, reason: string): Promise<void> {
   st.parties = new Parties();
   st.ledger = markStart(newLedger(), await $.clock.now(), reason);
-  st.inFlight.clear();
-  st.pendingSpawns.clear();
-  st.installedSince.clear();
-  st.restored.clear();
+  for (const held of [st.inFlight, st.pendingSpawns, st.installedSince, st.restored]) held.clear();
   st.pendingCommand = undefined;
 }
 
@@ -679,12 +676,14 @@ async function readMainWindow(st: State, $: EngineInterface, model?: string): Pr
 }
 
 /** A step's usage is the party's reading; a sharp fall nobody here caused is an unseen compaction (R39). */
-async function readStep(st: State, $: EngineInterface, e: TurnStepInput, r: TurnStepResult): Promise<void> {
+async function readStep(st: State, $: EngineInterface, e: TurnStepInput, r: TurnStepResult, signal: AbortSignal): Promise<void> {
   const key = keyOf(e.agentId);
   const u = r?.usage;
   dbg(st, $, 'turn.step', { party: key, model: e.model ?? null, input_tokens: u?.input_tokens ?? null, cache_read_input_tokens: u?.cache_read_input_tokens ?? null, cache_creation_input_tokens: u?.cache_creation_input_tokens ?? null, output_tokens: u?.output_tokens ?? null, usageModel: u?.model ?? null });
   if (key === 'main' && e.model !== undefined && (st.mainWindow === undefined || (st.mainModel ?? e.model) !== e.model)) await readMainWindow(st, $, e.model); // not read yet, or after /model
-  if (key === 'main') st.mainModel = e.model ?? st.mainModel; st.parties.describe(key, { model: e.model }); await judge(st, $, key);
+  if (key === 'main') st.mainModel = e.model ?? st.mainModel; else await unlessAborted<unknown>(st.windows.settled(e.model) ?? Promise.resolve(), signal); // the lookup begun beside this step, never past the dispatch's abort
+  st.parties.describe(key, { model: e.model }); await judge(st, $, key);
+  const windowed = key === 'main' ? undefined : st.parties.windowed(key, windowOf(st, st.parties.get(key).model), marks(st, key)!.ceiling); if (windowed) record(st, $, windowed);
   if (key === 'main') st.pendingCommand = undefined;
   const tokens = readingTokens(u);
   if (tokens === undefined) return st.parties.answered(key);
@@ -813,7 +812,7 @@ export const register: Register = (on: On, options: PluginOptions) => {
     warned: new Set(), logFailures: new Set(),
     pending: [], rowsWriting: 0, levelRowsWriting: 0, levelLinks: 0, levelBatched: 0, skips: new SkipFold(), levelSkips: new SkipFold(), writing: Promise.resolve(),
     parties: new Parties(), ledger: newLedger(), restored: new Set(),
-    inFlight: new Map(), pendingSpawns: new Set(), knownAgents: new Map(), installedSince: new Set(),
+    inFlight: new Map(), pendingSpawns: new Set(), knownAgents: new Map(), installedSince: new Set(), windows: new ModelWindows(),
   };
 
   on('session.start', async ($, e, next) => {
@@ -853,8 +852,9 @@ export const register: Register = (on: On, options: PluginOptions) => {
   });
 
   on('turn.step', async function* ($, e, next) {
+    lookUpWindow(st, $, e);
     const r = yield* next(e);
-    await guard(st, $, 'turn.step', () => readStep(st, $, e, r), e);
+    await guard(st, $, 'turn.step', () => readStep(st, $, e, r, next.signal), e);
     return r;
   });
 

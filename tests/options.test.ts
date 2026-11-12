@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { formatSize, OPTION_ENV, parseEnvFlag, parseSize, resolveOptions, sizeTokens, subagentMaxContext } from '../plugins/forward-compaction/src/options.ts';
+import { formatSize, OPTION_ENV, parseEnvFlag, parseSize, resolveOptions, sizeTokens, subagentWindow } from '../plugins/forward-compaction/src/options.ts';
 import { optionVars } from './option-env.ts';
 
 describe('parseSize and sizeTokens', () => {
@@ -23,22 +23,23 @@ describe('parseSize and sizeTokens', () => {
   });
 });
 
-describe('subagentMaxContext (L5, S1, S5)', () => {
-  it("measures a sub-agent whose model id carries [1m] against 1m, every other against 200k, and a set variable wins for all", () => {
-    expect(subagentMaxContext(undefined, 'claude-opus-5-5[1m]')).toBe(1_000_000);
-    expect(subagentMaxContext(undefined, 'claude-sonnet-5-5')).toBe(200_000);
-    expect(subagentMaxContext(undefined, 'claude-haiku-4-5-20251001')).toBe(200_000);
-    expect(subagentMaxContext(undefined, undefined)).toBe(200_000);
-    expect(subagentMaxContext(400_000, 'claude-opus-5-5[1m]')).toBe(400_000);
-    expect(subagentMaxContext(400_000, 'claude-sonnet-5-5')).toBe(400_000);
-  });
-  it("measures a sub-agent on main's own model id against main's reported window, and no other against it", () => {
-    const main = { model: 'claude-fable-5-2', window: 1_000_000 };
-    expect(subagentMaxContext(undefined, 'claude-fable-5-2', main)).toBe(1_000_000);
-    expect(subagentMaxContext(undefined, 'claude-sonnet-5-5', main)).toBe(200_000);
-    expect(subagentMaxContext(undefined, undefined, main)).toBe(200_000);
-    expect(subagentMaxContext(undefined, 'claude-fable-5-2', { model: 'claude-fable-5-2' })).toBe(200_000);
-    expect(subagentMaxContext(400_000, 'claude-fable-5-2', main)).toBe(400_000);
+describe('subagentWindow (L5, S1, S5)', () => {
+  const main = { model: 'claude-fable-5-2', window: 1_000_000 };
+  const listed = { window: 1_000_000 };
+  it.each<[string, Parameters<typeof subagentWindow>, ReturnType<typeof subagentWindow>]>([
+    ['the set variable, for every model', [400_000, 'claude-opus-5-5[1m]', main, listed], { maxContext: 400_000, source: 'option' }],
+    ['the set variable, for main\'s model', [400_000, 'claude-fable-5-2', main], { maxContext: 400_000, source: 'option' }],
+    ['the set variable, before a step names the model', [400_000, undefined], { maxContext: 400_000, source: 'option' }],
+    ['the [1m] marker of the model id', [undefined, 'claude-opus-5-5[1m]', main, { window: 200_000 }], { maxContext: 1_000_000, source: 'marker' }],
+    ["main's reported window, on main's own model id", [undefined, 'claude-fable-5-2', { model: 'claude-fable-5-2', window: 200_000 }, listed], { maxContext: 200_000, source: 'main' }],
+    ['the Models API figure of a 1M model under another main model', [undefined, 'claude-sonnet-5-5', main, listed], { maxContext: 1_000_000, source: 'models-api' }],
+    ['the Models API figure of a 200k model', [undefined, 'claude-haiku-4-5-20251001', main, { window: 200_000 }], { maxContext: 200_000, source: 'models-api' }],
+    ["the Models API figure on main's model id while main's window is not known", [undefined, 'claude-fable-5-2', { model: 'claude-fable-5-2' }, listed], { maxContext: 1_000_000, source: 'models-api' }],
+    ['the fallback, for a model the lookup could not learn', [undefined, 'claude-no-such-model-9', main, { unknown: 'the Models API does not list this model (404 not_found_error)' }], { maxContext: 200_000, source: 'fallback', unknown: 'the Models API does not list this model (404 not_found_error)' }],
+    ['the fallback, before its model was looked up', [undefined, 'claude-sonnet-5-5', main], { maxContext: 200_000, source: 'fallback', unknown: 'its model was not looked up yet' }],
+    ['the fallback, before a step names its model', [undefined, undefined, main, listed], { maxContext: 200_000, source: 'fallback', unknown: 'no step has named its model yet' }],
+  ])('measures a sub-agent against %s', (_name, args, want) => {
+    expect(subagentWindow(...args)).toEqual(want);
   });
 });
 

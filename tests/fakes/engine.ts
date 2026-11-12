@@ -31,7 +31,16 @@ export type Script = {
   registerError?: string | (() => string | undefined);
   /** The host's session state (`$.state`); pass one map to two fakes to model a plugin reload in one session. */
   state?: Map<string, { value: unknown; version: number }>;
+  /** What the Models API answers per model id, read at each request: its `max_input_tokens` (a listed model), a whole `{ status, text }`, or an Error the request rejects with; an id not here gets the API's 404. MODELS by default. */
+  models?: Record<string, number | { status: number; text: string } | Error | Promise<{ status: number; text: string }>>;
+  /** What `$.session.authorize()` answers: null is a session with no first-party credential. A bearer handle by default. */
+  credential?: { handle: string; kind: 'bearer' | 'api-key' } | null;
 };
+
+/** The Models API's `max_input_tokens` per model id as it answered live on 2026-11-12; `claude-sonnet-4-5`, the suite's stand-in model, is scripted at 200k. */
+export const MODELS: Record<string, number> = { 'claude-fable-5-2': 1_000_000, 'claude-opus-5-5': 1_000_000, 'claude-sonnet-5-5': 1_000_000, 'claude-haiku-5-5': 1_000_000, 'claude-haiku-4-5': 200_000, 'claude-haiku-4-5-20251001': 200_000, 'claude-sonnet-4-5': 200_000 };
+/** The Models API's error body, as recorded: a model it does not list (404), a request with no credential (401). */
+const apiError = (type: string, message: string): string => JSON.stringify({ type: 'error', error: { type, message }, request_id: 'req_fake' });
 
 export function fakeEngine(script: Script = {}) {
   const home = mkdtempSync(join(tmpdir(), 'fc-engine-'));
@@ -39,6 +48,8 @@ export function fakeEngine(script: Script = {}) {
   const screen: ScreenCall[] = [];
   const unscripted: string[] = [];
   const compactCalls: unknown[][] = [];
+  const fetches: { url: string; init?: unknown }[] = [];
+  const credential = script.credential === undefined ? { handle: 'handle-1', kind: 'bearer' as const } : script.credential;
   const registerFailure = (): string | undefined => (typeof script.registerError === 'function' ? script.registerError() : script.registerError);
   const hooks = new Map<string, Fn>();
   let now = script.now ?? Date.UTC(2026, 9, 23, 12, 0, 0);
@@ -62,6 +73,22 @@ export function fakeEngine(script: Script = {}) {
       compact: async (...args: unknown[]) => {
         compactCalls.push(args);
         return script.compact ? script.compact(...args) : { messages: [] };
+      },
+      authorize: async () => credential,
+    },
+    http: {
+      /** The Models API alone: one model by its id, answered only to a request that spends the session's handle, as the real one answers. */
+      fetch: async (url: string, init?: { headers?: Record<string, string>; auth?: string }) => {
+        fetches.push(init === undefined ? { url } : { url, init });
+        const id = decodeURIComponent(url.slice(url.lastIndexOf('/') + 1));
+        const scripted = await (script.models ?? MODELS)[id]; // a promise is an answer still out
+        if (scripted instanceof Error) throw scripted;
+        const answer = !url.startsWith('https://api.anthropic.com/v1/models/') ? { status: 404, text: apiError('not_found_error', 'Not found') }
+          : credential === null || init?.auth !== credential.handle ? { status: 401, text: apiError('authentication_error', 'x-api-key header is required') }
+          : scripted === undefined ? { status: 404, text: apiError('not_found_error', `model: ${id}`) }
+          : typeof scripted === 'number' ? { status: 200, text: JSON.stringify({ type: 'model', id, display_name: id, max_input_tokens: scripted, max_tokens: 128_000, lifecycle: 'active' }) }
+          : scripted;
+        return { ...answer, ok: answer.status >= 200 && answer.status < 300, headers: {} };
       },
     },
     env: { get: async (name: string) => vars[name] },
@@ -139,7 +166,7 @@ export function fakeEngine(script: Script = {}) {
   }
 
   return {
-    $, home, vars, screen, unscripted, compactCalls, hooks, dispatch,
+    $, home, vars, screen, unscripted, compactCalls, fetches, hooks, dispatch,
     advance: (ms: number) => void (now += ms),
     texts: () => screen.map((c) => c.text),
     cleanup: () => rmSync(home, { recursive: true, force: true }),

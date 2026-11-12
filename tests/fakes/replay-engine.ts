@@ -45,6 +45,10 @@ export const ANSWERS: Record<(typeof PATHS)[number], { from: 'recorded'; subject
   'session.compact': { from: 'recorded' },
   // the session's directory, read for a relative load file: world state
   'session.cwd': { from: 'recorded' },
+  // the session's credential as a handle: the recorder writes CREDENTIAL_HANDLE in its place, so the request that spends it finds its recorded answer
+  'session.authorize': { from: 'recorded' },
+  // a Models API lookup: the URL names the model asked about
+  'http.fetch': { from: 'recorded', subject: true },
   'session.id': { from: 'harness' },
   'clock.now': { from: 'harness' },
   'clock.after': { from: 'harness', sync: true },
@@ -298,6 +302,10 @@ export const FORWARD = 'mcp__forward-compaction__forward_compaction';
 export const SECTIONS = { objective: 'Replay the synthetic fixture.', decisions: 'none', done: 'Recorded it.', remaining: 'Replay it.', next: 'Check I3 and I5.' };
 export const SKILL_TEXT = 'Base directory for this skill: /HOME/project/.claude/skills/replay-rules\n\n# Replay rules\nThe marker for this skill is replay-rules-marker-7f3a.';
 export const BRIEF = 'Brief for agent one: read the filler and compact.';
+/** The handle the synthetic session's `$.session.authorize()` answers: the recorder writes none of it to a row. */
+export const SYNTHETIC_HANDLE = 'handle-held-by-the-host-7c1e';
+/** The Models API's answer for the synthetic sub-agent's model. */
+export const SYNTHETIC_MODEL = { status: 200, ok: true, headers: {}, text: '{"id":"claude-sonnet-4-5","max_input_tokens":200000}' };
 
 /** The sub-agent's transcript at its ask: the forward_compaction call, its result, and two messages after it. */
 export function askMessages(): unknown[] {
@@ -326,8 +334,10 @@ export async function recordSynthetic(dir: string): Promise<string> {
       read: async (path: string) => { throw Object.assign(new Error(`ENOENT: ${path}`), { code: 'ENOENT' }); },
       stat: async (path: string) => { throw Object.assign(new Error(`ENOENT: ${path}`), { code: 'ENOENT' }); },
     },
+    http: { fetch: async () => SYNTHETIC_MODEL },
     process: { run: async () => ({ exitCode: 0, stdout: '', stderr: '' }) },
     session: {
+      authorize: async () => ({ handle: SYNTHETIC_HANDLE, kind: 'bearer' }),
       id: async () => '00000000-0000-0000-0000-000000000000',
       usage: async () => ({ context: { tokens: 0, window: 1_000_000 } }),
       version: async () => ({ version: 'synthetic' }),

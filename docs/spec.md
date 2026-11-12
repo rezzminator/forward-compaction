@@ -400,11 +400,39 @@ no ceiling. Claude Code's API reports only the main chat's window, so a
 sub-agent's comes from the model id its steps report: one carrying the API's
 own `[1m]` context marker is measured against 1,000,000, one on the model id
 the main chat's last request named against the main chat's reported window,
-every other (and one no step has named yet) against 200,000. The marker is the id's literal, never
-a table of model names. `FORWARD_COMPACTION_SUBAGENT_MAX_CONTEXT`, when set,
-is every sub-agent's max context instead. An ignored (Haiku) sub-agent's
-ceiling comes from the same per-model max context.
+every other against the context window the Anthropic Models API states for
+its id: `max_input_tokens` of `GET https://api.anthropic.com/v1/models/{id}`.
+The marker is the id's literal and the window the API's answer, never a table
+of model names. `FORWARD_COMPACTION_SUBAGENT_MAX_CONTEXT`, when set, is every
+sub-agent's max context instead, and no model is looked up. An ignored (Haiku)
+sub-agent's ceiling comes from the same per-model max context.
 Claude Code's ask point for a party is held at or below its max context.
+
+A model is looked up once in a session, with the session's own Anthropic
+credential through Claude Code's plugin API (`$.session.authorize()`, then
+`$.http.fetch`). The request starts beside the first step that names the
+model, is read when that step ends, and counts as failed after 5 seconds.
+While a model's window is not known, the sub-agent is measured against
+200,000, the smallest window the API lists: a ceiling reached early costs a
+mechanical wake, one set too high a request too long. That holds for a
+sub-agent no step has named a model for yet, a session with no credential the
+API takes (a third-party provider), a request Claude Code refuses
+(`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`), a failed request, and a model
+the API does not list. A failed lookup is tried again at a later step of a
+sub-agent on that model: after 1 step, then 2, 4 … up to 64; a model the API
+does not list is not asked again.
+
+The decision log's `window` row records the max context a sub-agent is
+measured against, once a step has named its model and each time it changes:
+`{party, label, model, maxContext, source, ceiling}`, `source` being `option`,
+`marker`, `main`, `models-api` or `fallback`. A `fallback` row carries
+`unknown`, the reason the window is not known, and goes to `warnings.jsonl`
+as `window-unknown`.
+
+The Models API states a model's own window. With
+`CLAUDE_CODE_DISABLE_1M_CONTEXT`, Claude Code takes 200k for a model the API
+lists at 1M, and the plugin API reports that for the main chat's model alone:
+set `FORWARD_COMPACTION_SUBAGENT_MAX_CONTEXT=200k` with it.
 
 ### Ignored models
 
@@ -424,18 +452,19 @@ judgement with the entry matched, only when it is first made or changes; the
 judgement is kept in `$.state`, so a plugin reload writes no row for one that
 holds. A held ask's row carries `why: ignored-model`.
 
-With the defaults, on the 200k sub-agent max context:
+With the defaults, on a 200k sub-agent max context (on 1M the ceiling is
+800k, and a managed sub-agent is nudged at 165k, then every 65k):
 
 | Sub-agent | Nudges | Held | Mechanical wake |
 | --- | --- | --- | --- |
-| Sonnet or Opus | none: the first is due at 165k, past the ceiling | every ask below 160k with nothing stored | at 160k |
-| Haiku (ignored) | none | every ask below 160k, Claude Code's 63k ask included | at 160k |
+| Managed | none: the first is due at 165k, past the ceiling | every ask below 160k with nothing stored | at 160k |
+| Ignored (Haiku) | none | every ask below 160k, Claude Code's 63k ask included | at 160k |
 
 ### State on disk
 
 | Path | What | Retention |
 | --- | --- | --- |
-| `~/.local/state/forward-compaction/logs/decisions/{session}.jsonl` (`$PLUGIN_LOG_DIR/forward-compaction/decisions/` when set) | decision rows: every frontier stored (with `orders` and `lifted`, its counts of standing orders carried and lifted, and `notes`, the count of changes its receipt named), every nudge, every compaction decision, every `landed` row (`{party, kind, before, after, line}`, `kind` being `frontier` or `mechanical`, `before` and `after` the measured readings or `null`, written with the landed line), every `ignore` row (`{party, label, model, judged, matched}`, `judged` being `managed`, `ignored` or `unknown`, `matched` the ignore-list entry or `null`, written when a party's judgement is first made or changes); a held-ask streak is one folded `skips` row, written when the streak closes and stamped with its last ask's time, so it can follow later rows; rows past the first 500 that come before the environment layer is read are counted in one `rows-lost` row | a file over 8 MiB moves to `.1`; other sessions' files older than 14 days, then all but the newest 200, are deleted |
+| `~/.local/state/forward-compaction/logs/decisions/{session}.jsonl` (`$PLUGIN_LOG_DIR/forward-compaction/decisions/` when set) | decision rows: every frontier stored (with `orders` and `lifted`, its counts of standing orders carried and lifted, and `notes`, the count of changes its receipt named), every nudge, every compaction decision, every `landed` row (`{party, kind, before, after, line}`, `kind` being `frontier` or `mechanical`, `before` and `after` the measured readings or `null`, written with the landed line), every `ignore` row (`{party, label, model, judged, matched}`, `judged` being `managed`, `ignored` or `unknown`, `matched` the ignore-list entry or `null`, written when a party's judgement is first made or changes), every `window` row (`{party, label, model, maxContext, source, ceiling}`, with `unknown` on the `fallback` source, written when a sub-agent's max context is first known or changes); a held-ask streak is one folded `skips` row, written when the streak closes and stamped with its last ask's time, so it can follow later rows; rows past the first 500 that come before the environment layer is read are counted in one `rows-lost` row | a file over 8 MiB moves to `.1`; other sessions' files older than 14 days, then all but the newest 200, are deleted |
 | `~/.local/state/forward-compaction/logs/{errors,warnings,info}.jsonl` (`$PLUGIN_LOG_DIR/forward-compaction/` when set) | the plugin's errors, warnings and info: every decision event lands at its level — errors and warnings in their files, every other operational event (nudge, stored, each compaction decision, party, skill, tool-registered, look-back, the lines said) in `info.jsonl`, a held-ask streak folded into its first row and one `skips` row. Each row's `event` names what happened (never a bare `error` or `warning`), and an error or warning row's `where` names the function that raised it. One failure is one row: a tool that fails to register writes one error row and one screen line, and is tried again at each `turn.start`: at once for its first three tries, then after a wait of 30 seconds that doubles with each failure, up to 15 minutes, for the rest of the session. Rows a write could not append (the lock held past its 10-second wait, the writer killed at its 15-second bound, any failure) stay queued, order kept, and are retried with the next write: a row may be written twice, never lost or torn. Only past 2,000 held rows are the oldest dropped, and their count goes to `errors.jsonl` (`plugin-log-rows-dropped`) once a write succeeds. A lock stage or broken lock whose writer died is cleared | a level file over 20 MiB moves to `.1`, the older ones to `.2` … `.5`, the oldest of five deleted |
 | `debug.jsonl` in the same directory (with `FORWARD_COMPACTION_DEBUG` on) | a row at every step: each hook entry (hook, party, trigger, model), each `$` answer the plugin decides on (`session.usage` figures, the `agent.list` count, each `turn.step` reading with its four counts and model, `fs.stat` results), the options and variables resolved, each ratio base and each ratio, measured or not and why, with the base's characters and tokens and the characters and reading now, each wake's section sizes and files, each nudge sent or withheld and why, and every decision row whole; numbers as the API gave them | as the level files: `.1` … `.5` |
 | `issues.md` in the same directory | notes a model appends when the plugin gave it trouble, as each tool answer asks | not managed by the plugin |

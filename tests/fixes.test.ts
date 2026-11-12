@@ -77,20 +77,20 @@ describe("L5 + S1 + S5: each sub-agent is measured against its own model's max c
     const f = await begin({ env: unset });
     await spawn(f, 'b1b1b1b1b1');
     await spawn(f, 'c2c2c2c2c2');
-    await step(f, 170_000, 'b1b1b1b1b1', 'claude-sonnet-5-5');
+    await step(f, 170_000, 'b1b1b1b1b1', 'claude-haiku-4-5');
     await step(f, 170_000, 'c2c2c2c2c2', 'claude-opus-5-5[1m]');
     expect(((await read(f, 'tu-r2', 'c2c2c2c2c2')).context ?? []).join('\n')).toMatch(/context 170k /);
     expect(await ask(f, 'b1b1b1b1b1')).toHaveProperty('messages');
     expect(await ask(f, 'c2c2c2c2c2')).toHaveProperty('skip');
   });
 
-  it("measures a sub-agent on main's model id against main's 1M window: at 170k it is held, where one on another model is woken mechanically", async () => {
+  it("measures a sub-agent on main's model id against main's 1M window: at 170k it is held, where one on a 200k model is woken mechanically", async () => {
     const f = await begin({ env: unset });
     await step(f, 40_000, undefined, 'claude-fable-5-2');
     await spawn(f, 'b1b1b1b1b1');
     await step(f, 170_000, 'b1b1b1b1b1', 'claude-fable-5-2');
     await spawn(f, 'c2c2c2c2c2');
-    await step(f, 170_000, 'c2c2c2c2c2', 'claude-sonnet-5-5');
+    await step(f, 170_000, 'c2c2c2c2c2', 'claude-haiku-4-5');
     expect(await ask(f, 'b1b1b1b1b1')).toHaveProperty('skip');
     expect(await ask(f, 'c2c2c2c2c2')).toHaveProperty('messages');
   });

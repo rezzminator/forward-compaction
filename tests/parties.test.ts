@@ -335,6 +335,21 @@ describe('Parties ignore judgement', () => {
     expect(parties.judged('agent:a1', read)).toBeUndefined();
   });
 
+  it("returns a sub-agent's window row once a step has named its model, and again only when its max context, its source or the reason it is unknown changes", () => {
+    const parties = new Parties();
+    parties.describe('agent:a1', { label: 'collector a1b2c3' });
+    const fallback = { maxContext: 200_000, source: 'fallback' as const, unknown: 'the Models API answered 529' };
+    expect(parties.windowed('agent:a1', fallback, 160_000)).toBeUndefined(); // no step has named its model
+    parties.describe('agent:a1', { model: 'claude-sonnet-5-5' });
+    expect(parties.windowed('agent:a1', fallback, 160_000)).toEqual({ event: 'window', party: 'agent:a1', label: 'collector a1b2c3', model: 'claude-sonnet-5-5', maxContext: 200_000, source: 'fallback', ceiling: 160_000, unknown: 'the Models API answered 529' });
+    expect(parties.windowed('agent:a1', fallback, 160_000)).toBeUndefined();
+    expect(parties.windowed('agent:a1', { ...fallback, unknown: 'the Models API answered 500' }, 160_000)).toEqual({ event: 'window', party: 'agent:a1', label: 'collector a1b2c3', model: 'claude-sonnet-5-5', maxContext: 200_000, source: 'fallback', ceiling: 160_000, unknown: 'the Models API answered 500' });
+    const listed = { maxContext: 1_000_000, source: 'models-api' as const };
+    expect(parties.windowed('agent:a1', listed, 800_000)).toEqual({ event: 'window', party: 'agent:a1', label: 'collector a1b2c3', model: 'claude-sonnet-5-5', maxContext: 1_000_000, source: 'models-api', ceiling: 800_000 });
+    expect(parties.windowed('agent:a1', listed, 800_000)).toBeUndefined();
+    expect(parties.windowed('agent:a1', { maxContext: 1_000_000, source: 'main' }, 800_000)).toEqual({ event: 'window', party: 'agent:a1', label: 'collector a1b2c3', model: 'claude-sonnet-5-5', maxContext: 1_000_000, source: 'main', ceiling: 800_000 });
+  });
+
   it('a party that starts over is judged afresh', () => {
     const parties = new Parties();
     parties.describe('main', { model: 'claude-sonnet-5-5' });

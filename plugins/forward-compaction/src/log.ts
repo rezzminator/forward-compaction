@@ -224,16 +224,17 @@ export function pluginLogEvent(row: Record<string, unknown>): Omit<PluginLogFiel
   let event = String(row.event);
   if (NO_LEVEL_ROW.includes(event)) return undefined;
   if (event === 'compact' && row.decision === 'error') event = 'compact-error';
+  if (event === 'window' && typeof row.unknown === 'string') event = 'window-unknown';
   const errors = ['option-error', 'tool-register-failed', 'look-back-manual-error', 'compact-error', 'turn-end-rejected'];
-  const warnings = ['decision-retention-failed', 'unseen-compaction', 'compact-window', 'ceiling-below-ask'];
+  const warnings = ['decision-retention-failed', 'unseen-compaction', 'compact-window', 'ceiling-below-ask', 'window-unknown'];
   const level = errors.includes(event) ? 'error' : warnings.includes(event) ? 'warning' : 'info';
   const detail: Record<string, unknown> = {};
-  for (const key of ['party', 'type', 'tool', 'tries', 'seq', 'why', 'tokens', 'chars', 'files', 'before', 'after', 'held', 'error', 'problem', 'dir', 'level', 'decision', 'trigger', 'count', 'from', 'to', 'firstTokens', 'lastTokens', 'label', 'model', 'judged', 'matched']) {
+  for (const key of ['party', 'type', 'tool', 'tries', 'seq', 'why', 'tokens', 'chars', 'files', 'before', 'after', 'held', 'error', 'problem', 'dir', 'level', 'decision', 'trigger', 'count', 'from', 'to', 'firstTokens', 'lastTokens', 'label', 'model', 'judged', 'matched', 'maxContext', 'source', 'ceiling', 'unknown']) {
     const value = row[key];
     if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean' || value === null) detail[key] = value;
   }
   const skips = event === 'skips' && typeof row.count === 'number' ? `${row.count} more held compaction asks folded` : undefined;
-  const msg = [row.line, row.error, row.problem, row.detail, skips, row.reason, row.why].find((value) => typeof value === 'string');
+  const msg = [row.line, row.error, row.problem, row.detail, skips, row.reason, row.why, row.unknown].find((value) => typeof value === 'string');
   return { level, event, msg: typeof msg === 'string' ? msg : event.replace(/-/g, ' '), where: `hooks/forward-compaction.ts#${typeof row.where === 'string' ? row.where : 'record'}`, detail, ...(event === 'skips' && typeof row.ts === 'string' ? { ts: row.ts } : {}) };
 }
 

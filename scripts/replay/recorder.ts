@@ -114,11 +114,13 @@ const given = (...args: unknown[]): unknown[] => {
  * this list to the adapter's. Each call is answered by the engine and written with its path, arguments and outcome;
  * a path missing here is written as an error row and throws, so the recording shows it.
  */
-export const PATHS = ['agent.list', 'clock.after', 'clock.now', 'env.get', 'fs.read', 'fs.stat', 'process.run', 'session.compact', 'session.cwd', 'session.id', 'session.messages', 'session.usage', 'state.get', 'state.set', 'tool.register', 'ui.log'] as const;
+export const PATHS = ['agent.list', 'clock.after', 'clock.now', 'env.get', 'fs.read', 'fs.stat', 'http.fetch', 'process.run', 'session.authorize', 'session.compact', 'session.cwd', 'session.id', 'session.messages', 'session.usage', 'state.get', 'state.set', 'tool.register', 'ui.log'] as const;
+/** Written to a row in place of the handle `$.session.authorize()` answers, in that answer and in the request that spends it: the handle stands for the session's credential, so no row carries it, and a replayed lookup passes this word back as recorded. */
+export const CREDENTIAL_HANDLE = 'credential-handle';
 
 function engineFor($: EngineInterface, id: number): any {
-  const call = (path: string, args: unknown[], run: () => unknown): unknown => {
-    const done = (outcome: { result: unknown } | { error: unknown }, sync?: true): void => writeRow($, { id, phase: 'call', path, args, ...outcome, ...(sync ? { sync } : {}) });
+  const call = (path: string, args: unknown[], run: () => unknown, written: (result: unknown) => unknown = (result) => result): unknown => {
+    const done = (outcome: { result: unknown } | { error: unknown }, sync?: true): void => writeRow($, { id, phase: 'call', path, args, ...('result' in outcome ? { result: written(outcome.result) } : outcome), ...(sync ? { sync } : {}) });
     let out: unknown;
     try {
       out = run();
@@ -149,8 +151,10 @@ function engineFor($: EngineInterface, id: number): any {
       read: (path: string, options?: any) => call('fs.read', given(path, options), () => (options === undefined ? $.fs.read(path) : $.fs.read(path, options))),
       stat: (path: string) => call('fs.stat', [path], () => $.fs.stat(path)),
     },
+    http: { fetch: (url: string, init?: any) => call('http.fetch', given(url, init?.auth === undefined ? init : { ...init, auth: CREDENTIAL_HANDLE }), () => (init === undefined ? $.http.fetch(url) : $.http.fetch(url, init))) },
     process: { run: (argv: string[], init?: any) => call('process.run', given(argv, init), () => $.process.run(argv, init)) },
     session: {
+      authorize: () => call('session.authorize', [], () => $.session.authorize(), (auth: any) => (auth ? { ...auth, handle: CREDENTIAL_HANDLE } : auth)),
       compact: (args?: any) => call('session.compact', given(args), () => (args === undefined ? $.session.compact() : $.session.compact(args))),
       cwd: () => call('session.cwd', [], () => $.session.cwd()),
       id: () => call('session.id', [], () => $.session.id()),

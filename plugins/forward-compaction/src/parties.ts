@@ -3,6 +3,7 @@ import { ignoredBy, type RatioBase } from './window.ts';
 import { keptOrders, type LiftedOrder, type StandingOrder } from './orders.ts';
 import type { PlanSeen } from './plan.ts';
 import type { LoadFile } from './frontier.ts';
+import type { SubagentWindow } from './options.ts';
 
 /** A frontier the model wrote, held in memory until a door installs it. */
 export type StoredFrontier = {
@@ -35,6 +36,9 @@ export type Judging = { mainKnown: boolean; ignore: readonly string[] };
 
 /** The decision row `ignore`: a party's ignore judgement, written when first made and each time it changes, with the list entry its model matched. */
 export type IgnoreRow = { event: 'ignore'; party: string; label: string; model: string | null; judged: Judgement; matched: string | null };
+
+/** The decision row `window`: the max context a sub-agent is measured against, where it came from and the ceiling it gives, written when first known and each time it changes; `unknown` says why its model's window is not known, and the max context is then the fallback. */
+export type WindowRow = { event: 'window'; party: string; label: string; model: string; ceiling: number } & SubagentWindow;
 
 export type PartyState = {
   /** "main" or "agent:{id}". */
@@ -74,6 +78,8 @@ export type PartyState = {
   dropAsked: string[];
   /** The judgement last returned by `judged`. */
   judged?: Judgement;
+  /** The max context, source and unknown reason of the last window row returned for the party (`windowed`). */
+  windowed?: string;
   /** Plan mode and the plan file, as the party's last plan-mode attachment named them (plan.ts `planFrom`). */
   plan?: PlanSeen;
 };
@@ -116,7 +122,7 @@ export class Parties {
 
   /**
    * Main's max context is not known: `FORWARD_COMPACTION_MAIN_MAX_CONTEXT` is unset and Claude Code has not reported its
-   * window yet. Main then gets no nudge and no ceiling. A sub-agent's is always known: `FORWARD_COMPACTION_SUBAGENT_MAX_CONTEXT`, else its model's (`subagentMaxContext`).
+   * window yet. Main then gets no nudge and no ceiling. A sub-agent always has one: `FORWARD_COMPACTION_SUBAGENT_MAX_CONTEXT`, else its model's, else the fallback (options.ts `subagentWindow`).
    */
   windowUnknown(key: string, mainKnown: boolean): boolean {
     return key === 'main' && !mainKnown;
@@ -136,6 +142,15 @@ export class Parties {
     if (state.judged === judged) return undefined;
     state.judged = judged;
     return { event: 'ignore', party: key, label: state.label, model: state.model ?? null, judged, matched: this.ignored(key, judging.ignore) ?? null };
+  }
+
+  /** The window row when the party's max context, its source or the reason it is unknown is new or has changed since the last row returned for the party; undefined while it holds, and before a step has named the party's model. */
+  windowed(key: string, window: SubagentWindow, ceiling: number): WindowRow | undefined {
+    const state = this.get(key);
+    const windowed = `${window.maxContext} ${window.source} ${window.unknown ?? ''}`;
+    if (state.model === undefined || state.windowed === windowed) return undefined;
+    state.windowed = windowed;
+    return { event: 'window', party: key, label: state.label, model: state.model, ...window, ceiling };
   }
 
   /** Stores the party's frontier, the latest winning; returns the one it replaced. */
