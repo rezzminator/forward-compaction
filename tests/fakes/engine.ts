@@ -42,6 +42,15 @@ export const MODELS: Record<string, number> = { 'claude-fable-5-2': 1_000_000, '
 /** The Models API's error body, as recorded: a model it does not list (404), a request with no credential (401). */
 const apiError = (type: string, message: string): string => JSON.stringify({ type: 'error', error: { type, message }, request_id: 'req_fake' });
 
+/** The `on` a fake hands `register`. With a matcher the hook runs only for an event whose fields equal the matcher's, as the engine narrows; any other event passes beneath. */
+export function onInto(hooks: Map<string, Fn>): any {
+  return (name: string, a: Fn | Record<string, unknown>, b?: Fn): void => {
+    if (b === undefined) return void hooks.set(name, a as Fn);
+    const matcher = Object.entries(a);
+    hooks.set(name, ($: unknown, e: unknown, next: Fn) => (matcher.every(([key, value]) => (e as Record<string, unknown>)[key] === value) ? b($, e, next) : next(e)));
+  };
+}
+
 export function fakeEngine(script: Script = {}) {
   const home = mkdtempSync(join(tmpdir(), 'fc-engine-'));
   const vars: Record<string, string> = { HOME: home, CLAUDE_CONFIG_DIR: join(home, '.claude'), ...script.env };
@@ -138,7 +147,7 @@ export function fakeEngine(script: Script = {}) {
     });
   const $ = proxy(base, '');
 
-  register(((name: string, fn: Fn) => void hooks.set(name, fn)) as any, {} as any);
+  register(onInto(hooks), {} as any);
 
   /** Runs one hook with `impl` as everything beneath it; a hook the plugin does not register passes straight to `impl`. `signal` is the dispatch's abort. */
   async function dispatch(event: string, e: unknown, impl: Fn = async (x) => x, signal: AbortSignal = new AbortController().signal): Promise<any> {

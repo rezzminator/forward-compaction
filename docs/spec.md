@@ -208,6 +208,19 @@ them. The frontier message carries the call's own receipt, since the install
 replaces the message that held it, and, like a mechanical wake's message,
 ends with the experimental line and where to note any trouble.
 
+On screen the two built messages are user-role rows, which Claude Code's
+fullscreen view draws whole. Outside the expanded view (the ctrl+o
+transcript, `--verbose`, an export) the plugin draws nothing for the facts
+message and one dim line for the message after it:
+`forward-compaction installed the frontier: the transcript view (ctrl+o) shows it and the recorded facts in full`,
+or for a mechanical wake
+`forward-compaction compacted mechanically, no frontier was written: the transcript view (ctrl+o) shows its note and the recorded facts in full`.
+The fold is a drawing only: the stored messages, the ones the model reads,
+keep every character, and the expanded view draws them as Claude Code does.
+A row folds only when Claude Code marks its message as built by a hook
+(origin `unclassified`) and it opens as a wake message does, so the same
+text typed or pasted by the person is drawn whole.
+
 The facts message opens with the plugin version that built the wake
 (`compacted by forward-compaction 2.2.5`), so a chat on an old build shows
 it. It holds, each section only when it has content:

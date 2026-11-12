@@ -4,6 +4,7 @@ import { applyDrops, dropNote, changesNote, pinnedBy, experimental, isAbsolutePa
 import { answersOf, workOf, type CallAnswer } from '../src/work.ts';
 import { newLedger, markStart, addEntry, resolveSpawn, attributeSkill, shellsOf, factsFor, promptsKept, restorePrompts, skillsKept, restoreSkills, liftSources, isPersonOrigin, keyOf, originKind, type Ledger, type PartyKey } from '../src/ledger.ts';
 import { splitAtCall, buildWake, mechanicalWake, landedLine, recentFiles, type WakeFile, type AgentRow, type Landing } from '../src/wake.ts';
+import { wakeRow } from '../src/wake-row.ts';
 import { planFrom, planRead, PLAN_ROWS, type WakePlan } from '../src/plan.ts';
 import { decide, installWarnings, turnEndDoor, readingTokens, knownTrigger } from '../src/decide.ts';
 import { k, nudgeLevel, nudgeText } from '../src/nudge.ts';
@@ -63,9 +64,7 @@ type State = {
 };
 
 /** A line on the person's screen: Claude Code already names the plugin in front of it, so the line never names it again. */
-function show($: EngineInterface, line: string): void {
-  $.ui.log(screenLine(line));
-}
+function show($: EngineInterface, line: string): void { $.ui.log(screenLine(line)); }
 
 const screenLine = (line: string): string => line.replace(/^forward-compaction: /, '');
 
@@ -232,9 +231,7 @@ async function retainLogs(st: State, $: EngineInterface, file: string, path: str
 }
 
 /** After a /clear or a resume: main's conversation is a new one, under a new session id and its own decision log file. */
-function startOver(st: State): void {
-  Object.assign(st, { sessionId: undefined, logPath: undefined, pending: [], retained: false, writeError: undefined, rowsDropped: undefined });
-}
+function startOver(st: State): void { Object.assign(st, { sessionId: undefined, logPath: undefined, pending: [], retained: false, writeError: undefined, rowsDropped: undefined }); }
 
 /** Says `line` once per `key`; its row's event is the key's stem and its `where` the function that raised it. */
 function warnOnce(st: State, $: EngineInterface, where: string, key: string, line: string, level: PluginLogLevel = 'warning'): void {
@@ -857,6 +854,9 @@ export const register: Register = (on: On, options: PluginOptions) => {
     await guard(st, $, 'turn.step', () => readStep(st, $, e, r, next.signal), e);
     return r;
   });
+
+  // A message the wake built folds to one dim line outside the expanded view (wake-row.ts `wakeRow`); every other row is the engine's.
+  on('ui.render', { component: 'UserMessage' }, ($, e, next) => wakeRow(e.props) ?? next(e));
 
   on('turn.start', async ($, e, next) => {
     await ensureTools(st, $, next.signal), await guard(st, $, 'turn.start', () => noteRun(st, $, e), e); // a tool that failed to register is tried again once due

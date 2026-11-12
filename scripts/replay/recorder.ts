@@ -245,9 +245,17 @@ async function* invokeSteps(hook: string, $: EngineInterface, e: unknown, next: 
 /** Every event the plugin registers. Claude Code reads `on("<event>", hook)` statically, so each is written out; a hook the plugin adds and this list lacks is named in the version row, and sanitize refuses the recording. */
 export const RECORDED = ['session.start', 'tool.call', 'session.compact', 'turn.step', 'turn.start', 'turn.complete', 'prompt.submit', 'prompt.attachment', 'session.receive', 'skill.prompt', 'agent.spawn', 'classic.Stop', 'classic.SubagentStop', 'session.end'] as const;
 let unrecorded: string[] = [];
+/** The plugin's draw hook reaches the engine as registered and is never recorded: a draw decides nothing a replay holds, and tests/wake-row.test.ts holds what it draws. */
+export const DRAWN = { event: 'ui.render', matcher: { component: 'UserMessage' } } as const;
+let draw: (...args: any[]) => any = passOn;
 
 export const register: Register = (on: On, options) => {
   const result = plugin(((pattern: string, ...rest: any[]) => {
+    if (pattern === DRAWN.event) {
+      if (rest.length !== 2 || JSON.stringify(rest[0]) !== JSON.stringify(DRAWN.matcher)) unrecorded.push(`${pattern} (not the ${JSON.stringify(DRAWN.matcher)} draw)`);
+      draw = rest.at(-1);
+      return { dispose: () => undefined };
+    }
     if (rest.length !== 1 || hooks.has(pattern)) unrecorded.push(`${pattern} (${rest.length === 1 ? 'registered twice' : 'with a matcher'})`);
     hooks.set(pattern, rest.at(-1));
     return { dispose: () => undefined };
@@ -267,5 +275,6 @@ export const register: Register = (on: On, options) => {
   on('classic.Stop', async ($, e, next) => invoke('classic.Stop', $, e, next) as any);
   on('classic.SubagentStop', async ($, e, next) => invoke('classic.SubagentStop', $, e, next) as any);
   on('session.end', async ($, e, next) => invoke('session.end', $, e, next) as any);
+  on('ui.render', { component: 'UserMessage' }, (_$, e, next) => draw(undefined, e, next)); // the draw reads no `$`
   return result;
 };

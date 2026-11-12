@@ -7,7 +7,7 @@
 [![Claude Code plugin](https://img.shields.io/badge/Claude%20Code-plugin-D97757)](https://docs.claude.com/en/docs/claude-code/plugins)
 [![Version](https://img.shields.io/badge/version-2.2.5-blue)](./CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
-[![Tests](https://img.shields.io/badge/tests-649%20passing-brightgreen)](#development)
+[![Tests](https://img.shields.io/badge/tests-662%20passing-brightgreen)](#development)
 [![Built with Professor](https://img.shields.io/badge/built%20with-Professor-8A2BE2)](https://github.com/rezzminator/professor)
 
 </div>
@@ -125,6 +125,8 @@ After a compaction the model's context holds, oldest first:
 1. **The facts the plugin recorded as they happened:** your standing orders; anything that arrived after the handoff call; the plan file when in plan mode; your ten newest messages and every answer you gave (or the sub-agent's brief); the skills in use; the agents and background shells; the shell commands it ran; the files it touched; the task list; and any files the handoff asked to carry.
 2. **The handoff, word for word**, with an instruction to continue from its next action.
 3. **The messages after the call, word for word**, as many as fit. Any dropped are named as not carried.
+
+On your screen the first two fold to one dim line, `forward-compaction installed the frontier: …`, where Claude Code's fullscreen view would otherwise draw them whole; the transcript view (ctrl+o) shows both in full. Only the drawing folds: the model reads every word.
 
 Every figure, limit and edge case is in the [behaviour reference](./docs/spec.md).
 

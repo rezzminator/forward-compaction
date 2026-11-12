@@ -10,6 +10,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { gunzipSync } from 'node:zlib';
 import { register } from '../../plugins/forward-compaction/hooks/forward-compaction.ts';
+import { onInto } from './engine.ts';
 import type { PATHS, Row } from '../../scripts/replay/recorder.ts';
 
 type Fn = (...args: any[]) => any;
@@ -118,7 +119,7 @@ export async function replay(rows: readonly Row[], sandbox?: string): Promise<Re
 
 async function drive(recorded: Invocation[], root: string): Promise<Replay> {
   const hooks = new Map<string, Fn>();
-  register(((name: string, fn: Fn) => void hooks.set(name, fn)) as any, {} as any);
+  register(onInto(hooks), {} as any);
   const unrecorded: string[] = [];
   const replayed: Invocation[] = [];
   const signal = new AbortController().signal;

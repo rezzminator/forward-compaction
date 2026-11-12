@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { ANSWERS, SYNTHETIC_HANDLE, SYNTHETIC_MODEL, loadFixture, invocations, replay, recordSynthetic, type Invocation } from './fakes/replay-engine.ts';
-import { ENV_NAMES, PATHS, PART_CHARS, RECORDED, STATE_KEYS, rowFiles, type Row } from '../scripts/replay/recorder.ts';
+import { DRAWN, ENV_NAMES, PATHS, PART_CHARS, RECORDED, STATE_KEYS, register as recorder, rowFiles, type Row } from '../scripts/replay/recorder.ts';
 import { contextTokens } from '../plugins/forward-compaction/src/decide.ts';
 import { parseFrontier } from '../plugins/forward-compaction/src/frontier.ts';
 import { resolveOptions, subagentWindow } from '../plugins/forward-compaction/src/options.ts';
@@ -438,9 +438,20 @@ describe('the recorder', () => {
     expect(JSON.parse(parts.map((p) => p.text).join('')).input.text.length).toBe(PART_CHARS * 2 + 5);
   });
 
+  it('hands the plugin\'s draw hook to the engine under its own matcher, unrecorded', async () => {
+    const registered: { pattern: string; matcher?: unknown; hook: (...args: any[]) => any }[] = [];
+    recorder(((pattern: string, ...rest: any[]) => void registered.push({ pattern, ...(rest.length === 2 ? { matcher: rest[0] } : {}), hook: rest.at(-1) })) as any, {} as any);
+    expect(registered.map((r) => r.pattern)).toEqual([...RECORDED, 'ui.render']);
+    const draw = registered.at(-1)!;
+    expect(draw.matcher).toEqual({ component: 'UserMessage' });
+    const row = (isExpanded: boolean) => ({ surface: 'terminal', component: 'UserMessage', requestId: 'm1', props: { text: '[forward-compaction: facts] Your context was compacted', origin: { kind: 'unclassified' }, isExpanded } });
+    expect(await draw.hook({}, row(false), async () => 'engine')).toEqual({ type: 'Box', props: { display: 'none' } });
+    expect(await draw.hook({}, row(true), async () => 'engine')).toBe('engine');
+  });
+
   it('wraps every event and $ path the adapter uses, every variable it reads and every state key it uses, spelled as Claude Code requires', () => {
     const adapter = readFileSync(join(ROOT, 'plugins/forward-compaction/hooks/forward-compaction.ts'), 'utf8');
-    expect(new Set(adapter.match(/(?<=\bon\(')[^']+/g))).toEqual(new Set(RECORDED));
+    expect(new Set(adapter.match(/(?<=\bon\(')[^']+/g))).toEqual(new Set([...RECORDED, DRAWN.event]));
     expect(new Set(adapter.match(/(?<=\$\.)[a-z]+\.[a-zA-Z]+/g))).toEqual(new Set(PATHS));
     expect(new Set(adapter.match(/(?<=\$\.env\.get\(')[^']+/g))).toEqual(new Set(ENV_NAMES));
     expect(new Set(adapter.match(/(?<=\$\.state\.(?:get|set)\(\{ plugin: 'forward-compaction', key: ')[^']+/g))).toEqual(new Set(STATE_KEYS));
