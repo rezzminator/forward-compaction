@@ -69,6 +69,10 @@ export type PartyState = {
   wokeAt?: number;
   /** The reading the party's last nudge went out at, since its last install: the next one waits until the context has grown by `every` past it. */
   nudgedAt?: number;
+  /** The nudges delivered since the last install: the count a nudge's wording goes by (nudge.ts `nudgeText`). */
+  nudges: number;
+  /** The finish notice went out since the last install (`finishDue`). */
+  finishTold: boolean;
   /** The party's completed requests. */
   requests: number;
   installs: number;
@@ -104,7 +108,7 @@ export class Parties {
   get(key: string): PartyState {
     let state = this.states.get(key);
     if (!state) {
-      state = { key, label: key, answeredSinceSkip: true, nudgeLevel: 0, absorbNext: false, requests: 0, installs: 0, installedThisTurn: false, dropAsked: [] };
+      state = { key, label: key, answeredSinceSkip: true, nudgeLevel: 0, absorbNext: false, nudges: 0, finishTold: false, requests: 0, installs: 0, installedThisTurn: false, dropAsked: [] };
       this.states.set(key, state);
     }
     return state;
@@ -278,11 +282,26 @@ export class Parties {
     }
     state.nudgeLevel = level;
     state.nudgedAt = tokens;
+    state.nudges += 1;
     return true;
   }
 
   /**
-   * A compaction installed: the frontier goes, the nudges start over from the next reading's level, and no reading
+   * Whether the finish notice goes out now, recorded as sent: once since the party's last install, at a reading
+   * (`tokens`) of `start` or more, while nothing is stored and no nudge has gone, as a nudge's first wordings carry
+   * the finish rule themselves. After a wake none goes until the reading has grown by `every` past the first one
+   * after it: a compaction that soon frees next to nothing.
+   */
+  finishDue(key: string, tokens: number, start: number, every: number): boolean {
+    const state = this.get(key);
+    if (state.finishTold || state.nudges > 0 || state.stored !== undefined || state.absorbNext || tokens < start) return false;
+    if (state.wokeAt !== undefined && tokens < state.wokeAt + every) return false;
+    state.finishTold = true;
+    return true;
+  }
+
+  /**
+   * A compaction installed: the frontier goes, the nudges and the finish notice start over from the next reading's level, and no reading
    * stands until the next request measures one, whose landing line then goes out. Returns a landing still waiting from an earlier install.
    */
   installed(key: string, landing?: Landing): Landing | undefined {
@@ -292,6 +311,8 @@ export class Parties {
       lastDecision: 'install',
       answeredSinceSkip: true,
       nudgeLevel: 0,
+      nudges: 0,
+      finishTold: false,
       absorbNext: true,
       wokeAt: undefined,
       nudgedAt: undefined,

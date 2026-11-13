@@ -7,7 +7,7 @@ import { splitAtCall, buildWake, mechanicalWake, landedLine, recentFiles, type W
 import { wakeRow } from '../src/wake-row.ts';
 import { planFrom, planRead, PLAN_ROWS, type WakePlan } from '../src/plan.ts';
 import { decide, installWarnings, turnEndDoor, readingTokens, knownTrigger } from '../src/decide.ts';
-import { k, nudgeLevel, nudgeText } from '../src/nudge.ts';
+import { k, noticeFor, nudgeLevel } from '../src/nudge.ts';
 import { Parties, type Judging } from '../src/parties.ts';
 import { askPointOf, charsPerToken, partyMarks, startWarnings, apiChars, type AskPoint, type Marks, type UsageBreakdown } from '../src/window.ts';
 import { unseenCompaction } from '../src/unseen.ts';
@@ -256,6 +256,7 @@ async function readOptionEnv($: EngineInterface): Promise<Pick<OptionEnvironment
     readOptionVar('FORWARD_COMPACTION_MAIN_CEILING', () => $.env.get('FORWARD_COMPACTION_MAIN_CEILING')),
     readOptionVar('FORWARD_COMPACTION_MAIN_NUDGE_START', () => $.env.get('FORWARD_COMPACTION_MAIN_NUDGE_START')),
     readOptionVar('FORWARD_COMPACTION_MAIN_NUDGE_EVERY', () => $.env.get('FORWARD_COMPACTION_MAIN_NUDGE_EVERY')),
+    readOptionVar('FORWARD_COMPACTION_MAIN_FINISH_START', () => $.env.get('FORWARD_COMPACTION_MAIN_FINISH_START')),
     readOptionVar('FORWARD_COMPACTION_SUBAGENT_MAX_CONTEXT', () => $.env.get('FORWARD_COMPACTION_SUBAGENT_MAX_CONTEXT')),
     readOptionVar('FORWARD_COMPACTION_SUBAGENT_CEILING', () => $.env.get('FORWARD_COMPACTION_SUBAGENT_CEILING')),
     readOptionVar('FORWARD_COMPACTION_SUBAGENT_NUDGE_START', () => $.env.get('FORWARD_COMPACTION_SUBAGENT_NUDGE_START')),
@@ -512,19 +513,18 @@ async function answerForward(st: State, $: EngineInterface, e: Record<string, un
   }
 }
 
-/** Past a nudge point with nothing stored, the tool result carries the nudge once per level (R37). */
+/** The tool result carries what nudge.ts `noticeFor` sends the party now (R37): a nudge, main's finish notice, or nothing. */
 async function nudged(st: State, $: EngineInterface, key: PartyKey, result: ToolCallResult): Promise<ToolCallResult> {
   if (result.deny !== undefined) return result;
   try {
     await start(st, $);
-    await judge(st, $, key); const party = st.parties.get(key);
-    const tokens = party.reading; // measured only: a step late at worst, never an estimate
-    const m = marks(st, key);
-    const level = tokens === undefined || m === undefined ? 0 : nudgeLevel(tokens, m.start, m.every);
-    const withheld = tokens === undefined ? 'no-reading' : m === undefined ? 'window-unknown' : level === 0 ? 'below-start' : st.parties.ignored(key, st.config.ignoreModels) !== undefined ? 'ignored-model' : !st.parties.nudgeDue(key, level, tokens!, m!) ? 'not-due' : undefined;
-    if (withheld !== undefined) return (dbg(st, $, 'nudge-withheld', { party: key, why: withheld, tokens: tokens ?? null, level, start: m?.start ?? null, every: m?.every ?? null }), result);
-    record(st, $, { event: 'nudge', party: key, level, tokens, start: m!.start, every: m!.every });
-    return { ...result, context: [...(result.context ?? []), nudgeText({ tokens: tokens!, tool: st.toolNames.forward_compaction })] };
+    await judge(st, $, key);
+    const tokens = st.parties.get(key).reading, m = marks(st, key); // measured only: a step late at worst, never an estimate
+    const { level, withheld, sent } = noticeFor(st.parties, key, tokens, m, st.config.ignoreModels, st.toolNames.forward_compaction);
+    if (withheld !== undefined) dbg(st, $, 'nudge-withheld', { party: key, why: withheld, tokens: tokens ?? null, level, start: m?.start ?? null, every: m?.every ?? null, finish: sent !== undefined });
+    if (sent === undefined) return result;
+    record(st, $, sent.row);
+    return { ...result, context: [...(result.context ?? []), sent.text] };
   } catch (error) {
     say(st, $, `forward-compaction: nudging ${key} failed: ${message(error)}`, 'error', { event: 'nudge-error', where: 'nudged', party: key, error: message(error) });
     return result;

@@ -2,7 +2,7 @@ import { readdirSync, readFileSync, existsSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { PLUGIN_VERSION } from '../plugins/forward-compaction/src/wake.ts';
-import { DEFAULT_CEILING_NATIVE, DEFAULT_DEBUG, DEFAULT_IGNORE_MODELS, DEFAULT_KEEP_SKILLS, DEFAULT_MAIN, DEFAULT_SUBAGENT, OPTION_ENV, parseEnvFlag, parseSize, type OptionName } from '../plugins/forward-compaction/src/options.ts';
+import { DEFAULT_CEILING_NATIVE, DEFAULT_DEBUG, DEFAULT_IGNORE_MODELS, DEFAULT_KEEP_SKILLS, DEFAULT_MAIN, DEFAULT_MAIN_FINISH_START, DEFAULT_SUBAGENT, OPTION_ENV, parseEnvFlag, parseSize, type OptionName } from '../plugins/forward-compaction/src/options.ts';
 
 const ROOT = join(import.meta.dirname, '..');
 const PLUGIN = 'plugins/forward-compaction';
@@ -54,7 +54,7 @@ function sameSet(a: ReadonlySet<string>, b: ReadonlySet<string>): string[] {
 // Gate 4, README half: each `| `FORWARD_COMPACTION_X` | type | default | meaning |` row against OPTION_ENV and the code's default.
 // Main's max context defaults to the window Claude Code reports: its cell says `window`.
 const CODE_DEFAULT: Record<OptionName, unknown> = {
-  mainMaxContext: 'window', mainCeiling: DEFAULT_MAIN.ceiling, mainNudgeStart: DEFAULT_MAIN.nudgeStart, mainNudgeEvery: DEFAULT_MAIN.nudgeEvery,
+  mainMaxContext: 'window', mainCeiling: DEFAULT_MAIN.ceiling, mainNudgeStart: DEFAULT_MAIN.nudgeStart, mainNudgeEvery: DEFAULT_MAIN.nudgeEvery, mainFinishStart: DEFAULT_MAIN_FINISH_START,
   subagentMaxContext: 'model', subagentCeiling: DEFAULT_SUBAGENT.ceiling, subagentNudgeStart: DEFAULT_SUBAGENT.nudgeStart, subagentNudgeEvery: DEFAULT_SUBAGENT.nudgeEvery,
   ceilingNative: DEFAULT_CEILING_NATIVE, ignoreModels: DEFAULT_IGNORE_MODELS.join(','), keepSkills: DEFAULT_KEEP_SKILLS.join(',') || 'none', debug: DEFAULT_DEBUG,
 };
@@ -129,7 +129,7 @@ describe('layout gates (D22)', () => {
   it('(4) names a README option row missing, extra or with a default the code does not have', () => {
     const row = (name: string, def: string): string => `| \`${name}\` | size | \`${def}\` | x |`;
     const cells: [string, string][] = [
-      ['MAIN_MAX_CONTEXT', 'window'], ['MAIN_CEILING', '70%'], ['MAIN_NUDGE_START', '15%'],
+      ['MAIN_MAX_CONTEXT', 'window'], ['MAIN_CEILING', '70%'], ['MAIN_NUDGE_START', '15%'], ['MAIN_FINISH_START', '100k'],
       ['SUBAGENT_MAX_CONTEXT', 'model'], ['SUBAGENT_CEILING', '80%'], ['SUBAGENT_NUDGE_START', '165k'], ['SUBAGENT_NUDGE_EVERY', '20%'],
       ['CEILING_NATIVE', '0'], ['IGNORE_MODELS', 'haiku'], ['KEEP_SKILLS', 'none'], ['DEBUG', '1'], ['EXTRA', '1'],
     ];

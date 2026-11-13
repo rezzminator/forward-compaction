@@ -14,7 +14,7 @@ const frontier = (toolUseId: string, storedAtTokens = 41_200): Omit<StoredFronti
 describe('Parties state', () => {
   it('creates a party on first touch with the defaults', () => {
     const parties = new Parties();
-    expect(parties.get('main')).toMatchObject({ key: 'main', label: 'main', nudgeLevel: 0, absorbNext: false, installs: 0, installedThisTurn: false });
+    expect(parties.get('main')).toMatchObject({ key: 'main', label: 'main', nudgeLevel: 0, absorbNext: false, nudges: 0, finishTold: false, installs: 0, installedThisTurn: false });
     expect(parties.get('main').stored).toBeUndefined();
     expect(parties.get('main').reading).toBeUndefined();
     expect(parties.get('agent:a1').label).toBe('agent:a1');
@@ -97,6 +97,7 @@ describe('nudgeDue (R30)', () => {
     expect(parties.nudgeDue('main', 1)).toBe(true);
     expect(parties.nudgeDue('main', 2)).toBe(true);
     expect(parties.nudgeDue('main', 1)).toBe(false);
+    expect(parties.get('main').nudges).toBe(2); // the delivered ones only
   });
 
   it('owes nothing at level 0 and nothing while a frontier is stored', () => {
@@ -239,6 +240,37 @@ describe('asked, answered and reactive (D8)', () => {
   });
 });
 
+describe('finishDue', () => {
+  const due = (parties: Parties, tokens: number) => parties.finishDue('main', tokens, 100_000, 50_000);
+
+  it('is true from the finish start on, once', () => {
+    expect([99_999, 100_000, 100_001].map((tokens) => due(new Parties(), tokens))).toEqual([false, true, true]);
+    const parties = new Parties();
+    expect([due(parties, 99_999), due(parties, 100_000), due(parties, 180_000)]).toEqual([false, true, false]);
+    expect(parties.get('main').finishTold).toBe(true);
+  });
+
+  it('is false while a frontier is stored, and after a nudge, whose first wordings carry the finish rule', () => {
+    const stored = new Parties();
+    stored.store('main', frontier('t1'));
+    expect(due(stored, 120_000)).toBe(false);
+    stored.takeStored('main');
+    expect(due(stored, 120_000)).toBe(true);
+    const nudged = new Parties();
+    expect(nudged.nudgeDue('main', 1)).toBe(true);
+    expect(due(nudged, 120_000)).toBe(false);
+  });
+
+  it('starts over at an install, from one nudge step past the first reading after it', () => {
+    const parties = new Parties();
+    expect(due(parties, 120_000)).toBe(true);
+    parties.installed('main');
+    expect(due(parties, 120_000)).toBe(false); // no reading since the install
+    parties.read('main', 110_000);
+    expect([due(parties, 159_999), due(parties, 160_000), due(parties, 160_001)]).toEqual([false, true, false]);
+  });
+});
+
 describe('installed', () => {
   it('clears the frontier, the nudges and the reading, counts the install, sets the turn mark and holds the landing', () => {
     const parties = new Parties();
@@ -247,12 +279,13 @@ describe('installed', () => {
     parties.asked('main', 'skip');
     parties.store('main', frontier('t1'));
     expect(parties.installed('main', LANDING)).toBeUndefined();
-    expect(parties.get('main')).toMatchObject({ nudgeLevel: 0, absorbNext: true, installs: 1, installedThisTurn: true, lastDecision: 'install', landing: LANDING });
+    expect(parties.get('main')).toMatchObject({ nudgeLevel: 0, nudges: 0, absorbNext: true, installs: 1, installedThisTurn: true, lastDecision: 'install', landing: LANDING });
     expect(parties.get('main').reading).toBeUndefined(); // no estimate stands in for a reading
     expect(parties.get('main').stored).toBeUndefined();
     expect(parties.reactive('main')).toBe(false);
     parties.read('main', 25_000, 0);
     expect(parties.nudgeDue('main', 1)).toBe(true);
+    expect(parties.get('main').nudges).toBe(1); // counted from the install
   });
 
   it('turnEnded clears the turn mark and nothing else', () => {

@@ -63,11 +63,18 @@ and no ceiling, and an automatic ask from it with nothing stored is held as
    `FORWARD_COMPACTION_SUBAGENT_NUDGE_START`: a share of the main chat's max
    context, a token count for a sub-agent), the
    model reads one line saying how large its context is, in tokens. One more
-   follows every `FORWARD_COMPACTION_{MAIN|SUBAGENT}_NUDGE_EVERY`. The line
-   asks it to wrap up to its first milestone and call `forward_compaction`
-   there, to skip it when it can finish all of its work soon, and to keep
-   going to that milestone when its work needs the larger context; it names
-   no max context and no ceiling. A held
+   follows every `FORWARD_COMPACTION_{MAIN|SUBAGENT}_NUDGE_EVERY`. Each line
+   is worded by its count since the party's last install, so no two read
+   alike and each is firmer than the one before: the first asks for a
+   frontier at the first milestone, the second at the end of the step in
+   hand, the third to start no new step, the fourth to compact now, the
+   fifth to stop, and from the sixth on the line names how many notices went
+   unanswered. The last nudge before the ceiling, the one that one more
+   `NUDGE_EVERY` of growth would carry to it, says instead that the plugin
+   compacts next, with no frontier from the model. The first three close on
+   the party's exception: a sub-agent's on when it may skip, as its work
+   ends within a few calls, the main chat's on the finish rule below. No
+   line names a max context or the ceiling. A held
    compaction ask adds no nudge of its own. After an install, the first
    reading's level is absorbed silently (a sub-agent's floor of system
    prompt, tools and skills is already 55-60k), so the next nudge goes only
@@ -80,6 +87,18 @@ and no ceiling, and an automatic ask from it with nothing stored is held as
    gets no nudge.
    No call is ever refused or held back: a party that does not compact is
    compacted mechanically at its ceiling.
+
+   The finish rule: the main chat also compacts when its whole work is
+   finished, before its final report, with `remaining` "none" and `next`
+   "write the final report". A finished chat otherwise holds a large context
+   until the person replies, and a reply after the prompt cache expired
+   re-sends all of it. The main chat reads the rule in its first three
+   nudges, and before any nudge in one line of its own, the finish notice:
+   once since its last install, when its context reaches
+   `FORWARD_COMPACTION_MAIN_FINISH_START` with nothing stored, and after an
+   install only once it has grown one `NUDGE_EVERY` past its first reading.
+   A sub-agent is never asked: its context ends with its report. The plugin
+   detects no finish and holds no turn end: the model decides.
 2. **Compacting.** The model calls `forward_compaction` (the model sees
    `mcp__forward-compaction__forward_compaction`). The plugin stores the frontier
    in memory for that party and never refuses the call: an argument it cannot
@@ -404,7 +423,7 @@ this rule. It is requested upstream in
 
 Sizes are percentages of each party's max context or token counts; a
 sub-agent's nudge sizes default to token counts (165k, then every 65k), the
-same on every max context. The main chat's max context is the
+same on every max context, as does the main chat's finish start (100k). The main chat's max context is the
 window Claude Code reports through `$.session.usage()`, read at session
 start, at the main chat's first request when not read yet, and again when its
 model changes (`/model`); `FORWARD_COMPACTION_MAIN_MAX_CONTEXT` sets it
@@ -477,7 +496,7 @@ With the defaults, on a 200k sub-agent max context (on 1M the ceiling is
 
 | Path | What | Retention |
 | --- | --- | --- |
-| `~/.local/state/forward-compaction/logs/decisions/{session}.jsonl` (`$PLUGIN_LOG_DIR/forward-compaction/decisions/` when set) | decision rows: every frontier stored (with `orders` and `lifted`, its counts of standing orders carried and lifted, and `notes`, the count of changes its receipt named), every nudge, every compaction decision, every `landed` row (`{party, kind, before, after, line}`, `kind` being `frontier` or `mechanical`, `before` and `after` the measured readings or `null`, written with the landed line), every `ignore` row (`{party, label, model, judged, matched}`, `judged` being `managed`, `ignored` or `unknown`, `matched` the ignore-list entry or `null`, written when a party's judgement is first made or changes), every `window` row (`{party, label, model, maxContext, source, ceiling}`, with `unknown` on the `fallback` source, written when a sub-agent's max context is first known or changes); a held-ask streak is one folded `skips` row, written when the streak closes and stamped with its last ask's time, so it can follow later rows; rows past the first 500 that come before the environment layer is read are counted in one `rows-lost` row | a file over 8 MiB moves to `.1`; other sessions' files older than 14 days, then all but the newest 200, are deleted |
+| `~/.local/state/forward-compaction/logs/decisions/{session}.jsonl` (`$PLUGIN_LOG_DIR/forward-compaction/decisions/` when set) | decision rows: every frontier stored (with `orders` and `lifted`, its counts of standing orders carried and lifted, and `notes`, the count of changes its receipt named), every nudge (with `notice`, its count since the party's last install, and `last`, true for the last one before the ceiling), every `finish-notice` row (`{party, tokens, start}`), every compaction decision, every `landed` row (`{party, kind, before, after, line}`, `kind` being `frontier` or `mechanical`, `before` and `after` the measured readings or `null`, written with the landed line), every `ignore` row (`{party, label, model, judged, matched}`, `judged` being `managed`, `ignored` or `unknown`, `matched` the ignore-list entry or `null`, written when a party's judgement is first made or changes), every `window` row (`{party, label, model, maxContext, source, ceiling}`, with `unknown` on the `fallback` source, written when a sub-agent's max context is first known or changes); a held-ask streak is one folded `skips` row, written when the streak closes and stamped with its last ask's time, so it can follow later rows; rows past the first 500 that come before the environment layer is read are counted in one `rows-lost` row | a file over 8 MiB moves to `.1`; other sessions' files older than 14 days, then all but the newest 200, are deleted |
 | `~/.local/state/forward-compaction/logs/{errors,warnings,info}.jsonl` (`$PLUGIN_LOG_DIR/forward-compaction/` when set) | the plugin's errors, warnings and info: every decision event lands at its level — errors and warnings in their files, every other operational event (nudge, stored, each compaction decision, party, skill, tool-registered, look-back, the lines said) in `info.jsonl`, a held-ask streak folded into its first row and one `skips` row. Each row's `event` names what happened (never a bare `error` or `warning`), and an error or warning row's `where` names the function that raised it. One failure is one row: a tool that fails to register writes one error row and one screen line, and is tried again at each `turn.start`: at once for its first three tries, then after a wait of 30 seconds that doubles with each failure, up to 15 minutes, for the rest of the session. Rows a write could not append (the lock held past its 10-second wait, the writer killed at its 15-second bound, any failure) stay queued, order kept, and are retried with the next write: a row may be written twice, never lost or torn. Only past 2,000 held rows are the oldest dropped, and their count goes to `errors.jsonl` (`plugin-log-rows-dropped`) once a write succeeds. A lock stage or broken lock whose writer died is cleared | a level file over 20 MiB moves to `.1`, the older ones to `.2` … `.5`, the oldest of five deleted |
 | `debug.jsonl` in the same directory (with `FORWARD_COMPACTION_DEBUG` on) | a row at every step: each hook entry (hook, party, trigger, model), each `$` answer the plugin decides on (`session.usage` figures, the `agent.list` count, each `turn.step` reading with its four counts and model, `fs.stat` results), the options and variables resolved, each ratio base and each ratio, measured or not and why, with the base's characters and tokens and the characters and reading now, each wake's section sizes and files, each nudge sent or withheld and why, and every decision row whole; numbers as the API gave them | as the level files: `.1` … `.5` |
 | `issues.md` in the same directory | notes a model appends when the plugin gave it trouble, as each tool answer asks | not managed by the plugin |

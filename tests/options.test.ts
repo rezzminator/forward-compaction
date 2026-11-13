@@ -53,7 +53,7 @@ describe('parseEnvFlag', () => {
 describe('resolveOptions', () => {
   it('holds the defaults with nothing set', () => {
     expect(resolveOptions()).toEqual({
-      main: { ceiling: { percent: 60 }, nudgeStart: { percent: 15 }, nudgeEvery: { percent: 5 } },
+      main: { ceiling: { percent: 60 }, nudgeStart: { percent: 15 }, nudgeEvery: { percent: 5 }, finishStart: { tokens: 100_000 } },
       subagent: { ceiling: { percent: 80 }, nudgeStart: { tokens: 165_000 }, nudgeEvery: { tokens: 65_000 } },
       ceilingNative: false, ignoreModels: ['haiku'], keepSkills: [], debug: true, errors: [],
     });
@@ -65,6 +65,7 @@ describe('resolveOptions', () => {
       mainCeiling: 'FORWARD_COMPACTION_MAIN_CEILING',
       mainNudgeStart: 'FORWARD_COMPACTION_MAIN_NUDGE_START',
       mainNudgeEvery: 'FORWARD_COMPACTION_MAIN_NUDGE_EVERY',
+      mainFinishStart: 'FORWARD_COMPACTION_MAIN_FINISH_START',
       subagentMaxContext: 'FORWARD_COMPACTION_SUBAGENT_MAX_CONTEXT',
       subagentCeiling: 'FORWARD_COMPACTION_SUBAGENT_CEILING',
       subagentNudgeStart: 'FORWARD_COMPACTION_SUBAGENT_NUDGE_START',
@@ -93,12 +94,14 @@ describe('resolveOptions', () => {
   });
 
   it('names a bad size by its variable and falls back to the default (R3)', () => {
-    const resolved = resolveOptions({ vars: { FORWARD_COMPACTION_MAIN_CEILING: 'abc', FORWARD_COMPACTION_SUBAGENT_CEILING: '0' } });
+    const resolved = resolveOptions({ vars: { FORWARD_COMPACTION_MAIN_CEILING: 'abc', FORWARD_COMPACTION_MAIN_FINISH_START: '-5', FORWARD_COMPACTION_SUBAGENT_CEILING: '0' } });
     expect(resolved.errors).toEqual([
       'forward-compaction: env FORWARD_COMPACTION_MAIN_CEILING is invalid (not an integer, a k/m value or a percentage: "abc"); using the default 60%',
+      'forward-compaction: env FORWARD_COMPACTION_MAIN_FINISH_START is invalid (not an integer, a k/m value or a percentage: "-5"); using the default 100000',
       'forward-compaction: env FORWARD_COMPACTION_SUBAGENT_CEILING is invalid (not positive: "0"); using the default 80%',
     ]);
     expect(resolved.main.ceiling).toEqual({ percent: 60 });
+    expect(resolved.main.finishStart).toEqual({ tokens: 100_000 });
     expect(resolved.subagent.ceiling).toEqual({ percent: 80 });
   });
 
@@ -123,9 +126,9 @@ describe('resolveOptions', () => {
   });
 
   it('reads every size option through the test helper', () => {
-    const resolved = resolveOptions({ vars: optionVars({ mainCeiling: '80k', mainNudgeStart: '30k', mainNudgeEvery: '5k', subagentCeiling: '50%', subagentNudgeStart: '20k', subagentNudgeEvery: '2%', ceilingNative: true }) });
+    const resolved = resolveOptions({ vars: optionVars({ mainCeiling: '80k', mainNudgeStart: '30k', mainNudgeEvery: '5k', mainFinishStart: '10%', subagentCeiling: '50%', subagentNudgeStart: '20k', subagentNudgeEvery: '2%', ceilingNative: true }) });
     expect(resolved).toMatchObject({
-      main: { ceiling: { tokens: 80_000 }, nudgeStart: { tokens: 30_000 }, nudgeEvery: { tokens: 5_000 } },
+      main: { ceiling: { tokens: 80_000 }, nudgeStart: { tokens: 30_000 }, nudgeEvery: { tokens: 5_000 }, finishStart: { percent: 10 } },
       subagent: { ceiling: { percent: 50 }, nudgeStart: { tokens: 20_000 }, nudgeEvery: { percent: 2 } },
       ceilingNative: true, errors: [],
     });
