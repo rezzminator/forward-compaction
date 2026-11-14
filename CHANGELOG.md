@@ -2,6 +2,12 @@
 
 Every release of forward-compaction, named sub-agent-compact before 1.0.0. Versions follow [semantic versioning](https://semver.org); each release is the `main` commit tagged `forward-compaction--v<version>` (`sub-agent-compact--v<version>` before 1.0.0), with a GitHub release carrying the section below.
 
+## [2.3.1] — 2026-11-14
+
+### Fixed
+
+- **The wake folds in a sub-agent's view too.** Opening a sub-agent from the agent list still drew its facts and handoff whole under "From main": Claude Code stamps those rows `coordinator` there, not `unclassified` as in the main view. Both now fold the same way.
+
 ## [2.3.0] — 2026-11-14
 
 ### Added
