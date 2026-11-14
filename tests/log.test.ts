@@ -59,6 +59,12 @@ describe('decision events in the level files', () => {
     expect(future.pluginLogEvent?.({ event: 'compact', party: 'main', trigger: 'auto', decision: 'skip', why: 'waiting', tokens: 9 }).detail).toEqual({ party: 'main', trigger: 'auto', decision: 'skip', why: 'waiting', tokens: 9 });
     expect(future.pluginLogEvent?.({ event: 'skips', party: 'main', count: 4, from: 'a', to: 'b', firstTokens: 1, lastTokens: 2, ts: 'b' }).detail).toEqual({ party: 'main', count: 4, from: 'a', to: 'b', firstTokens: 1, lastTokens: 2 });
   });
+  it("files a sub-agent's window at info with its figures, and an unknown window as a warning that names why and the fallback it is measured against", () => {
+    const row = { event: 'window', party: 'agent:a1', label: 'collector a1b2c3', model: 'claude-sonnet-5-5', maxContext: 1_000_000, source: 'models-api', ceiling: 800_000 };
+    expect(future.pluginLogEvent?.(row)).toEqual({ level: 'info', event: 'window', msg: 'window', where: 'hooks/forward-compaction.ts#record', detail: { party: 'agent:a1', label: 'collector a1b2c3', model: 'claude-sonnet-5-5', maxContext: 1_000_000, source: 'models-api', ceiling: 800_000 } });
+    const unknown = { ...row, model: 'claude-no-such-model-9', maxContext: 200_000, source: 'fallback', ceiling: 160_000, unknown: 'the Models API does not list this model (404 not_found_error)' };
+    expect(future.pluginLogEvent?.(unknown)).toEqual({ level: 'warning', event: 'window-unknown', msg: 'the Models API does not list this model (404 not_found_error)', where: 'hooks/forward-compaction.ts#record', detail: { party: 'agent:a1', label: 'collector a1b2c3', model: 'claude-no-such-model-9', maxContext: 200_000, source: 'fallback', ceiling: 160_000, unknown: 'the Models API does not list this model (404 not_found_error)' } });
+  });
   it('stamps a folded skips row with its streak\'s time and any other row with the writing time', () => {
     const stamp = (fields: object, now: number) => JSON.parse(levelRow({ plugin: 'p', level: 'info', event: 'skips', msg: 'm', where: 'w', ...fields }, now)).ts;
     const late = Date.parse('2026-10-24T00:06:52.411Z');

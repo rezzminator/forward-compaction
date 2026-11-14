@@ -1,10 +1,11 @@
 // The wake: what a compaction installs. [facts] [frontier] [tail…] — the facts and the frontier are built here from typed values,
 // the tail is the engine's own messages returned untouched. Pure: files, agents and the clock arrive as inputs.
-import { andList, DEFAULT_TOOL, k as kilo } from './nudge.ts';
-import { keptSaid, PROMPTS_KEPT } from './ledger.ts';
-import { experimental, EXPERIMENTAL_OPENING } from './frontier.ts';
-import { ordersSection, type LiftedOrder, type StandingOrder } from './orders.ts';
-import type { WakePlan } from './plan.ts';
+import { andList, DEFAULT_TOOL, k as kilo } from './nudge';
+import { keptSaid, PROMPTS_KEPT } from './ledger';
+import { experimental, EXPERIMENTAL_OPENING } from './frontier';
+import { ordersSection, type LiftedOrder, type StandingOrder } from './orders';
+import type { WakePlan } from './plan';
+import { WAKE_OPENING } from './wake-row';
 
 /** A message in `session.compact`'s shape; a SessionMessage fits. */
 export type WakeMessage = {
@@ -35,7 +36,7 @@ const iso = (at: number): string => new Date(at).toISOString();
  */
 const SHARE = { arrived: 0.25, notices: 0.05, siblings: 0.1, commands: 0.05 } as const;
 /** The plugin version that builds a wake, named in its facts header so a chat on an old build is visible; tests/layout.test.ts pins it to plugin.json. */
-export const PLUGIN_VERSION = '2.2.5';
+export const PLUGIN_VERSION = '2.3.0';
 /** An image the person attached: a built wake message holds only text (`session.compact`'s messages), so each is named, never silently gone. */
 const IMAGE = /\[Image #\d+\]/g;
 const IMAGE_NOTE = '$& (image not carried: the wake cannot hold images)';
@@ -386,7 +387,7 @@ function renderFacts<M>(input: Shared<M>, facts: WakeFacts, { siblings, files, r
   }
 
   const resume = facts.startReason === 'resume' && facts.startedAt !== undefined ? [`The ledger started at ${iso(facts.startedAt)} when this process resumed; anything earlier is not recorded.`] : [];
-  const head = `[forward-compaction: facts] Your context was compacted by forward-compaction ${PLUGIN_VERSION}. These facts were recorded as they happened, never reconstructed. ${mechanical ? 'You wrote no frontier: the note after these facts says what happened.' : 'Your own frontier follows in the next message.'}`;
+  const head = `${WAKE_OPENING.facts} Your context was compacted by forward-compaction ${PLUGIN_VERSION}. These facts were recorded as they happened, never reconstructed. ${mechanical ? 'You wrote no frontier: the note after these facts says what happened.' : 'Your own frontier follows in the next message.'}`;
   return {
     text: [[head, ...resume].join('\n'), ...sections.map((s) => s.text)].join('\n\n'),
     sections: sections.filter((s) => s.content).length,
@@ -455,7 +456,7 @@ export function buildWake<M extends WakeMessage>(input: BuildWakeInput<M>): Wake
   const missing = input.missing ?? [];
   return assemble(input, split?.tail ?? input.messages, { siblings: split?.siblings ?? [], files: input.files ?? [] }, ({ kept, dropped }) => {
     const lines = [
-      `[forward-compaction: frontier] Below is the frontier you wrote with forward_compaction: continue from its ## Next${within(input.orders)}.`,
+      `${WAKE_OPENING.frontier} Below is the frontier you wrote with forward_compaction: continue from its ## Next${within(input.orders)}.`,
       `=== frontier ===\n${input.frontier}\n=== end of frontier ===`,
     ];
     if (missing.length > 0) lines.push(`Your frontier was missing ${andList(missing)}: re-establish ${missing.length === 1 ? 'it' : 'them'} from ${sourceOf(input.party)} and the messages below.`);
@@ -476,7 +477,7 @@ export function mechanicalWake<M extends WakeMessage>(input: MechanicalWakeInput
   const why = input.reason.kind === 'ceiling' ? `, past the ${kilo(input.reason.ceiling)} ceiling` : ', and Claude Code reported your request too long';
   const source = sourceOf(input.party);
   return assemble(input, input.messages, { siblings: [], files: [], recent: input.recent ?? [], mechanical: true }, ({ kept, dropped }) => experimental(
-    `[forward-compaction: no frontier written by the model] Your context reached ${input.tokens === undefined ? 'a size not measured yet' : `${kilo(input.tokens)} tokens`}${why}, and you had not called forward_compaction, so the plugin compacted it mechanically: the facts above and your newest ${kept} messages below, kept verbatim; ${dropped} older messages are gone (look_back finds an exact detail). No objective or next step was written. Re-establish them from ${source} and the messages below, then continue${within(input.orders)}; call ${input.tool ?? DEFAULT_TOOL} at your next milestone.`, input.logDir),
+    `${WAKE_OPENING.mechanical} Your context reached ${input.tokens === undefined ? 'a size not measured yet' : `${kilo(input.tokens)} tokens`}${why}, and you had not called forward_compaction, so the plugin compacted it mechanically: the facts above and your newest ${kept} messages below, kept verbatim; ${dropped} older messages are gone (look_back finds an exact detail). No objective or next step was written. Re-establish them from ${source} and the messages below, then continue${within(input.orders)}; call ${input.tool ?? DEFAULT_TOOL} at your next milestone.`, input.logDir),
   'none');
 }
 

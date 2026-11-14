@@ -6,12 +6,13 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSy
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
-import { ANSWERS, loadFixture, invocations, replay, recordSynthetic, type Invocation } from './fakes/replay-engine.ts';
-import { ENV_NAMES, PATHS, PART_CHARS, RECORDED, STATE_KEYS, rowFiles, type Row } from '../scripts/replay/recorder.ts';
+import { ANSWERS, SYNTHETIC_HANDLE, SYNTHETIC_MODEL, loadFixture, invocations, replay, recordSynthetic, type Invocation } from './fakes/replay-engine.ts';
+import { DRAWN, ENV_NAMES, PATHS, PART_CHARS, RECORDED, STATE_KEYS, register as recorder, rowFiles, type Row } from '../scripts/replay/recorder.ts';
 import { contextTokens } from '../plugins/forward-compaction/src/decide.ts';
 import { parseFrontier } from '../plugins/forward-compaction/src/frontier.ts';
-import { resolveOptions, subagentMaxContext } from '../plugins/forward-compaction/src/options.ts';
+import { resolveOptions, subagentWindow } from '../plugins/forward-compaction/src/options.ts';
 import { askPointOf, partyMarks } from '../plugins/forward-compaction/src/window.ts';
+import { modelWindowRequest, parseModelWindow } from '../plugins/forward-compaction/src/model-window.ts';
 
 const ROOT = join(import.meta.dirname, '..');
 const FIXTURES = join(ROOT, 'tests/fixtures/replay');
@@ -39,13 +40,15 @@ const frontierOf = (call: Invocation): string | undefined => {
 const count = (hay: string, needle: string): number => (needle === '' ? 0 : hay.split(needle).length - 1);
 const knownAgents = (view: View): Set<string> => new Set(view.filter((i) => i.hook === 'agent.spawn').map((i) => i.nextResult?.result?.agentId).filter((id): id is string => typeof id === 'string'));
 
-/** The ask point of a party, from what the plugin read through the API: session.start's `$.session.usage` breakdown, held at the party's max context from the recorded options. */
+/** The ask point of a party, from what the plugin read through the API: session.start's `$.session.usage` breakdown, held at the party's max context from the recorded options and its model's recorded Models API answer. */
 function askPointAt(view: View, key: string): number {
   const usage = view.find((i) => i.hook === 'session.start')?.calls.find((c) => c.path === 'session.usage')?.result?.context;
   const vars = Object.fromEntries(view.flatMap((i) => i.calls).filter((c) => c.path === 'env.get' && typeof c.result === 'string').map((c) => [c.args[0] as string, c.result as string]));
   const config = resolveOptions({ vars });
   const api = askPointOf(usage?.breakdown, usage?.window)?.tokens;
-  const m = key === 'main' ? partyMarks(config.main, config.main.maxContext ?? usage?.window, api) : partyMarks(config.subagent, subagentMaxContext(config.subagent.maxContext, view.find((i) => i.hook === 'turn.step' && party(i.input) === key)?.input?.model), api);
+  const model: string | undefined = view.find((i) => i.hook === 'turn.step' && party(i.input) === key)?.input?.model;
+  const fetched = model === undefined ? undefined : view.flatMap((i) => i.calls).find((c) => c.path === 'http.fetch' && c.args[0] === modelWindowRequest(model).url)?.result; // the plugin's Models API lookup, as recorded
+  const m = key === 'main' ? partyMarks(config.main, config.main.maxContext ?? usage?.window, api) : partyMarks(config.subagent, subagentWindow(config.subagent.maxContext, model, {}, fetched === undefined ? undefined : parseModelWindow(fetched.status, fetched.text)).maxContext, api);
   return m?.askPoint ?? Number.POSITIVE_INFINITY;
 }
 /** The party's reading the plugin held at `seq`: the last of its steps that had ended by then (a step still open, its tools running, is not read yet). */
@@ -416,6 +419,13 @@ describe('the recorder', () => {
       const recorded = invocations(names.sort().map((n) => JSON.parse(readFileSync(join(rows, n), 'utf8'))));
       expect(recorded.find((i) => i.hook === 'skill.prompt')?.parent).toBe(recorded.find((i) => i.input?.tool === 'Skill')?.id);
       expect(recorded.find((i) => i.hook === 'session.compact')?.calls.map((c) => c.path)).toContain('agent.list');
+      // the sub-agent's first step looks its model's window up: both calls are rows, the credential handle in neither
+      const lookup = recorded.find((i) => i.hook === 'turn.step')!.calls.filter((c) => c.path === 'session.authorize' || c.path === 'http.fetch');
+      expect(lookup.map(({ path, args, result }) => ({ path, args, result }))).toEqual([
+        { path: 'session.authorize', args: [], result: { handle: 'credential-handle', kind: 'bearer' } },
+        { path: 'http.fetch', args: ['https://api.anthropic.com/v1/models/claude-sonnet-4-5', { headers: { 'anthropic-version': '2023-06-01' }, auth: 'credential-handle' }], result: SYNTHETIC_MODEL },
+      ]);
+      expect(names.filter((n) => readFileSync(join(rows, n), 'utf8').includes(SYNTHETIC_HANDLE)), 'rows that carry the credential handle').toEqual([]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -428,9 +438,20 @@ describe('the recorder', () => {
     expect(JSON.parse(parts.map((p) => p.text).join('')).input.text.length).toBe(PART_CHARS * 2 + 5);
   });
 
+  it('hands the plugin\'s draw hook to the engine under its own matcher, unrecorded', async () => {
+    const registered: { pattern: string; matcher?: unknown; hook: (...args: any[]) => any }[] = [];
+    recorder(((pattern: string, ...rest: any[]) => void registered.push({ pattern, ...(rest.length === 2 ? { matcher: rest[0] } : {}), hook: rest.at(-1) })) as any, {} as any);
+    expect(registered.map((r) => r.pattern)).toEqual([...RECORDED, 'ui.render']);
+    const draw = registered.at(-1)!;
+    expect(draw.matcher).toEqual({ component: 'UserMessage' });
+    const row = (isExpanded: boolean) => ({ surface: 'terminal', component: 'UserMessage', requestId: 'm1', props: { text: '[forward-compaction: facts] Your context was compacted', origin: { kind: 'unclassified' }, isExpanded } });
+    expect(await draw.hook({}, row(false), async () => 'engine')).toEqual({ type: 'Box', props: { display: 'none' } });
+    expect(await draw.hook({}, row(true), async () => 'engine')).toBe('engine');
+  });
+
   it('wraps every event and $ path the adapter uses, every variable it reads and every state key it uses, spelled as Claude Code requires', () => {
     const adapter = readFileSync(join(ROOT, 'plugins/forward-compaction/hooks/forward-compaction.ts'), 'utf8');
-    expect(new Set(adapter.match(/(?<=\bon\(')[^']+/g))).toEqual(new Set(RECORDED));
+    expect(new Set(adapter.match(/(?<=\bon\(')[^']+/g))).toEqual(new Set([...RECORDED, DRAWN.event]));
     expect(new Set(adapter.match(/(?<=\$\.)[a-z]+\.[a-zA-Z]+/g))).toEqual(new Set(PATHS));
     expect(new Set(adapter.match(/(?<=\$\.env\.get\(')[^']+/g))).toEqual(new Set(ENV_NAMES));
     expect(new Set(adapter.match(/(?<=\$\.state\.(?:get|set)\(\{ plugin: 'forward-compaction', key: ')[^']+/g))).toEqual(new Set(STATE_KEYS));

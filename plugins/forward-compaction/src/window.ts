@@ -1,5 +1,5 @@
-import { k } from './nudge.ts';
-import { sizeTokens, type PartySizes, type Size } from './options.ts';
+import { k } from './nudge';
+import { sizeTokens, type PartySizes, type Size } from './options';
 
 /** `$.session.usage({ breakdown: 'summary' })`'s breakdown, the fields the ask point is read from. */
 export type UsageBreakdown = { autoCompactThreshold?: number; rawMaxTokens?: number; autocompactSource?: string };
@@ -36,13 +36,13 @@ export function ceilingTokens(size: Size, maxContext: number): number {
   return sizeTokens(size, maxContext);
 }
 
-/** A party's token marks: its max context, Claude Code's ask point (held at or below the max context), the ceiling, the nudge start and step. */
-export type Marks = { maxContext: number; askPoint: number; ceiling: number; start: number; every: number };
+/** A party's token marks: its max context, Claude Code's ask point (held at or below the max context), the ceiling, the nudge start and step, and for main its finish start. */
+export type Marks = { maxContext: number; askPoint: number; ceiling: number; start: number; every: number; finish?: number };
 
 /** The marks of a party with these sizes against its max context; undefined while that is not known (main's, before Claude Code reports its window). */
-export function partyMarks(sizes: PartySizes, maxContext: number | undefined, apiAsk: number | undefined): Marks | undefined {
+export function partyMarks(sizes: PartySizes & { finishStart?: Size }, maxContext: number | undefined, apiAsk: number | undefined): Marks | undefined {
   if (maxContext === undefined) return undefined;
-  return { maxContext, askPoint: Math.min(apiAsk ?? maxContext, maxContext), ceiling: ceilingTokens(sizes.ceiling, maxContext), start: sizeTokens(sizes.nudgeStart, maxContext), every: sizeTokens(sizes.nudgeEvery, maxContext) };
+  return { maxContext, askPoint: Math.min(apiAsk ?? maxContext, maxContext), ceiling: ceilingTokens(sizes.ceiling, maxContext), start: sizeTokens(sizes.nudgeStart, maxContext), every: sizeTokens(sizes.nudgeEvery, maxContext), ...(sizes.finishStart === undefined ? {} : { finish: sizeTokens(sizes.finishStart, maxContext) }) };
 }
 
 /** A live window as `$.session.messages({ as: 'api' })` answers it: each message's content blocks. */

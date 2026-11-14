@@ -1,4 +1,4 @@
-import { pluginLogDir } from './plugin-log.ts';
+import { pluginLogDir } from './plugin-log';
 
 /** A context size: a token count, or a percentage of the party's max context. */
 export type Size = { tokens: number } | { percent: number };
@@ -6,16 +6,35 @@ export type Size = { tokens: number } | { percent: number };
 /** Each party's sizes: the ceiling (with no frontier stored, the context at which a mechanical wake is installed), where the first nudge goes out and the growth between nudges, each a token count or a percentage of the party's max context. */
 export type PartySizes = { ceiling: Size; nudgeStart: Size; nudgeEvery: Size };
 export const DEFAULT_MAIN: PartySizes = { ceiling: { percent: 60 }, nudgeStart: { percent: 15 }, nudgeEvery: { percent: 5 } };
-/** 160k on the 200k sub-agent max context; the first nudge at 80k sits above the floor a sub-agent's wake lands at. */
-export const DEFAULT_SUBAGENT: PartySizes = { ceiling: { percent: 80 }, nudgeStart: { percent: 40 }, nudgeEvery: { percent: 10 } };
-/** A sub-agent's max context when its model id has no `[1m]` marker: Claude Code's API reports no sub-agent's window. Main's defaults to the window `$.session.usage()` reports. */
+/** The ceiling is a share of the sub-agent's max context (160k on 200k, 800k on 1m); the nudges are token counts, the same on every max context. */
+export const DEFAULT_SUBAGENT: PartySizes = { ceiling: { percent: 80 }, nudgeStart: { tokens: 165_000 }, nudgeEvery: { tokens: 65_000 } };
+/** The fallback: a sub-agent's max context while its model's window is not known. The smallest window the Models API lists, and the one Claude Code itself takes for a model it does not know: a ceiling reached early costs a mechanical wake, one set too high a request too long. Main's max context defaults to the window `$.session.usage()` reports. */
+/** Main's finish start: the context from which main is told to compact at the end of its whole work, before the final report. A token count: what a compaction leaves behind does not grow with the max context. */
+export const DEFAULT_MAIN_FINISH_START: Size = { tokens: 100_000 };
 export const DEFAULT_SUBAGENT_MAX_CONTEXT = 200_000;
 /** A sub-agent's max context when its model id carries the API's own `[1m]` context marker. */
 export const MARKED_SUBAGENT_MAX_CONTEXT = 1_000_000;
 
-/** A sub-agent's max context: the set variable for every sub-agent, else 1m for a model id carrying `[1m]` and 200k for every other (and while no step has named its model). */
-export function subagentMaxContext(set: number | undefined, model: string | undefined): number {
-  return set ?? (model?.includes('[1m]') ? MARKED_SUBAGENT_MAX_CONTEXT : DEFAULT_SUBAGENT_MAX_CONTEXT);
+/** Main's model as its last step named it, with the window Claude Code reports for main. */
+export type MainWindow = { model?: string; window?: number };
+
+/** Where a sub-agent's max context comes from: the set variable, its model id's `[1m]` marker, main's reported window, the Models API's `max_input_tokens`, or the fallback while none of them knows. */
+export type WindowSource = 'option' | 'marker' | 'main' | 'models-api' | 'fallback';
+/** A sub-agent's max context with its source; `unknown` says why its model's window is not known, whenever the fallback stands in for it. */
+export type SubagentWindow = { maxContext: number; source: WindowSource; unknown?: string };
+
+/**
+ * A sub-agent's max context, the first of these that knows: the set variable, for every sub-agent; 1m for a model id
+ * carrying `[1m]`; main's reported window for a sub-agent on main's own model id; the window the Models API states for
+ * its model (`looked`, model-window.ts); else the fallback, with why the window is unknown.
+ */
+export function subagentWindow(set: number | undefined, model: string | undefined, main: MainWindow = {}, looked?: { window: number } | { unknown: string }): SubagentWindow {
+  if (set !== undefined) return { maxContext: set, source: 'option' };
+  if (model === undefined) return { maxContext: DEFAULT_SUBAGENT_MAX_CONTEXT, source: 'fallback', unknown: 'no step has named its model yet' };
+  if (model.includes('[1m]')) return { maxContext: MARKED_SUBAGENT_MAX_CONTEXT, source: 'marker' };
+  if (model === main.model && main.window !== undefined) return { maxContext: main.window, source: 'main' };
+  if (looked !== undefined && 'window' in looked) return { maxContext: looked.window, source: 'models-api' };
+  return { maxContext: DEFAULT_SUBAGENT_MAX_CONTEXT, source: 'fallback', unknown: looked?.unknown ?? 'its model was not looked up yet' };
 }
 /** Mechanical wakes, not native summaries, at the ceiling. */
 export const DEFAULT_CEILING_NATIVE = false;
@@ -73,6 +92,7 @@ export const OPTION_ENV = {
   mainCeiling: 'FORWARD_COMPACTION_MAIN_CEILING',
   mainNudgeStart: 'FORWARD_COMPACTION_MAIN_NUDGE_START',
   mainNudgeEvery: 'FORWARD_COMPACTION_MAIN_NUDGE_EVERY',
+  mainFinishStart: 'FORWARD_COMPACTION_MAIN_FINISH_START',
   subagentMaxContext: 'FORWARD_COMPACTION_SUBAGENT_MAX_CONTEXT',
   subagentCeiling: 'FORWARD_COMPACTION_SUBAGENT_CEILING',
   subagentNudgeStart: 'FORWARD_COMPACTION_SUBAGENT_NUDGE_START',
@@ -94,9 +114,9 @@ export function parseEnvFlag(raw: string): Parse<boolean> {
 }
 
 export type ResolvedOptions = {
-  /** Main's sizes and max context; no max context set means the window `$.session.usage()` reports. */
-  main: PartySizes & { maxContext?: number };
-  /** No max context set means each sub-agent's own, from its model id (`subagentMaxContext`). */
+  /** Main's sizes, finish start and max context; no max context set means the window `$.session.usage()` reports. */
+  main: PartySizes & { finishStart: Size; maxContext?: number };
+  /** No max context set means each sub-agent's own, its model's (`subagentWindow`). */
   subagent: PartySizes & { maxContext?: number };
   /** At the ceiling with no frontier, Claude Code's own summary runs instead of the mechanical wake. */
   ceilingNative: boolean;
@@ -172,7 +192,7 @@ export function resolveOptions(env: OptionEnvironment = {}): ResolvedOptions {
     nudgeEvery: size(`${party}NudgeEvery`, fallback.nudgeEvery),
   });
   const mainMax = maxContext('mainMaxContext', "main's window");
-  const main = { ...sizes('main', DEFAULT_MAIN), ...(mainMax !== undefined ? { maxContext: mainMax } : {}) };
+  const main = { ...sizes('main', DEFAULT_MAIN), finishStart: size('mainFinishStart', DEFAULT_MAIN_FINISH_START), ...(mainMax !== undefined ? { maxContext: mainMax } : {}) };
   const subagentMax = maxContext('subagentMaxContext', "each sub-agent's model's max context");
   const subagent = { ...sizes('subagent', DEFAULT_SUBAGENT), ...(subagentMax !== undefined ? { maxContext: subagentMax } : {}) };
   const ceilingNative = flag('ceilingNative', DEFAULT_CEILING_NATIVE);

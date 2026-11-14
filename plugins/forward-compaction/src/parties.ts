@@ -1,8 +1,9 @@
-import type { Landing } from './wake.ts';
-import { ignoredBy, type RatioBase } from './window.ts';
-import { keptOrders, type LiftedOrder, type StandingOrder } from './orders.ts';
-import type { PlanSeen } from './plan.ts';
-import type { LoadFile } from './frontier.ts';
+import type { Landing } from './wake';
+import { ignoredBy, type RatioBase } from './window';
+import { keptOrders, type LiftedOrder, type StandingOrder } from './orders';
+import type { PlanSeen } from './plan';
+import type { LoadFile } from './frontier';
+import type { SubagentWindow } from './options';
 
 /** A frontier the model wrote, held in memory until a door installs it. */
 export type StoredFrontier = {
@@ -36,6 +37,9 @@ export type Judging = { mainKnown: boolean; ignore: readonly string[] };
 /** The decision row `ignore`: a party's ignore judgement, written when first made and each time it changes, with the list entry its model matched. */
 export type IgnoreRow = { event: 'ignore'; party: string; label: string; model: string | null; judged: Judgement; matched: string | null };
 
+/** The decision row `window`: the max context a sub-agent is measured against, where it came from and the ceiling it gives, written when first known and each time it changes; `unknown` says why its model's window is not known, and the max context is then the fallback. */
+export type WindowRow = { event: 'window'; party: string; label: string; model: string; ceiling: number } & SubagentWindow;
+
 export type PartyState = {
   /** "main" or "agent:{id}". */
   key: string;
@@ -61,8 +65,14 @@ export type PartyState = {
   nudgeLevel: number;
   /** True from an install until the party's next reading, whose nudge level is then absorbed silently. */
   absorbNext: boolean;
-  /** The party's first reading after its last install: its next nudge waits until the context has grown by `every` past it. */
+  /** The party's first reading after its last install: its next nudge waits until the context has grown by its working room past it (`roomAfterWake`). */
   wokeAt?: number;
+  /** The reading the party's last nudge went out at, since its last install: the next one waits until the context has grown by `every` past it. */
+  nudgedAt?: number;
+  /** The nudges delivered since the last install: the count a nudge's wording goes by (nudge.ts `nudgeText`). */
+  nudges: number;
+  /** The finish notice went out since the last install (`finishDue`). */
+  finishTold: boolean;
   /** The party's completed requests. */
   requests: number;
   installs: number;
@@ -72,11 +82,24 @@ export type PartyState = {
   dropAsked: string[];
   /** The judgement last returned by `judged`. */
   judged?: Judgement;
+  /** The max context, source and unknown reason of the last window row returned for the party (`windowed`). */
+  windowed?: string;
   /** Plan mode and the plan file, as the party's last plan-mode attachment named them (plan.ts `planFrom`). */
   plan?: PlanSeen;
 };
 
 /** Per-party state, memory only, keyed "main" or "agent:{id}". A party is created on first touch. */
+/** The marks a nudge is timed by, in tokens. */
+export type NudgeMarks = { start: number; every: number; ceiling: number };
+
+/**
+ * The growth a party gets after a wake before its next nudge: as much as it had before its first nudge (`start`),
+ * held to two `every` below its ceiling so a nudge still comes before the mechanical wake, and never under one `every`.
+ */
+export function roomAfterWake(wokeAt: number, { start, every, ceiling }: NudgeMarks): number {
+  return Math.max(every, Math.min(start, ceiling - 2 * every - wokeAt));
+}
+
 export class Parties {
   private readonly states = new Map<string, PartyState>();
   private seq = 0;
@@ -85,7 +108,7 @@ export class Parties {
   get(key: string): PartyState {
     let state = this.states.get(key);
     if (!state) {
-      state = { key, label: key, answeredSinceSkip: true, nudgeLevel: 0, absorbNext: false, requests: 0, installs: 0, installedThisTurn: false, dropAsked: [] };
+      state = { key, label: key, answeredSinceSkip: true, nudgeLevel: 0, absorbNext: false, nudges: 0, finishTold: false, requests: 0, installs: 0, installedThisTurn: false, dropAsked: [] };
       this.states.set(key, state);
     }
     return state;
@@ -103,7 +126,7 @@ export class Parties {
 
   /**
    * Main's max context is not known: `FORWARD_COMPACTION_MAIN_MAX_CONTEXT` is unset and Claude Code has not reported its
-   * window yet. Main then gets no nudge and no ceiling. A sub-agent's is always known: `FORWARD_COMPACTION_SUBAGENT_MAX_CONTEXT`, else its model's (`subagentMaxContext`).
+   * window yet. Main then gets no nudge and no ceiling. A sub-agent always has one: `FORWARD_COMPACTION_SUBAGENT_MAX_CONTEXT`, else its model's, else the fallback (options.ts `subagentWindow`).
    */
   windowUnknown(key: string, mainKnown: boolean): boolean {
     return key === 'main' && !mainKnown;
@@ -123,6 +146,15 @@ export class Parties {
     if (state.judged === judged) return undefined;
     state.judged = judged;
     return { event: 'ignore', party: key, label: state.label, model: state.model ?? null, judged, matched: this.ignored(key, judging.ignore) ?? null };
+  }
+
+  /** The window row when the party's max context, its source or the reason it is unknown is new or has changed since the last row returned for the party; undefined while it holds, and before a step has named the party's model. */
+  windowed(key: string, window: SubagentWindow, ceiling: number): WindowRow | undefined {
+    const state = this.get(key);
+    const windowed = `${window.maxContext} ${window.source} ${window.unknown ?? ''}`;
+    if (state.model === undefined || state.windowed === windowed) return undefined;
+    state.windowed = windowed;
+    return { event: 'window', party: key, label: state.label, model: state.model, ...window, ceiling };
   }
 
   /** Stores the party's frontier, the latest winning; returns the one it replaced. */
@@ -237,19 +269,39 @@ export class Parties {
   /**
    * Whether a nudge goes out now, recorded as sent: once per level while nothing is stored. None goes between an
    * install and the party's next reading: until then no size is measured. After a wake none goes until the reading
-   * (`tokens`) has grown by `every` past the first one after it: a first reading just under a level boundary would
-   * otherwise be nudged again a few thousand tokens later.
+   * (`tokens`) has grown by the party's working room (`roomAfterWake`) past the first one after it: a wake lands
+   * near or above the nudge start, and a nudge a few thousand tokens later makes the party compact in a loop. None
+   * goes within `every` of the last one either: a nudge held back past a level boundary is not followed by the next level's.
    */
-  nudgeDue(key: string, level: number, tokens?: number, every?: number): boolean {
+  nudgeDue(key: string, level: number, tokens?: number, marks?: NudgeMarks): boolean {
     const state = this.get(key);
     if (state.stored !== undefined || state.absorbNext || level <= state.nudgeLevel) return false;
-    if (state.wokeAt !== undefined && tokens !== undefined && every !== undefined && tokens < state.wokeAt + every) return false;
+    if (tokens !== undefined && marks !== undefined) {
+      if (state.wokeAt !== undefined && tokens < state.wokeAt + roomAfterWake(state.wokeAt, marks)) return false;
+      if (state.nudgedAt !== undefined && tokens < state.nudgedAt + marks.every) return false;
+    }
     state.nudgeLevel = level;
+    state.nudgedAt = tokens;
+    state.nudges += 1;
     return true;
   }
 
   /**
-   * A compaction installed: the frontier goes, the nudges start over from the next reading's level, and no reading
+   * Whether the finish notice goes out now, recorded as sent: once since the party's last install, at a reading
+   * (`tokens`) of `start` or more, while nothing is stored and no nudge has gone, as a nudge's first wordings carry
+   * the finish rule themselves. After a wake none goes until the reading has grown by `every` past the first one
+   * after it: a compaction that soon frees next to nothing.
+   */
+  finishDue(key: string, tokens: number, start: number, every: number): boolean {
+    const state = this.get(key);
+    if (state.finishTold || state.nudges > 0 || state.stored !== undefined || state.absorbNext || tokens < start) return false;
+    if (state.wokeAt !== undefined && tokens < state.wokeAt + every) return false;
+    state.finishTold = true;
+    return true;
+  }
+
+  /**
+   * A compaction installed: the frontier goes, the nudges and the finish notice start over from the next reading's level, and no reading
    * stands until the next request measures one, whose landing line then goes out. Returns a landing still waiting from an earlier install.
    */
   installed(key: string, landing?: Landing): Landing | undefined {
@@ -259,8 +311,11 @@ export class Parties {
       lastDecision: 'install',
       answeredSinceSkip: true,
       nudgeLevel: 0,
+      nudges: 0,
+      finishTold: false,
       absorbNext: true,
       wokeAt: undefined,
+      nudgedAt: undefined,
       reading: undefined,
       base: undefined,
       landing,

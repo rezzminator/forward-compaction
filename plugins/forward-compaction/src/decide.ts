@@ -1,4 +1,4 @@
-import { andList } from './nudge.ts';
+import { andList } from './nudge';
 
 export type Trigger = 'manual' | 'auto' | 'plugin' | 'precompute';
 

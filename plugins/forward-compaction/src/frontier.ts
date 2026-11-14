@@ -1,15 +1,15 @@
 // The forward_compaction tool contract: what the model may send, what is stored whole (never trimmed, never refused), and what the receipt says.
 
-import { k } from './nudge.ts';
-import { DROP_MAX } from './drop.ts';
-import { carryOrders, type LiftedOrder, type OrderMemory, type StandingOrder } from './orders.ts';
-export { applyDrops, dropNote, pinnedBy } from './drop.ts';
+import { k } from './nudge';
+import { DROP_MAX } from './drop';
+import { carryOrders, type LiftedOrder, type OrderMemory, type StandingOrder } from './orders';
+export { applyDrops, dropNote, pinnedBy } from './drop';
 
 /** The tool's name as registered; the model sees `mcp__forward-compaction__forward_compaction`. */
 export const FORWARD_TOOL = 'forward_compaction';
 
 export const FORWARD_TOOL_DESCRIPTION =
-  'Compacts your context — at a clean milestone once context is large. Stores your frontier, one argument per section, any length, for yourself after a reset; at your next compaction it and recorded facts replace everything before this call, the newest later messages that fit stay verbatim, the rest named as not carried. The person\'s binding orders go in standing_orders, verbatim. Always stores; the receipt names any change. Example: forward_compaction({"objective": "…", "decisions": "…", "done": "…", "remaining": "…", "next": "…", "load_files": []}). Exact old detail later → look_back.';
+  'Compacts your context at a clean milestone once it is large. Stores your frontier, one argument per section, any length, for yourself after a reset; at your next compaction it and recorded facts replace everything before this call, the newest later messages that fit stay verbatim, the rest named as not carried. The person\'s binding orders go in standing_orders, verbatim. Always stores; the receipt names any change. Example: forward_compaction({"objective": "…", "decisions": "…", "done": "…", "remaining": "…", "next": "…", "load_files": [{"path": "…"}]}). Exact old detail later → look_back.';
 
 /**
  * The frontier's sections in the order they are assembled: the argument, its heading, whether it is required, and what it
@@ -19,7 +19,7 @@ const SECTIONS = [
   { key: 'objective', heading: 'Objective', required: true, description: 'MANDATORY: what the work is for and what done means.' },
   { key: 'decisions', heading: 'Decisions', required: true, description: 'MANDATORY: every ruling the person gave on how something gets done, in the person\'s words, each with its undo when one exists; "none" when there are none. Rules binding the rest of the work go in standing_orders.' },
   { key: 'done', heading: 'Done', required: true, description: 'MANDATORY: finished pieces, each with how it was verified; every figure with the command that produced it.' },
-  { key: 'remaining', heading: 'Remaining', required: true, description: 'MANDATORY: every step left, in order; "none" when nothing is left.' },
+  { key: 'remaining', heading: 'Remaining', required: true, description: 'MANDATORY: every step left, in order; "none" when nothing is left. A plan file you update at each milestone may stand in: name its path here and put it in load_files.' },
   { key: 'next', heading: 'Next', required: true, description: 'MANDATORY: the first concrete action after the wake.' },
   { key: 'blocked', heading: 'Blocked', required: false, description: 'Optional: what waits on whom.' },
   { key: 'findings', heading: 'Findings', required: false, description: 'Optional: your own choices with why, errors verbatim, the commands and recipes you will need again.' },
@@ -88,6 +88,8 @@ export const FORWARD_INPUT_SCHEMA = {
 // Format caps: design budgets on what the model may send, never a measured size.
 /** Lines one load file carries: a plan, a spec or a module in hand reads whole, and a longer one names where to Read the rest. */
 export const LOAD_FILE_MAX_LINES = 250;
+/** The most characters one file the plugin picked carries at a mechanical install: 250 lines of 160. A file of few, enormous lines is cut here, where the line cap never bites. */
+export const LOAD_FILE_MAX_CHARS = 40_000;
 /** A load file's `why`: one line saying what it is for; a longer one is cut to it. */
 export const WHY_MAX_CHARS = 200;
 
@@ -306,16 +308,19 @@ const span = (r: { from: number; to: number }): string => (r.from === r.to ? `${
  * line. Lines asked for past the cap are counted, and the body ends with one line naming where to Read them. `shown` is
  * the ranges that loaded, clipped to the file and the cap ('' for a whole file). A range past the file's end, or clipped
  * by it, is a `problem`, and an empty load is one too: a slice of nothing never reaches the wake as a Load block that says nothing.
+ * A file holding a NUL character is binary and is a `problem`, never a body; with `maxChars`, a body past it is cut there and says so.
  */
-export function sliceFile(path: string, text: string, ranges: readonly { from: number; to: number }[] | undefined): { body: string; shown: string; problem?: string } | { problem: string } {
+export function sliceFile(path: string, text: string, ranges: readonly { from: number; to: number }[] | undefined, maxChars?: number): { body: string; shown: string; problem?: string } | { problem: string } {
+  if (text.includes('\u0000')) return { problem: 'not a text file' };
+  const capped = (body: string): string => (maxChars === undefined || body.length <= maxChars ? body : `${body.slice(0, maxChars)}\n[cut at ${maxChars} characters: Read ${path} for the rest]`);
   const lines = text.split('\n');
   if (lines.length > 0 && lines[lines.length - 1] === '') lines.pop();
   const count = lines.length;
   const more = (left: number, from: number): string => `[${left} more lines not carried: Read ${path} from line ${from}]`;
   if (ranges === undefined) {
     if (text.trim() === '') return { problem: 'the file is empty' };
-    if (count <= LOAD_FILE_MAX_LINES) return { body: text, shown: '' };
-    return { body: [...lines.slice(0, LOAD_FILE_MAX_LINES), more(count - LOAD_FILE_MAX_LINES, LOAD_FILE_MAX_LINES + 1)].join('\n'), shown: `1-${LOAD_FILE_MAX_LINES}` };
+    if (count <= LOAD_FILE_MAX_LINES) return { body: capped(text), shown: '' };
+    return { body: capped([...lines.slice(0, LOAD_FILE_MAX_LINES), more(count - LOAD_FILE_MAX_LINES, LOAD_FILE_MAX_LINES + 1)].join('\n')), shown: `1-${LOAD_FILE_MAX_LINES}` };
   }
   const parts: string[] = [];
   const shown: { from: number; to: number }[] = [];
@@ -358,6 +363,6 @@ export function sliceFile(path: string, text: string, ranges: readonly { from: n
   if (shown.length === 0) return { problem: problem ?? 'no lines asked for' };
   if (!held) return { problem: [problem, `lines ${shown.map(span).join(',')}: only blank lines`].filter((p) => p !== undefined).join('; ') };
   if (left > 0) parts.push(more(left, next!));
-  return { body: parts.join('\n'), shown: shown.map(span).join(','), ...(problem !== undefined ? { problem } : {}) };
+  return { body: capped(parts.join('\n')), shown: shown.map(span).join(','), ...(problem !== undefined ? { problem } : {}) };
 }
 

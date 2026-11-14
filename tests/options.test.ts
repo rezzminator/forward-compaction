@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { formatSize, OPTION_ENV, parseEnvFlag, parseSize, resolveOptions, sizeTokens, subagentMaxContext } from '../plugins/forward-compaction/src/options.ts';
+import { formatSize, OPTION_ENV, parseEnvFlag, parseSize, resolveOptions, sizeTokens, subagentWindow } from '../plugins/forward-compaction/src/options.ts';
 import { optionVars } from './option-env.ts';
 
 describe('parseSize and sizeTokens', () => {
@@ -23,14 +23,23 @@ describe('parseSize and sizeTokens', () => {
   });
 });
 
-describe('subagentMaxContext (L5, S1, S5)', () => {
-  it("measures a sub-agent whose model id carries [1m] against 1m, every other against 200k, and a set variable wins for all", () => {
-    expect(subagentMaxContext(undefined, 'claude-opus-5-5[1m]')).toBe(1_000_000);
-    expect(subagentMaxContext(undefined, 'claude-sonnet-5-5')).toBe(200_000);
-    expect(subagentMaxContext(undefined, 'claude-haiku-4-5-20251001')).toBe(200_000);
-    expect(subagentMaxContext(undefined, undefined)).toBe(200_000);
-    expect(subagentMaxContext(400_000, 'claude-opus-5-5[1m]')).toBe(400_000);
-    expect(subagentMaxContext(400_000, 'claude-sonnet-5-5')).toBe(400_000);
+describe('subagentWindow (L5, S1, S5)', () => {
+  const main = { model: 'claude-fable-5-2', window: 1_000_000 };
+  const listed = { window: 1_000_000 };
+  it.each<[string, Parameters<typeof subagentWindow>, ReturnType<typeof subagentWindow>]>([
+    ['the set variable, for every model', [400_000, 'claude-opus-5-5[1m]', main, listed], { maxContext: 400_000, source: 'option' }],
+    ['the set variable, for main\'s model', [400_000, 'claude-fable-5-2', main], { maxContext: 400_000, source: 'option' }],
+    ['the set variable, before a step names the model', [400_000, undefined], { maxContext: 400_000, source: 'option' }],
+    ['the [1m] marker of the model id', [undefined, 'claude-opus-5-5[1m]', main, { window: 200_000 }], { maxContext: 1_000_000, source: 'marker' }],
+    ["main's reported window, on main's own model id", [undefined, 'claude-fable-5-2', { model: 'claude-fable-5-2', window: 200_000 }, listed], { maxContext: 200_000, source: 'main' }],
+    ['the Models API figure of a 1M model under another main model', [undefined, 'claude-sonnet-5-5', main, listed], { maxContext: 1_000_000, source: 'models-api' }],
+    ['the Models API figure of a 200k model', [undefined, 'claude-haiku-4-5-20251001', main, { window: 200_000 }], { maxContext: 200_000, source: 'models-api' }],
+    ["the Models API figure on main's model id while main's window is not known", [undefined, 'claude-fable-5-2', { model: 'claude-fable-5-2' }, listed], { maxContext: 1_000_000, source: 'models-api' }],
+    ['the fallback, for a model the lookup could not learn', [undefined, 'claude-no-such-model-9', main, { unknown: 'the Models API does not list this model (404 not_found_error)' }], { maxContext: 200_000, source: 'fallback', unknown: 'the Models API does not list this model (404 not_found_error)' }],
+    ['the fallback, before its model was looked up', [undefined, 'claude-sonnet-5-5', main], { maxContext: 200_000, source: 'fallback', unknown: 'its model was not looked up yet' }],
+    ['the fallback, before a step names its model', [undefined, undefined, main, listed], { maxContext: 200_000, source: 'fallback', unknown: 'no step has named its model yet' }],
+  ])('measures a sub-agent against %s', (_name, args, want) => {
+    expect(subagentWindow(...args)).toEqual(want);
   });
 });
 
@@ -44,8 +53,8 @@ describe('parseEnvFlag', () => {
 describe('resolveOptions', () => {
   it('holds the defaults with nothing set', () => {
     expect(resolveOptions()).toEqual({
-      main: { ceiling: { percent: 60 }, nudgeStart: { percent: 15 }, nudgeEvery: { percent: 5 } },
-      subagent: { ceiling: { percent: 80 }, nudgeStart: { percent: 40 }, nudgeEvery: { percent: 10 } },
+      main: { ceiling: { percent: 60 }, nudgeStart: { percent: 15 }, nudgeEvery: { percent: 5 }, finishStart: { tokens: 100_000 } },
+      subagent: { ceiling: { percent: 80 }, nudgeStart: { tokens: 165_000 }, nudgeEvery: { tokens: 65_000 } },
       ceilingNative: false, ignoreModels: ['haiku'], keepSkills: [], debug: true, errors: [],
     });
   });
@@ -56,6 +65,7 @@ describe('resolveOptions', () => {
       mainCeiling: 'FORWARD_COMPACTION_MAIN_CEILING',
       mainNudgeStart: 'FORWARD_COMPACTION_MAIN_NUDGE_START',
       mainNudgeEvery: 'FORWARD_COMPACTION_MAIN_NUDGE_EVERY',
+      mainFinishStart: 'FORWARD_COMPACTION_MAIN_FINISH_START',
       subagentMaxContext: 'FORWARD_COMPACTION_SUBAGENT_MAX_CONTEXT',
       subagentCeiling: 'FORWARD_COMPACTION_SUBAGENT_CEILING',
       subagentNudgeStart: 'FORWARD_COMPACTION_SUBAGENT_NUDGE_START',
@@ -84,12 +94,14 @@ describe('resolveOptions', () => {
   });
 
   it('names a bad size by its variable and falls back to the default (R3)', () => {
-    const resolved = resolveOptions({ vars: { FORWARD_COMPACTION_MAIN_CEILING: 'abc', FORWARD_COMPACTION_SUBAGENT_CEILING: '0' } });
+    const resolved = resolveOptions({ vars: { FORWARD_COMPACTION_MAIN_CEILING: 'abc', FORWARD_COMPACTION_MAIN_FINISH_START: '-5', FORWARD_COMPACTION_SUBAGENT_CEILING: '0' } });
     expect(resolved.errors).toEqual([
       'forward-compaction: env FORWARD_COMPACTION_MAIN_CEILING is invalid (not an integer, a k/m value or a percentage: "abc"); using the default 60%',
+      'forward-compaction: env FORWARD_COMPACTION_MAIN_FINISH_START is invalid (not an integer, a k/m value or a percentage: "-5"); using the default 100000',
       'forward-compaction: env FORWARD_COMPACTION_SUBAGENT_CEILING is invalid (not positive: "0"); using the default 80%',
     ]);
     expect(resolved.main.ceiling).toEqual({ percent: 60 });
+    expect(resolved.main.finishStart).toEqual({ tokens: 100_000 });
     expect(resolved.subagent.ceiling).toEqual({ percent: 80 });
   });
 
@@ -114,9 +126,9 @@ describe('resolveOptions', () => {
   });
 
   it('reads every size option through the test helper', () => {
-    const resolved = resolveOptions({ vars: optionVars({ mainCeiling: '80k', mainNudgeStart: '30k', mainNudgeEvery: '5k', subagentCeiling: '50%', subagentNudgeStart: '20k', subagentNudgeEvery: '2%', ceilingNative: true }) });
+    const resolved = resolveOptions({ vars: optionVars({ mainCeiling: '80k', mainNudgeStart: '30k', mainNudgeEvery: '5k', mainFinishStart: '10%', subagentCeiling: '50%', subagentNudgeStart: '20k', subagentNudgeEvery: '2%', ceilingNative: true }) });
     expect(resolved).toMatchObject({
-      main: { ceiling: { tokens: 80_000 }, nudgeStart: { tokens: 30_000 }, nudgeEvery: { tokens: 5_000 } },
+      main: { ceiling: { tokens: 80_000 }, nudgeStart: { tokens: 30_000 }, nudgeEvery: { tokens: 5_000 }, finishStart: { percent: 10 } },
       subagent: { ceiling: { percent: 50 }, nudgeStart: { tokens: 20_000 }, nudgeEvery: { percent: 2 } },
       ceilingNative: true, errors: [],
     });
@@ -133,7 +145,7 @@ describe('resolveOptions', () => {
 
   it('names a nudge start that is not below the ceiling in the same unit, and passes across units', () => {
     expect(resolveOptions({ vars: { FORWARD_COMPACTION_MAIN_CEILING: '40k', FORWARD_COMPACTION_MAIN_NUDGE_START: '50k' } }).errors).toEqual(['forward-compaction: env FORWARD_COMPACTION_MAIN_NUDGE_START 50000 is not below FORWARD_COMPACTION_MAIN_CEILING 40000; no nudge goes out before the ceiling']);
-    expect(resolveOptions({ vars: { FORWARD_COMPACTION_SUBAGENT_CEILING: '40%' } }).errors).toEqual(['forward-compaction: env FORWARD_COMPACTION_SUBAGENT_NUDGE_START 40% is not below FORWARD_COMPACTION_SUBAGENT_CEILING 40%; no nudge goes out before the ceiling']);
+    expect(resolveOptions({ vars: { FORWARD_COMPACTION_SUBAGENT_CEILING: '80k' } }).errors).toEqual(['forward-compaction: env FORWARD_COMPACTION_SUBAGENT_NUDGE_START 165000 is not below FORWARD_COMPACTION_SUBAGENT_CEILING 80000; no nudge goes out before the ceiling']);
     expect(resolveOptions({ vars: { FORWARD_COMPACTION_MAIN_CEILING: '40k', FORWARD_COMPACTION_MAIN_NUDGE_START: '20k' } }).errors).toEqual([]);
     expect(resolveOptions({ vars: { FORWARD_COMPACTION_MAIN_CEILING: '30%' } }).errors).toEqual([]);
   });

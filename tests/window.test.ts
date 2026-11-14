@@ -91,6 +91,11 @@ describe('partyMarks: a party sized against its max context', () => {
     expect(partyMarks(sub, 200_000, undefined)).toMatchObject({ askPoint: 200_000 });
   });
 
+  it("sizes main's finish start too, a token count as it is and a percentage against the max context", () => {
+    expect(partyMarks({ ...sub, finishStart: { tokens: 100_000 } }, 1_000_000, 63_000)).toEqual({ maxContext: 1_000_000, askPoint: 63_000, ceiling: 800_000, start: 400_000, every: 100_000, finish: 100_000 });
+    expect(partyMarks({ ...sub, finishStart: { percent: 10 } }, 200_000, 63_000)).toMatchObject({ finish: 20_000 });
+  });
+
   it("is undefined while main's max context is not known", () => {
     expect(partyMarks(sub, undefined, 63_000)).toBeUndefined();
   });

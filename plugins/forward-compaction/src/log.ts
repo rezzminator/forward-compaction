@@ -2,7 +2,7 @@
 // Chats share the decisions folder in the plugin log directory, so each session writes its own
 // file there; a resumed session appends to the rows it wrote before.
 // The level files are the plugin's own logging module's (./plugin-log.ts); this file keeps only what is this plugin's own.
-import { LOCK_FN, runAborted, type PluginLogFields } from './plugin-log.ts';
+import { LOCK_FN, runAborted, type PluginLogFields } from './plugin-log';
 
 /** The session's own log path: the session id goes before the extension of `logFile`. */
 export function sessionLogPath(logFile: string, sessionId: string): string {
@@ -224,16 +224,17 @@ export function pluginLogEvent(row: Record<string, unknown>): Omit<PluginLogFiel
   let event = String(row.event);
   if (NO_LEVEL_ROW.includes(event)) return undefined;
   if (event === 'compact' && row.decision === 'error') event = 'compact-error';
+  if (event === 'window' && typeof row.unknown === 'string') event = 'window-unknown';
   const errors = ['option-error', 'tool-register-failed', 'look-back-manual-error', 'compact-error', 'turn-end-rejected'];
-  const warnings = ['decision-retention-failed', 'unseen-compaction', 'compact-window', 'ceiling-below-ask'];
+  const warnings = ['decision-retention-failed', 'unseen-compaction', 'compact-window', 'ceiling-below-ask', 'window-unknown'];
   const level = errors.includes(event) ? 'error' : warnings.includes(event) ? 'warning' : 'info';
   const detail: Record<string, unknown> = {};
-  for (const key of ['party', 'type', 'tool', 'tries', 'seq', 'why', 'tokens', 'chars', 'files', 'before', 'after', 'held', 'error', 'problem', 'dir', 'level', 'decision', 'trigger', 'count', 'from', 'to', 'firstTokens', 'lastTokens', 'label', 'model', 'judged', 'matched']) {
+  for (const key of ['party', 'type', 'tool', 'tries', 'seq', 'why', 'tokens', 'chars', 'files', 'before', 'after', 'held', 'error', 'problem', 'dir', 'level', 'decision', 'trigger', 'count', 'from', 'to', 'firstTokens', 'lastTokens', 'label', 'model', 'judged', 'matched', 'maxContext', 'source', 'ceiling', 'unknown']) {
     const value = row[key];
     if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean' || value === null) detail[key] = value;
   }
   const skips = event === 'skips' && typeof row.count === 'number' ? `${row.count} more held compaction asks folded` : undefined;
-  const msg = [row.line, row.error, row.problem, row.detail, skips, row.reason, row.why].find((value) => typeof value === 'string');
+  const msg = [row.line, row.error, row.problem, row.detail, skips, row.reason, row.why, row.unknown].find((value) => typeof value === 'string');
   return { level, event, msg: typeof msg === 'string' ? msg : event.replace(/-/g, ' '), where: `hooks/forward-compaction.ts#${typeof row.where === 'string' ? row.where : 'record'}`, detail, ...(event === 'skips' && typeof row.ts === 'string' ? { ts: row.ts } : {}) };
 }
 

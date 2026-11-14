@@ -14,7 +14,7 @@ const frontier = (toolUseId: string, storedAtTokens = 41_200): Omit<StoredFronti
 describe('Parties state', () => {
   it('creates a party on first touch with the defaults', () => {
     const parties = new Parties();
-    expect(parties.get('main')).toMatchObject({ key: 'main', label: 'main', nudgeLevel: 0, absorbNext: false, installs: 0, installedThisTurn: false });
+    expect(parties.get('main')).toMatchObject({ key: 'main', label: 'main', nudgeLevel: 0, absorbNext: false, nudges: 0, finishTold: false, installs: 0, installedThisTurn: false });
     expect(parties.get('main').stored).toBeUndefined();
     expect(parties.get('main').reading).toBeUndefined();
     expect(parties.get('agent:a1').label).toBe('agent:a1');
@@ -97,6 +97,7 @@ describe('nudgeDue (R30)', () => {
     expect(parties.nudgeDue('main', 1)).toBe(true);
     expect(parties.nudgeDue('main', 2)).toBe(true);
     expect(parties.nudgeDue('main', 1)).toBe(false);
+    expect(parties.get('main').nudges).toBe(2); // the delivered ones only
   });
 
   it('owes nothing at level 0 and nothing while a frontier is stored', () => {
@@ -160,16 +161,31 @@ describe('the first reading after an install (no re-nudge)', () => {
     expect(parties.nudgeDue('main', 5)).toBe(true);
   });
 
-  it('sends no nudge loop after a wake (S2, decisions 0f3e8b92 rows 20-25): the next one only once the context grew by every past the first reading', () => {
-    // start 40k, every 20k: woken, the first reading 66,560 is level 2, just under the 80k boundary.
+  it('sends no nudge loop after a wake (S2, decisions 0f3e8b92 rows 20-25): the next one only once the context grew by its working room past the first reading', () => {
+    // start 80k, every 20k: the first reading after each wake, the ceiling, and the first reading that is nudged again.
+    const cases: [woke: number, ceiling: number, due: number][] = [
+      [78_000, 800_000, 158_000], // far from the ceiling: the start's 80k of room
+      [66_560, 160_000, 120_000], // held to two every below the ceiling
+      [110_000, 160_000, 130_000], // already past that hold: one every
+    ];
+    for (const [woke, ceiling, first] of cases) {
+      const marks = { start: 80_000, every: 20_000, ceiling };
+      const at = (tokens: number) => nudgeLevel(tokens, marks.start, marks.every);
+      const parties = new Parties();
+      parties.nudgeDue('agent:a1', at(85_000), 85_000, marks);
+      parties.installed('agent:a1');
+      parties.read('agent:a1', woke, at(woke));
+      const due = (tokens: number) => (parties.read('agent:a1', tokens, at(tokens)), parties.nudgeDue('agent:a1', at(tokens), tokens, marks));
+      expect([woke + 1_000, first - 1, first].map(due), `woke at ${woke}, ceiling ${ceiling}`).toEqual([false, false, true]);
+    }
+  });
+
+  it('sends no nudge within every of the last one: a nudge held back to just under a level boundary is not followed by the next level\'s', () => {
+    const marks = { start: 80_000, every: 20_000, ceiling: 800_000 };
+    const at = (tokens: number) => nudgeLevel(tokens, marks.start, marks.every);
     const parties = new Parties();
-    const at = (tokens: number) => nudgeLevel(tokens, 40_000, 20_000);
-    parties.nudgeDue('agent:a1', at(85_000), 85_000, 20_000);
-    parties.installed('agent:a1');
-    parties.read('agent:a1', 66_560, at(66_560));
-    const due = (tokens: number) => (parties.read('agent:a1', tokens, at(tokens)), parties.nudgeDue('agent:a1', at(tokens), tokens, 20_000));
-    expect([72_000, 79_000, 81_000, 86_559].map(due)).toEqual([false, false, false, false]); // 81k crossed a level boundary 14k after the wake
-    expect(due(86_560)).toBe(true);
+    const due = (tokens: number) => (parties.read('agent:a1', tokens, at(tokens)), parties.nudgeDue('agent:a1', at(tokens), tokens, marks));
+    expect([158_000, 161_000, 177_999, 178_000].map(due)).toEqual([true, false, false, true]); // 161k is the next level, 3k later
   });
 
   it('absorbs nothing for a party never installed', () => {
@@ -224,6 +240,37 @@ describe('asked, answered and reactive (D8)', () => {
   });
 });
 
+describe('finishDue', () => {
+  const due = (parties: Parties, tokens: number) => parties.finishDue('main', tokens, 100_000, 50_000);
+
+  it('is true from the finish start on, once', () => {
+    expect([99_999, 100_000, 100_001].map((tokens) => due(new Parties(), tokens))).toEqual([false, true, true]);
+    const parties = new Parties();
+    expect([due(parties, 99_999), due(parties, 100_000), due(parties, 180_000)]).toEqual([false, true, false]);
+    expect(parties.get('main').finishTold).toBe(true);
+  });
+
+  it('is false while a frontier is stored, and after a nudge, whose first wordings carry the finish rule', () => {
+    const stored = new Parties();
+    stored.store('main', frontier('t1'));
+    expect(due(stored, 120_000)).toBe(false);
+    stored.takeStored('main');
+    expect(due(stored, 120_000)).toBe(true);
+    const nudged = new Parties();
+    expect(nudged.nudgeDue('main', 1)).toBe(true);
+    expect(due(nudged, 120_000)).toBe(false);
+  });
+
+  it('starts over at an install, from one nudge step past the first reading after it', () => {
+    const parties = new Parties();
+    expect(due(parties, 120_000)).toBe(true);
+    parties.installed('main');
+    expect(due(parties, 120_000)).toBe(false); // no reading since the install
+    parties.read('main', 110_000);
+    expect([due(parties, 159_999), due(parties, 160_000), due(parties, 160_001)]).toEqual([false, true, false]);
+  });
+});
+
 describe('installed', () => {
   it('clears the frontier, the nudges and the reading, counts the install, sets the turn mark and holds the landing', () => {
     const parties = new Parties();
@@ -232,12 +279,13 @@ describe('installed', () => {
     parties.asked('main', 'skip');
     parties.store('main', frontier('t1'));
     expect(parties.installed('main', LANDING)).toBeUndefined();
-    expect(parties.get('main')).toMatchObject({ nudgeLevel: 0, absorbNext: true, installs: 1, installedThisTurn: true, lastDecision: 'install', landing: LANDING });
+    expect(parties.get('main')).toMatchObject({ nudgeLevel: 0, nudges: 0, absorbNext: true, installs: 1, installedThisTurn: true, lastDecision: 'install', landing: LANDING });
     expect(parties.get('main').reading).toBeUndefined(); // no estimate stands in for a reading
     expect(parties.get('main').stored).toBeUndefined();
     expect(parties.reactive('main')).toBe(false);
     parties.read('main', 25_000, 0);
     expect(parties.nudgeDue('main', 1)).toBe(true);
+    expect(parties.get('main').nudges).toBe(1); // counted from the install
   });
 
   it('turnEnded clears the turn mark and nothing else', () => {
@@ -318,6 +366,21 @@ describe('Parties ignore judgement', () => {
     parties.describe('agent:a1', { model: 'claude-sonnet-5-5' });
     expect(parties.judged('agent:a1', read)).toMatchObject({ judged: 'managed', matched: null });
     expect(parties.judged('agent:a1', read)).toBeUndefined();
+  });
+
+  it("returns a sub-agent's window row once a step has named its model, and again only when its max context, its source or the reason it is unknown changes", () => {
+    const parties = new Parties();
+    parties.describe('agent:a1', { label: 'collector a1b2c3' });
+    const fallback = { maxContext: 200_000, source: 'fallback' as const, unknown: 'the Models API answered 529' };
+    expect(parties.windowed('agent:a1', fallback, 160_000)).toBeUndefined(); // no step has named its model
+    parties.describe('agent:a1', { model: 'claude-sonnet-5-5' });
+    expect(parties.windowed('agent:a1', fallback, 160_000)).toEqual({ event: 'window', party: 'agent:a1', label: 'collector a1b2c3', model: 'claude-sonnet-5-5', maxContext: 200_000, source: 'fallback', ceiling: 160_000, unknown: 'the Models API answered 529' });
+    expect(parties.windowed('agent:a1', fallback, 160_000)).toBeUndefined();
+    expect(parties.windowed('agent:a1', { ...fallback, unknown: 'the Models API answered 500' }, 160_000)).toEqual({ event: 'window', party: 'agent:a1', label: 'collector a1b2c3', model: 'claude-sonnet-5-5', maxContext: 200_000, source: 'fallback', ceiling: 160_000, unknown: 'the Models API answered 500' });
+    const listed = { maxContext: 1_000_000, source: 'models-api' as const };
+    expect(parties.windowed('agent:a1', listed, 800_000)).toEqual({ event: 'window', party: 'agent:a1', label: 'collector a1b2c3', model: 'claude-sonnet-5-5', maxContext: 1_000_000, source: 'models-api', ceiling: 800_000 });
+    expect(parties.windowed('agent:a1', listed, 800_000)).toBeUndefined();
+    expect(parties.windowed('agent:a1', { maxContext: 1_000_000, source: 'main' }, 800_000)).toEqual({ event: 'window', party: 'agent:a1', label: 'collector a1b2c3', model: 'claude-sonnet-5-5', maxContext: 1_000_000, source: 'main', ceiling: 800_000 });
   });
 
   it('a party that starts over is judged afresh', () => {

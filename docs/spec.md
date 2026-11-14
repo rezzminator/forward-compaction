@@ -60,22 +60,45 @@ and no ceiling, and an automatic ask from it with nothing stored is held as
 
 1. **Nudges.** After a tool result, once a party's context passes its nudge
    start (`FORWARD_COMPACTION_MAIN_NUDGE_START` or
-   `FORWARD_COMPACTION_SUBAGENT_NUDGE_START`, a share of its max context), the
-   model reads one line saying how large its context is, as tokens and as a
-   share of its max context. One more follows every
-   `FORWARD_COMPACTION_{MAIN|SUBAGENT}_NUDGE_EVERY`. The line asks it to call
-   `forward_compaction` once its current step is done, never in the middle of
-   one, and to skip it only when nothing is left but its final answer; it
-   names the ceiling. A held
+   `FORWARD_COMPACTION_SUBAGENT_NUDGE_START`: a share of the main chat's max
+   context, a token count for a sub-agent), the
+   model reads one line saying how large its context is, in tokens. One more
+   follows every `FORWARD_COMPACTION_{MAIN|SUBAGENT}_NUDGE_EVERY`. Each line
+   is worded by its count since the party's last install, so no two read
+   alike and each is firmer than the one before: the first asks for a
+   frontier at the first milestone, the second at the end of the step in
+   hand, the third to start no new step, the fourth to compact now, the
+   fifth to stop, and from the sixth on the line names how many notices went
+   unanswered. The last nudge before the ceiling, the one that one more
+   `NUDGE_EVERY` of growth would carry to it, says instead that the plugin
+   compacts next, with no frontier from the model. The first three close on
+   the party's exception: a sub-agent's on when it may skip, as its work
+   ends within a few calls, the main chat's on the finish rule below. No
+   line names a max context or the ceiling. A held
    compaction ask adds no nudge of its own. After an install, the first
    reading's level is absorbed silently (a sub-agent's floor of system
    prompt, tools and skills is already 55-60k), so the next nudge goes only
-   when the context crosses the level above it and has grown by at least
-   one `NUDGE_EVERY` past that first reading: a first reading just under a
-   level brings no nudge a few thousand tokens later. A model on the ignore list
+   when the context crosses the level above it and has grown by its working
+   room past that first reading: one `NUDGE_START`, held to two `NUDGE_EVERY`
+   below the ceiling so a nudge still comes before the mechanical wake, and
+   never under one `NUDGE_EVERY`. A wake lands near or above the nudge start,
+   and a nudge a few thousand tokens later makes the party compact in a loop.
+   No nudge goes within one `NUDGE_EVERY` of the last one. A model on the ignore list
    gets no nudge.
    No call is ever refused or held back: a party that does not compact is
    compacted mechanically at its ceiling.
+
+   The finish rule: the main chat also compacts when its whole work is
+   finished, before its final report, with `remaining` "none" and `next`
+   "write the final report". A finished chat otherwise holds a large context
+   until the person replies, and a reply after the prompt cache expired
+   re-sends all of it. The main chat reads the rule in its first three
+   nudges, and before any nudge in one line of its own, the finish notice:
+   once since its last install, when its context reaches
+   `FORWARD_COMPACTION_MAIN_FINISH_START` with nothing stored, and after an
+   install only once it has grown one `NUDGE_EVERY` past its first reading.
+   A sub-agent is never asked: its context ends with its report. The plugin
+   detects no finish and holds no turn end: the model decides.
 2. **Compacting.** The model calls `forward_compaction` (the model sees
    `mcp__forward-compaction__forward_compaction`). The plugin stores the frontier
    in memory for that party and never refuses the call: an argument it cannot
@@ -103,7 +126,9 @@ needs no ToolSearch.
   done, in the person's words, each with its undo when one exists, `none`
   when there are none; the finished pieces, each with how it was verified,
   every figure with the command that produced it; every step left, in order,
-  `none` when nothing is left; the first concrete action after the wake.
+  `none` when nothing is left, or the path of a plan file the party updates at
+  each milestone, carried in `load_files`; the first concrete action after the
+  wake.
   `decisions` holds how a thing gets done ("the result is `already_sent`, not
   `sent`"); a rule that binds the rest of the work goes in `standing_orders`.
 - A frontier missing a required section (absent, not a string, or blank) is
@@ -130,7 +155,8 @@ needs no ToolSearch.
   Only an entry with no path is skipped. Their size never
   refuses the frontier: it is always stored. Each file is read when the
   frontier installs and carries at most 250 lines: of its `lines` ranges when
-  given, else from line 1. When lines are left past the 250th, the file's
+  given, else from line 1. A file holding a NUL character is binary: it is
+  named as `not a text file` and never carried. When lines are left past the 250th, the file's
   block ends with one line, `[N more lines not carried: Read {path} from line
   L]`, N the lines left in the ranges or the file and L the next one. There is
   no room for the files together. A file that is missing, or whose ranges
@@ -200,6 +226,19 @@ message, then the messages after the call, returned as Claude Code holds
 them. The frontier message carries the call's own receipt, since the install
 replaces the message that held it, and, like a mechanical wake's message,
 ends with the experimental line and where to note any trouble.
+
+On screen the two built messages are user-role rows, which Claude Code's
+fullscreen view draws whole. Outside the expanded view (the ctrl+o
+transcript, `--verbose`, an export) the plugin draws nothing for the facts
+message and one dim line for the message after it:
+`forward-compaction installed the frontier: the transcript view (ctrl+o) shows it and the recorded facts in full`,
+or for a mechanical wake
+`forward-compaction compacted mechanically, no frontier was written: the transcript view (ctrl+o) shows its note and the recorded facts in full`.
+The fold is a drawing only: the stored messages, the ones the model reads,
+keep every character, and the expanded view draws them as Claude Code does.
+A row folds only when Claude Code marks its message as built by a hook
+(origin `unclassified`) and it opens as a wake message does, so the same
+text typed or pasted by the person is drawn whole.
 
 The facts message opens with the plugin version that built the wake
 (`compacted by forward-compaction 2.2.5`), so a chat on an old build shows
@@ -275,7 +314,8 @@ it. It holds, each section only when it has content:
 - in a mechanical wake only, under `## Files you were working on, newest
   first, read at install`: the 5 newest files the party touched, read from
   disk at install, each at most 250 lines with the same `[N more lines not
-  carried: …]` line, as Claude Code's own compaction restores its 5 most
+  carried: …]` line and at most 40,000 characters, a longer one ending `[cut
+  at 40000 characters: Read {path} for the rest]`, as Claude Code's own compaction restores its 5 most
   recent files because it fires uninvited. One that could not be read is
   named in place with why. A frontier's wake carries only the files the
   frontier asked for, and the wake an error falls back to, built without
@@ -381,19 +421,50 @@ this rule. It is requested upstream in
 
 ### Max contexts
 
-Sizes are percentages of each party's max context. The main chat's is the
+Sizes are percentages of each party's max context or token counts; a
+sub-agent's nudge sizes default to token counts (165k, then every 65k), the
+same on every max context, as does the main chat's finish start (100k). The main chat's max context is the
 window Claude Code reports through `$.session.usage()`, read at session
 start, at the main chat's first request when not read yet, and again when its
 model changes (`/model`); `FORWARD_COMPACTION_MAIN_MAX_CONTEXT` sets it
 instead. Until it is known (set, or reported) the main chat gets no nudge and
 no ceiling. Claude Code's API reports only the main chat's window, so a
 sub-agent's comes from the model id its steps report: one carrying the API's
-own `[1m]` context marker is measured against 1,000,000, every other (and one
-no step has named yet) against 200,000. The marker is the id's literal, never
-a table of model names. `FORWARD_COMPACTION_SUBAGENT_MAX_CONTEXT`, when set,
-is every sub-agent's max context instead. An ignored (Haiku) sub-agent's
-ceiling comes from the same per-model max context.
+own `[1m]` context marker is measured against 1,000,000, one on the model id
+the main chat's last request named against the main chat's reported window,
+every other against the context window the Anthropic Models API states for
+its id: `max_input_tokens` of `GET https://api.anthropic.com/v1/models/{id}`.
+The marker is the id's literal and the window the API's answer, never a table
+of model names. `FORWARD_COMPACTION_SUBAGENT_MAX_CONTEXT`, when set, is every
+sub-agent's max context instead, and no model is looked up. An ignored (Haiku)
+sub-agent's ceiling comes from the same per-model max context.
 Claude Code's ask point for a party is held at or below its max context.
+
+A model is looked up once in a session, with the session's own Anthropic
+credential through Claude Code's plugin API (`$.session.authorize()`, then
+`$.http.fetch`). The request starts beside the first step that names the
+model, is read when that step ends, and counts as failed after 5 seconds.
+While a model's window is not known, the sub-agent is measured against
+200,000, the smallest window the API lists: a ceiling reached early costs a
+mechanical wake, one set too high a request too long. That holds for a
+sub-agent no step has named a model for yet, a session with no credential the
+API takes (a third-party provider), a request Claude Code refuses
+(`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`), a failed request, and a model
+the API does not list. A failed lookup is tried again at a later step of a
+sub-agent on that model: after 1 step, then 2, 4 … up to 64; a model the API
+does not list is not asked again.
+
+The decision log's `window` row records the max context a sub-agent is
+measured against, once a step has named its model and each time it changes:
+`{party, label, model, maxContext, source, ceiling}`, `source` being `option`,
+`marker`, `main`, `models-api` or `fallback`. A `fallback` row carries
+`unknown`, the reason the window is not known, and goes to `warnings.jsonl`
+as `window-unknown`.
+
+The Models API states a model's own window. With
+`CLAUDE_CODE_DISABLE_1M_CONTEXT`, Claude Code takes 200k for a model the API
+lists at 1M, and the plugin API reports that for the main chat's model alone:
+set `FORWARD_COMPACTION_SUBAGENT_MAX_CONTEXT=200k` with it.
 
 ### Ignored models
 
@@ -413,18 +484,19 @@ judgement with the entry matched, only when it is first made or changes; the
 judgement is kept in `$.state`, so a plugin reload writes no row for one that
 holds. A held ask's row carries `why: ignored-model`.
 
-With the defaults, on the 200k sub-agent max context:
+With the defaults, on a 200k sub-agent max context (on 1M the ceiling is
+800k, and a managed sub-agent is nudged at 165k, then every 65k):
 
 | Sub-agent | Nudges | Held | Mechanical wake |
 | --- | --- | --- | --- |
-| Sonnet or Opus | at 80k, 100k, 120k and 140k | every ask below 160k with nothing stored | at 160k |
-| Haiku (ignored) | none | every ask below 160k, Claude Code's 63k ask included | at 160k |
+| Managed | none: the first is due at 165k, past the ceiling | every ask below 160k with nothing stored | at 160k |
+| Ignored (Haiku) | none | every ask below 160k, Claude Code's 63k ask included | at 160k |
 
 ### State on disk
 
 | Path | What | Retention |
 | --- | --- | --- |
-| `~/.local/state/forward-compaction/logs/decisions/{session}.jsonl` (`$PLUGIN_LOG_DIR/forward-compaction/decisions/` when set) | decision rows: every frontier stored (with `orders` and `lifted`, its counts of standing orders carried and lifted, and `notes`, the count of changes its receipt named), every nudge, every compaction decision, every `landed` row (`{party, kind, before, after, line}`, `kind` being `frontier` or `mechanical`, `before` and `after` the measured readings or `null`, written with the landed line), every `ignore` row (`{party, label, model, judged, matched}`, `judged` being `managed`, `ignored` or `unknown`, `matched` the ignore-list entry or `null`, written when a party's judgement is first made or changes); a held-ask streak is one folded `skips` row, written when the streak closes and stamped with its last ask's time, so it can follow later rows; rows past the first 500 that come before the environment layer is read are counted in one `rows-lost` row | a file over 8 MiB moves to `.1`; other sessions' files older than 14 days, then all but the newest 200, are deleted |
+| `~/.local/state/forward-compaction/logs/decisions/{session}.jsonl` (`$PLUGIN_LOG_DIR/forward-compaction/decisions/` when set) | decision rows: every frontier stored (with `orders` and `lifted`, its counts of standing orders carried and lifted, and `notes`, the count of changes its receipt named), every nudge (with `notice`, its count since the party's last install, and `last`, true for the last one before the ceiling), every `finish-notice` row (`{party, tokens, start}`), every compaction decision, every `landed` row (`{party, kind, before, after, line}`, `kind` being `frontier` or `mechanical`, `before` and `after` the measured readings or `null`, written with the landed line), every `ignore` row (`{party, label, model, judged, matched}`, `judged` being `managed`, `ignored` or `unknown`, `matched` the ignore-list entry or `null`, written when a party's judgement is first made or changes), every `window` row (`{party, label, model, maxContext, source, ceiling}`, with `unknown` on the `fallback` source, written when a sub-agent's max context is first known or changes); a held-ask streak is one folded `skips` row, written when the streak closes and stamped with its last ask's time, so it can follow later rows; rows past the first 500 that come before the environment layer is read are counted in one `rows-lost` row | a file over 8 MiB moves to `.1`; other sessions' files older than 14 days, then all but the newest 200, are deleted |
 | `~/.local/state/forward-compaction/logs/{errors,warnings,info}.jsonl` (`$PLUGIN_LOG_DIR/forward-compaction/` when set) | the plugin's errors, warnings and info: every decision event lands at its level — errors and warnings in their files, every other operational event (nudge, stored, each compaction decision, party, skill, tool-registered, look-back, the lines said) in `info.jsonl`, a held-ask streak folded into its first row and one `skips` row. Each row's `event` names what happened (never a bare `error` or `warning`), and an error or warning row's `where` names the function that raised it. One failure is one row: a tool that fails to register writes one error row and one screen line, and is tried again at each `turn.start`: at once for its first three tries, then after a wait of 30 seconds that doubles with each failure, up to 15 minutes, for the rest of the session. Rows a write could not append (the lock held past its 10-second wait, the writer killed at its 15-second bound, any failure) stay queued, order kept, and are retried with the next write: a row may be written twice, never lost or torn. Only past 2,000 held rows are the oldest dropped, and their count goes to `errors.jsonl` (`plugin-log-rows-dropped`) once a write succeeds. A lock stage or broken lock whose writer died is cleared | a level file over 20 MiB moves to `.1`, the older ones to `.2` … `.5`, the oldest of five deleted |
 | `debug.jsonl` in the same directory (with `FORWARD_COMPACTION_DEBUG` on) | a row at every step: each hook entry (hook, party, trigger, model), each `$` answer the plugin decides on (`session.usage` figures, the `agent.list` count, each `turn.step` reading with its four counts and model, `fs.stat` results), the options and variables resolved, each ratio base and each ratio, measured or not and why, with the base's characters and tokens and the characters and reading now, each wake's section sizes and files, each nudge sent or withheld and why, and every decision row whole; numbers as the API gave them | as the level files: `.1` … `.5` |
 | `issues.md` in the same directory | notes a model appends when the plugin gave it trouble, as each tool answer asks | not managed by the plugin |

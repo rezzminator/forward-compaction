@@ -3,9 +3,13 @@ import {
   buildWake, COMMANDS_KEPT, fitTail, landedLine, mechanicalWake, recentFiles, RECENT_FILES_KEPT, splitAtCall, wakeBudget,
   type BuiltMessage, type WakeFacts, type WakeMessage,
 } from '../plugins/forward-compaction/src/wake.ts';
+import { wakeRow, type RowNode } from '../plugins/forward-compaction/src/wake-row.ts';
 import { PLUGIN_VERSION } from '../plugins/forward-compaction/src/wake.ts';
 
 type Msg = WakeMessage & { handle: string };
+/** A built message as the transcript draws it folded (wake-row.ts): the engine stamps a hook's message `unclassified`. */
+const folded = (m: BuiltMessage): RowNode | undefined => wakeRow({ text: m.text, origin: { kind: 'unclassified' }, isExpanded: false });
+const dimLine = (text: string): RowNode => ({ type: 'Box', props: { marginTop: 1 }, children: [{ type: 'Text', props: { dimColor: true }, children: [text] }] });
 const user = (text: string, handle = `h-${text.slice(0, 12)}`): Msg => ({ role: 'user', text, toolUses: [], handle });
 const assistant = (text: string, uses: { id: string; tool: string; input?: Record<string, unknown> }[] = [], handle = `h-${text.slice(0, 12)}`): Msg => ({
   role: 'assistant', text, handle,
@@ -119,6 +123,8 @@ describe('buildWake (R20)', () => {
     const wake = buildWake({ ...mainInput([user('hello'), call, res, t1, t2]), toolUseId: 't9', frontier });
     const [f, h, ...tail] = wake.messages as [BuiltMessage, BuiltMessage, ...Msg[]];
     expect(f.text.startsWith('[forward-compaction: facts]')).toBe(true);
+    expect(folded(f)).toEqual({ type: 'Box', props: { display: 'none' } });
+    expect(folded(h)).toEqual(dimLine('forward-compaction installed the frontier: the transcript view (ctrl+o) shows it and the recorded facts in full'));
     expect(h.text).toContain(`=== frontier ===\n${frontier}\n=== end of frontier ===`);
     expect(h.text).not.toMatch(/\d+k tokens/); // no size for the call: none is measured at that moment
     expect(h.text).toContain('The 2 messages after this one are what happened after you wrote it, kept verbatim.');
@@ -545,6 +551,8 @@ describe('mechanicalWake (R23)', () => {
     const wake = mechanicalWake({ ...mainInput(msgs), askPoint: 3000, tokens: 120_000, reason: { kind: 'ceiling', ceiling: 100_000 } });
     const h = wake.messages[1] as BuiltMessage;
     expect(h.text.startsWith('[forward-compaction: no frontier written by the model]')).toBe(true);
+    expect(folded(wake.messages[0] as BuiltMessage)).toEqual({ type: 'Box', props: { display: 'none' } });
+    expect(folded(h)).toEqual(dimLine('forward-compaction compacted mechanically, no frontier was written: the transcript view (ctrl+o) shows its note and the recorded facts in full'));
     expect(h.text).toContain('Your context reached 120k tokens, past the 100k ceiling,');
     expect(h.text).toContain(`${wake.dropped} older messages are gone (look_back finds an exact detail)`);
     expect(h.text).toContain(`your newest ${wake.kept} messages below`);

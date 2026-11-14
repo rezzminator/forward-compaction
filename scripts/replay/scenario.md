@@ -12,7 +12,7 @@ What each step exercises: S1 a typed skill (D5 b); S2 main's frontier installed 
 S3 two concurrent sub-agents, each loading the skill through the Skill tool (D5 a; D5 c if Claude Code preloads),
 A storing a frontier below its ask point (receipt "from about") and installed at its first ask (C7), B never storing,
 nudged, and compacted mechanically at its ceiling (C10: `settings.json` sets `FORWARD_COMPACTION_SUBAGENT_CEILING` to 100k, below
-what its batched Reads reach; the 80% default of the 200k sub-agent max context, 160k, would not fire here); S4 a coordinator message to A (`session.receive`, I7);
+what its batched Reads reach; the 80% default of a sub-agent's max context, 160k at the least, would not fire here); S4 a coordinator message to A (`session.receive`, I7);
 S5 a background shell and its task notification (Stop `background_tasks`, I8, I12); S6 main's second frontier, with blocked
 (install #2, chained: I11); S7 `/compact` (C1, I1); S8 main past its ask point with no frontier (C9 skip; about 70k
 after filler-2, below the 100k ceiling), then its frontier installed at the next ask (C7).

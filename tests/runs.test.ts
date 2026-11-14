@@ -19,9 +19,9 @@ afterEach(() => {
   }
 });
 
-/** Main held where 60%, 15% and 5% of 200k fall on a 1M window; sub-agents on their defaults (200k max context, nudges from 80k every 20k, ceiling 160k). */
+/** Main held where 60%, 15% and 5% of 200k fall on a 1M window; sub-agents on a 200k max context with its 160k ceiling, nudged from 80k every 20k. */
 async function begin(): Promise<Fake> {
-  const env = { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '100000', FORWARD_COMPACTION_MAIN_CEILING: '120000', FORWARD_COMPACTION_MAIN_NUDGE_START: '30000', FORWARD_COMPACTION_MAIN_NUDGE_EVERY: '10000' };
+  const env = { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '100000', FORWARD_COMPACTION_MAIN_CEILING: '120000', FORWARD_COMPACTION_MAIN_NUDGE_START: '30000', FORWARD_COMPACTION_MAIN_NUDGE_EVERY: '10000', FORWARD_COMPACTION_SUBAGENT_NUDGE_START: '80k', FORWARD_COMPACTION_SUBAGENT_NUDGE_EVERY: '20k' };
   const f = fakeEngine({ window: 1_000_000, env });
   fakes.push(f);
   await f.dispatch('session.start', { reason: 'startup' }, async () => ({}));

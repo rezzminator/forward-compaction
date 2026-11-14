@@ -56,7 +56,7 @@ async function writeVersion($: EngineInterface): Promise<void> {
 }
 
 /** The plugin's environment reads, each spelled as the literal Claude Code requires; `tests/replay.test.ts` holds this list to the adapter's. */
-export const ENV_NAMES = ['HOME', 'PLUGIN_LOG_DIR', 'CLAUDE_CONFIG_DIR', 'FORWARD_COMPACTION_MAIN_MAX_CONTEXT', 'FORWARD_COMPACTION_MAIN_CEILING', 'FORWARD_COMPACTION_MAIN_NUDGE_START', 'FORWARD_COMPACTION_MAIN_NUDGE_EVERY', 'FORWARD_COMPACTION_SUBAGENT_MAX_CONTEXT', 'FORWARD_COMPACTION_SUBAGENT_CEILING', 'FORWARD_COMPACTION_SUBAGENT_NUDGE_START', 'FORWARD_COMPACTION_SUBAGENT_NUDGE_EVERY', 'FORWARD_COMPACTION_CEILING_NATIVE', 'FORWARD_COMPACTION_IGNORE_MODELS', 'FORWARD_COMPACTION_KEEP_SKILLS', 'FORWARD_COMPACTION_DEBUG'] as const;
+export const ENV_NAMES = ['HOME', 'PLUGIN_LOG_DIR', 'CLAUDE_CONFIG_DIR', 'FORWARD_COMPACTION_MAIN_MAX_CONTEXT', 'FORWARD_COMPACTION_MAIN_CEILING', 'FORWARD_COMPACTION_MAIN_NUDGE_START', 'FORWARD_COMPACTION_MAIN_NUDGE_EVERY', 'FORWARD_COMPACTION_MAIN_FINISH_START', 'FORWARD_COMPACTION_SUBAGENT_MAX_CONTEXT', 'FORWARD_COMPACTION_SUBAGENT_CEILING', 'FORWARD_COMPACTION_SUBAGENT_NUDGE_START', 'FORWARD_COMPACTION_SUBAGENT_NUDGE_EVERY', 'FORWARD_COMPACTION_CEILING_NATIVE', 'FORWARD_COMPACTION_IGNORE_MODELS', 'FORWARD_COMPACTION_KEEP_SKILLS', 'FORWARD_COMPACTION_DEBUG'] as const;
 
 function envGet($: EngineInterface, name: string): Promise<string | undefined> {
   switch (name) {
@@ -67,6 +67,7 @@ function envGet($: EngineInterface, name: string): Promise<string | undefined> {
     case 'FORWARD_COMPACTION_MAIN_CEILING': return $.env.get('FORWARD_COMPACTION_MAIN_CEILING');
     case 'FORWARD_COMPACTION_MAIN_NUDGE_START': return $.env.get('FORWARD_COMPACTION_MAIN_NUDGE_START');
     case 'FORWARD_COMPACTION_MAIN_NUDGE_EVERY': return $.env.get('FORWARD_COMPACTION_MAIN_NUDGE_EVERY');
+    case 'FORWARD_COMPACTION_MAIN_FINISH_START': return $.env.get('FORWARD_COMPACTION_MAIN_FINISH_START');
     case 'FORWARD_COMPACTION_SUBAGENT_MAX_CONTEXT': return $.env.get('FORWARD_COMPACTION_SUBAGENT_MAX_CONTEXT');
     case 'FORWARD_COMPACTION_SUBAGENT_CEILING': return $.env.get('FORWARD_COMPACTION_SUBAGENT_CEILING');
     case 'FORWARD_COMPACTION_SUBAGENT_NUDGE_START': return $.env.get('FORWARD_COMPACTION_SUBAGENT_NUDGE_START');
@@ -114,11 +115,13 @@ const given = (...args: unknown[]): unknown[] => {
  * this list to the adapter's. Each call is answered by the engine and written with its path, arguments and outcome;
  * a path missing here is written as an error row and throws, so the recording shows it.
  */
-export const PATHS = ['agent.list', 'clock.after', 'clock.now', 'env.get', 'fs.read', 'fs.stat', 'process.run', 'session.compact', 'session.cwd', 'session.id', 'session.messages', 'session.usage', 'state.get', 'state.set', 'tool.register', 'ui.log'] as const;
+export const PATHS = ['agent.list', 'clock.after', 'clock.now', 'env.get', 'fs.read', 'fs.stat', 'http.fetch', 'process.run', 'session.authorize', 'session.compact', 'session.cwd', 'session.id', 'session.messages', 'session.usage', 'state.get', 'state.set', 'tool.register', 'ui.log'] as const;
+/** Written to a row in place of the handle `$.session.authorize()` answers, in that answer and in the request that spends it: the handle stands for the session's credential, so no row carries it, and a replayed lookup passes this word back as recorded. */
+export const CREDENTIAL_HANDLE = 'credential-handle';
 
 function engineFor($: EngineInterface, id: number): any {
-  const call = (path: string, args: unknown[], run: () => unknown): unknown => {
-    const done = (outcome: { result: unknown } | { error: unknown }, sync?: true): void => writeRow($, { id, phase: 'call', path, args, ...outcome, ...(sync ? { sync } : {}) });
+  const call = (path: string, args: unknown[], run: () => unknown, written: (result: unknown) => unknown = (result) => result): unknown => {
+    const done = (outcome: { result: unknown } | { error: unknown }, sync?: true): void => writeRow($, { id, phase: 'call', path, args, ...('result' in outcome ? { result: written(outcome.result) } : outcome), ...(sync ? { sync } : {}) });
     let out: unknown;
     try {
       out = run();
@@ -149,8 +152,10 @@ function engineFor($: EngineInterface, id: number): any {
       read: (path: string, options?: any) => call('fs.read', given(path, options), () => (options === undefined ? $.fs.read(path) : $.fs.read(path, options))),
       stat: (path: string) => call('fs.stat', [path], () => $.fs.stat(path)),
     },
+    http: { fetch: (url: string, init?: any) => call('http.fetch', given(url, init?.auth === undefined ? init : { ...init, auth: CREDENTIAL_HANDLE }), () => (init === undefined ? $.http.fetch(url) : $.http.fetch(url, init))) },
     process: { run: (argv: string[], init?: any) => call('process.run', given(argv, init), () => $.process.run(argv, init)) },
     session: {
+      authorize: () => call('session.authorize', [], () => $.session.authorize(), (auth: any) => (auth ? { ...auth, handle: CREDENTIAL_HANDLE } : auth)),
       compact: (args?: any) => call('session.compact', given(args), () => (args === undefined ? $.session.compact() : $.session.compact(args))),
       cwd: () => call('session.cwd', [], () => $.session.cwd()),
       id: () => call('session.id', [], () => $.session.id()),
@@ -241,9 +246,17 @@ async function* invokeSteps(hook: string, $: EngineInterface, e: unknown, next: 
 /** Every event the plugin registers. Claude Code reads `on("<event>", hook)` statically, so each is written out; a hook the plugin adds and this list lacks is named in the version row, and sanitize refuses the recording. */
 export const RECORDED = ['session.start', 'tool.call', 'session.compact', 'turn.step', 'turn.start', 'turn.complete', 'prompt.submit', 'prompt.attachment', 'session.receive', 'skill.prompt', 'agent.spawn', 'classic.Stop', 'classic.SubagentStop', 'session.end'] as const;
 let unrecorded: string[] = [];
+/** The plugin's draw hook reaches the engine as registered and is never recorded: a draw decides nothing a replay holds, and tests/wake-row.test.ts holds what it draws. */
+export const DRAWN = { event: 'ui.render', matcher: { component: 'UserMessage' } } as const;
+let draw: (...args: any[]) => any = passOn;
 
 export const register: Register = (on: On, options) => {
   const result = plugin(((pattern: string, ...rest: any[]) => {
+    if (pattern === DRAWN.event) {
+      if (rest.length !== 2 || JSON.stringify(rest[0]) !== JSON.stringify(DRAWN.matcher)) unrecorded.push(`${pattern} (not the ${JSON.stringify(DRAWN.matcher)} draw)`);
+      draw = rest.at(-1);
+      return { dispose: () => undefined };
+    }
     if (rest.length !== 1 || hooks.has(pattern)) unrecorded.push(`${pattern} (${rest.length === 1 ? 'registered twice' : 'with a matcher'})`);
     hooks.set(pattern, rest.at(-1));
     return { dispose: () => undefined };
@@ -263,5 +276,6 @@ export const register: Register = (on: On, options) => {
   on('classic.Stop', async ($, e, next) => invoke('classic.Stop', $, e, next) as any);
   on('classic.SubagentStop', async ($, e, next) => invoke('classic.SubagentStop', $, e, next) as any);
   on('session.end', async ($, e, next) => invoke('session.end', $, e, next) as any);
+  on('ui.render', { component: 'UserMessage' }, (_$, e, next) => draw(undefined, e, next)); // the draw reads no `$`
   return result;
 };

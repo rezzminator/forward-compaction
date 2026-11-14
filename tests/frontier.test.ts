@@ -27,7 +27,7 @@ describe('the forward_compaction tool as registered', () => {
   it('is named forward_compaction and its description is short and holds one example call with the section arguments (R17)', () => {
     expect(FORWARD_TOOL).toBe('forward_compaction');
     expect(FORWARD_TOOL_DESCRIPTION.length).toBeLessThanOrEqual(600);
-    expect(FORWARD_TOOL_DESCRIPTION).toContain('forward_compaction({"objective": "…", "decisions": "…", "done": "…", "remaining": "…", "next": "…", "load_files": []})');
+    expect(FORWARD_TOOL_DESCRIPTION).toContain('forward_compaction({"objective": "…", "decisions": "…", "done": "…", "remaining": "…", "next": "…", "load_files": [{"path": "…"}]})');
     expect(FORWARD_TOOL_DESCRIPTION).not.toContain('"frontier"');
     expect(FORWARD_TOOL_DESCRIPTION).toContain('standing_orders');
     expect(FORWARD_TOOL_DESCRIPTION).toContain('the newest later messages that fit stay verbatim, the rest named as not carried');
@@ -48,7 +48,7 @@ describe('the forward_compaction tool as registered', () => {
     expect(FORWARD_INPUT_SCHEMA.properties.objective.description).toBe('MANDATORY: what the work is for and what done means.');
     expect(FORWARD_INPUT_SCHEMA.properties.decisions.description).toBe("MANDATORY: every ruling the person gave on how something gets done, in the person's words, each with its undo when one exists; \"none\" when there are none. Rules binding the rest of the work go in standing_orders.");
     expect(FORWARD_INPUT_SCHEMA.properties.done.description).toBe('MANDATORY: finished pieces, each with how it was verified; every figure with the command that produced it.');
-    expect(FORWARD_INPUT_SCHEMA.properties.remaining.description).toBe('MANDATORY: every step left, in order; "none" when nothing is left.');
+    expect(FORWARD_INPUT_SCHEMA.properties.remaining.description).toBe('MANDATORY: every step left, in order; "none" when nothing is left. A plan file you update at each milestone may stand in: name its path here and put it in load_files.');
     expect(FORWARD_INPUT_SCHEMA.properties.next.description).toBe('MANDATORY: the first concrete action after the wake.');
     expect(FORWARD_INPUT_SCHEMA.properties.findings.description).toBe('Optional: your own choices with why, errors verbatim, the commands and recipes you will need again.');
     for (const name of SECTIONS.filter((n) => !REQUIRED.includes(n))) expect(FORWARD_INPUT_SCHEMA.properties[name as 'blocked'].description).toMatch(/^Optional: /);
@@ -305,6 +305,11 @@ describe('parseLineRanges and sliceFile (copied from the old carry module)', () 
     expect(sliceFile('/f', file, [{ from: 148, to: 200 }])).toEqual({ body: 'line 148\nline 149', shown: '148-149', problem: 'lines 148-200: the file ends at line 149' });
     expect(sliceFile('/f', file, [{ from: 1, to: 1 }, { from: 160, to: 170 }])).toEqual({ body: 'line 1', shown: '1', problem: 'lines 160-170: past the end of the file, which has 149 lines' });
     expect(sliceFile('/f', '', undefined)).toEqual({ problem: 'the file is empty' });
+    expect(sliceFile('/f.png', 'PNG\u0000IHDR', undefined)).toEqual({ problem: 'not a text file' });
+    expect(sliceFile('/f', 'x'.repeat(40_000), undefined, 40_000)).toEqual({ body: 'x'.repeat(40_000), shown: '' });
+    expect(sliceFile('/f', 'x'.repeat(40_001), undefined)).toEqual({ body: 'x'.repeat(40_001), shown: '' });
+    expect(sliceFile('/f', 'x'.repeat(40_001), undefined, 40_000)).toEqual({ body: `${'x'.repeat(40_000)}\n[cut at 40000 characters: Read /f for the rest]`, shown: '' });
+    expect(sliceFile('/f', `a\n${'x'.repeat(40_001)}`, [{ from: 2, to: 2 }], 40_000)).toEqual({ body: `${'x'.repeat(40_000)}\n[cut at 40000 characters: Read /f for the rest]`, shown: '2' });
     expect(sliceFile('/f', 'x\n', undefined)).toEqual({ body: 'x\n', shown: '' });
   });
 
