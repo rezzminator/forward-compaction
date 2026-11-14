@@ -1,6 +1,6 @@
 // The ledger: typed facts recorded as events happen, reduced by pure functions. Nothing is read from rendered text.
 
-import { workSummary, type WorkFact, type WorkSummary } from './work.ts';
+import { workSummary, type WorkFact, type WorkSummary } from './work';
 
 export type PartyKey = 'main' | 'unknown' | `agent:${string}` | `spawn:${string}`;
 

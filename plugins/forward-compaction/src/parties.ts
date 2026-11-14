@@ -1,9 +1,9 @@
-import type { Landing } from './wake.ts';
-import { ignoredBy, type RatioBase } from './window.ts';
-import { keptOrders, type LiftedOrder, type StandingOrder } from './orders.ts';
-import type { PlanSeen } from './plan.ts';
-import type { LoadFile } from './frontier.ts';
-import type { SubagentWindow } from './options.ts';
+import type { Landing } from './wake';
+import { ignoredBy, type RatioBase } from './window';
+import { keptOrders, type LiftedOrder, type StandingOrder } from './orders';
+import type { PlanSeen } from './plan';
+import type { LoadFile } from './frontier';
+import type { SubagentWindow } from './options';
 
 /** A frontier the model wrote, held in memory until a door installs it. */
 export type StoredFrontier = {

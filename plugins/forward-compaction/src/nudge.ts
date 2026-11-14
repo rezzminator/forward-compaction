@@ -1,4 +1,4 @@
-import type { Parties } from './parties.ts';
+import type { Parties } from './parties';
 
 /** The tool's name as the installed copy registered it; a `-dev` copy's differs. */
 export const DEFAULT_TOOL = 'mcp__forward-compaction__forward_compaction';

@@ -1,5 +1,5 @@
-import { FORWARD_INPUT_SCHEMA, FORWARD_TOOL, FORWARD_TOOL_DESCRIPTION } from './frontier.ts';
-import { LOOK_BACK_DESCRIPTION, LOOK_BACK_INPUT_SCHEMA, LOOK_BACK_TOOL } from './look-back.ts';
+import { FORWARD_INPUT_SCHEMA, FORWARD_TOOL, FORWARD_TOOL_DESCRIPTION } from './frontier';
+import { LOOK_BACK_DESCRIPTION, LOOK_BACK_INPUT_SCHEMA, LOOK_BACK_TOOL } from './look-back';
 
 /** Registering the tools holds a turn no longer than this: past it the turn goes on and the plugin stops waiting on registration. */
 export const ENSURE_TOOLS_TIMEOUT_MS = 5_000;

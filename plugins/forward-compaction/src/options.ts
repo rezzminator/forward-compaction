@@ -1,4 +1,4 @@
-import { pluginLogDir } from './plugin-log.ts';
+import { pluginLogDir } from './plugin-log';
 
 /** A context size: a token count, or a percentage of the party's max context. */
 export type Size = { tokens: number } | { percent: number };

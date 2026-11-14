@@ -1,4 +1,4 @@
-import { bounded, type After } from './bounded.ts';
+import { bounded, type After } from './bounded';
 
 // A model's context window as the Models API states it: `GET {MODELS_API}{id}` answers `max_input_tokens`. Claude Code's
 // plugin API reports a window for the session's model alone, so a sub-agent on another model is looked up here, once

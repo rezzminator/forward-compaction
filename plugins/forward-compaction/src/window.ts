@@ -1,5 +1,5 @@
-import { k } from './nudge.ts';
-import { sizeTokens, type PartySizes, type Size } from './options.ts';
+import { k } from './nudge';
+import { sizeTokens, type PartySizes, type Size } from './options';
 
 /** `$.session.usage({ breakdown: 'summary' })`'s breakdown, the fields the ask point is read from. */
 export type UsageBreakdown = { autoCompactThreshold?: number; rawMaxTokens?: number; autocompactSource?: string };

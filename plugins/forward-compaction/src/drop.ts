@@ -1,7 +1,7 @@
 // Dropping a skill or command from the wake: the model names it in drop_skills on two frontiers in a row, and the second
 // one's wake leaves it out. A file whose frontmatter sets FRONTMATTER_KEEP, or a name FORWARD_COMPACTION_KEEP_SKILLS lists, is never dropped.
 
-import type { Ledger, PartyKey, SkillEntry } from './ledger.ts';
+import type { Ledger, PartyKey, SkillEntry } from './ledger';
 
 /** The frontmatter key that pins a skill or command in every wake: `forward-compaction-keep: true`. */
 export const FRONTMATTER_KEEP = 'forward-compaction-keep';

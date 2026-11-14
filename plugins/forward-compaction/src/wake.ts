@@ -1,11 +1,11 @@
 // The wake: what a compaction installs. [facts] [frontier] [tail…] — the facts and the frontier are built here from typed values,
 // the tail is the engine's own messages returned untouched. Pure: files, agents and the clock arrive as inputs.
-import { andList, DEFAULT_TOOL, k as kilo } from './nudge.ts';
-import { keptSaid, PROMPTS_KEPT } from './ledger.ts';
-import { experimental, EXPERIMENTAL_OPENING } from './frontier.ts';
-import { ordersSection, type LiftedOrder, type StandingOrder } from './orders.ts';
-import type { WakePlan } from './plan.ts';
-import { WAKE_OPENING } from './wake-row.ts';
+import { andList, DEFAULT_TOOL, k as kilo } from './nudge';
+import { keptSaid, PROMPTS_KEPT } from './ledger';
+import { experimental, EXPERIMENTAL_OPENING } from './frontier';
+import { ordersSection, type LiftedOrder, type StandingOrder } from './orders';
+import type { WakePlan } from './plan';
+import { WAKE_OPENING } from './wake-row';
 
 /** A message in `session.compact`'s shape; a SessionMessage fits. */
 export type WakeMessage = {
@@ -36,7 +36,7 @@ const iso = (at: number): string => new Date(at).toISOString();
  */
 const SHARE = { arrived: 0.25, notices: 0.05, siblings: 0.1, commands: 0.05 } as const;
 /** The plugin version that builds a wake, named in its facts header so a chat on an old build is visible; tests/layout.test.ts pins it to plugin.json. */
-export const PLUGIN_VERSION = '2.2.5';
+export const PLUGIN_VERSION = '2.3.0';
 /** An image the person attached: a built wake message holds only text (`session.compact`'s messages), so each is named, never silently gone. */
 const IMAGE = /\[Image #\d+\]/g;
 const IMAGE_NOTE = '$& (image not carried: the wake cannot hold images)';

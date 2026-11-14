@@ -1,9 +1,9 @@
 // The forward_compaction tool contract: what the model may send, what is stored whole (never trimmed, never refused), and what the receipt says.
 
-import { k } from './nudge.ts';
-import { DROP_MAX } from './drop.ts';
-import { carryOrders, type LiftedOrder, type OrderMemory, type StandingOrder } from './orders.ts';
-export { applyDrops, dropNote, pinnedBy } from './drop.ts';
+import { k } from './nudge';
+import { DROP_MAX } from './drop';
+import { carryOrders, type LiftedOrder, type OrderMemory, type StandingOrder } from './orders';
+export { applyDrops, dropNote, pinnedBy } from './drop';
 
 /** The tool's name as registered; the model sees `mcp__forward-compaction__forward_compaction`. */
 export const FORWARD_TOOL = 'forward_compaction';

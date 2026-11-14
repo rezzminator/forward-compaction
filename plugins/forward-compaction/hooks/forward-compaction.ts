@@ -1,22 +1,22 @@
 import type { EngineInterface, On, PluginOptions, Register, SessionCompactInput, SessionCompactResult, ToolCallResult, TurnStartInput, TurnStepInput, TurnStepResult, TurnCompleteInput, PromptSubmitInput, SessionReceiveInput, SkillPromptInput, AgentSpawnInput, AgentSpawnResult } from 'claude-code';
-import { bounded, unlessAborted } from '../src/bounded.ts';
-import { applyDrops, dropNote, changesNote, pinnedBy, experimental, isAbsolutePath, parseFrontier, loadFileNote, receipt, parseLineRanges, sliceFile, LOAD_FILE_MAX_CHARS, toolInput, type FileCheck, type LoadFile } from '../src/frontier.ts';
-import { answersOf, workOf, type CallAnswer } from '../src/work.ts';
-import { newLedger, markStart, addEntry, resolveSpawn, attributeSkill, shellsOf, factsFor, promptsKept, restorePrompts, skillsKept, restoreSkills, liftSources, isPersonOrigin, keyOf, originKind, type Ledger, type PartyKey } from '../src/ledger.ts';
-import { splitAtCall, buildWake, mechanicalWake, landedLine, recentFiles, type WakeFile, type AgentRow, type Landing } from '../src/wake.ts';
-import { wakeRow } from '../src/wake-row.ts';
-import { planFrom, planRead, PLAN_ROWS, type WakePlan } from '../src/plan.ts';
-import { decide, installWarnings, turnEndDoor, readingTokens, knownTrigger } from '../src/decide.ts';
-import { k, noticeFor, nudgeLevel } from '../src/nudge.ts';
-import { Parties, type Judging } from '../src/parties.ts';
-import { askPointOf, charsPerToken, partyMarks, startWarnings, apiChars, type AskPoint, type Marks, type UsageBreakdown } from '../src/window.ts';
-import { unseenCompaction } from '../src/unseen.ts';
-import { parseLookBack, boundaryArgv, boundaryLine, searchArgv, entryArgv, namesArgv, processOutput, parseEntries, toolNames, resultIds, searchResults, entryResult, manualTranscriptCall, lookBackNotice, findTranscriptArgv, firstFound, type LookBackResult } from '../src/look-back.ts';
-import { DecisionWriteError, hookRow, sessionLogPath, runCwd, decisionAppendArgv, retentionArgv, DECISION_HOLD_ROWS, decisionFailure, endReport, SkipFold, pluginLogEvent, pluginLogDiagnostic } from '../src/log.ts';
-import { levelRow, onScreen, pluginLogDir, PluginLogQueue, requeueRows, type PluginLogLevel, type PluginLogFields } from '../src/plugin-log.ts';
-import { resolveOptions, subagentWindow, type OptionEnvironment, type ResolvedOptions, type SubagentWindow } from '../src/options.ts';
-import { ModelWindows } from '../src/model-window.ts';
-import { TOOLS, toolsToRegister, ENSURE_TOOLS_TIMEOUT_MS, END_CORE_RESERVE_MS, PENDING_BEFORE_CONFIG, nextTry, holdPending, type ToolKind } from '../src/register.ts';
+import { bounded, unlessAborted } from '../src/bounded';
+import { applyDrops, dropNote, changesNote, pinnedBy, experimental, isAbsolutePath, parseFrontier, loadFileNote, receipt, parseLineRanges, sliceFile, LOAD_FILE_MAX_CHARS, toolInput, type FileCheck, type LoadFile } from '../src/frontier';
+import { answersOf, workOf, type CallAnswer } from '../src/work';
+import { newLedger, markStart, addEntry, resolveSpawn, attributeSkill, shellsOf, factsFor, promptsKept, restorePrompts, skillsKept, restoreSkills, liftSources, isPersonOrigin, keyOf, originKind, type Ledger, type PartyKey } from '../src/ledger';
+import { splitAtCall, buildWake, mechanicalWake, landedLine, recentFiles, type WakeFile, type AgentRow, type Landing } from '../src/wake';
+import { wakeRow } from '../src/wake-row';
+import { planFrom, planRead, PLAN_ROWS, type WakePlan } from '../src/plan';
+import { decide, installWarnings, turnEndDoor, readingTokens, knownTrigger } from '../src/decide';
+import { k, noticeFor, nudgeLevel } from '../src/nudge';
+import { Parties, type Judging } from '../src/parties';
+import { askPointOf, charsPerToken, partyMarks, startWarnings, apiChars, type AskPoint, type Marks, type UsageBreakdown } from '../src/window';
+import { unseenCompaction } from '../src/unseen';
+import { parseLookBack, boundaryArgv, boundaryLine, searchArgv, entryArgv, namesArgv, processOutput, parseEntries, toolNames, resultIds, searchResults, entryResult, manualTranscriptCall, lookBackNotice, findTranscriptArgv, firstFound, type LookBackResult } from '../src/look-back';
+import { DecisionWriteError, hookRow, sessionLogPath, runCwd, decisionAppendArgv, retentionArgv, DECISION_HOLD_ROWS, decisionFailure, endReport, SkipFold, pluginLogEvent, pluginLogDiagnostic } from '../src/log';
+import { levelRow, onScreen, pluginLogDir, PluginLogQueue, requeueRows, type PluginLogLevel, type PluginLogFields } from '../src/plugin-log';
+import { resolveOptions, subagentWindow, type OptionEnvironment, type ResolvedOptions, type SubagentWindow } from '../src/options';
+import { ModelWindows } from '../src/model-window';
+import { TOOLS, toolsToRegister, ENSURE_TOOLS_TIMEOUT_MS, END_CORE_RESERVE_MS, PENDING_BEFORE_CONFIG, nextTry, holdPending, type ToolKind } from '../src/register';
 
 // Thin adapter: every decision lives in src/. Each hook catches its own failures, logs them with context and lets the compaction through.
 
@@ -141,7 +141,7 @@ const judging = (st: State): Judging => ({ mainKnown: st.config.main.maxContext 
 async function judge(st: State, $: EngineInterface, key: PartyKey): Promise<void> {
   await restoreKept(st, $, key);
   const row = st.parties.judged(key, judging(st));
-  if (row) (record(st, $, row), await $.state.set({ plugin: 'forward-compaction', key: 'judged', id: `${await (st.sessionId ??= $.session.id())}/${key}` }, { judged: row.judged, model: row.model }));
+  if (row) { const kept: import('../contract').ForwardCompactionJudged = { judged: row.judged, model: row.model }; record(st, $, row); await $.state.set({ plugin: 'forward-compaction', key: 'judged', id: `${await (st.sessionId ??= $.session.id())}/${key}` }, kept); } // the contract type brings contract.d.ts into the validator's program
 }
 
 /** A debug row (`debug.jsonl`) while FORWARD_COMPACTION_DEBUG is on: numbers as the API gave them. */
