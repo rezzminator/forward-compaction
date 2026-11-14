@@ -2,6 +2,28 @@
 
 Every release of forward-compaction, named sub-agent-compact before 1.0.0. Versions follow [semantic versioning](https://semver.org); each release is the `main` commit tagged `forward-compaction--v<version>` (`sub-agent-compact--v<version>` before 1.0.0), with a GitHub release carrying the section below.
 
+## [2.3.0] — 2026-11-14
+
+### Added
+
+- **The main chat compacts when its work is finished.** Before its final report it writes its handoff, so your reply meets a small context instead of re-sending a large one after the prompt cache expired. Past `FORWARD_COMPACTION_MAIN_FINISH_START` (new, default `100k`) with no nudge sent, the main chat reads that rule once per install, and its first three nudges repeat it. A sub-agent is never asked.
+- **A sub-agent is measured against its own model's context window.** With `FORWARD_COMPACTION_SUBAGENT_MAX_CONTEXT` unset, a sub-agent on another model than the main chat's was measured against a guessed 200k; the plugin now asks the Anthropic Models API for the model's window, once per model in a session. While the window is unknown the 200k fallback stands in, and a decision row and a warning say why.
+- **The wake folds on screen.** After a compaction the facts message draws nothing and the handoff draws one dim line naming ctrl+o, instead of screens of text; ctrl+o, `--verbose` and an export still show every character, and the model reads every word.
+- **A plan file can stand in for `remaining`.** A plan file the model updates at each milestone may be named there by its path and carried in `load_files`.
+- **The README opens on one picture of the difference.** Claude Code's own compaction forks the chat and a second run paraphrases it; forward-compaction swaps in Claude's own handoff. The animated race moved to the benchmark.
+
+### Changed
+
+- **Every nudge has its own words, firmer each time.** A nudge names only the context's size and is worded by its count since the last install, from "at your first milestone" through "compact now" to a last notice, before the ceiling, that the plugin compacts next.
+- **A sub-agent is nudged later.** Its first nudge moves from 40% of its window (80k on 200k) to 165k (`FORWARD_COMPACTION_SUBAGENT_NUDGE_START`), and it repeats every 65k instead of every 10% (`FORWARD_COMPACTION_SUBAGENT_NUDGE_EVERY`); on a 200k max context that lies past the 160k ceiling, so such a sub-agent is not nudged and wakes mechanically.
+- **A woken party is nudged again only after real working room.** After a wake the next nudge waits one nudge-start of growth, and no nudge comes within one nudge-every of the last. A sub-agent on the main chat's model is measured against the main chat's window instead of 200k.
+- **The nudge asks for the files the model will read again** in `load_files`, and the tool's example call shows a filled entry: sub-agents passed none, so about 30% of their reads after a compaction re-read files read only before it.
+
+### Fixed
+
+- **A binary file is named, never carried,** and a file the plugin picks at a mechanical install is cut at 40,000 characters: a PNG among the newest files grew a forced compaction from 164k to 277k.
+- **`claude plugin validate` passes on Claude Code 2.1.325.** Relative imports in the plugin drop their `.ts` suffix and the hooks module reads its stored session type from the contract; `npm run typecheck` now refuses a `.ts` import the validator would.
+
 ## [2.2.5] — 2026-11-01
 
 ### Changed
