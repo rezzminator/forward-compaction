@@ -5,7 +5,7 @@
 **Claude Code compaction without the wait. The model writes its own handoff while it still remembers everything, so your exact words carry through.**
 
 [![Claude Code plugin](https://img.shields.io/badge/Claude%20Code-plugin-D97757)](https://docs.claude.com/en/docs/claude-code/plugins)
-[![Version](https://img.shields.io/badge/version-2.2.5-blue)](./CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-2.3.0-blue)](./CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
 [![Tests](https://img.shields.io/badge/tests-675%20passing-brightgreen)](#development)
 [![Built with Professor](https://img.shields.io/badge/built%20with-Professor-8A2BE2)](https://github.com/rezzminator/professor)
@@ -14,12 +14,12 @@
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/compaction-dark.gif">
-    <img src="docs/assets/compaction-light.gif" width="830" alt="One main-chat compaction on two lanes, one clock, both starting at the same moment. Claude Code's native compaction forks the chat: a second run re-reads all 214k tokens and paraphrases them while the chat waits, 54.9 s median. With forward-compaction the model that did the work writes its own frontier, 24.2 s median, then the plugin installs it in 0.085 s with no summarizer run, leaving 8.0k tokens of context instead of 18.6k at $0.16 instead of $0.25.">
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/flow-dark.svg">
+    <img src="docs/assets/flow-light.svg" width="100%" alt="When a chat fills up. Claude Code's own compaction forks the chat: a second run reads all 214k tokens and paraphrases them into a summary, leaving 18.6k tokens, in 55 s. forward-compaction does not fork: Claude writes its own handoff at a clean point, the plugin swaps it in in 0.085 s, and 8.0k tokens are left, your words and the handoff verbatim, in 24 s.">
   </picture>
 </p>
 
-<p align="center"><sub>Main chats, medians of 2,939 real compactions over 30 days to 2026-10-29; the clocks run 7.5× faster than real seconds. For sub-agents native is faster (21.5 s vs 28.7 s).</sub></p>
+<p align="center"><sub>Main chats, medians of 2,939 real compactions over 30 days to 2026-10-29; the full numbers are in the <a href="#benchmark">benchmark</a>. For sub-agents native is faster (21.5 s vs 28.7 s).</sub></p>
 
 ## Why
 
@@ -41,6 +41,15 @@ forward-compaction turns this around. As the context grows, the model is told ho
 - **A way back.** `look_back` searches the chat's own transcript from before the compaction for an exact detail the handoff left out.
 
 ## Benchmark
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/compaction-dark.gif">
+    <img src="docs/assets/compaction-light.gif" width="830" alt="One main-chat compaction on two lanes, one clock, both starting at the same moment. Claude Code's native compaction forks the chat: a second run re-reads all 214k tokens and paraphrases them while the chat waits, 54.9 s median. With forward-compaction the model that did the work writes its own frontier, 24.2 s median, then the plugin installs it in 0.085 s with no summarizer run, leaving 8.0k tokens of context instead of 18.6k at $0.16 instead of $0.25.">
+  </picture>
+</p>
+
+<p align="center"><sub>Main chats, medians of 2,939 real compactions over 30 days to 2026-10-29; the clocks run 7.5× faster than real seconds.</sub></p>
 
 Measured on 2,939 real compactions in one heavy user's Claude Code transcripts over 30 days (2026-09-29 → 2026-10-29): 1,357 by Claude Code's native summarizer and 804 by forward-compaction, in main chats and sub-agents. Every figure comes from the compaction's own boundary record (duration, tokens before and after) or the handoff call's API usage, except where marked as estimated.
 
