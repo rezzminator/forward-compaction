@@ -237,8 +237,9 @@ or for a mechanical wake
 The fold is a drawing only: the stored messages, the ones the model reads,
 keep every character, and the expanded view draws them as Claude Code does.
 A row folds only when Claude Code marks its message as built by a hook
-(origin `unclassified`) and it opens as a wake message does, so the same
-text typed or pasted by the person is drawn whole.
+(origin `unclassified` in the main view, `coordinator` in a sub-agent's view,
+where it sits under "From main") and it opens as a wake message does, so the
+same text typed or pasted by the person is drawn whole.
 
 The facts message opens with the plugin version that built the wake
 (`compacted by forward-compaction 2.2.5`), so a chat on an old build shows
