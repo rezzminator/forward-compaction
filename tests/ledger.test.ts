@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   promptsKept, restorePrompts, PROMPTS_KEPT, skillsKept, restoreSkills, liftSources,
-  PERSON_ORIGINS, addEntry, attributeSkill, factsFor, isPersonOrigin, markStart, newLedger, resolveSpawn, shellsOf,
+  PERSON_ORIGINS, addEntry, attributeSkill, deliveryOf, factsFor, isPersonOrigin, markStart, newLedger, resolveSpawn, runStartOf, shellsOf,
   type EntryInput, type Ledger, type PartyKey,
 } from '../plugins/forward-compaction/src/ledger.ts';
 
@@ -125,6 +125,35 @@ describe('markStart', () => {
   });
 });
 
+describe('deliveryOf', () => {
+  const text = (t: string) => ({ type: 'text', text: t });
+  it.each([
+    ['a child agent\'s return into a running sub-agent', { agentId: 'a1', origin: { kind: 'task-notification' }, message: { content: [text('<system-reminder>\n<task-notification>done</task-notification>\n</system-reminder>')] } },
+      { kind: 'received', party: 'agent:a1', origin: 'task-notification', text: '<system-reminder>\n<task-notification>done</task-notification>\n</system-reminder>', at: 7 }],
+    ['a coordinator\'s note, its text blocks joined and other blocks left out', { agentId: 'a1', origin: { kind: 'coordinator' }, message: { content: [text('note'), { type: 'image', source: {} }, text('more')] } },
+      { kind: 'received', party: 'agent:a1', origin: 'coordinator', text: 'note\nmore', at: 7 }],
+    ['main, whose deliveries arrive through prompt.submit', { origin: { kind: 'task-notification' }, message: { content: [text('done')] } }, undefined],
+    ['a row with no text', { agentId: 'a1', origin: { kind: 'coordinator' }, message: { content: [{ type: 'image', source: {} }] } }, undefined],
+  ])('%s', (_name, e, want) => {
+    expect(deliveryOf(e, 7)).toEqual(want);
+  });
+});
+
+describe('runStartOf', () => {
+  const got = (origin: string, text: string): EntryInput => ({ kind: 'received', party: 'agent:a1', origin, text, at: 1 });
+  const fact = { kind: 'received', party: 'agent:a1', origin: 'run-start', text: 'woke', at: 7 };
+  it.each([
+    ['the message that woke the run', [], 'woke', fact],
+    ['a run begun with no text', [], '', undefined],
+    ['the resuming message agent.spawn recorded already', [got('resume', 'woke')], 'woke', undefined],
+    ['the same text delivered before by another door', [got('coordinator', 'woke')], 'woke', fact],
+    ['a resume older than the newest delivery', [got('resume', 'woke'), got('task-notification', 'done')], 'woke', fact],
+    ['another party\'s resume', [{ ...got('resume', 'woke'), party: 'agent:a2' } as EntryInput], 'woke', fact],
+  ])('%s', (_name, entries, text, want) => {
+    expect(runStartOf(build(...entries), 'agent:a1', text, 7)).toEqual(want);
+  });
+});
+
 describe('factsFor', () => {
   it('leaves out a person message already in the kept tail, exactly or contained (R9)', () => {
     const ledger = build(person('fix the parser'), person('also add tests'));
@@ -173,6 +202,21 @@ describe('factsFor', () => {
     expect(factsFor(ledger, 'agent:a3', none).brief).toBeUndefined();
     expect(factsFor(ledger, 'main', none).brief).toBeUndefined();
     expect(factsFor(ledger, 'agent:a2', { keptTexts: ['the brief two is first'] }).brief).toBeUndefined();
+  });
+
+  it("names the party's children from their briefs, once each with the latest description, oldest first", () => {
+    const brief = (id: string, spawnedBy: PartyKey, description: string): EntryInput => ({
+      kind: 'brief', party: `agent:${id}`, text: 'b', subagentType: 'collector', description, spawnedBy, at: 1,
+    });
+    const ledger = build(
+      brief('c1', 'agent:a1', 'first'), brief('c2', 'main', 'main\'s'), brief('c1', 'agent:a1', 'again'),
+      { kind: 'brief', party: 'spawn:toolu_1', text: 'b', spawnedBy: 'agent:a1', at: 2 }, brief('c3', 'agent:a1', 'third'),
+    );
+    expect(factsFor(ledger, 'agent:a1', none).children).toEqual([
+      { id: 'c1', subagentType: 'collector', description: 'again' }, { id: 'c3', subagentType: 'collector', description: 'third' },
+    ]);
+    expect(factsFor(ledger, 'main', none).children).toEqual([{ id: 'c2', subagentType: 'collector', description: 'main\'s' }]);
+    expect(factsFor(ledger, 'agent:c1', none).children).toEqual([]);
   });
 
   it('carries the latest brief of a party that was briefed twice', () => {

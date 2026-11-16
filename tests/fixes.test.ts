@@ -164,6 +164,7 @@ describe('S (brief 45k): a resumed sub-agent keeps its brief', () => {
     await spawn(f);
     await step(f, 64_000, A1);
     await f.dispatch('agent.spawn', { tool_use_id: 'tu-resume', prompt: 'Continue with item 2', description: 'one', subagentType: 'general-purpose', provider: { kind: 'local' }, resume: { agentId: A1 } }, async () => ({ model: 'sonnet', agentId: A1 }));
+    await f.dispatch('turn.start', { text: 'Continue with item 2', turnId: 't2', agentId: A1 }, async () => ({})); // the resumed run begins with the same message
     await f.dispatch('tool.call', { tool: FORWARD, tool_use_id: 'tu-h', agentId: A1, ...SECTIONS }, async () => ({ result: 'not ours' }));
     const messages = [
       { role: 'user', text: 'Brief for agent one', toolUses: [], handle: 'h0' },
@@ -173,6 +174,7 @@ describe('S (brief 45k): a resumed sub-agent keeps its brief', () => {
     const wake = (await f.dispatch('session.compact', { trigger: 'auto', agentId: A1, messages: messages.slice(1) }, async () => ({ skip: 'native ran' }))).messages[0].text;
     expect(wake).toContain('## Your brief\nBrief for agent one');
     expect(wake).toMatch(/## Messages delivered to you\n### \S+ \(resume\)\nContinue with item 2/);
+    expect(wake.split('Continue with item 2').length - 1).toBe(1);
   });
 });
 

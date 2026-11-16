@@ -12,10 +12,13 @@ What each step exercises: S1 a typed skill (D5 b); S2 main's frontier installed 
 S3 two concurrent sub-agents, each loading the skill through the Skill tool (D5 a; D5 c if Claude Code preloads),
 A storing a frontier below its ask point (receipt "from about") and installed at its first ask (C7), B never storing,
 nudged, and compacted mechanically at its ceiling (C10: `settings.json` sets `FORWARD_COMPACTION_SUBAGENT_CEILING` to 100k, below
-what its batched Reads reach; the 80% default of a sub-agent's max context, 160k at the least, would not fire here); S4 a coordinator message to A (`session.receive`, I7);
+what its batched Reads reach; the 80% default of a sub-agent's max context, 160k at the least, would not fire here); S4 a coordinator message to A (a `session.append` `delivery` row while A runs, else A's later run);
 S5 a background shell and its task notification (Stop `background_tasks`, I8, I12); S6 main's second frontier, with blocked
 (install #2, chained: I11); S7 `/compact` (C1, I1); S8 main past its ask point with no frontier (C9 skip; about 70k
-after filler-2, below the 100k ceiling), then its frontier installed at the next ask (C7).
+after filler-2, below the 100k ceiling), then its frontier installed at the next ask (C7); S9 a background agent C past its
+ask point spawning a background child, then storing its frontier in the message that waits on that child, so the child's
+return reaches C as a `session.append` `delivery` row after the frontier and before its install (I7, I12; `settings.json`
+sets `CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH` so C may spawn).
 
 | step | wait | prompt |
 |---|---|---|
@@ -27,3 +30,4 @@ after filler-2, below the 100k ceiling), then its frontier installed at the next
 | S6 | main-turn | Read filler/filler-4.txt and filler/filler-5.txt whole, one Read call each. Then call forward_compaction with objective "replay step S6" and blocked "nothing blocks S6", and end your turn. |
 | S7 | manual-compact | /compact |
 | S8 | main-turn | Read filler/filler-1.txt to filler/filler-8.txt whole, one Read call per message, waiting for each result before the next. Right after the result of filler/filler-2.txt, call forward_compaction with Objective "replay step S8", then read on. |
+| S9 | main-turn | Spawn one background general-purpose agent C, then end your turn. C's prompt: "Read filler/filler-1.txt, filler/filler-2.txt and filler/filler-3.txt whole, one Read call each. Then spawn one background general-purpose agent whose prompt tells it to run the Bash command python3 -c 'import time; time.sleep(20)' and then answer child-done-7f3a. Right after the spawn, in ONE message, call forward_compaction with Objective 'agent C frontier' and Remaining 'wait for the child' together with the Bash command python3 -c 'import time; time.sleep(45)'. Then answer 'C done' with the child's reply." |

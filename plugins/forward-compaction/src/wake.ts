@@ -150,6 +150,7 @@ export type WakeFacts = {
   arrived?: readonly { at: number; origin: string; text: string }[];
   /** The `agent.spawn` prompt; absent when the agent was spawned before the ledger started. */
   brief?: { text: string };
+  children?: readonly { id: string; subagentType?: string; description?: string }[]; // the agents the party spawned (ledger.ts `Facts`)
   received: readonly { at: number; origin: string; text: string }[];
   /** Latest text per skill, newest first. */
   skills: readonly { skill: string; text: string; source?: string; path?: string; keep?: true }[];
@@ -341,11 +342,13 @@ function renderFacts<M>(input: Shared<M>, facts: WakeFacts, { siblings, files, r
 
   if (input.agents !== undefined) {
     if (!Array.isArray(input.agents)) sections.push({ text: `## Agents\n(could not be listed: ${(input.agents as { error: string }).error})`, content: false });
-    else if (input.agents.some((a) => input.self === undefined || a.parentId === input.self)) {
-      const others = input.agents.filter((a) => input.self === undefined || a.parentId === input.self);
-      const rows = others.slice(0, AGENTS_MAX_ROWS).map((a) => `- ${a.id} ${a.type} ${a.status}: ${a.description}`);
-      const more = others.length - AGENTS_MAX_ROWS;
-      sections.push(section(['## Agents, listed at install', ...rows, ...(more > 0 ? [`(${more} more not listed)`] : [])].join('\n')));
+    else {
+      const listed = new Set(input.agents.map((a) => a.id));
+      const own = input.agents.filter((a) => input.self === undefined || a.parentId === input.self).map((a) => `- ${a.id} ${a.type} ${a.status}: ${a.description}`);
+      // A child the list no longer holds may have returned while the frontier was written: named, so its "still running" is not trusted; past the cap the newest stay.
+      const gone = (facts.children ?? []).filter((c) => !listed.has(c.id)).map((c) => `- ${[c.id, c.subagentType].filter((x) => x !== undefined).join(' ')} not in the list (finished, stopped or gone)${c.description !== undefined ? `: ${c.description}` : ''}`);
+      const rows = [...own.slice(0, AGENTS_MAX_ROWS), ...gone.slice(Math.max(0, gone.length - Math.max(0, AGENTS_MAX_ROWS - own.length)))];
+      if (rows.length > 0) sections.push(section(['## Agents, listed at install', ...rows, ...(own.length + gone.length > rows.length ? [`(${own.length + gone.length - rows.length} more not listed)`] : [])].join('\n')));
     }
   }
 

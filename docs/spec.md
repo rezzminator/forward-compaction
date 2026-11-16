@@ -277,9 +277,12 @@ it. It holds, each section only when it has content:
   `[Image #N] (image not carried: the wake cannot hold images)`. A resumed
   sub-agent's resuming message is a delivered message, never part of its
   brief;
-- the newest ten messages delivered to the sub-agent (its coordinator's, and
-  the notifications that resumed it) or the notifications delivered (main
-  chat);
+- the newest ten messages delivered to the sub-agent (its coordinator's, the
+  returns of the agents it started, and the notifications that resumed it) or
+  the notifications delivered (main chat); one delivered into a running
+  sub-agent is recorded from the row Claude Code appends as it delivers it
+  (`session.append`, door `delivery`), as the model reads it, and one that
+  resumes it from the turn it starts;
 - the results of the tool calls made in the same response as the frontier;
 - the skills and commands in force, as they were loaded, within Claude Code's
   own limits after its compaction: newest loaded first, each cut past 20,000
@@ -295,7 +298,10 @@ it. It holds, each section only when it has content:
   without saying which party loaded it is named, not carried, in every
   party's wake, with the call that loads it again;
 - the agents, listed at install (at most 50 rows): for main every agent, for a
-  sub-agent only the agents it spawned (`parentId` its own id);
+  sub-agent only the agents it spawned (`parentId` its own id); then each agent
+  the party spawned that the list no longer holds, as `not in the list
+  (finished, stopped or gone)`, so a frontier's "still running" is not
+  trusted; past the cap the newest of those stay;
 - the background shells and crons, from the newest Stop event, with its age.
   The list is session-wide, not per agent; before any Stop event it says the
   running shells are unknown;

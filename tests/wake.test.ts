@@ -464,6 +464,20 @@ describe('F sections', () => {
     expect(wakeOf({ agents: rows }).f).toContain('- a0 general-purpose running: me\n- a1 general-purpose running: sibling\n- a2 collector running: child\n- a3 collector running: sibling\'s child');
   });
 
+  it('names a child the party spawned that the list no longer holds, after the listed ones and within the row cap', () => {
+    const rows = [{ id: 'a2', type: 'collector', status: 'running', description: 'child', parentId: 'a0' }];
+    const children = [{ id: 'a2', subagentType: 'collector', description: 'child' }, { id: 'a4', subagentType: 'collector', description: 'finished child' }, { id: 'a5' }];
+    const gone = '(finished, stopped or gone)';
+    expect(wakeOf({ agents: rows, self: 'a0', f: { children } }, 'subagent').f).toContain(`## Agents, listed at install\n- a2 collector running: child\n- a4 collector not in the list ${gone}: finished child\n- a5 not in the list ${gone}\n\n`);
+    expect(wakeOf({ agents: [], self: 'a0', f: { children: children.slice(1, 2) } }, 'subagent').f).toContain(`## Agents, listed at install\n- a4 collector not in the list ${gone}: finished child\n\n`);
+    const many = Array.from({ length: 50 }, (_, i) => ({ id: `m${i}`, type: 'general-purpose', status: 'running', description: `job ${i}` }));
+    const f = wakeOf({ agents: many, f: { children: [{ id: 'm0' }, { id: 'x1' }] } }).f;
+    expect(f).toContain('- m49 general-purpose running: job 49\n(1 more not listed)');
+    expect(f).not.toContain('x1 not in the list');
+    const newest = wakeOf({ agents: many.slice(0, 48), f: { children: [{ id: 'x1' }, { id: 'x2' }, { id: 'x3' }] } }).f;
+    expect(newest).toContain(`- m47 general-purpose running: job 47\n- x2 not in the list ${gone}\n- x3 not in the list ${gone}\n(1 more not listed)\n\n`);
+  });
+
   it('states the unknown shells when no Stop event came (R24)', () => {
     expect(wakeOf({}).f).toContain('(unknown: no Stop event yet in this process)');
   });

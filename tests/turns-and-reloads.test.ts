@@ -63,12 +63,13 @@ describe('the prompts across a plugin reload', () => {
     const state = new Map<string, { value: unknown; version: number }>();
     const before = await begin({ state });
     await before.dispatch('agent.spawn', { tool_use_id: 'tu-spawn', prompt: 'Brief for agent one', description: 'one', subagentType: 'general-purpose', provider: { kind: 'local' } }, async () => ({ model: 'sonnet', agentId: 'a1b2c3d4e5' }));
-    await before.dispatch('session.receive', { agentId: 'a1b2c3d4e5', origin: { kind: 'coordinator' }, text: 'also check the docs' }, async () => ({}));
+    const note = '<system-reminder>\nThe coordinator sent a message while you were working:\nalso check the docs\n\nAddress this before completing your current task.\n</system-reminder>';
+    await before.dispatch('session.append', { door: 'delivery', origin: { kind: 'coordinator' }, uuid: 'u-1', agentId: 'a1b2c3d4e5', message: { type: 'attachment', name: 'queued_command', role: 'user', content: [{ type: 'text', text: note }] } }, async (e: unknown) => e);
     const after = await begin({ state, agents: () => [{ id: 'a1b2c3d4e5', type: 'general-purpose', status: 'running', description: 'one' }] });
     await after.dispatch('turn.step', { turnId: 't1', index: 0, model: 'claude-sonnet-4-5', messageCount: 4, agentId: 'a1b2c3d4e5' }, async () => ({ turnId: 't1', index: 0, answer: '', toolUses: [], stopReason: 'tool_use', ...usage(170_000) }));
     const r = await after.dispatch('session.compact', { trigger: 'auto', agentId: 'a1b2c3d4e5', messages }, async () => ({ skip: 'native ran' }));
     expect(r.messages[0].text).toContain('## Your brief\nBrief for agent one');
-    expect(r.messages[0].text).toContain('also check the docs');
+    expect(r.messages[0].text).toContain(`(coordinator)\n${note}`);
   });
 });
 

@@ -1,4 +1,4 @@
-// A minimal `$` of Claude Code 2.1.309 for driving the adapter's `register`. Answers are scripted per test;
+// A minimal `$` of Claude Code 2.1.325 for driving the adapter's `register`. Answers are scripted per test;
 // a `$` call nothing scripts is recorded in `unscripted` (and throws), so a test names the path it lacks.
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';

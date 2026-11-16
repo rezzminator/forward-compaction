@@ -9,7 +9,7 @@ steps() { grep -E '^\| S[0-9]+ \|' "$here/scenario.md" | sed -E 's/^\| (S[0-9]+)
 
 if [ "${1:-}" = "--dry-run" ]; then
   n=$(steps | wc -l)
-  [ "$n" -ge 8 ] || { echo "drive: scenario.md has $n steps, expected S1-S8" >&2; exit 1; }
+  [ "$n" -ge 9 ] || { echo "drive: scenario.md has $n steps, expected S1-S9" >&2; exit 1; }
   steps | while IFS=$'\t' read -r id wait prompt; do
     case $wait in main-turn|manual-compact|notification) ;; *) echo "drive: $id has unknown wait '$wait'" >&2; exit 1 ;; esac
     echo "drive (dry run): $id waits for $wait: ${prompt:0:60}..."
@@ -24,9 +24,9 @@ rows="$root/rows"
 # Rows whose start is of hook $1, for main only (no agentId key; an escaped one inside a text does not count), whose text holds $2.
 # Subshells without pipefail: a grep that matches nothing is a count of 0, never an exit under set -e.
 count() ( set +o pipefail; grep -l "\"phase\":\"start\",\"hook\":\"$1\"" "$rows"/*.json 2>/dev/null | xargs -r grep -L '"agentId":"' | xargs -r grep -l -- "${2:-}" | wc -l )
-# Start rows of prompt.submit or session.receive (any party) that name $1 and are not the typed S5 prompt (it says
+# Start rows of prompt.submit or session.append (any party; the recorder holds its `delivery` door alone) that name $1 and are not the typed S5 prompt (it says
 # run_in_background): the shell's notification. notice_rows lists them; notices counts them.
-notice_rows() ( set +o pipefail; grep -lE '"phase":"start","hook":"(prompt.submit|session.receive)"' "$rows"/*.json 2>/dev/null | xargs -r grep -l -- "$1" | xargs -r grep -L 'run_in_background' | sort )
+notice_rows() ( set +o pipefail; grep -lE '"phase":"start","hook":"(prompt.submit|session.append)"' "$rows"/*.json 2>/dev/null | xargs -r grep -l -- "$1" | xargs -r grep -L 'run_in_background' | sort )
 notices() ( set +o pipefail; notice_rows "$1" | wc -l )
 # Main turn.complete start rows written after row file $1 (row files sort by their zero-padded seq).
 turns_after() ( set +o pipefail; grep -l '"phase":"start","hook":"turn.complete"' "$rows"/*.json 2>/dev/null | xargs -r grep -L '"agentId":"' | awk -v mark="$1" '$0 > mark' | wc -l )
@@ -86,7 +86,7 @@ steps | while IFS=$'\t' read -r id wait prompt; do
       if (wait_for "$id replay-done notification" "[ \$(notices replay-done) -gt $done_rows ]" 300); then
         mark=$(notice_rows replay-done | tail -1)
       else
-        echo "drive: $id saw no replay-done row in prompt.submit or session.receive; waiting for the next main turn instead" >&2
+        echo "drive: $id saw no replay-done row in prompt.submit or session.append; waiting for the next main turn instead" >&2
       fi
       wait_for "$id notification turn" "[ \$(turns_after $mark) -gt 0 ]" ;;
   esac

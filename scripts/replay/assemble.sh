@@ -15,8 +15,8 @@ cp "$src/.claude-plugin/plugin.json" "$src/.claude-plugin/icon.svg" "$out/.claud
 cp "$src/contract.d.ts" "$out/contract.d.ts"
 cp -R "$src/src" "$out/src"
 cp "$src/hooks/forward-compaction.ts" "$out/hooks/forward-compaction.ts"
-sed "s#'../../plugins/forward-compaction/hooks/forward-compaction.ts'#'./forward-compaction.ts'#" "$here/recorder.ts" > "$out/hooks/recorder.ts"
-grep -q "from './forward-compaction.ts'" "$out/hooks/recorder.ts" || { echo "assemble: recorder import was not rewritten" >&2; exit 1; }
+sed "s#'../../plugins/forward-compaction/hooks/forward-compaction'#'./forward-compaction'#" "$here/recorder.ts" > "$out/hooks/recorder.ts"
+grep -q "from './forward-compaction'" "$out/hooks/recorder.ts" || { echo "assemble: recorder import was not rewritten" >&2; exit 1; }
 printf '{ "modules": ["./recorder.ts"] }\n' > "$out/hooks/hooks.json"
 cp -R "$here/skills/replay-rules" "$out/skills/replay-rules"
 mkdir -p "$root/rows"

@@ -2,8 +2,8 @@
 // every `$` call the plugin makes, every `next` and every return written as one row file under `rows/`.
 // assemble.sh copies it beside hooks/forward-compaction.ts and names it the assembled plugin's only module.
 import type { EngineInterface, On, Register } from 'claude-code';
-// assemble.sh rewrites this import to './forward-compaction.ts', the copy beside it.
-import { register as plugin } from '../../plugins/forward-compaction/hooks/forward-compaction.ts';
+// assemble.sh rewrites this import to './forward-compaction', the copy beside it; extensionless, as Claude Code's validator requires.
+import { register as plugin } from '../../plugins/forward-compaction/hooks/forward-compaction';
 
 /** Relative, so under the session's cwd that launch.sh sets: whether `$.fs.write` reaches outside it is unverified (O2). */
 const ROWS = 'rows';
@@ -244,8 +244,10 @@ async function* invokeSteps(hook: string, $: EngineInterface, e: unknown, next: 
 }
 
 /** Every event the plugin registers. Claude Code reads `on("<event>", hook)` statically, so each is written out; a hook the plugin adds and this list lacks is named in the version row, and sanitize refuses the recording. */
-export const RECORDED = ['session.start', 'tool.call', 'session.compact', 'turn.step', 'turn.start', 'turn.complete', 'prompt.submit', 'prompt.attachment', 'session.receive', 'skill.prompt', 'agent.spawn', 'classic.Stop', 'classic.SubagentStop', 'session.end'] as const;
+export const RECORDED = ['session.start', 'tool.call', 'session.compact', 'turn.step', 'turn.start', 'turn.complete', 'prompt.submit', 'prompt.attachment', 'session.append', 'skill.prompt', 'agent.spawn', 'classic.Stop', 'classic.SubagentStop', 'session.end'] as const;
 let unrecorded: string[] = [];
+/** The recorded events the plugin registers under a matcher, each recorded under that same matcher: what the engine narrows to is what the recording holds. */
+export const MATCHED: Partial<Record<(typeof RECORDED)[number], Record<string, string>>> = { 'session.append': { door: 'delivery' } };
 /** The plugin's draw hook reaches the engine as registered and is never recorded: a draw decides nothing a replay holds, and tests/wake-row.test.ts holds what it draws. */
 export const DRAWN = { event: 'ui.render', matcher: { component: 'UserMessage' } } as const;
 let draw: (...args: any[]) => any = passOn;
@@ -257,7 +259,9 @@ export const register: Register = (on: On, options) => {
       draw = rest.at(-1);
       return { dispose: () => undefined };
     }
-    if (rest.length !== 1 || hooks.has(pattern)) unrecorded.push(`${pattern} (${rest.length === 1 ? 'registered twice' : 'with a matcher'})`);
+    const matcher = MATCHED[pattern as (typeof RECORDED)[number]];
+    if (hooks.has(pattern)) unrecorded.push(`${pattern} (registered twice)`);
+    else if (rest.length !== (matcher === undefined ? 1 : 2) || (matcher !== undefined && JSON.stringify(rest[0]) !== JSON.stringify(matcher))) unrecorded.push(`${pattern} (${matcher === undefined ? 'with a matcher' : `not under ${JSON.stringify(matcher)}`})`);
     hooks.set(pattern, rest.at(-1));
     return { dispose: () => undefined };
   }) as unknown as On, options);
@@ -270,7 +274,7 @@ export const register: Register = (on: On, options) => {
   on('turn.complete', async ($, e, next) => invoke('turn.complete', $, e, next) as any);
   on('prompt.submit', async ($, e, next) => invoke('prompt.submit', $, e, next) as any);
   on('prompt.attachment', async ($, e, next) => invoke('prompt.attachment', $, e, next) as any);
-  on('session.receive', async ($, e, next) => invoke('session.receive', $, e, next) as any);
+  on('session.append', { door: 'delivery' }, async ($, e, next) => invoke('session.append', $, e, next) as any);
   on('skill.prompt', async ($, e, next) => invoke('skill.prompt', $, e, next) as any);
   on('agent.spawn', async ($, e, next) => invoke('agent.spawn', $, e, next) as any);
   on('classic.Stop', async ($, e, next) => invoke('classic.Stop', $, e, next) as any);

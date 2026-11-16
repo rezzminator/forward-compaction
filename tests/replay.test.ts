@@ -37,6 +37,9 @@ const frontierOf = (call: Invocation): string | undefined => {
   const out = parseFrontier(Object.fromEntries(SECTION_KEYS.filter((key) => key in args).map((key) => [key, args[key]])));
   return out.frontier === '' ? undefined : out.frontier;
 };
+/** What a delivery reaching a sub-agent mid-turn (`session.append` door `delivery`) says: its row's text blocks. */
+const delivered = (inv: Invocation): string => (inv.input?.message?.content ?? []).filter((b: any) => b?.type === 'text' && typeof b.text === 'string').map((b: any) => b.text).join('\n');
+const isDelivery = (inv: Invocation): boolean => inv.hook === 'session.append' && inv.input?.door === 'delivery' && party(inv.input) !== 'main';
 const count = (hay: string, needle: string): number => (needle === '' ? 0 : hay.split(needle).length - 1);
 const knownAgents = (view: View): Set<string> => new Set(view.filter((i) => i.hook === 'agent.spawn').map((i) => i.nextResult?.result?.agentId).filter((id): id is string => typeof id === 'string'));
 
@@ -57,11 +60,22 @@ function readingAt(view: View, key: string, seq: number): number | undefined {
   return last ? contextTokens(last.end?.result?.usage) : undefined;
 }
 
-/** The I3 tail rule: the frontier verbatim in the last hook-built message, then only handle-carrying messages, a suffix of the ask's messages after the anchor's results. */
+/**
+ * The I3 tail rule: the frontier verbatim in the last hook-built message, then only handle-carrying messages, a suffix of
+ * the ask's messages after the anchor's results — every user message right after the anchor's response (its run of
+ * assistant messages) whose results answer that response's calls, as Claude Code may return each call's result apart.
+ */
 function tailAfterAnchor(messages: readonly any[], id: string): string[] | undefined {
   const anchor = messages.findIndex((m) => m.toolUses?.some((u: any) => u.tool_use_id === id));
-  const results = messages.findIndex((m, i) => i > anchor && m.toolResults?.some((r: any) => r.tool_use_id === id));
-  return anchor < 0 || results < 0 ? undefined : messages.slice(results + 1).map((m) => m.handle);
+  if (anchor < 0) return undefined;
+  let first = anchor;
+  while (first > 0 && messages[first - 1].role === 'assistant') first--;
+  let next = anchor;
+  while (next + 1 < messages.length && messages[next + 1].role === 'assistant') next++;
+  const calls = new Set(messages.slice(first, next + 1).flatMap((m) => (m.toolUses ?? []).map((u: any) => u.tool_use_id)));
+  const start = ++next;
+  while (next < messages.length && messages[next].role === 'user' && (messages[next].toolResults?.length ?? 0) > 0 && messages[next].toolResults.every((r: any) => calls.has(r.tool_use_id))) next++;
+  return messages.slice(start, next).some((m) => m.toolResults.some((r: any) => r.tool_use_id === id)) ? messages.slice(next).map((m) => m.handle) : undefined;
 }
 
 const payload = (m: any): string => JSON.stringify({ text: m.text, toolUses: (m.toolUses ?? []).map((u: any) => [u.tool_use_id, u.tool, u.input]), toolResults: (m.toolResults ?? []).map((r: any) => [r.tool_use_id, r.text]) });
@@ -128,11 +142,11 @@ export const INVARIANTS: Record<Name, (view: View, recorded: boolean) => Verdict
   I7(view) {
     const failures: string[] = [];
     let subjects = 0;
-    for (const r of view.filter((i) => i.hook === 'session.receive' && party(i.input) !== 'main')) {
+    for (const r of view.filter(isDelivery)) {
       const wake = nextWake(view, party(r.input), r.seq);
       if (!wake) continue;
       subjects++;
-      if (!texts(wakeOf(wake)!).includes(r.input.text)) failures.push(`I7 ${at(wake)}: the wake lacks session.receive #${r.id}'s text`);
+      if (!texts(wakeOf(wake)!).includes(delivered(r))) failures.push(`I7 ${at(wake)}: the wake lacks the text of the delivery session.append #${r.id}`);
     }
     return { subjects, failures };
   },
@@ -197,11 +211,11 @@ export const INVARIANTS: Record<Name, (view: View, recorded: boolean) => Verdict
   I12(view) {
     const failures: string[] = [];
     let subjects = 0;
-    for (const n of view.filter((i) => (i.hook === 'prompt.submit' || i.hook === 'session.receive') && /task|notification/i.test(String(i.input?.origin?.kind)))) {
+    for (const n of view.filter((i) => (i.hook === 'prompt.submit' || isDelivery(i)) && /task|notification/i.test(String(i.input?.origin?.kind)))) {
       const wake = nextWake(view, party(n.input), n.seq);
       if (!wake) continue;
       subjects++;
-      const times = count(texts(wakeOf(wake)!), n.input.text);
+      const times = count(texts(wakeOf(wake)!), n.hook === 'session.append' ? delivered(n) : n.input.text);
       if (times !== 1) failures.push(`I12 ${at(wake)}: the notification of ${n.hook} #${n.id} appears ${times} times`);
     }
     return { subjects, failures };
@@ -243,13 +257,13 @@ function pinned(version: string | undefined, dirs: readonly string[]): void {
 const fixtureDirs = (): string[] => (existsSync(FIXTURES) ? readdirSync(FIXTURES).filter((d) => existsSync(join(FIXTURES, d, 'session.jsonl.gz')) || existsSync(join(FIXTURES, d, 'session.jsonl'))) : []);
 const fixtureOf = (dir: string): string => (existsSync(join(FIXTURES, dir, 'session.jsonl.gz')) ? join(FIXTURES, dir, 'session.jsonl.gz') : join(FIXTURES, dir, 'session.jsonl'));
 
-/** What the live recording on 2.1.309 cannot give a subject, and why; every other invariant must run on one. */
+/** What the live recording on 2.1.325 cannot give a subject, and why; every other invariant must run on one. */
 export const LIVE_NOT_EXERCISED: Partial<Record<Name, string>> = {
-  I2: 'Claude Code 2.1.309 sent no precompute ask in the recorded session (O3: its frequency is unproven)',
+  I2: 'Claude Code 2.1.325 sent no precompute ask in the recorded session (O3: its frequency is unproven)',
   I11: "a chained install's anchor is a new forward_compaction call made after every message the install before it kept, so the two tails share no message",
 };
 const LIVE_EXERCISES: readonly Name[] = ALL.filter((name) => LIVE_NOT_EXERCISED[name] === undefined);
-const LIVE = (): Row[] => loadFixture(fixtureOf('2.1.309'));
+const LIVE = (): Row[] => loadFixture(fixtureOf('2.1.325'));
 /** A skill.prompt loaded inside a Skill call, with the next wake of the party that made the call: an I5 subject. */
 function skillSubject(view: View): { skill: Invocation; call: Invocation; wake: Invocation } {
   for (const skill of view.filter((i) => i.hook === 'skill.prompt')) {
@@ -438,10 +452,11 @@ describe('the recorder', () => {
     expect(JSON.parse(parts.map((p) => p.text).join('')).input.text.length).toBe(PART_CHARS * 2 + 5);
   });
 
-  it('hands the plugin\'s draw hook to the engine under its own matcher, unrecorded', async () => {
+  it('records a matched hook under the plugin\'s own matcher, and hands the draw hook to the engine unrecorded', async () => {
     const registered: { pattern: string; matcher?: unknown; hook: (...args: any[]) => any }[] = [];
     recorder(((pattern: string, ...rest: any[]) => void registered.push({ pattern, ...(rest.length === 2 ? { matcher: rest[0] } : {}), hook: rest.at(-1) })) as any, {} as any);
     expect(registered.map((r) => r.pattern)).toEqual([...RECORDED, 'ui.render']);
+    expect(registered.filter((r) => r.matcher !== undefined).map((r) => [r.pattern, r.matcher])).toEqual([['session.append', { door: 'delivery' }], ['ui.render', { component: 'UserMessage' }]]);
     const draw = registered.at(-1)!;
     expect(draw.matcher).toEqual({ component: 'UserMessage' });
     const row = (isExpanded: boolean) => ({ surface: 'terminal', component: 'UserMessage', requestId: 'm1', props: { text: '[forward-compaction: facts] Your context was compacted', origin: { kind: 'unclassified' }, isExpanded } });

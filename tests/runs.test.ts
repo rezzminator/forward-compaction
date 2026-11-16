@@ -99,6 +99,25 @@ describe("a sub-agent's runs, and what arrives between a frontier and its instal
     expect(text).toMatch(/\(run-start\)\n<task-notification>digger 7 done: 42 offices<\/task-notification>/);
   });
 
+  it("carries a child's return delivered into a running sub-agent between its frontier and the install, and names the child the agent list no longer holds", async () => {
+    const f = await begin();
+    await spawn(f);
+    const C1 = 'c0ffee0001';
+    const notification = `<system-reminder>\n[SYSTEM NOTIFICATION - NOT USER INPUT]\n<task-notification>\n<task-id>${C1}</task-id>\n<status>completed</status>\n<result>cluster 1 clean</result>\n</task-notification>\n</system-reminder>`;
+    const text = wakeText(await run(f, async () => {
+      await step(f, 90_000, A1);
+      await f.dispatch('tool.call', { tool: 'Agent', tool_use_id: 'tu-child', agentId: A1 }, async () => (
+        await f.dispatch('agent.spawn', { tool_use_id: 'tu-child', prompt: 'Diff-check cluster 1', description: 'Diff-check cluster 1', subagentType: 'collector', provider: { kind: 'local' } }, async () => ({ model: 'sonnet', agentId: C1 })),
+        { result: 'Async agent launched' }));
+      await store(f, A1);
+      await f.dispatch('session.append', { door: 'delivery', origin: { kind: 'task-notification' }, uuid: 'u-1', agentId: A1, message: { type: 'attachment', name: 'queued_command', role: 'user', content: [{ type: 'text', text: notification }] } }, async (e) => e);
+      return ask(f);
+    }));
+    const from = text.indexOf(ARRIVED);
+    expect(text.slice(from, text.indexOf('\n## ', from + 1))).toBe(`${ARRIVED}\n### 2026-10-23T12:00:00.000Z (task-notification)\n${notification}\n`);
+    expect(text).toContain(`## Agents, listed at install\n- ${C1} collector not in the list (finished, stopped or gone): Diff-check cluster 1\n`);
+  });
+
   it("carries main's notification and the person's message that arrived between its frontier and the install, and only those, into the wake", async () => {
     const f = await begin();
     await f.dispatch('prompt.submit', { text: '<task-notification>old agent done</task-notification>', origin: { kind: 'task-notification' } }, async () => ({}));

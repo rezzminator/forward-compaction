@@ -49,6 +49,27 @@ export function shellsOf(e: Record<string, unknown>, stopping?: string): { tasks
   return { tasks: tasks.filter((t) => t.id !== stopping), crons };
 }
 
+/**
+ * A row delivered into a running sub-agent (`session.append` door `delivery`: a child agent's return, a coordinator's note) as
+ * the received fact, its text the row's text blocks, what the model reads; none for main, whose deliveries arrive through
+ * prompt.submit, or for a row with no text.
+ */
+export function deliveryOf(e: { agentId?: string; origin: unknown; message: { content: readonly { type: string; [field: string]: unknown }[] } }, at: number): EntryInput | undefined {
+  const text = e.message.content.flatMap((b) => (b.type === 'text' && typeof b.text === 'string' ? [b.text] : [])).join('\n');
+  if (e.agentId === undefined || e.agentId === '' || text === '') return undefined;
+  return { kind: 'received', party: keyOf(e.agentId), origin: originKind(e.origin), text, at };
+}
+
+/**
+ * The message a sub-agent's later run begins with (`turn.start`: what woke it) as the received fact; none when it is empty, or
+ * when the party's newest received fact is that text as a resume, which agent.spawn recorded already.
+ */
+export function runStartOf(ledger: Ledger, party: PartyKey, text: string, at: number): EntryInput | undefined {
+  const last = [...ledger.entries].reverse().find((e): e is ReceivedEntry => e.kind === 'received' && e.party === party);
+  if (text === '' || (last?.origin === 'resume' && last.text === text)) return undefined;
+  return { kind: 'received', party, origin: 'run-start', text, at };
+}
+
 export function newLedger(): Ledger {
   return { nextSeq: 1, entries: [] };
 }
@@ -168,6 +189,8 @@ export type Facts = {
   /** Every delivery to the party recorded from seq `since` (its frontier stored) that the kept tail does not hold, oldest first: the model wrote its frontier without them. Left out of person, notices and received. */
   arrived: { at: number; origin: string; text: string }[];
   brief?: BriefEntry;
+  /** The agents the party spawned, from their briefs, oldest first, each once with its latest description: the wake names one `$.agent.list` no longer lists. */
+  children: { id: string; subagentType?: string; description?: string }[];
   received: ReceivedEntry[];
   skills: SkillEntry[];
   unattributedSkills: SkillEntry[];
@@ -196,12 +219,19 @@ export function factsFor(ledger: Ledger, party: PartyKey, opts: { keptTexts: rea
   const person = mine('person', party).filter(before);
   const kept = person.filter(fresh);
   const shells = entries.find((e): e is ShellsEntry => e.kind === 'shells');
+  const children = new Map<string, Facts['children'][number]>();
+  for (const e of entries) {
+    if (e.kind !== 'brief' || e.spawnedBy !== party || !e.party.startsWith('agent:')) continue; // a `spawn:` party never got its id
+    const id = e.party.slice('agent:'.length);
+    children.set(id, { id, ...(e.subagentType !== undefined ? { subagentType: e.subagentType } : {}), ...(e.description !== undefined ? { description: e.description } : {}) });
+  }
   return {
     person: kept,
     personInTail: person.length - kept.length,
     notices: mine('notice', party).filter(before).filter(fresh),
     arrived,
     brief: mine('brief', party).filter(fresh).at(-1),
+    children: [...children.values()],
     received: mine('received', party).filter(before).filter(fresh),
     skills: newestFirst(party).filter(fresh),
     unattributedSkills: newestFirst('unknown').filter((s) => !carried.has(s.skill)).filter(fresh),

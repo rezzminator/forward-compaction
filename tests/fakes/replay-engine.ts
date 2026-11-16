@@ -349,7 +349,7 @@ export async function recordSynthetic(dir: string): Promise<string> {
     ui: { log: () => undefined },
   };
   const hooks = new Map<string, Fn>();
-  recorded(((name: string, fn: Fn) => void hooks.set(name, fn)) as any, {} as any);
+  recorded(onInto(hooks), {} as any);
   const signal = new AbortController().signal;
   const call = (name: string, e: unknown, below: (x: any) => unknown = async () => ({})) => hooks.get(name)!($, e, Object.assign(async (x: unknown) => below(x), { signal }));
   const step = async (input: number) => {

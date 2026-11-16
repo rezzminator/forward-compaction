@@ -1,8 +1,8 @@
-import type { EngineInterface, On, PluginOptions, Register, SessionCompactInput, SessionCompactResult, ToolCallResult, TurnStartInput, TurnStepInput, TurnStepResult, TurnCompleteInput, PromptSubmitInput, SessionReceiveInput, SkillPromptInput, AgentSpawnInput, AgentSpawnResult } from 'claude-code';
+import type { EngineInterface, On, PluginOptions, Register, SessionCompactInput, SessionCompactResult, ToolCallResult, TurnStartInput, TurnStepInput, TurnStepResult, TurnCompleteInput, PromptSubmitInput, SessionAppendInput, SkillPromptInput, AgentSpawnInput, AgentSpawnResult } from 'claude-code';
 import { bounded, unlessAborted } from '../src/bounded';
 import { applyDrops, dropNote, changesNote, pinnedBy, experimental, isAbsolutePath, parseFrontier, loadFileNote, receipt, parseLineRanges, sliceFile, LOAD_FILE_MAX_CHARS, toolInput, type FileCheck, type LoadFile } from '../src/frontier';
 import { answersOf, workOf, type CallAnswer } from '../src/work';
-import { newLedger, markStart, addEntry, resolveSpawn, attributeSkill, shellsOf, factsFor, promptsKept, restorePrompts, skillsKept, restoreSkills, liftSources, isPersonOrigin, keyOf, originKind, type Ledger, type PartyKey } from '../src/ledger';
+import { newLedger, markStart, addEntry, deliveryOf, runStartOf, resolveSpawn, attributeSkill, shellsOf, factsFor, promptsKept, restorePrompts, skillsKept, restoreSkills, liftSources, isPersonOrigin, keyOf, originKind, type Ledger, type PartyKey } from '../src/ledger';
 import { splitAtCall, buildWake, mechanicalWake, landedLine, recentFiles, type WakeFile, type AgentRow, type Landing } from '../src/wake';
 import { wakeRow } from '../src/wake-row';
 import { planFrom, planRead, PLAN_ROWS, type WakePlan } from '../src/plan';
@@ -756,22 +756,20 @@ async function restoreKept(st: State, $: EngineInterface, party: PartyKey): Prom
   st.parties.restoreJudged(party, (await $.state.get({ plugin: 'forward-compaction', key: 'judged', id })).value);
 }
 
-/** A turn starts. A sub-agent's later run begins with what woke it (a background child's notification): recorded like a coordinator's message, once. */
+/** A turn starts. A sub-agent's later run begins with what woke it (a background child's notification, a coordinator's message): recorded as received. */
 async function noteRun(st: State, $: EngineInterface, e: TurnStartInput): Promise<void> {
   const key = keyOf(e.agentId);
   const first = key !== 'main' && st.parties.get(key).requests === 0; // the first run begins with the brief, recorded at agent.spawn
   st.parties.newTurn(key);
-  if (key === 'main' || first || e.text === '') return;
-  const last = [...st.ledger.entries].reverse().find((x) => (x.kind === 'brief' || x.kind === 'received') && x.party === key);
-  if (last !== undefined && 'text' in last && last.text === e.text) return; // session.receive recorded it already
-  st.ledger = addEntry(st.ledger, { kind: 'received', party: key, at: await $.clock.now(), origin: 'run-start', text: e.text });
-  await keepKept(st, $, key);
+  const fact = key === 'main' || first ? undefined : runStartOf(st.ledger, key, e.text, await $.clock.now());
+  if (fact !== undefined) (st.ledger = addEntry(st.ledger, fact), await keepKept(st, $, key));
 }
 
-async function noteReceived(st: State, $: EngineInterface, e: SessionReceiveInput): Promise<void> {
-  if (e.agentId === undefined) return;
-  st.ledger = addEntry(st.ledger, { kind: 'received', party: keyOf(e.agentId), at: await $.clock.now(), origin: originKind(e.origin), text: e.text });
-  await keepKept(st, $, keyOf(e.agentId));
+/** A row delivered into a running sub-agent mid-turn (a child agent's return, a coordinator's note), recorded as the model reads it. */
+async function noteDelivery(st: State, $: EngineInterface, e: SessionAppendInput): Promise<void> {
+  const fact = deliveryOf(e, await $.clock.now());
+  dbg(st, $, 'delivery', { agentId: e.agentId ?? null, origin: originKind(e.origin), uuid: e.uuid, recorded: fact !== undefined });
+  if (fact !== undefined) (st.ledger = addEntry(st.ledger, fact), await keepKept(st, $, keyOf(e.agentId)));
 }
 
 /** D5: the party a skill belongs to, from the calls in flight around it (the event names none). */
@@ -874,8 +872,8 @@ export const register: Register = (on: On, options: PluginOptions) => {
     return next(e);
   });
 
-  on('session.receive', async ($, e, next) => {
-    await guard(st, $, 'session.receive', () => noteReceived(st, $, e), e);
+  on('session.append', { door: 'delivery' }, async ($, e, next) => {
+    await guard(st, $, 'session.append', () => noteDelivery(st, $, e), e);
     return next(e);
   });
 

@@ -2,6 +2,13 @@
 
 Every release of forward-compaction, named sub-agent-compact before 1.0.0. Versions follow [semantic versioning](https://semver.org); each release is the `main` commit tagged `forward-compaction--v<version>` (`sub-agent-compact--v<version>` before 1.0.0), with a GitHub release carrying the section below.
 
+## [Unreleased]
+
+### Fixed
+
+- **A sub-agent no longer loses what its child agents return while it compacts.** A child that finished while a busy sub-agent wrote its handoff reached it only as a delivered notice, which the plugin never recorded: the install dropped it, and the sub-agent went on waiting for children that had already returned. Every message delivered into a running sub-agent (a child's return, its coordinator's note) is now recorded as it is delivered and carried into the wake, under what arrived after the handoff when it came later.
+- **The agents list names the children that have left it.** The wake listed only the agents Claude Code still lists, so finished children vanished without a word. Each agent the party started that is no longer listed now appears as `not in the list (finished, stopped or gone)`.
+
 ## [2.3.1] — 2026-11-14
 
 ### Fixed
