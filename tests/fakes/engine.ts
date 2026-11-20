@@ -71,7 +71,7 @@ export function fakeEngine(script: Script = {}) {
   const hangs = (call: 'session.id' | 'tool.register') => script.hang?.includes(call) === true;
   const state = script.state ?? new Map<string, { value: unknown; version: number }>();
 
-  const enoent = (path: string) => Object.assign(new Error(`ENOENT: no such file, ${path}`), { code: 'ENOENT' });
+  const enoent = (path: string) => new Error(`forward-compaction: $.fs.read(${path}) failed: ENOENT`);
   const base = {
     session: {
       id: () => (hangs('session.id') ? never : Promise.resolve('session-1')),

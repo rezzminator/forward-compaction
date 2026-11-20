@@ -22,7 +22,14 @@ export const STORAGE_DIR = 'storage';
 export const historyFile = (key: ListName | TextName): string => `history/${key}.jsonl`;
 
 const message = (error: unknown): string => (error instanceof Error ? error.message : String(error));
-const absent = (error: unknown): boolean => (error as { code?: unknown } | null)?.code === 'ENOENT';
+/**
+ * Whether a file call failed because the path is missing. The host's `$.fs` rejects a missing path with an Error whose
+ * message ends in its errno (`{plugin}: $.fs.read({path}) failed: ENOENT`) and no `code`; a Node-style `code` counts too.
+ */
+export const absent = (error: unknown): boolean => {
+  const e = error as { code?: unknown; message?: unknown } | null;
+  return e?.code === 'ENOENT' || (typeof e?.message === 'string' && /\bENOENT\b/.test(e.message));
+};
 /** A name safe as one path segment. */
 const segment = (name: string): string => name.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^\.+/, '') || 'unknown';
 

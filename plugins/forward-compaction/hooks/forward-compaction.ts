@@ -3,7 +3,7 @@ import { bounded, unlessAborted } from '../src/bounded';
 import { applyCall, experimental, isAbsolutePath, parseCall, loadFileNote, readLoadFiles, receipt, LOAD_FILE_MAX_CHARS, toolInput, type FileCheck, type LoadFile } from '../src/frontier';
 import { descriptionOf, pinnedBy } from '../src/carry';
 import { emptyHeld, frontierSize, sizeLines, TEXTS } from '../src/lists';
-import { loadParty, partyRoot, notSaved, NO_FOLDER, type FileProblem, type Fs } from '../src/disk';
+import { absent, loadParty, partyRoot, notSaved, NO_FOLDER, type FileProblem, type Fs } from '../src/disk';
 import { storageApply } from '../src/storage';
 import { keptOrders } from '../src/orders';
 import { answersOf, workOf, type CallAnswer } from '../src/work';
@@ -480,7 +480,7 @@ async function sessionBegins(st: State, $: EngineInterface): Promise<void> {
 
 /** ENOENT is a missing file; any other failure to stat is said as the error it is. */
 async function statFile(st: State, $: EngineInterface, path: string): Promise<FileCheck> {
-  const check: FileCheck = await Promise.resolve().then(() => $.fs.stat(path)).then((stat) => ({ kind: stat.kind, size: stat.size }), (error: unknown) => ((error as { code?: unknown } | null)?.code === 'ENOENT' ? { absent: true } : { error: message(error) }));
+  const check: FileCheck = await Promise.resolve().then(() => $.fs.stat(path)).then((stat) => ({ kind: stat.kind, size: stat.size }), (error: unknown) => (absent(error) ? { absent: true } : { error: message(error) }));
   dbg(st, $, 'fs.stat', { path, ...check });
   return check;
 }
