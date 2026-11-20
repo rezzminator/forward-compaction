@@ -81,11 +81,12 @@ function envGet($: EngineInterface, name: string): Promise<string | undefined> {
 }
 
 /** The plugin's state keys: Claude Code requires each ref's plugin and key as string literals, so each is spelled out; `tests/replay.test.ts` holds this list to the adapter's. */
-export const STATE_KEYS = ['judged', 'orders', 'prompts', 'skills'] as const;
+export const STATE_KEYS = ['judged', 'later', 'orders', 'prompts', 'skills'] as const;
 
 function stateGet($: EngineInterface, ref: { key: string; id?: string }): unknown {
   switch (ref.key) {
     case 'judged': return $.state.get({ plugin: 'forward-compaction', key: 'judged', id: ref.id } as never);
+    case 'later': return $.state.get({ plugin: 'forward-compaction', key: 'later', id: ref.id } as never);
     case 'orders': return $.state.get({ plugin: 'forward-compaction', key: 'orders', id: ref.id } as never);
     case 'prompts': return $.state.get({ plugin: 'forward-compaction', key: 'prompts', id: ref.id } as never);
     case 'skills': return $.state.get({ plugin: 'forward-compaction', key: 'skills', id: ref.id } as never);
@@ -96,6 +97,7 @@ function stateGet($: EngineInterface, ref: { key: string; id?: string }): unknow
 function stateSet($: EngineInterface, ref: { key: string; id?: string }, value: unknown): unknown {
   switch (ref.key) {
     case 'judged': return $.state.set({ plugin: 'forward-compaction', key: 'judged', id: ref.id } as never, value as never);
+    case 'later': return $.state.set({ plugin: 'forward-compaction', key: 'later', id: ref.id } as never, value as never);
     case 'orders': return $.state.set({ plugin: 'forward-compaction', key: 'orders', id: ref.id } as never, value as never);
     case 'prompts': return $.state.set({ plugin: 'forward-compaction', key: 'prompts', id: ref.id } as never, value as never);
     case 'skills': return $.state.set({ plugin: 'forward-compaction', key: 'skills', id: ref.id } as never, value as never);

@@ -398,45 +398,51 @@ describe('F sections', () => {
 
   it('carries a skill up to 20,000 characters whatever the wake budget, outside it', () => {
     // askPoint 2000 at 3.5 characters a token: B is 3,500 characters
-    const f = wakeOf({ askPoint: 2000, f: { skills: [{ skill: 'big', text: 'b'.repeat(20_000), source: 'user' }, { skill: 'also', text: 'a'.repeat(1000), source: 'user' }] } }).f;
-    expect(f).toContain('### big (user)\n' + 'b'.repeat(20_000) + '\n');
-    expect(f).toContain('### also (user)\n' + 'a'.repeat(1000));
+    const f = wakeOf({ askPoint: 2000, f: { skills: [{ skill: 'big', text: 'b'.repeat(20_000), source: 'user', keep: true }, { skill: 'also', text: 'a'.repeat(1000), source: 'user', keep: true }] } }).f;
+    expect(f).toContain('### big (user, pinned)\n' + 'b'.repeat(20_000) + '\n');
+    expect(f).toContain('### also (user, pinned)\n' + 'a'.repeat(1000));
     expect(f).not.toContain('skill content truncated');
     expect(f).not.toContain('## Skills not carried');
   });
 
-  it("cuts a skill past 20,000 characters to Claude Code's own marker, a pinned one too, and names the unattributed ones", () => {
+  it("carries a pinned skill or one keep_skills names whole, cut past 20,000 characters to Claude Code's own marker, and lists every other one and the unattributed ones", () => {
     const marker = '\n\n[... skill content truncated for compaction; use Read on the skill path if you need the full text]';
-    const f = wakeOf({
+    const { f, wake } = wakeOf({
+      keepSkills: ['small', 'huge'],
       f: {
         skills: [
           { skill: 'small', text: 'tiny', source: 'user', path: '/s/SKILL.md' },
           { skill: 'huge', text: 'h'.repeat(40_000), source: 'plugin' },
           { skill: 'pinned', text: 'p'.repeat(20_001), source: 'user', keep: true },
+          { skill: 'listed', text: 'LISTED BODY', source: 'user', path: '/s/l/SKILL.md', description: 'What it is for.' },
+          { skill: 'bare', text: 'BARE BODY', source: 'plugin' },
         ],
         unattributedSkills: [{ skill: 'mystery' }],
       },
-    }).f;
-    expect(f).toContain('## Skills in force, as loaded (one you no longer need: name it in drop_skills on two frontiers in a row)\n### small (user, /s/SKILL.md)\ntiny');
-    expect(f).toContain('### huge (plugin)\n' + 'h'.repeat(20_000 - marker.length) + marker + '\n');
-    expect(f).toMatch(new RegExp(`### pinned \\([^)]*pinned[^)]*\\)\\n${'p'.repeat(20_000 - marker.length)}\\n\\n\\[\\.\\.\\. skill content truncated`));
-    expect(f).toContain('## Skills not carried\n- mystery: loaded in this session by an unidentified party; call Skill mystery if it applies to you.');
+    });
+    expect(f).toContain('## Skills in force, as loaded\n### small (user, /s/SKILL.md, named in your keep_skills)\ntiny');
+    expect(f).toContain('### huge (plugin, named in your keep_skills)\n' + 'h'.repeat(20_000 - marker.length) + marker + '\n');
+    expect(f).toContain('### pinned (user, pinned)\n' + 'p'.repeat(20_000 - marker.length) + marker + '\n');
+    expect(f).toContain('## Skills not carried\nTheir text is not in your context: load one again with the Skill tool before doing work it governs.\n- listed (user, /s/l/SKILL.md): What it is for.\n- bare (plugin)\n- mystery: loaded in this session by an unidentified party; call Skill mystery if it applies to you.');
+    expect(f).not.toContain('LISTED BODY');
+    expect(f).not.toContain('BARE BODY');
+    expect([wake.skills, wake.facts]).toEqual([{ carried: 3, listed: 3 }, 3]);
   });
 
   it('takes skills newest first within 100,000 characters, skipping one that does not fit and carrying a smaller one after it', () => {
     const skills = [
-      ...['s1', 's2', 's3', 's4'].map((skill) => ({ skill, text: skill.repeat(15_000), source: 'user' })), // each cut to 20,000: 80,000
-      { skill: 's5', text: 'x'.repeat(19_000), source: 'user' }, // 99,000
+      ...['s1', 's2', 's3', 's4'].map((skill) => ({ skill, text: skill.repeat(15_000), source: 'user', keep: true as const })), // each cut to 20,000: 80,000
+      { skill: 's5', text: 'x'.repeat(19_000), source: 'user', keep: true as const }, // 99,000
       { skill: 'big', text: 'y'.repeat(5_000), source: 'user', path: '/s/big/SKILL.md', keep: true as const }, // 1,000 left: skipped, pin or not
-      { skill: 'nopath', text: 'z'.repeat(2_000), source: 'plugin' }, // skipped
-      { skill: 'tiny', text: 'ok', source: 'user' }, // fits in what is left
+      { skill: 'nopath', text: 'z'.repeat(2_000), source: 'plugin', keep: true as const }, // skipped
+      { skill: 'tiny', text: 'ok', source: 'user', keep: true as const }, // fits in what is left
     ];
     const f = wakeOf({ f: { skills } }).f;
-    expect(f.indexOf('### s1 (user)')).toBeLessThan(f.indexOf('### s4 (user)'));
-    expect(f).toContain('### s5 (user)\n' + 'x'.repeat(19_000));
-    expect(f).toContain('### tiny (user)\nok');
+    expect(f.indexOf('### s1 (user, pinned)')).toBeLessThan(f.indexOf('### s4 (user, pinned)'));
+    expect(f).toContain('### s5 (user, pinned)\n' + 'x'.repeat(19_000));
+    expect(f).toContain('### tiny (user, pinned)\nok');
     expect(f).not.toContain('yyyyy');
-    expect(f).toContain('## Skills not carried\n- big: over the 100,000-character room for skills; call Skill big or Read /s/big/SKILL.md if it applies to you.\n- nopath: over the 100,000-character room for skills; call Skill nopath if it applies to you.');
+    expect(f).toContain('## Skills not carried\nTheir text is not in your context: load one again with the Skill tool before doing work it governs.\n- big: over the 100,000-character room for skills; call Skill big or Read /s/big/SKILL.md if it applies to you.\n- nopath: over the 100,000-character room for skills; call Skill nopath if it applies to you.');
   });
 
   it('lists agents (at most 50) or says why it could not', () => {
@@ -527,6 +533,17 @@ describe('F sections', () => {
     });
     expect(f).toContain('## Files you asked to carry\n### /abs/a.ts lines 1-3 — the bug\nline1\nline2\nline3');
     expect(f).toContain('## Files not carried\n- /abs/gone.ts: lines 10-40 out of range (5 lines)\n- /abs/err.ts: EACCES: permission denied');
+  });
+
+  it('lists the files for later by path, lines and why, never their content, and names one gone as not carried, on a mechanical wake too', () => {
+    const later = { listed: [{ path: '/abs/plan.md', lines: '1-40', why: 'step 4', later: true as const }, { path: '/abs/notes.md', later: true as const }], gone: [{ path: '/abs/gone.md', problem: 'no such file' }] };
+    const block = '## Files for later, not loaded\nTheir content is not in your context: read each with the Read tool (or the shell) at the step that needs it.\n- /abs/plan.md lines 1-40 — step 4\n- /abs/notes.md\n\n## Files not carried\n- /abs/gone.md: no such file';
+    const { f, wake } = wakeOf({ later, files: [{ path: '/abs/a.ts', content: 'A' }] });
+    expect(f).toContain(`## Files you asked to carry\n### /abs/a.ts\nA\n\n${block}`);
+    expect([wake.later, wake.carried, wake.notCarried]).toEqual([2, ['/abs/a.ts'], ['/abs/gone.md']]);
+    const mechanical = mechanicalWake({ ...mainInput([user('before')]), reason: { kind: 'reactive' }, later });
+    expect((mechanical.messages[0] as BuiltMessage).text).toContain(block);
+    expect(mechanical.later).toBe(2);
   });
 
   it('carries every load file it could read, with no room and no count cap, whatever the ask point or ratio', () => {

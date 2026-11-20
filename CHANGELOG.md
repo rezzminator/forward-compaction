@@ -4,6 +4,15 @@ Every release of forward-compaction, named sub-agent-compact before 1.0.0. Versi
 
 ## [Unreleased]
 
+### Changed
+
+- **A wake lists the skills instead of carrying their text.** Every skill and command the party loaded was carried whole into every wake, however long ago it stopped mattering. Each is now one line, its name, source and description, with a note to load it again with the Skill tool; only one its file's frontmatter pins (`forward-compaction-keep: true`), one `FORWARD_COMPACTION_KEEP_SKILLS` names (`*` names every one) and one the handoff's new `keep_skills` names for that one wake is carried whole.
+- **A handoff can list a file for later.** A `load_files` entry marked `later: true` is never read in: every wake of the party lists it by path, lines and why until a handoff names it again, drops it with the new `drop_files`, or the file is gone, which the next wake says once. The tool's description asks the model to write what only a later step needs to such a file.
+
+### Removed
+
+- **`drop_skills`.** With every skill listed rather than carried, there is nothing left to drop. A call that still passes it is stored, the value carried under its findings.
+
 ### Fixed
 
 - **A sub-agent no longer loses what its child agents return while it compacts.** A child that finished while a busy sub-agent wrote its handoff reached it only as a delivered notice, which the plugin never recorded: the install dropped it, and the sub-agent went on waiting for children that had already returned. Every message delivered into a running sub-agent (a child's return, its coordinator's note) is now recorded as it is delivered and carried into the wake, under what arrived after the handoff when it came later.

@@ -74,8 +74,9 @@ describe('the prompts across a plugin reload', () => {
 });
 
 describe('the skills across a plugin reload', () => {
-  it("carries main's skills loaded before a reload into the wake after it, one loaded since winning", async () => {
+  it("carries main's skills loaded before a reload into the wake after it, one loaded since winning, every one pinned by FORWARD_COMPACTION_KEEP_SKILLS=* set at the reload", async () => {
     const state = new Map<string, { value: unknown; version: number }>();
+    const env = { FORWARD_COMPACTION_KEEP_SKILLS: '*' };
     const before = await begin({ state });
     for (const [skill, text] of [['god-speed', 'GOD SPEED BODY'], ['ponytail', 'OLD PONYTAIL']]) {
       await before.dispatch('tool.call', { tool: 'Skill', tool_use_id: `tu-${skill}`, skill }, async () => {
@@ -83,16 +84,14 @@ describe('the skills across a plugin reload', () => {
         return { result: 'loaded' };
       });
     }
-    const after = await begin({ state });
+    const after = await begin({ state, env });
     await after.dispatch('tool.call', { tool: 'Skill', tool_use_id: 'tu-p2', skill: 'ponytail' }, async () => {
       await after.dispatch('skill.prompt', { skill: 'ponytail', text: 'NEW PONYTAIL', frontmatter: {} }, async () => ({ text: 'NEW PONYTAIL' }));
       return { result: 'loaded' };
     });
     await step(after, 125_000);
     const facts = (await ask(after)).messages[0].text;
-    expect(facts).toContain('## Skills in force, as loaded');
-    expect(facts).toContain('GOD SPEED BODY');
-    expect(facts).toContain('NEW PONYTAIL');
+    expect(facts).toContain('## Skills in force, as loaded\n### ponytail (unknown source, pinned)\nNEW PONYTAIL\n### god-speed (unknown source, pinned)\nGOD SPEED BODY');
     expect(facts).not.toContain('OLD PONYTAIL');
   });
 });

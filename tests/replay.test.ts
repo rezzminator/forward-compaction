@@ -29,6 +29,8 @@ const isForward = (tool: unknown): boolean => typeof tool === 'string' && tool.e
 /** A wake this plugin built: the messages a session.compact returned without calling next (a native summary passed through next is Claude Code's, not an install). */
 const wakeOf = (inv: Invocation): any[] | undefined => (inv.hook === 'session.compact' && inv.next === undefined && Array.isArray(inv.end?.result?.messages) ? inv.end!.result.messages : undefined);
 const texts = (messages: readonly any[]): string => messages.map((m) => [m.text ?? '', ...(m.toolResults ?? []).map((r: any) => r.text ?? '')].join('\n')).join('\n');
+/** Whether a wake lists a skill under `## Skills not carried` by its name: the wake carries a skill's text only when it is pinned or kept, and lists every other one. */
+const listsSkill = (wake: string, skill: string): boolean => wake.includes('## Skills not carried\n') && wake.slice(wake.indexOf('## Skills not carried\n')).includes(`\n- ${skill} (`);
 const nextWake = (view: View, key: string, after: number): Invocation | undefined => view.find((c) => c.seq > after && party(c.input) === key && wakeOf(c) !== undefined);
 /** The frontier the plugin assembled from the call's section arguments, or undefined when the call carried none. */
 const SECTION_KEYS = ['objective', 'decisions', 'done', 'remaining', 'next', 'blocked', 'findings'];
@@ -124,7 +126,8 @@ export const INVARIANTS: Record<Name, (view: View, recorded: boolean) => Verdict
       const wake = nextWake(view, key, s.seq);
       if (!wake) continue;
       subjects++;
-      if (!texts(wakeOf(wake)!).includes(s.input.text)) failures.push(`I5 ${at(wake)}: the wake lacks the text of skill.prompt #${s.id} (${s.input.skill}), loaded inside ${key}'s Skill call tool.call #${around[0]!.id}`);
+      const text = texts(wakeOf(wake)!);
+      if (!text.includes(s.input.text) && !listsSkill(text, s.input.skill)) failures.push(`I5 ${at(wake)}: the wake neither carries nor lists skill.prompt #${s.id} (${s.input.skill}), loaded inside ${key}'s Skill call tool.call #${around[0]!.id}`);
     }
     return { subjects, failures };
   },
@@ -303,12 +306,12 @@ describe('replay gate (D19)', { timeout: 60_000 }, () => {
     expect(failures).toContain('replayed: I5 not exercised: no subject in this fixture');
   });
 
-  it('a recorded wake without the skill text fails I5 naming the hook, its number and the party', async () => {
+  it('a recorded wake that neither carries nor lists the skill fails I5 naming the hook, its number and the party', async () => {
     const rows = LIVE();
     const { skill, call, wake } = skillSubject(invocations(rows));
     const key = party(call.input);
     const edited = rows.map((r) => (r.id === wake.id && r.phase === 'end' ? JSON.parse(JSON.stringify(r).split(JSON.stringify(skill.input.text).slice(1, -1)).join('(gone)')) : r));
-    expect(await gate(edited, LIVE_EXERCISES)).toContain(`recorded: I5 session.compact #${wake.id} ${key}: the wake lacks the text of skill.prompt #${skill.id} (${skill.input.skill}), loaded inside ${key}'s Skill call tool.call #${call.id}`);
+    expect(await gate(edited, LIVE_EXERCISES)).toContain(`recorded: I5 session.compact #${wake.id} ${key}: the wake neither carries nor lists skill.prompt #${skill.id} (${skill.input.skill}), loaded inside ${key}'s Skill call tool.call #${call.id}`);
   });
 
   it('a format-bearing $ path the recording never holds fails as unrecorded (R41)', async () => {

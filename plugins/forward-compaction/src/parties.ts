@@ -3,6 +3,7 @@ import { ignoredBy, type RatioBase } from './window';
 import { keptOrders, type LiftedOrder, type StandingOrder } from './orders';
 import type { PlanSeen } from './plan';
 import type { LoadFile } from './frontier';
+import { keptLater } from './carry';
 import type { SubagentWindow } from './options';
 
 /** A frontier the model wrote, held in memory until a door installs it. */
@@ -21,6 +22,8 @@ export type StoredFrontier = {
   lifted?: LiftedOrder[];
   /** The required sections it lacks (frontier.ts `ParsedFrontier.missing`): it installs without them, its wake naming each. */
   missing?: string[];
+  /** The skills and commands its wake carries whole (the tool's `keep_skills`), for that one wake. */
+  keepSkills?: string[];
   /** Store order across all parties. */
   seq: number;
 };
@@ -78,8 +81,8 @@ export type PartyState = {
   installs: number;
   /** An install happened in the party's current turn: the turn-end door (P1) does not fire again. */
   installedThisTurn: boolean;
-  /** The loaded, unpinned names the last stored frontier's drop_skills asked once: the next frontier naming one again drops it. */
-  dropAsked: string[];
+  /** The files for later its frontiers listed (carry.ts `laterApply`), named in every wake until one leaves; absent until a frontier or `$.state` sets it. */
+  later?: LoadFile[];
   /** The judgement last returned by `judged`. */
   judged?: Judgement;
   /** The max context, source and unknown reason of the last window row returned for the party (`windowed`). */
@@ -108,7 +111,7 @@ export class Parties {
   get(key: string): PartyState {
     let state = this.states.get(key);
     if (!state) {
-      state = { key, label: key, answeredSinceSkip: true, nudgeLevel: 0, absorbNext: false, nudges: 0, finishTold: false, requests: 0, installs: 0, installedThisTurn: false, dropAsked: [] };
+      state = { key, label: key, answeredSinceSkip: true, nudgeLevel: 0, absorbNext: false, nudges: 0, finishTold: false, requests: 0, installs: 0, installedThisTurn: false };
       this.states.set(key, state);
     }
     return state;
@@ -172,6 +175,12 @@ export class Parties {
   restoreOrders(key: string, kept: unknown): void {
     const orders = keptOrders(kept);
     if (orders !== undefined) this.get(key).orders ??= orders;
+  }
+
+  /** The files for later `$.state` kept for the party before a plugin reload, when usable; a list set in this process wins. */
+  restoreLater(key: string, kept: unknown): void {
+    const later = keptLater(kept);
+    if (later !== undefined) this.get(key).later ??= later;
   }
 
   /** The judgement and model `$.state` kept for the party before a plugin reload, when usable; what this process already knows wins. */

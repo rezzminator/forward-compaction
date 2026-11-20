@@ -23,6 +23,8 @@ export type BriefEntry = Base & {
 };
 export type SkillEntry = Base & {
   kind: 'skill'; party: PartyKey; skill: string; text: string; source?: string; path?: string; how: SkillHow; keep?: true;
+  /** Its frontmatter's `description` (carry.ts `descriptionOf`): what a wake that lists the skill instead of carrying it says of it. */
+  description?: string;
 };
 export type ShellsEntry = Base & { kind: 'shells'; tasks: ShellTask[]; crons: CronJob[] };
 export type WorkEntry = Base & { kind: 'work'; party: PartyKey; fact: WorkFact };
@@ -129,7 +131,7 @@ const latestPerSkill = (skills: SkillEntry[]): SkillEntry[] => {
 };
 
 /** A skill as `$.state` keeps it: a skill entry without its seq and party. */
-export type KeptSkill = { at: number; skill: string; text: string; how: SkillHow; source?: string; path?: string; keep?: true };
+export type KeptSkill = { at: number; skill: string; text: string; how: SkillHow; source?: string; path?: string; keep?: true; description?: string };
 
 /** A party's skills to keep: the latest text of each skill it loaded, oldest first. */
 export function skillsKept(ledger: Ledger, party: PartyKey): KeptSkill[] {

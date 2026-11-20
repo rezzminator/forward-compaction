@@ -124,7 +124,7 @@ export type ResolvedOptions = {
   logFile?: string;
   /** Lower-cased ignore-list entries; empty when the variable is set empty. */
   ignoreModels: string[];
-  /** Skill and command names never dropped from a wake, as given, trimmed. */
+  /** Skill and command names every wake carries whole, as given, trimmed; `*` names every one (carry.ts `KEEP_ALL`). */
   keepSkills: string[];
   debug: boolean;
   /** One line per option that was invalid and fell back; empty when all were valid. */

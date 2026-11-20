@@ -2,7 +2,8 @@
 // the tail is the engine's own messages returned untouched. Pure: files, agents and the clock arrive as inputs.
 import { andList, DEFAULT_TOOL, k as kilo } from './nudge';
 import { keptSaid, PROMPTS_KEPT } from './ledger';
-import { experimental, EXPERIMENTAL_OPENING } from './frontier';
+import { experimental, EXPERIMENTAL_OPENING, type LoadFile } from './frontier';
+import { fitSkills, pinned, LATER_NOTE, SKILLS_LISTED_NOTE, SKILLS_MAX_CHARS } from './carry';
 import { ordersSection, type LiftedOrder, type StandingOrder } from './orders';
 import type { WakePlan } from './plan';
 import { WAKE_OPENING } from './wake-row';
@@ -48,30 +49,6 @@ export const FILES_MAX = 15;
 export const RECENT_FILES_KEPT = 5;
 /** The agents section's row cap: a design budget, enough for a coordinator's fleet, never the size of one. */
 export const AGENTS_MAX_ROWS = 50;
-/** One skill's carried text: Claude Code's own 5,000 tokens a skill after compaction, at its 4 characters a token; a design budget in characters, never a measured token count. */
-export const SKILL_MAX_CHARS = 20_000;
-/** All carried skills together: Claude Code's own 25,000 tokens for skills after compaction, at its 4 characters a token; a design budget in characters, never a measured token count. */
-export const SKILLS_MAX_CHARS = 100_000;
-/** What ends a skill cut to SKILL_MAX_CHARS, Claude Code's own marker, verbatim. */
-export const SKILL_TRUNCATED = '\n\n[... skill content truncated for compaction; use Read on the skill path if you need the full text]';
-
-/**
- * The skills a wake carries, as Claude Code carries them after its own compaction: newest loaded first, each cut past
- * SKILL_MAX_CHARS to its head and SKILL_TRUNCATED, and together within SKILLS_MAX_CHARS; one that does not fit what is
- * left is skipped and the next, smaller one may still fit. A pinned skill is cut and fitted like the rest.
- */
-export function fitSkills<S extends { text: string }>(skills: readonly S[]): { carried: S[]; skipped: S[] } {
-  const carried: S[] = [];
-  const skipped: S[] = [];
-  let left = SKILLS_MAX_CHARS;
-  for (const s of skills) {
-    const text = s.text.length > SKILL_MAX_CHARS ? s.text.slice(0, SKILL_MAX_CHARS - SKILL_TRUNCATED.length) + SKILL_TRUNCATED : s.text;
-    if (text.length > left) skipped.push(s);
-    else (left -= text.length), carried.push({ ...s, text });
-  }
-  return { carried, skipped };
-}
-
 /**
  * B = half the ask point, a design budget: half leaves the woken party room to work before its next ask (D18). B bounds the
  * kept tail, not the whole wake: the facts sections' shares (`SHARE`) sum to 0.45×B, and the person's words, the task list, the
@@ -152,8 +129,8 @@ export type WakeFacts = {
   brief?: { text: string };
   children?: readonly { id: string; subagentType?: string; description?: string }[]; // the agents the party spawned (ledger.ts `Facts`)
   received: readonly { at: number; origin: string; text: string }[];
-  /** Latest text per skill, newest first. */
-  skills: readonly { skill: string; text: string; source?: string; path?: string; keep?: true }[];
+  /** Latest text per skill, newest first; `keep` pinned, `description` its frontmatter's. */
+  skills: readonly { skill: string; text: string; source?: string; path?: string; keep?: true; description?: string }[];
   unattributedSkills: readonly { skill: string }[];
   shells?: {
     at: number;
@@ -204,6 +181,11 @@ type Shared<M> = {
   orders?: { standing: readonly StandingOrder[]; lifted?: readonly LiftedOrder[] };
   /** Plan mode and the plan file, when the party's plan-mode attachments named them; absent, no section. */
   plan?: WakePlan;
+  /** The skills and commands this wake carries whole besides the frontmatter-pinned ones: `keepSkills` the frontier's keep_skills, `pins` FORWARD_COMPACTION_KEEP_SKILLS (carry.ts `pinned`); every other one is listed. */
+  keepSkills?: readonly string[];
+  pins?: readonly string[];
+  /** The party's files for later (carry.ts `laterApply`): `listed` named by path and why, never read; `gone` the ones missing or unreadable now, named as not carried. */
+  later?: { listed: readonly LoadFile[]; gone: readonly { path: string; problem: string }[] };
 };
 /** `missing`: the required sections the frontier lacks (frontier.ts `ParsedFrontier.missing`), each named in the head. */
 export type BuildWakeInput<M> = Shared<M> & { toolUseId: string; frontier: string; files?: readonly WakeFile[]; missing?: readonly string[] };
@@ -225,6 +207,9 @@ export type Wake<M> = {
   headChars: number;
   carried: string[];
   notCarried: string[];
+  /** For the wake's log rows: the skills carried whole and those listed under `## Skills not carried`, and the files for later listed. */
+  skills: { carried: number; listed: number };
+  later: number;
 };
 
 type Section = { text: string; content: boolean };
@@ -252,7 +237,7 @@ function age(ms: number): string {
 
 type Extras = { siblings: readonly Sibling[]; files: readonly WakeFile[]; recent?: readonly RecentFile[]; mechanical?: boolean };
 
-type Rendered = { text: string; sections: number; sizes: Wake<never>['sizes']; carried: string[]; notCarried: string[] };
+type Rendered = { text: string; sections: number; sizes: Wake<never>['sizes']; carried: string[]; notCarried: string[]; skills: Wake<never>['skills']; later: number };
 
 /** F: every section with its cap; whole or not, never cut. With no measured ratio no section is capped. */
 function renderFacts<M>(input: Shared<M>, facts: WakeFacts, { siblings, files, recent = [], mechanical = false }: Extras): Rendered {
@@ -319,13 +304,19 @@ function renderFacts<M>(input: Shared<M>, facts: WakeFacts, { siblings, files, r
   }
 
   const notCarried: string[] = [];
-  // the skills within Claude Code's own post-compaction limits, outside B; the tail is fitted after them
-  const skills = fitSkills(facts.skills);
-  const carriedSkills = skills.carried.map((s) => `### ${s.skill} (${s.source ?? 'unknown source'}${s.path === undefined ? '' : `, ${s.path}`}${s.keep ? ', pinned: never dropped' : ''})\n${s.text}`);
-  if (carriedSkills.length > 0) sections.push(section(['## Skills in force, as loaded (one you no longer need: name it in drop_skills on two frontiers in a row)', ...carriedSkills].join('\n')));
+  // a pinned skill, or one the frontier's keep_skills names, carried whole within Claude Code's own post-compaction limits,
+  // outside B; every other one listed by name, source and description. The tail is fitted after them.
+  const keep = new Set(input.keepSkills ?? []);
+  const whole = (s: WakeFacts['skills'][number]): boolean => pinned(s, input.pins ?? []) || keep.has(s.skill);
+  const from = (s: WakeFacts['skills'][number]): string => `${s.source ?? 'unknown source'}${s.path === undefined ? '' : `, ${s.path}`}`;
+  const skills = fitSkills(facts.skills.filter(whole));
+  const carriedSkills = skills.carried.map((s) => `### ${s.skill} (${from(s)}${pinned(s, input.pins ?? []) ? ', pinned' : ', named in your keep_skills'})\n${s.text}`);
+  if (carriedSkills.length > 0) sections.push(section(['## Skills in force, as loaded', ...carriedSkills].join('\n')));
+  const listed = facts.skills.filter((s) => !whole(s));
+  for (const s of listed) notCarried.push(`- ${s.skill} (${from(s)})${s.description === undefined ? '' : `: ${s.description}`}`);
   for (const s of skills.skipped) notCarried.push(`- ${s.skill}: over the ${num(SKILLS_MAX_CHARS)}-character room for skills; call Skill ${s.skill}${s.path === undefined ? '' : ` or Read ${s.path}`} if it applies to you.`);
   for (const s of facts.unattributedSkills) notCarried.push(`- ${s.skill}: loaded in this session by an unidentified party; call Skill ${s.skill} if it applies to you.`);
-  if (notCarried.length > 0) sections.push({ text: ['## Skills not carried', ...notCarried].join('\n'), content: false });
+  if (notCarried.length > 0) sections.push({ text: ['## Skills not carried', SKILLS_LISTED_NOTE, ...notCarried].join('\n'), content: listed.length > 0 });
 
   const work = facts.work;
   if (work !== undefined && work.files.length > 0) {
@@ -363,10 +354,11 @@ function renderFacts<M>(input: Shared<M>, facts: WakeFacts, { siblings, files, r
     sections.push({ text: [header, ...(rows.length > 0 ? rows : ['(none running)'])].join('\n'), content: rows.length > 0 });
   }
 
+  // the load files not carried, and the files for later now missing or unreadable, each named once with why
+  const dropped: string[] = [];
   if (files.length > 0) {
     // each already cut to LOAD_FILE_MAX_LINES (frontier.ts `sliceFile`); no room and no count cap
     const carried: string[] = [];
-    const dropped: string[] = [];
     for (const f of files) {
       if (f.problem !== undefined) {
         dropped.push(`- ${f.path}: ${f.problem}`);
@@ -377,8 +369,11 @@ function renderFacts<M>(input: Shared<M>, facts: WakeFacts, { siblings, files, r
       carried.push(`### ${f.path}${f.lines === undefined ? '' : ` lines ${f.lines}`}${f.why === undefined ? '' : ` — ${f.why}`}\n${f.content}`);
     }
     if (carried.length > 0) sections.push(section(['## Files you asked to carry', ...carried].join('\n')));
-    if (dropped.length > 0) sections.push({ text: ['## Files not carried', ...dropped].join('\n'), content: false });
   }
+  const later = input.later?.listed ?? [];
+  if (later.length > 0) sections.push(section(['## Files for later, not loaded', LATER_NOTE, ...later.map((f) => `- ${f.path}${f.lines === undefined ? '' : ` lines ${f.lines}`}${f.why === undefined ? '' : ` — ${f.why}`}`)].join('\n')));
+  for (const f of input.later?.gone ?? []) (dropped.push(`- ${f.path}: ${f.problem}`), filesNotCarried.push(f.path));
+  if (dropped.length > 0) sections.push({ text: ['## Files not carried', ...dropped].join('\n'), content: false });
 
   if (recent.length > 0) {
     // each already cut to LOAD_FILE_MAX_LINES (frontier.ts `sliceFile`); one that could not be read is named in place
@@ -397,6 +392,8 @@ function renderFacts<M>(input: Shared<M>, facts: WakeFacts, { siblings, files, r
     sizes: sections.map((s) => ({ section: s.text.split('\n', 1)[0]!, chars: s.text.length })),
     carried: filesCarried,
     notCarried: filesNotCarried,
+    skills: { carried: skills.carried.length, listed: notCarried.length },
+    later: later.length,
   };
 }
 
@@ -440,6 +437,8 @@ function assemble<M extends WakeMessage>(
       headChars: text.length,
       carried: f.carried,
       notCarried: f.notCarried,
+      skills: f.skills,
+      later: f.later,
     };
   }
 }

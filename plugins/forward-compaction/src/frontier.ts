@@ -1,15 +1,14 @@
 // The forward_compaction tool contract: what the model may send, what is stored whole (never trimmed, never refused), and what the receipt says.
 
 import { k } from './nudge';
-import { DROP_MAX } from './drop';
 import { carryOrders, type LiftedOrder, type OrderMemory, type StandingOrder } from './orders';
-export { applyDrops, dropNote, pinnedBy } from './drop';
+export { descriptionOf, keepNote, keepOutcome, keptLater, laterApply, laterChecked, laterNote, laterProblem, pinned, pinnedBy, FRONTMATTER_KEEP, KEEP_ALL } from './carry';
 
 /** The tool's name as registered; the model sees `mcp__forward-compaction__forward_compaction`. */
 export const FORWARD_TOOL = 'forward_compaction';
 
 export const FORWARD_TOOL_DESCRIPTION =
-  'Compacts your context at a clean milestone once it is large. Stores your frontier, one argument per section, any length, for yourself after a reset; at your next compaction it and recorded facts replace everything before this call, the newest later messages that fit stay verbatim, the rest named as not carried. The person\'s binding orders go in standing_orders, verbatim. Always stores; the receipt names any change. Example: forward_compaction({"objective": "…", "decisions": "…", "done": "…", "remaining": "…", "next": "…", "load_files": [{"path": "…"}]}). Exact old detail later → look_back.';
+  'Compacts your large context at a clean milestone. Stores your frontier; at your next compaction it and recorded facts replace all before this call, the newest later messages that fit stay verbatim, the rest named as not carried. The person\'s binding orders go in standing_orders. Write what only a later step needs to a file, list it in load_files with later: true, and name that step in remaining or next. Always stores. Example: forward_compaction({"objective": "…", "decisions": "…", "done": "…", "remaining": "…", "next": "…", "load_files": [{"path": "…"}]}). Exact old detail later → look_back.';
 
 /**
  * The frontier's sections in the order they are assembled: the argument, its heading, whether it is required, and what it
@@ -48,14 +47,19 @@ export const FORWARD_INPUT_SCHEMA = {
           path: { type: 'string', description: 'Absolute path.' },
           lines: { type: 'string', description: 'Line ranges, like "10-40" or "1-60,160-185".' },
           why: { type: 'string', description: 'What you need it for, one line; past 200 characters it is cut.' },
+          later: { type: 'boolean', description: 'true: not read in; listed by path and why in every wake until load_files names it again or drop_files drops it.' },
         },
       },
     },
-    drop_skills: {
+    drop_files: {
       type: 'array',
-      maxItems: DROP_MAX,
       items: { type: 'string' },
-      description: 'Optional: names of skills or commands in your context you no longer need. Name one on two frontiers in a row and the second wake leaves it out; one its file pins stays.',
+      description: 'Paths listed for later (load_files later: true) that no step needs any more.',
+    },
+    keep_skills: {
+      type: 'array',
+      items: { type: 'string' },
+      description: 'Skills or commands whose text this one wake carries whole; any other is listed by name and description, to load again with the Skill tool.',
     },
     standing_orders: {
       type: 'array',
@@ -93,15 +97,18 @@ export const LOAD_FILE_MAX_CHARS = 40_000;
 /** A load file's `why`: one line saying what it is for; a longer one is cut to it. */
 export const WHY_MAX_CHARS = 200;
 
-/** One file the model asked to carry into the wake: its path, absolute or resolved against the session's directory; `lines` and `why` the model's own text, `why` cut to WHY_MAX_CHARS. */
-export type LoadFile = { path: string; lines?: string; why?: string };
+/** One file the model asked to carry into the wake: its path, absolute or resolved against the session's directory; `lines` and `why` the model's own text, `why` cut to WHY_MAX_CHARS; `later`, listed for a later step and never read in (carry.ts `laterApply`). */
+export type LoadFile = { path: string; lines?: string; why?: string; later?: true };
 
 export type ParsedFrontier = {
   frontier: string;
   loadFiles: LoadFile[];
   /** The place in the call's `load_files` of each entry of `loadFiles`, so a note on one names the entry the model sent. */
   loadAt: number[];
-  dropSkills: string[];
+  /** The paths of files for later the call takes off the party's list (carry.ts `laterApply`), resolved as `loadFiles` are. */
+  dropFiles: string[];
+  /** The skills and commands the call's wake carries whole (carry.ts `keepOutcome`). */
+  keepSkills: string[];
   standingOrders: StandingOrder[];
   lifted: LiftedOrder[];
   /** The required sections absent, not a string or blank, in section order: the wake names each, and the receipt says so. */
@@ -110,7 +117,7 @@ export type ParsedFrontier = {
   notes: string[];
 };
 
-const FIELDS = [...SECTIONS.map((section) => section.key), 'load_files', 'drop_skills', 'standing_orders', 'lifted'];
+const FIELDS = [...SECTIONS.map((section) => section.key), 'load_files', 'drop_files', 'keep_skills', 'standing_orders', 'lifted'];
 const num = (n: number): string => n.toLocaleString('en-US');
 const kind = (v: unknown): string => (v === null ? 'null' : Array.isArray(v) ? 'array' : typeof v);
 /** Whether `p` is absolute, POSIX or Windows. */
@@ -119,7 +126,7 @@ export const isAbsolutePath = (p: string): boolean => /^(\/|[A-Za-z]:[\\/]|\\\\)
 const inDir = (dir: string, path: string): string => `${dir.replace(/[\\/]+$/, '')}/${path.replace(/^(\.[\\/])+/, '')}`;
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 
-const ARRAYS = ['load_files', 'drop_skills', 'standing_orders', 'lifted'];
+const ARRAYS = ['load_files', 'drop_files', 'keep_skills', 'standing_orders', 'lifted'];
 const FOLD = /<\/(\w+)>\s*<parameter name="(\w+)">/g;
 
 /**
@@ -183,9 +190,9 @@ function carryUnknown(fields: Record<string, unknown>): Record<string, unknown> 
 
 /**
  * Reads the model's tool input into a frontier that is always stored: nothing is refused. Each bad argument is left
- * out (a section) or skipped (one `drop_skills`, `standing_orders` or `lifted` entry, or a `load_files` entry with no
+ * out (a section) or skipped (one `drop_files`, `keep_skills`, `standing_orders` or `lifted` entry, or a `load_files` entry with no
  * path) and named in `notes` for the receipt, the sections' text and the files coming back as sent; an unknown argument
- * rides under findings. A load file's relative path is resolved against `cwd`, the session's directory, when known.
+ * rides under findings. A load file's relative path, and a `drop_files` one, is resolved against `cwd`, the session's directory, when known.
  * With `memory`, the party's remembered standing orders, the plugin carries every one the frontier left out and keeps
  * every one a lift did not prove (orders.ts `carryOrders`).
  * `$.fs.stat` checks (V12-V15) are the adapter's, through `loadFileNote`.
@@ -197,13 +204,22 @@ export function parseFrontier(input: unknown, memory?: OrderMemory, cwd?: string
   const given = (key: string): boolean => typeof fields[key] === 'string' && (fields[key] as string).trim() !== '';
   const frontier = SECTIONS.flatMap(({ key, heading }) => (given(key) ? [`## ${heading}\n${fields[key] as string}`] : [])).join('\n\n');
   const missing = SECTIONS.flatMap(({ key, required }) => (required && !given(key) ? [key] : []));
-  const drops = fields.drop_skills;
-  let dropSkills: string[] = [];
-  if (drops !== undefined && !Array.isArray(drops)) notes.push('drop_skills must be an array of skill or command names: none dropped.');
-  else if (drops !== undefined) {
-    dropSkills = drops.filter((d, i): d is string => (typeof d === 'string' && d.trim() !== '') || (notes.push(`drop_skills[${i}] must be a non-blank string: skipped.`), false));
-    if (dropSkills.length > DROP_MAX) (notes.push(`drop_skills has ${dropSkills.length} names, over the ${DROP_MAX} cap: the first ${DROP_MAX} are used.`), (dropSkills = dropSkills.slice(0, DROP_MAX)));
-  }
+  /** A list of names: each non-blank string kept, anything else skipped by its place, and a list that is none named whole. */
+  const names = (key: string, what: string, none: string): string[] => {
+    const value = fields[key];
+    if (value === undefined) return [];
+    if (!Array.isArray(value)) return (notes.push(`${key} must be an array of ${what}: ${none}.`), []);
+    return value.filter((d, i): d is string => (typeof d === 'string' && d.trim() !== '') || (notes.push(`${key}[${i}] must be a non-blank string: skipped.`), false));
+  };
+  const keepSkills = names('keep_skills', 'skill or command names', 'none kept');
+  /** A path as sent, or resolved against `cwd`; a relative one is named in `notes` under `at`. */
+  const resolve = (at: string, sent: string): string => {
+    if (isAbsolutePath(sent)) return sent;
+    if (cwd === undefined) return (notes.push(`${at} "${sent}" is relative and the session's directory is unknown: carried as given.`), sent);
+    const path = inDir(cwd, sent);
+    return (notes.push(`${at} "${sent}" is relative: carried as ${path}, in the session's directory.`), path);
+  };
+  const dropFiles = names('drop_files', 'paths', 'none dropped').map((sent, i) => resolve(`drop_files[${i}]`, sent));
   const orders = carryOrders(memory ?? { remembered: [], said: [], party: 'main' }, fields.standing_orders, fields.lifted);
   notes.push(...orders.notes);
   const files = fields.load_files;
@@ -217,10 +233,11 @@ export function parseFrontier(input: unknown, memory?: OrderMemory, cwd?: string
         notes.push(`load_files[${i}].path must be a non-blank string; got ${kind(sent)}: skipped.`);
         continue;
       }
-      let path = sent;
-      if (!isAbsolutePath(sent) && cwd === undefined) notes.push(`load_files[${i}].path "${sent}" is relative and the session's directory is unknown: carried as given.`);
-      else if (!isAbsolutePath(sent)) (path = inDir(cwd!, sent)), notes.push(`load_files[${i}].path "${sent}" is relative: carried as ${path}, in the session's directory.`);
+      const path = resolve(`load_files[${i}].path`, sent);
       const file: LoadFile = { path };
+      const { later } = entry as Record<string, unknown>;
+      if (later === true) file.later = true;
+      else if (later !== undefined && later !== false) notes.push(`load_files[${i}].later must be true or false; got ${kind(later)}: ${path} carried whole.`);
       if (ranges !== undefined && (typeof ranges !== 'string' || parseLineRanges(ranges) === undefined)) notes.push(`load_files[${i}].lines "${String(ranges)}" is not a range like "10-40" or "1-60,160-185": ${path} carried from line 1.`);
       else if (ranges !== undefined) file.lines = ranges as string;
       if (why !== undefined && typeof why !== 'string') notes.push(`load_files[${i}].why must be a string; got ${kind(why)}: ${path} carried without it.`);
@@ -229,7 +246,7 @@ export function parseFrontier(input: unknown, memory?: OrderMemory, cwd?: string
       loadFiles.push(file), loadAt.push(i);
     }
   }
-  return { frontier, dropSkills, standingOrders: orders.standing, lifted: orders.lifted, loadFiles, loadAt, missing, notes };
+  return { frontier, dropFiles, keepSkills, standingOrders: orders.standing, lifted: orders.lifted, loadFiles, loadAt, missing, notes };
 }
 
 /** What the adapter learned from `$.fs.stat(path)` on one load file: its stat, or `absent` (ENOENT), or the error text of any other throw. */
