@@ -2,9 +2,11 @@
 // the tail is the engine's own messages returned untouched. Pure: files, agents and the clock arrive as inputs.
 import { andList, DEFAULT_TOOL, k as kilo } from './nudge';
 import { keptSaid, PROMPTS_KEPT } from './ledger';
-import { experimental, EXPERIMENTAL_OPENING, type LoadFile } from './frontier';
-import { fitSkills, pinned, LATER_NOTE, SKILLS_LISTED_NOTE, SKILLS_MAX_CHARS } from './carry';
-import { ordersSection, type LiftedOrder, type StandingOrder } from './orders';
+import { experimental, EXPERIMENTAL_OPENING } from './frontier';
+import { fitSkills, pinned, SKILLS_LISTED_NOTE, SKILLS_MAX_CHARS } from './carry';
+import { ordersSection } from './orders';
+import type { Item, StorageEntry } from './lists';
+import { storageSection } from './storage';
 import type { WakePlan } from './plan';
 import { WAKE_OPENING } from './wake-row';
 
@@ -177,17 +179,18 @@ type Shared<M> = {
   tool?: string;
   /** The level-log directory, where the issues file the wake's last line names lives. */
   logDir?: string;
-  /** The party's standing orders, and the orders lifted since its last install, shown once; absent or empty, no section. */
-  orders?: { standing: readonly StandingOrder[]; lifted?: readonly LiftedOrder[] };
+  /** The party's live standing orders (lists.ts); absent or empty, no section. */
+  orders?: readonly Item[];
+  /** The party's storage folder, absolute, and its listed entries (storage.ts); none listed, no section. */
+  storage?: { dir: string; entries: readonly StorageEntry[] };
   /** Plan mode and the plan file, when the party's plan-mode attachments named them; absent, no section. */
   plan?: WakePlan;
-  /** The skills and commands this wake carries whole besides the frontmatter-pinned ones: `keepSkills` the frontier's keep_skills, `pins` FORWARD_COMPACTION_KEEP_SKILLS (carry.ts `pinned`); every other one is listed. */
-  keepSkills?: readonly string[];
+  /** The skills and commands this wake carries whole besides the frontmatter-pinned ones: FORWARD_COMPACTION_KEEP_SKILLS (carry.ts `pinned`); every other one is listed. */
   pins?: readonly string[];
-  /** The party's files for later (carry.ts `laterApply`): `listed` named by path and why, never read; `gone` the ones missing or unreadable now, named as not carried. */
-  later?: { listed: readonly LoadFile[]; gone: readonly { path: string; problem: string }[] };
+  /** The frontier as the plugin holds it, rendered (lists.ts `renderFrontier`): a frontier wake installs it, a mechanical wake shows it as it stands; '' or absent when nothing is held. */
+  frontier?: string;
 };
-/** `missing`: the required sections the frontier lacks (frontier.ts `ParsedFrontier.missing`), each named in the head. */
+/** `missing`: the texts the held frontier lacks (frontier.ts `Applied.missing`), each named in the head. */
 export type BuildWakeInput<M> = Shared<M> & { toolUseId: string; frontier: string; files?: readonly WakeFile[]; missing?: readonly string[] };
 export type MechanicalWakeInput<M> = Shared<M> & {
   reason: { kind: 'ceiling'; ceiling: number } | { kind: 'reactive' };
@@ -207,9 +210,9 @@ export type Wake<M> = {
   headChars: number;
   carried: string[];
   notCarried: string[];
-  /** For the wake's log rows: the skills carried whole and those listed under `## Skills not carried`, and the files for later listed. */
+  /** For the wake's log rows: the skills carried whole and those listed under `## Skills not carried`, and the storage entries listed. */
   skills: { carried: number; listed: number };
-  later: number;
+  storage: number;
 };
 
 type Section = { text: string; content: boolean };
@@ -237,7 +240,7 @@ function age(ms: number): string {
 
 type Extras = { siblings: readonly Sibling[]; files: readonly WakeFile[]; recent?: readonly RecentFile[]; mechanical?: boolean };
 
-type Rendered = { text: string; sections: number; sizes: Wake<never>['sizes']; carried: string[]; notCarried: string[]; skills: Wake<never>['skills']; later: number };
+type Rendered = { text: string; sections: number; sizes: Wake<never>['sizes']; carried: string[]; notCarried: string[]; skills: Wake<never>['skills']; storage: number };
 
 /** F: every section with its cap; whole or not, never cut. With no measured ratio no section is capped. */
 function renderFacts<M>(input: Shared<M>, facts: WakeFacts, { siblings, files, recent = [], mechanical = false }: Extras): Rendered {
@@ -249,7 +252,7 @@ function renderFacts<M>(input: Shared<M>, facts: WakeFacts, { siblings, files, r
   const sub = input.party === 'subagent';
 
   // Above all: the user's standing orders, binding and carried whole, outside every budget.
-  const orders = ordersSection(input.orders?.standing ?? [], input.orders?.lifted ?? []);
+  const orders = ordersSection(input.orders ?? []);
   if (orders !== undefined) sections.push(section(orders));
 
   // Then: what the model has not seen, which a notification-driven party would otherwise wait on forever.
@@ -304,13 +307,12 @@ function renderFacts<M>(input: Shared<M>, facts: WakeFacts, { siblings, files, r
   }
 
   const notCarried: string[] = [];
-  // a pinned skill, or one the frontier's keep_skills names, carried whole within Claude Code's own post-compaction limits,
-  // outside B; every other one listed by name, source and description. The tail is fitted after them.
-  const keep = new Set(input.keepSkills ?? []);
-  const whole = (s: WakeFacts['skills'][number]): boolean => pinned(s, input.pins ?? []) || keep.has(s.skill);
+  // a pinned skill carried whole within Claude Code's own post-compaction limits, outside B; every other one listed by
+  // name, source and description. The tail is fitted after them.
+  const whole = (s: WakeFacts['skills'][number]): boolean => pinned(s, input.pins ?? []);
   const from = (s: WakeFacts['skills'][number]): string => `${s.source ?? 'unknown source'}${s.path === undefined ? '' : `, ${s.path}`}`;
   const skills = fitSkills(facts.skills.filter(whole));
-  const carriedSkills = skills.carried.map((s) => `### ${s.skill} (${from(s)}${pinned(s, input.pins ?? []) ? ', pinned' : ', named in your keep_skills'})\n${s.text}`);
+  const carriedSkills = skills.carried.map((s) => `### ${s.skill} (${from(s)}, pinned)\n${s.text}`);
   if (carriedSkills.length > 0) sections.push(section(['## Skills in force, as loaded', ...carriedSkills].join('\n')));
   const listed = facts.skills.filter((s) => !whole(s));
   for (const s of listed) notCarried.push(`- ${s.skill} (${from(s)})${s.description === undefined ? '' : `: ${s.description}`}`);
@@ -354,7 +356,7 @@ function renderFacts<M>(input: Shared<M>, facts: WakeFacts, { siblings, files, r
     sections.push({ text: [header, ...(rows.length > 0 ? rows : ['(none running)'])].join('\n'), content: rows.length > 0 });
   }
 
-  // the load files not carried, and the files for later now missing or unreadable, each named once with why
+  // the load files not carried, each named once with why
   const dropped: string[] = [];
   if (files.length > 0) {
     // each already cut to LOAD_FILE_MAX_LINES (frontier.ts `sliceFile`); no room and no count cap
@@ -370,9 +372,8 @@ function renderFacts<M>(input: Shared<M>, facts: WakeFacts, { siblings, files, r
     }
     if (carried.length > 0) sections.push(section(['## Files you asked to carry', ...carried].join('\n')));
   }
-  const later = input.later?.listed ?? [];
-  if (later.length > 0) sections.push(section(['## Files for later, not loaded', LATER_NOTE, ...later.map((f) => `- ${f.path}${f.lines === undefined ? '' : ` lines ${f.lines}`}${f.why === undefined ? '' : ` — ${f.why}`}`)].join('\n')));
-  for (const f of input.later?.gone ?? []) (dropped.push(`- ${f.path}: ${f.problem}`), filesNotCarried.push(f.path));
+  const storage = input.storage === undefined ? undefined : storageSection(input.storage.dir, input.storage.entries);
+  if (storage !== undefined) sections.push(section(storage));
   if (dropped.length > 0) sections.push({ text: ['## Files not carried', ...dropped].join('\n'), content: false });
 
   if (recent.length > 0) {
@@ -393,7 +394,7 @@ function renderFacts<M>(input: Shared<M>, facts: WakeFacts, { siblings, files, r
     carried: filesCarried,
     notCarried: filesNotCarried,
     skills: { carried: skills.carried.length, listed: notCarried.length },
-    later: later.length,
+    storage: input.storage?.entries.length ?? 0,
   };
 }
 
@@ -438,30 +439,25 @@ function assemble<M extends WakeMessage>(
       carried: f.carried,
       notCarried: f.notCarried,
       skills: f.skills,
-      later: f.later,
+      storage: f.storage,
     };
   }
 }
 
+/** The head's line on how the next call changes the frontier: by item number, the rest staying. */
+export const CHANGES_ONLY = 'In your next forward_compaction call send only changes, by item number; whatever you leave out stays.';
 /** The head's clause when standing orders bind: the next step is taken within them. */
-const within = (orders: Shared<never>['orders']): string => ((orders?.standing.length ?? 0) > 0 ? ', within the standing orders above' : '');
+const within = (orders: Shared<never>['orders']): string => ((orders?.length ?? 0) > 0 ? ', within the standing orders above' : '');
 /** Where a woken party finds what its frontier did not say: the user's messages (main) or its brief. */
 const sourceOf = (party: 'main' | 'subagent'): string => (party === 'main' ? "the user's messages" : 'your brief');
 
-/**
- * The wake for a stored frontier: facts, the frontier verbatim, then every message after the `forward_compaction` call.
- * A call not in `messages` (compacted by something else, or one with no id) cannot be placed: the frontier is carried
- * with the newest messages that fit, as a mechanical wake keeps them, and the head says so.
- */
+/** The wake for a stored call: facts, the held frontier rendered, then every message after the call. A call not in `messages` (compacted by something else, or one with no id) cannot be placed: the frontier is carried with the newest messages that fit, as a mechanical wake keeps them, and the head says so. */
 export function buildWake<M extends WakeMessage>(input: BuildWakeInput<M>): Wake<M> {
   const split = splitAtCall(input.messages, input.toolUseId);
   const missing = input.missing ?? [];
   return assemble(input, split?.tail ?? input.messages, { siblings: split?.siblings ?? [], files: input.files ?? [] }, ({ kept, dropped }) => {
-    const lines = [
-      `${WAKE_OPENING.frontier} Below is the frontier you wrote with forward_compaction: continue from its ## Next${within(input.orders)}.`,
-      `=== frontier ===\n${input.frontier}\n=== end of frontier ===`,
-    ];
-    if (missing.length > 0) lines.push(`Your frontier was missing ${andList(missing)}: re-establish ${missing.length === 1 ? 'it' : 'them'} from ${sourceOf(input.party)} and the messages below.`);
+    const lines = [`${WAKE_OPENING.frontier} Below is your frontier as forward-compaction holds it: continue from its ## Next${within(input.orders)}. ${CHANGES_ONLY}`, `=== frontier ===\n${input.frontier}\n=== end of frontier ===`];
+    if (missing.length > 0) lines.push(`Your frontier has no ${andList(missing)}: re-establish ${missing.length === 1 ? 'it' : 'them'} from ${sourceOf(input.party)} and the messages below, and send ${missing.length === 1 ? 'it' : 'them'} in your next forward_compaction call.`);
     // The receipt's own experimental line moves to the wake's end, where it is read last.
     if (split?.own !== undefined) lines.push(`Your forward_compaction call returned:\n${split.own.split(`\n${EXPERIMENTAL_OPENING}`)[0]}`);
     if (split === undefined) lines.push(`Your forward_compaction call is not in the transcript, so which messages came after it is unknown: ${kept > 0 ? `the newest ${kept} are kept verbatim after this one, some perhaps from before your frontier` : 'none is kept'}${dropped > 0 ? `; ${dropped} older did not fit and are gone (look_back finds an exact detail)` : ''}. Continue from ## Next.`);
@@ -476,10 +472,13 @@ export function buildWake<M extends WakeMessage>(input: BuildWakeInput<M>): Wake
 
 /** The wake for a party with no frontier: the same facts, then the newest messages of `messages` that fit. */
 export function mechanicalWake<M extends WakeMessage>(input: MechanicalWakeInput<M>): Wake<M> {
-  const why = input.reason.kind === 'ceiling' ? `, past the ${kilo(input.reason.ceiling)} ceiling` : ', and Claude Code reported your request too long';
-  const source = sourceOf(input.party);
+  const why = input.reason.kind === 'ceiling' ? `, past the ${kilo(input.reason.ceiling)} ceiling` : ', and Claude Code reported your request too long', source = sourceOf(input.party);
+  const frontier = input.frontier ?? '', reached = `${WAKE_OPENING.mechanical} Your context reached ${input.tokens === undefined ? 'a size not measured yet' : `${kilo(input.tokens)} tokens`}${why}, and you had not called forward_compaction${frontier === '' ? '' : ' since your last wake'}, so the plugin compacted it mechanically`;
   return assemble(input, input.messages, { siblings: [], files: [], recent: input.recent ?? [], mechanical: true }, ({ kept, dropped }) => experimental(
-    `${WAKE_OPENING.mechanical} Your context reached ${input.tokens === undefined ? 'a size not measured yet' : `${kilo(input.tokens)} tokens`}${why}, and you had not called forward_compaction, so the plugin compacted it mechanically: the facts above and your newest ${kept} messages below, kept verbatim; ${dropped} older messages are gone (look_back finds an exact detail). No objective or next step was written. Re-establish them from ${source} and the messages below, then continue${within(input.orders)}; call ${input.tool ?? DEFAULT_TOOL} at your next milestone.`, input.logDir),
+    frontier === ''
+      ? `${reached}: the facts above and your newest ${kept} messages below, kept verbatim; ${dropped} older messages are gone (look_back finds an exact detail). No objective or next step was written. Re-establish them from ${source} and the messages below, then continue${within(input.orders)}; call ${input.tool ?? DEFAULT_TOOL} at your next milestone.`
+      : `${reached}: the facts above, your frontier below as forward-compaction holds it, unchanged since your last call, and your newest ${kept} messages after this one, kept verbatim; ${dropped} older messages are gone (look_back finds an exact detail). Continue from where the messages leave off, or from its ## Next${within(input.orders)}; call ${input.tool ?? DEFAULT_TOOL} at your next milestone. ${CHANGES_ONLY}\n\n=== frontier ===\n${frontier}\n=== end of frontier ===`,
+    input.logDir),
   'none');
 }
 

@@ -238,7 +238,7 @@ describe('buildWake (R20)', () => {
 
   it('prints no size for the call: the plugin measures none at that moment', () => {
     const wake = buildWake({ ...mainInput([call, res]), toolUseId: 't9', frontier, tokens: 64_000 });
-    expect((wake.messages[1] as BuiltMessage).text.split('\n')[0]).toBe('[forward-compaction: frontier] Below is the frontier you wrote with forward_compaction: continue from its ## Next.');
+    expect((wake.messages[1] as BuiltMessage).text.split('\n')[0]).toBe('[forward-compaction: frontier] Below is your frontier as forward-compaction holds it: continue from its ## Next. In your next forward_compaction call send only changes, by item number; whatever you leave out stays.');
   });
 
   it('counts the F sections that hold content', () => {
@@ -405,14 +405,13 @@ describe('F sections', () => {
     expect(f).not.toContain('## Skills not carried');
   });
 
-  it("carries a pinned skill or one keep_skills names whole, cut past 20,000 characters to Claude Code's own marker, and lists every other one and the unattributed ones", () => {
+  it("carries a pinned skill whole, cut past 20,000 characters to Claude Code's own marker, and lists every other one and the unattributed ones", () => {
     const marker = '\n\n[... skill content truncated for compaction; use Read on the skill path if you need the full text]';
     const { f, wake } = wakeOf({
-      keepSkills: ['small', 'huge'],
       f: {
         skills: [
-          { skill: 'small', text: 'tiny', source: 'user', path: '/s/SKILL.md' },
-          { skill: 'huge', text: 'h'.repeat(40_000), source: 'plugin' },
+          { skill: 'small', text: 'tiny', source: 'user', path: '/s/SKILL.md', keep: true },
+          { skill: 'huge', text: 'h'.repeat(40_000), source: 'plugin', keep: true },
           { skill: 'pinned', text: 'p'.repeat(20_001), source: 'user', keep: true },
           { skill: 'listed', text: 'LISTED BODY', source: 'user', path: '/s/l/SKILL.md', description: 'What it is for.' },
           { skill: 'bare', text: 'BARE BODY', source: 'plugin' },
@@ -420,8 +419,8 @@ describe('F sections', () => {
         unattributedSkills: [{ skill: 'mystery' }],
       },
     });
-    expect(f).toContain('## Skills in force, as loaded\n### small (user, /s/SKILL.md, named in your keep_skills)\ntiny');
-    expect(f).toContain('### huge (plugin, named in your keep_skills)\n' + 'h'.repeat(20_000 - marker.length) + marker + '\n');
+    expect(f).toContain('## Skills in force, as loaded\n### small (user, /s/SKILL.md, pinned)\ntiny');
+    expect(f).toContain('### huge (plugin, pinned)\n' + 'h'.repeat(20_000 - marker.length) + marker + '\n');
     expect(f).toContain('### pinned (user, pinned)\n' + 'p'.repeat(20_000 - marker.length) + marker + '\n');
     expect(f).toContain('## Skills not carried\nTheir text is not in your context: load one again with the Skill tool before doing work it governs.\n- listed (user, /s/l/SKILL.md): What it is for.\n- bare (plugin)\n- mystery: loaded in this session by an unidentified party; call Skill mystery if it applies to you.');
     expect(f).not.toContain('LISTED BODY');
@@ -535,15 +534,16 @@ describe('F sections', () => {
     expect(f).toContain('## Files not carried\n- /abs/gone.ts: lines 10-40 out of range (5 lines)\n- /abs/err.ts: EACCES: permission denied');
   });
 
-  it('lists the files for later by path, lines and why, never their content, and names one gone as not carried, on a mechanical wake too', () => {
-    const later = { listed: [{ path: '/abs/plan.md', lines: '1-40', why: 'step 4', later: true as const }, { path: '/abs/notes.md', later: true as const }], gone: [{ path: '/abs/gone.md', problem: 'no such file' }] };
-    const block = '## Files for later, not loaded\nTheir content is not in your context: read each with the Read tool (or the shell) at the step that needs it.\n- /abs/plan.md lines 1-40 — step 4\n- /abs/notes.md\n\n## Files not carried\n- /abs/gone.md: no such file';
-    const { f, wake } = wakeOf({ later, files: [{ path: '/abs/a.ts', content: 'A' }] });
+  it('lists the storage by name and description under its absolute folder, after the load files, never a file\'s content, on a mechanical wake too', () => {
+    const storage = { dir: '/h/fc/s1/storage', entries: [{ name: 'survey.md', description: 'the API survey' }, { name: 'raw.md', description: '' }] };
+    const block = '## Storage — files in /h/fc/s1/storage/\nsurvey.md — the API survey\nraw.md';
+    const { f, wake } = wakeOf({ storage, files: [{ path: '/abs/a.ts', content: 'A' }] });
     expect(f).toContain(`## Files you asked to carry\n### /abs/a.ts\nA\n\n${block}`);
-    expect([wake.later, wake.carried, wake.notCarried]).toEqual([2, ['/abs/a.ts'], ['/abs/gone.md']]);
-    const mechanical = mechanicalWake({ ...mainInput([user('before')]), reason: { kind: 'reactive' }, later });
-    expect((mechanical.messages[0] as BuiltMessage).text).toContain(block);
-    expect(mechanical.later).toBe(2);
+    expect([wake.storage, wake.carried]).toEqual([2, ['/abs/a.ts']]);
+    const mechanical = mechanicalWake({ ...mainInput([user('before')]), reason: { kind: 'reactive' }, storage });
+    expect((mechanical.messages[0] as BuiltMessage).text.split('\n\n').find((x) => x.startsWith('## Storage'))).toBe(block);
+    expect(mechanical.storage).toBe(2);
+    expect(wakeOf({ storage: { dir: '/h', entries: [] } }).wake.storage).toBe(0);
   });
 
   it('carries every load file it could read, with no room and no count cap, whatever the ask point or ratio', () => {
@@ -691,13 +691,12 @@ describe("the mechanical wake re-places the party's newest files, as Claude Code
     expect(wake.text).not.toContain('## Files you were working on');
   });
 
-  it('names each MANDATORY section a stored frontier lacks, to re-establish from the user or the brief', () => {
+  it('names each text the held frontier lacks, to re-establish from the user or the brief and send in the next call', () => {
     const call = assistant('writing', [{ id: 't9', tool: 'mcp__forward-compaction__forward_compaction' }]);
-    const head = (party: 'main' | 'subagent', missing?: string[]) => (buildWake({ ...mainInput([call, results(['t9', 'ok'])]), party, toolUseId: 't9', frontier: '## Objective\nx', ...(missing ? { missing } : {}) }).messages[1] as BuiltMessage).text;
-    expect(head('main', ['decisions', 'done', 'next'])).toContain("Your frontier was missing decisions, done and next: re-establish them from the user's messages and the messages below.");
-    expect(head('subagent', ['next'])).toContain('Your frontier was missing next: re-establish it from your brief and the messages below.');
-    expect(head('main')).toContain('Nothing happened after you wrote it. Continue from ## Next.');
-    expect(head('main')).not.toContain('Your frontier was missing');
+    const head = (party: 'main' | 'subagent', missing?: string[]) => (buildWake({ ...mainInput([call, results(['t9', 'ok'])]), party, toolUseId: 't9', frontier: '## Objective\nx', ...(missing ? { missing } : {}) }).messages[1] as BuiltMessage).text.split('\n\n');
+    expect(head('main', ['objective', 'next'])[2]).toBe("Your frontier has no objective and next: re-establish them from the user's messages and the messages below, and send them in your next forward_compaction call.");
+    expect(head('subagent', ['next'])[2]).toBe('Your frontier has no next: re-establish it from your brief and the messages below, and send it in your next forward_compaction call.');
+    expect(head('main')[2]).toBe('Your forward_compaction call returned:\nok');
   });
 });
 

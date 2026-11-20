@@ -6,12 +6,18 @@ Every release of forward-compaction, named sub-agent-compact before 1.0.0. Versi
 
 ### Changed
 
-- **A wake lists the skills instead of carrying their text.** Every skill and command the party loaded was carried whole into every wake, however long ago it stopped mattering. Each is now one line, its name, source and description, with a note to load it again with the Skill tool; only one its file's frontmatter pins (`forward-compaction-keep: true`), one `FORWARD_COMPACTION_KEEP_SKILLS` names (`*` names every one) and one the handoff's new `keep_skills` names for that one wake is carried whole.
-- **A handoff can list a file for later.** A `load_files` entry marked `later: true` is never read in: every wake of the party lists it by path, lines and why until a handoff names it again, drops it with the new `drop_files`, or the file is gone, which the next wake says once. The tool's description asks the model to write what only a later step needs to such a file.
+- **A wake lists the skills instead of carrying their text.** Every skill and command the party loaded was carried whole into every wake, however long ago it stopped mattering. Each is now one line, its name, source and description, with a note to load it again with the Skill tool; only one its file's frontmatter pins (`forward-compaction-keep: true`) or `FORWARD_COMPACTION_KEEP_SKILLS` names (`*` names every one) is carried whole.
+- **The handoff is numbered lists the model changes by number, kept on disk.** A call no longer rewrites every section: `objective` and `next` are texts, and `orders`, `decisions`, `done`, `remaining`, `blocked` and `findings` are lists, each taking `{add, remove, edit}` by item number; whatever a call leaves out stays. The reply gives the new numbers, one line per change and the handoff's size. Each change is written when it arrives to `~/.local/state/forward-compaction/{project}/{session}/`, with what leaves in a history folder beside it, so a restarted or resumed chat keeps every number, and the wake is rendered from the lists. A standing order is removed by its number, with no proof asked.
+
+### Added
+
+- **Storage.** The new `storage` argument keeps markdown files the model writes for a later step, each with a description; every wake lists them by name under the folder they sit in, and the model reads or edits them with Read and Edit.
+- **`FORWARD_COMPACTION_FRONTIER_WARN_CHARS`** (default `12000`): past this many characters, the reply asks the model to merge old items, largest list first. Nothing is cut.
 
 ### Removed
 
-- **`drop_skills`.** With every skill listed rather than carried, there is nothing left to drop. A call that still passes it is stored, the value carried under its findings.
+- **`drop_skills`.** With every skill listed rather than carried, there is nothing left to drop. A call that still passes it is stored and the reply says it is ignored.
+- **`standing_orders` and `lifted`.** Orders are the `orders` list. A call that still passes `standing_orders` has its entries added to it; one that passes `lifted` is told to remove the order by its number.
 
 ### Fixed
 

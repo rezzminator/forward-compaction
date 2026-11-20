@@ -19,7 +19,12 @@ export type Script = {
   breakdown?: Record<string, unknown> | null;
   /** What `$.session.messages(args)` answers; an empty transcript by default. */
   messages?: (args?: { agentId?: string }) => unknown;
+  /** `$.fs`'s files, which its writes join; pass one map, with one `home`, to two fakes to model a restart that finds them. */
   files?: Record<string, FileEntry>;
+  /** `$.fs.write` rejects with this message for a path it answers for (a full disk, a read-only folder); undefined writes. */
+  writeError?: (path: string) => string | undefined;
+  /** The home directory; a fresh temporary one by default. */
+  home?: string;
   agents?: () => unknown;
   compact?: (args?: unknown) => unknown;
   now?: number;
@@ -52,7 +57,7 @@ export function onInto(hooks: Map<string, Fn>): any {
 }
 
 export function fakeEngine(script: Script = {}) {
-  const home = mkdtempSync(join(tmpdir(), 'fc-engine-'));
+  const home = script.home ?? mkdtempSync(join(tmpdir(), 'fc-engine-'));
   const vars: Record<string, string> = { HOME: home, CLAUDE_CONFIG_DIR: join(home, '.claude'), ...script.env };
   const screen: ScreenCall[] = [];
   const unscripted: string[] = [];
@@ -71,6 +76,7 @@ export function fakeEngine(script: Script = {}) {
     session: {
       id: () => (hangs('session.id') ? never : Promise.resolve('session-1')),
       cwd: async () => home,
+      root: async () => home,
       usage: async () => ({
         context: {
           tokens: 0,
@@ -112,6 +118,13 @@ export function fakeEngine(script: Script = {}) {
         if (!file) throw enoent(path);
         return file.content;
       },
+      /** Writes into `script.files`, so two fakes sharing that map model a restart that finds the files. */
+      write: async (path: string, text: string) => {
+        const error = script.writeError?.(path);
+        if (error !== undefined) throw new Error(error);
+        (script.files ??= {})[path] = { content: text };
+      },
+      exists: async (path: string) => script.files?.[path] !== undefined,
     },
     process: {
       run: async (argv: string[], init?: { stdin?: string; cwd?: string }) => {

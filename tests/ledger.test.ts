@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  promptsKept, restorePrompts, PROMPTS_KEPT, skillsKept, restoreSkills, liftSources,
+  promptsKept, restorePrompts, PROMPTS_KEPT, skillsKept, restoreSkills,
   PERSON_ORIGINS, addEntry, attributeSkill, deliveryOf, factsFor, isUserOrigin, markStart, newLedger, resolveSpawn, runStartOf, shellsOf,
   type EntryInput, type Ledger, type PartyKey,
 } from '../plugins/forward-compaction/src/ledger.ts';
@@ -335,11 +335,6 @@ describe('the prompts kept across a plugin reload', () => {
     expect(promptsKept(l, 'main').map((p) => p.text)).toEqual(['Which quote?\nAnswer: Segment', 'm1', 'm2', 'm3', 'm4', 'm5', 'm6', 'm7', 'm8', 'm9', 'm10']);
     const back = restorePrompts(newLedger(), 'main', promptsKept(l, 'main'));
     expect(back.entries[0]).toMatchObject({ kind: 'user', text: 'Which quote?\nAnswer: Segment', answer: 'Segment' });
-  });
-
-  it("lifts orders with only the user's own words of an answer, never the question the model wrote", () => {
-    const l = build({ kind: 'user', party: 'main', at: 5, text: 'Shall I push?\nAnswer: Not yet', answer: 'Not yet' }, user('typed', 6));
-    expect(liftSources(l, 'main')).toEqual(['Not yet', 'typed']);
   });
 });
 

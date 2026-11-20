@@ -9,7 +9,9 @@ import { describe, expect, it, vi } from 'vitest';
 import { ANSWERS, SYNTHETIC_HANDLE, SYNTHETIC_MODEL, loadFixture, invocations, replay, recordSynthetic, type Invocation } from './fakes/replay-engine.ts';
 import { DRAWN, ENV_NAMES, PATHS, PART_CHARS, RECORDED, STATE_KEYS, register as recorder, rowFiles, type Row } from '../scripts/replay/recorder.ts';
 import { contextTokens } from '../plugins/forward-compaction/src/decide.ts';
-import { parseFrontier } from '../plugins/forward-compaction/src/frontier.ts';
+import { applyCall, parseCall, toolInput } from '../plugins/forward-compaction/src/frontier.ts';
+import { emptyHeld, renderFrontier } from '../plugins/forward-compaction/src/lists.ts';
+import { WAKE_OPENING } from '../plugins/forward-compaction/src/wake-row.ts';
 import { resolveOptions, subagentWindow } from '../plugins/forward-compaction/src/options.ts';
 import { askPointOf, partyMarks } from '../plugins/forward-compaction/src/window.ts';
 import { modelWindowRequest, parseModelWindow } from '../plugins/forward-compaction/src/model-window.ts';
@@ -34,10 +36,16 @@ const listsSkill = (wake: string, skill: string): boolean => wake.includes('## S
 const nextWake = (view: View, key: string, after: number): Invocation | undefined => view.find((c) => c.seq > after && party(c.input) === key && wakeOf(c) !== undefined);
 /** The frontier the plugin assembled from the call's section arguments, or undefined when the call carried none. */
 const SECTION_KEYS = ['objective', 'decisions', 'done', 'remaining', 'next', 'blocked', 'findings'];
-const frontierOf = (call: Invocation): string | undefined => {
-  const args = call.input?.objective !== undefined ? call.input : call.input?.input ?? {};
-  const out = parseFrontier(Object.fromEntries(SECTION_KEYS.filter((key) => key in args).map((key) => [key, args[key]])));
-  return out.frontier === '' ? undefined : out.frontier;
+/**
+ * The frontier the wake after `call` installs. The plugin holds it as lists that every call of the party changes, so it
+ * is each such call up to this one applied in order; the 2.1.325 recording's build installed the one call's sections
+ * whole, so its own outputs are held to that.
+ */
+const frontierOf = (view: View, call: Invocation, recorded: boolean): string => {
+  if (recorded) return SECTION_KEYS.flatMap((key) => (typeof toolInput(call.input)[key] === 'string' && (toolInput(call.input)[key] as string).trim() !== '' ? [`## ${key[0]!.toUpperCase()}${key.slice(1)}\n${toolInput(call.input)[key]}`] : [])).join('\n\n');
+  return renderFrontier(view
+    .filter((t) => t.seq <= call.seq && t.hook === 'tool.call' && isForward(t.input?.tool) && party(t.input) === party(call.input))
+    .reduce((held, t) => applyCall(held, parseCall(toolInput(t.input))).held, emptyHeld()));
 };
 /** What a delivery reaching a sub-agent mid-turn (`session.append` door `delivery`) says: its row's text blocks. */
 const delivered = (inv: Invocation): string => (inv.input?.message?.content ?? []).filter((b: any) => b?.type === 'text' && typeof b.text === 'string').map((b: any) => b.text).join('\n');
@@ -92,18 +100,18 @@ export const INVARIANTS: Record<Name, (view: View, recorded: boolean) => Verdict
     const subjects = view.filter((i) => i.hook === 'session.compact' && i.input?.trigger === 'precompute');
     return { subjects: subjects.length, failures: subjects.filter((i) => typeof i.end?.result?.skip !== 'string').map((i) => `I2 ${at(i)}: a precompute was not skipped`) };
   },
-  I3(view) {
+  I3(view, recorded) {
     const failures: string[] = [];
     let subjects = 0;
     for (const c of view) {
       const wake = wakeOf(c);
-      if (!wake || !wake.some((m) => typeof m.text === 'string' && m.text.includes('=== frontier ==='))) continue;
+      if (!wake || !wake.some((m) => typeof m.text === 'string' && m.text.startsWith(WAKE_OPENING.frontier))) continue;
       subjects++;
       const ask: any[] = c.input?.messages ?? [];
       const call = [...view].reverse().find((t) => t.seq < c.seq && t.hook === 'tool.call' && isForward(t.input?.tool) && party(t.input) === party(c.input) && tailAfterAnchor(ask, t.input.tool_use_id) !== undefined);
       if (!call) { failures.push(`I3 ${at(c)}: no forward_compaction call of this party is in the ask's messages`); continue; }
       const h = wake.findLastIndex((m) => m.handle === undefined);
-      if (h < 0 || !String(wake[h].text).includes(`=== frontier ===\n${frontierOf(call)}\n=== end of frontier ===`)) failures.push(`I3 ${at(c)}: the last hook-built message lacks the frontier of tool.call #${call.id} verbatim`);
+      if (h < 0 || !String(wake[h].text).includes(`=== frontier ===\n${frontierOf(view, call, recorded)}\n=== end of frontier ===`)) failures.push(`I3 ${at(c)}: the last hook-built message lacks the frontier of tool.call #${call.id} verbatim`);
       const tail = wake.slice(h + 1).map((m) => m.handle);
       const after = tailAfterAnchor(ask, call.input.tool_use_id)!;
       if (tail.some((x) => typeof x !== 'string')) failures.push(`I3 ${at(c)}: a tail message carries no handle`);
@@ -377,7 +385,7 @@ describe('replay gate (D19)', { timeout: 60_000 }, () => {
 
   it('classifies every $ path the adapter calls, and the utility paths are the harness\'s', () => {
     expect(new Set(Object.keys(ANSWERS))).toEqual(new Set(PATHS));
-    expect(Object.entries(ANSWERS).filter(([, how]) => how.from === 'harness').map(([path]) => path).sort()).toEqual(['clock.after', 'clock.now', 'process.run', 'session.id', 'state.get', 'state.set', 'tool.register', 'ui.log']);
+    expect(Object.entries(ANSWERS).filter(([, how]) => how.from === 'harness').map(([path]) => path).sort()).toEqual(['clock.after', 'clock.now', 'fs.exists', 'fs.write', 'process.run', 'session.id', 'session.root', 'state.get', 'state.set', 'tool.register', 'ui.log']);
   });
 
   it('replays concurrent parties on the recorded timeline: a step that starts inside another party\'s open step runs after the steps recorded before it', async () => {

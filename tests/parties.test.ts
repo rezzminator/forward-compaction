@@ -4,7 +4,6 @@ import { nudgeLevel } from '../plugins/forward-compaction/src/nudge.ts';
 
 const LANDING = { kind: 'frontier' as const, label: 'main', before: 70_000, chars: 10, facts: 1, kept: 0, dropped: 0 };
 const frontier = (toolUseId: string, storedAtTokens = 41_200): Omit<StoredFrontier, 'seq'> => ({
-  text: '## Objective\nx\n## Done\ny\n## Remaining\nz\n## Next\nw',
   loadFiles: [],
   toolUseId,
   storedAtTokens,
@@ -104,13 +103,6 @@ describe('nudgeDue (R30)', () => {
     const parties = new Parties();
     expect(parties.nudgeDue('main', 0)).toBe(false);
     parties.store('main', frontier('t1'));
-    expect(parties.nudgeDue('main', 5)).toBe(false);
-  });
-
-  it('owes no nudge while a frontier missing a MANDATORY section is stored: it installs like any other', () => {
-    const parties = new Parties();
-    expect(parties.nudgeDue('main', 4)).toBe(true);
-    parties.store('main', { ...frontier('t1'), missing: ['next'] });
     expect(parties.nudgeDue('main', 5)).toBe(false);
   });
 

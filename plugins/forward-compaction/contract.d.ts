@@ -4,10 +4,7 @@ export type ForwardCompactionPrompt = { kind: 'user' | 'received' | 'brief'; at:
 /** One skill a party loaded, as the plugin keeps it for a session: its latest text. */
 export type ForwardCompactionSkill = { at: number; skill: string; text: string; how: 'skill-tool' | 'typed-command' | 'preload' | 'ambiguous'; source?: string; path?: string; keep?: true; description?: string };
 
-/** One file a party's frontiers listed for a later step (`load_files` with `later: true`): its path, ranges and why, never its content. */
-export type ForwardCompactionLater = { path: string; lines?: string; why?: string; later?: true };
-
-/** One standing order a party's last stored frontier carried: the user's words verbatim (an entry an older version kept with an `at` is read for its order alone). */
+/** One standing order the previous build kept for a party, read once to seed its numbered orders (orders.ts `keptOrders`); nothing writes it any more. */
 export type ForwardCompactionOrder = { order: string };
 
 /** A party's last ignore judgement and the model it was made on, so a plugin reload writes no `ignore` row for a judgement that holds. */
@@ -17,9 +14,8 @@ declare module 'claude-code' {
   interface PluginState {
     /** Each party's newest prompts, by `{session id}/{party}`, so a plugin reload does not lose them. */
     /** Each party's loaded skills, latest text per skill, by the same id. */
-    /** The standing orders of each party's last stored frontier, by the same id, so the next frontier is still held to them. */
+    /** The standing orders the previous build kept for each party, by the same id, read once to seed its numbered orders. */
     /** Each party's last ignore judgement, by the same id. */
-    /** Each party's files for later, by the same id, so every wake after a plugin reload still lists them. */
-    'forward-compaction': { prompts: StateFamily<ForwardCompactionPrompt[]>; skills: StateFamily<ForwardCompactionSkill[]>; orders: StateFamily<ForwardCompactionOrder[]>; judged: StateFamily<ForwardCompactionJudged>; later: StateFamily<ForwardCompactionLater[]> };
+    'forward-compaction': { prompts: StateFamily<ForwardCompactionPrompt[]>; skills: StateFamily<ForwardCompactionSkill[]>; orders: StateFamily<ForwardCompactionOrder[]>; judged: StateFamily<ForwardCompactionJudged> };
   }
 }

@@ -4,12 +4,13 @@ This is the full behaviour of the plugin: every rule, limit and edge case the co
 
 ## What a compaction keeps
 
-- ✍️ **The model writes the frontier.** `forward_compaction` takes one
-  argument per section — `objective`, `decisions`, `done`, `remaining` and
-  `next`, each MANDATORY — and assembles them into one markdown frontier. It
-  is stored, never summarized, and installed verbatim; one missing a
-  MANDATORY section is stored and installs as it is, its wake naming each
-  section it lacks.
+- ✍️ **The model writes the frontier, change by change.** `forward_compaction`
+  takes `objective` and `next` as texts and `orders`, `decisions`, `done`,
+  `remaining`, `blocked` and `findings` as numbered lists the model changes
+  by item number; whatever a call leaves out stays. The plugin holds the
+  frontier in files on disk, never summarized, and renders the wake from it;
+  one with no objective or next installs as it is, its wake naming what it
+  lacks.
 - 🧾 **Facts are recorded, never reconstructed.** The user's messages (main
   chat) or the brief (sub-agent), the messages delivered to it, the skills
   loaded, the agents and the background shells come from typed hook events as
@@ -17,9 +18,10 @@ This is the full behaviour of the plugin: every rule, limit and edge case the co
   Each party's newest prompts (the user's ten newest typed messages and every
   answer they gave to an AskUserQuestion, or a sub-agent's brief and the ten
   newest delivered to it) and the skills it loaded
-  (the latest text of each), the standing orders of its last stored
-  frontier, and its files for later, are also held in Claude Code's session state, so a
-  plugin reload (`/reload-plugins`) does not lose them. The files touched and the task list come from each finished tool call.
+  (the latest text of each) are also held in Claude Code's session state, so a
+  plugin reload (`/reload-plugins`) does not lose them. Its frontier and its
+  storage live in its files ([State on disk](#state-on-disk)), so a restarted
+  or resumed chat keeps them with every number. The files touched and the task list come from each finished tool call.
 - ⏩ **The messages after the call are kept.** The model need not stop after it
   compacts: the newest messages from the call on stay in the new context as
   they were, as many as fit, and any left out are named as not carried. Anything delivered between
@@ -100,11 +102,12 @@ and no ceiling, and an automatic ask from it with nothing stored is held as
    A sub-agent is never asked: its context ends with its report. The plugin
    detects no finish and holds no turn end: the model decides.
 2. **Compacting.** The model calls `forward_compaction` (the model sees
-   `mcp__forward-compaction__forward_compaction`). The plugin stores the frontier
-   in memory for that party and never refuses the call: an argument it cannot
-   use is left out or skipped, and the receipt names it. A later call
-   replaces the stored one. A frontier missing a MANDATORY section is stored
-   and installs like a complete one, its wake naming each section it lacks.
+   `mcp__forward-compaction__forward_compaction`). The plugin applies the
+   call's changes to that party's frontier, writes them to its files, and
+   never refuses the call: an argument it cannot use is skipped, and the
+   result names it. A second call before the install applies on top of the
+   first. A frontier with no objective or next installs like a complete one,
+   its wake naming what it lacks.
 3. **Installing.** The stored frontier installs at the next door Claude Code
    opens: for the main chat at the end of the turn (the plugin asks Claude
    Code to compact) or at an automatic ask if one comes first; for a
@@ -116,117 +119,130 @@ and no ceiling, and an automatic ask from it with nothing stored is held as
 
 ### The tool
 
-`forward_compaction({objective, decisions, done, remaining, next, blocked, findings, load_files, drop_files, keep_skills, standing_orders, lifted})`,
+`forward_compaction({objective, next, orders, decisions, done, remaining, blocked, findings, storage, load_files})`,
 with its schema in the prompt's tool list (not deferred), so a nudged model
-needs no ToolSearch.
+needs no ToolSearch. The plugin holds each party's frontier as two texts and
+six numbered lists, and a call sends only changes: whatever it leaves out
+stays.
 
-- `objective`, `decisions`, `done`, `remaining`, `next` (required, each
-  description opening `MANDATORY:`): non-blank strings — what the work is for
-  and what done means; every ruling the user gave on how something gets
-  done, in the user's words, each with its undo when one exists, `none`
-  when there are none; the finished pieces, each with how it was verified,
-  every figure with the command that produced it; every step left, in order,
-  `none` when nothing is left, or the path of a plan file the party updates at
-  each milestone, carried in `load_files`; the first concrete action after the
-  wake.
-  `decisions` holds how a thing gets done ("the result is `already_sent`, not
-  `sent`"); a rule that binds the rest of the work goes in `standing_orders`.
-- A frontier missing a required section (absent, not a string, or blank) is
-  stored, never refused, and installs at the same doors as a complete one:
-  the frontier message names each missing section and says to re-establish it
-  from the user's messages (main) or the brief (sub-agent), and a warning
-  row names them. The decision log's `stored` row and the installing
-  `compact` row name the sections as `incomplete`. A later call with every
-  required section replaces it.
-- `blocked`, `findings` (optional): strings — what waits on whom; the party's
-  own choices with why, errors verbatim, the commands and recipes the party
-  will need again. Absent or blank, the section is left out.
-- The plugin assembles the frontier as `## Objective`, `## Decisions`,
-  `## Done`, `## Remaining`, `## Next`, then `## Blocked` and `## Findings` when given,
-  each heading followed by its argument verbatim and a blank line between
-  sections. The frontier has no length cap: it is stored and installed
-  whole, never trimmed.
-- `load_files` (optional): `{path, lines?, why?, later?}` entries, as many as the
+- `objective`, `next`: texts — what the work is for and what done means; the
+  first concrete action after the wake. A text sent replaces the stored one,
+  which goes to its history; one left out keeps it. The result says
+  `objective set`, `objective replaced` or `objective unchanged` (the same for
+  `next`), and `next kept: {text}` when the call left `next` out over a
+  stored one. A blank text or one that is no string is skipped with a note.
+- `orders`, `decisions`, `done`, `remaining`, `blocked`, `findings`: lists —
+  the user's orders that bind the rest of the work, in the user's words; every
+  ruling the user gave on how something gets done; the finished pieces, each
+  with how it was verified; every step left, in order; what waits on whom;
+  the party's own choices, errors verbatim, the commands it will need again.
+  Each takes one object `{add, remove, edit}`, every key optional: `add` an
+  array of texts, `remove` an array of item numbers, `edit` an array of
+  `{id, text}`. In `remaining` alone an `add` entry may be `{before, text}`:
+  the new step is shown before the live step with that number, or last, with
+  a note, when that number is not live.
+- An item's number is per list, starts at 1, never shifts and is never
+  reused, across restarts too. In one call a list's removes and edits apply to
+  the numbers the model saw, then its adds; a number both removed and edited
+  is removed, with a note. An edit replaces the item's whole text and keeps
+  its number and its place; an edit to the text it already holds is a note.
+  An added text equal to a live item of the same list, compared with its
+  spacing collapsed and in lower case, is skipped as `already [n]`.
+- An order is removed by its number in `orders.remove`, with no proof asked.
+  The live orders open every wake ([The wake](#the-wake)).
+- The call is never refused. A plain text sent to a list is one added item,
+  and an array sent straight to a list its adds; a single number or `{id,
+  text}` where an array was due is read as one; a number that is not live, a
+  blank text or a malformed entry is skipped. Each is answered by one note
+  naming its place (`done.remove[1]: [9] is not a live item: skipped.`).
+  `standing_orders` entries are taken as `orders.add`; `lifted` is answered
+  with a note naming `orders.remove`; `keep_skills`, `drop_files`,
+  `drop_skills` and a load file's `later` are ignored with a note. A field
+  the tool does not take joins `findings` as one item,
+  `[{name}, an argument forward_compaction does not take]` then its value,
+  and the note lists the fields. A field taken back out of a text that holds
+  its own closing tag then `<parameter name="…">` (the model's call markup
+  closed it early; a list, `storage` or `load_files` field is read as JSON, a
+  list one that is no JSON as text) is one note; one that cannot be (no
+  field, one the call also sent, or a `storage` or `load_files` one that is
+  not JSON) stays in the text it arrived in, under
+  `[{name}, as it arrived inside {field}]`.
+- `storage` (optional): `{add, remove}`, markdown files the party keeps for a
+  later step and reads or edits itself with Read and Edit, by the absolute
+  path the wake gives. `add` takes `{name, description, value}` entries: a
+  name is lower-case letters, digits and dashes ending `.md`; one sent
+  without `.md` gets it, and another is rewritten to that form (`API Survey`
+  → `api-survey.md`) and cut to 100 characters before `.md`, the result
+  naming the name stored. The value is
+  written whole, with no size cap, and the entry listed: `Stored {name} ({n}
+  characters)`. An existing file is overwritten after its old content is
+  copied to the history. An `add` without `value` changes a listed entry's
+  description only (`Described {name}`), lists an unlisted file already in
+  the folder (`Stored {name} ({n} characters, as it is in the folder)`), and
+  is skipped with a note when there is no such file. `remove` takes names:
+  each entry is unlisted (`Storage no longer lists {name}`) and its content
+  copied to the history, a name already there numbered before `.md`
+  (`survey.2.md`); a value the same call wrote is the one copied when that
+  call overwrites or removes it. The plugin's file API (`$.fs`) has no move or delete, so
+  the removed file stays in the storage folder, unlisted.
+- `load_files` (optional): `{path, lines?, why?}` entries, as many as the
   party needs, each a path to a regular file, `lines` a range like `10-40` or
-  `1-60,160-185`, `why` one line. A relative path is resolved against the
-  session's directory (`$.session.cwd()`), or carried as given when that read
-  fails; a `why` past 200 characters is cut to 200, and a missing one carries
-  the file without it; `lines` that are no range carry the file from line 1.
-  Only an entry with no path is skipped. Their size never
-  refuses the frontier: it is always stored. Each file is read when the
-  frontier installs and carries at most 250 lines: of its `lines` ranges when
-  given, else from line 1. A file holding a NUL character is binary: it is
-  named as `not a text file` and never carried. When lines are left past the 250th, the file's
-  block ends with one line, `[N more lines not carried: Read {path} from line
-  L]`, N the lines left in the ranges or the file and L the next one. There is
-  no room for the files together. A file that is missing, or whose ranges
-  hold no line, is named under `## Files not carried` with why.
-  An entry with `later: true` is a file for later: never read, it is listed
-  under `## Files for later, not loaded` by its path, `lines` and `why`, in
-  every wake of the party, the frontier's and the mechanical one alike, and
-  kept across a plugin reload. A frontier that names its path again without
-  `later` carries it whole and ends the listing; one that names it again with
-  `later` replaces the entry; a path named twice is listed once, at its last
-  entry. The list has no cap. At each wake every file for later is checked
-  with `$.fs.stat`: one that is missing, not a regular file or could not be
-  checked is named once under `## Files not carried` with why and leaves the
-  list. A `later` that is neither `true` nor `false` is named in the receipt,
-  and the file is carried whole.
-- `drop_files` (optional): paths listed for later that no step needs any
-  more, each resolved as a `load_files` path is; each leaves the list, even
-  when the same call lists it for later again, and one the list does not
-  hold is named in the receipt.
-- `keep_skills` (optional): names of skills or commands whose text this one
-  frontier's wake carries whole; the wake after lists them again unless a
-  frontier names them again. A name the party never loaded is named in the
-  receipt, and one that is pinned already is said to be.
-- `standing_orders` (optional): the user's orders that bind the rest of the
-  work (a prohibition, a limit, a rule), each `{order}`: the user's words
-  verbatim. Every entry with a non-blank `order` is kept, whatever else it
-  holds; no message is looked up to keep it. The model names them; the plugin
-  never guesses one from the user's wording. The plugin remembers the standing orders of each party's last stored
-  frontier, across installs, the mechanical wake, the user's own `/compact`
-  and a plugin reload. The party's next frontier carries each one again with the
-  same `order` text, or lifts it; an order it leaves out is carried on by the
-  plugin from that memory, and the receipt names it.
-- `lifted` (optional): the orders the user has lifted, each `{order, by}`:
-  `order` exactly the text the last frontier carried, `by` the user's words
-  that lifted it, verbatim. A lift counts only when `by` is found in a message
-  the plugin recorded for the party: the user's messages for the main
-  chat, its brief or a message delivered to it for a sub-agent. Words match
-  across spacing and letter case: a model that rejoins the user's lines or
-  re-cases a word still quotes them. Only a lift clears a remembered order; a
-  lift whose words no such message holds leaves the order binding, the
-  receipt names it, and the wake shows the claimed words beside the order. A
-  lift of a text that is no remembered order is ignored.
+  `1-60,160-185`, `why` one line. A call that sends `load_files` replaces the
+  earlier call's; one that leaves it out keeps them. A relative path is
+  resolved against the session's directory (`$.session.cwd()`), or carried as
+  given when that read fails; a `why` past 200 characters is cut to 200, and
+  a missing one carries the file without it; `lines` that are no range carry
+  the file from line 1. Only an entry with no path is skipped. Their size
+  never refuses the call. Each file is read when the frontier installs and
+  carries at most 250 lines: of its `lines` ranges when given, else from
+  line 1. A file holding a NUL character is binary: it is named as `not a
+  text file` and never carried. When lines are left past the 250th, the
+  file's block ends with one line, `[N more lines not carried: Read {path}
+  from line L]`, N the lines left in the ranges or the file and L the next
+  one. There is no room for the files together. A file that is missing, or
+  whose ranges hold no line, is named under `## Files not carried` with why.
 
-The result is a receipt saying when the frontier installs — for the main chat
-at the end of this turn, for a sub-agent at Claude Code's next ask (with
-where that ask comes) — and, when it replaced one, that it did. It names the
-files listed for later after the call, each `drop_files` path it dropped or
-did not hold, and, per `keep_skills` name, whether the next wake carries it
-whole, it is pinned already, or the party never loaded it. It prints no
-context size: the plugin measures none for that moment. A call is always stored. When the plugin left
-something out, skipped it or carried it on, the receipt ends with
-`Stored with N changes:` and one line each: an unknown field (carried under
-`## Findings` with its name), a section that is missing, blank or not a
-string, a `drop_files` or `keep_skills` value that is no list or an entry
-that is no non-blank string, a `later` that is no boolean, a bad
-`standing_orders` or `lifted` entry, a
-standing order the frontier left out (carried on), a lift whose words no
-recorded message holds (the order still binding), a lift of no remembered
-order, a `load_files` entry with no path, resolved from a relative path, with
-a cut or bad `why` or bad `lines`, absent, not a regular file or that could not
-be checked, a call with no `tool_use_id`, which the wake cannot place, and a
-field taken back out of a section that holds its own closing tag then
-`<parameter name="…">` (the model's call markup closed the section early; an
-array field is read as JSON). A folded field that cannot be taken out (no
-field, one the call also sent, or an array field that is not JSON) stays in
-the section it arrived in, under `[{name}, as it arrived inside {section}]`. A
-frontier missing a required section opens its receipt with `missing a
-MANDATORY section: the wake will name each one it lacks`, names each missing
-section in that list, and ends it with `Call forward_compaction again with
-every MANDATORY section to replace it before it installs.`
+Each call's changes are applied and written to the party's files when it
+arrives ([State on disk](#state-on-disk)), so the result can give numbers; a
+second call before the install applies on top of the first. The result is
+one line per change, then the notes, then the sizes, then when the frontier
+installs:
+
+- `Added to {list}: [7], [8]`, `Removed from {list}: [2] {its text}`,
+  `Edited in {list}: [4], was: {its old text}`, `Skipped in {list}: already
+  [3]`, and the texts' and storage lines above;
+- one note per skipped, malformed or unknown entry, naming the field and the
+  place, and per `load_files` entry resolved from a relative path, with a cut
+  or bad `why` or bad `lines`, absent, not a regular file or that could not
+  be checked; a call with no `tool_use_id`, which the wake cannot place, is
+  named too;
+- per file the plugin could not write, `Not saved to disk yet: {list, text or
+  storage entry} ({the error, the path of a list's, text's or history file
+  replaced by …, a storage file's keeping its place in the folder}); it is held
+  and saved again at your next call.` The change stays applied in memory,
+  the error is logged and shown on screen, and the next call writes it again;
+- `Frontier: {n} characters in {m} items ({list} {n}, …)`, counting every
+  live item, the objective and next, listing the lists that hold items;
+  past `FORWARD_COMPACTION_FRONTIER_WARN_CHARS` also `Frontier is {n}
+  characters, over {threshold}: in your next forward_compaction call merge
+  old items (remove several, add one that covers them), largest first: {list}
+  {n}, {list} {n}.`, or, with no list holding an item, `Frontier is {n}
+  characters, over {threshold}: in your next forward_compaction call send a
+  shorter objective and next.` Nothing is cut;
+- `Frontier stored`, with `with {n} files to load` when it carries any, and
+  `, without {objective|next}: send it before it installs, or the wake names
+  it missing` when the frontier holds no objective or next; then when it
+  installs — for the main chat at the end of this turn, for a sub-agent at
+  Claude Code's next ask (with where that ask comes) — and, when an earlier
+  call since the last wake was stored, `This call applied on top of your
+  earlier one since the last wake.` It prints no context size: the plugin
+  measures none for that moment.
+
+A frontier with no objective or next installs at the same doors as a complete
+one: the frontier message names what it lacks and says to re-establish it
+from the user's messages (main) or the brief (sub-agent) and send it in the
+next call, and a warning row names it. The decision log's `stored` row and
+the installing `compact` row name it as `incomplete`.
 
 Every answer ends with one line saying the
 plugin is experimental and asking the model to append a short note of any
@@ -237,7 +253,7 @@ directory resolves).
 
 The installed context is, oldest first: one facts message, one frontier
 message, then the messages after the call, returned as Claude Code holds
-them. The frontier message carries the call's own receipt, since the install
+them. The frontier message carries the call's own result, since the install
 replaces the message that held it, and, like a mechanical wake's message,
 ends with the experimental line and where to note any trouble.
 
@@ -260,13 +276,10 @@ The facts message opens with the plugin version that built the wake
 it. It holds, each section only when it has content:
 
 - the standing orders, first, under `## Standing orders — binding until the
-  user lifts them`: each order the frontier carried on its own list line, with a
-  lift no recorded message proves shown beside it, carried
-  whole, outside the budget; then each order lifted since the last install,
-  once, with the user's lifting words, and never again. A mechanical wake
-  carries the party's remembered orders the same way, and the frontier
-  message and the mechanical wake's message both say to continue within
-  them;
+  user lifts them`: each live order on its own line as `[n] text`, carried
+  whole, outside the budget. A mechanical wake carries them the same way,
+  and the frontier message and the mechanical wake's message both say to
+  continue within them;
 - what arrived after the frontier and the kept messages lack: every
   notification, message from the user or the coordinator, and message that
   resumed a sub-agent, verbatim, first;
@@ -301,9 +314,8 @@ it. It holds, each section only when it has content:
 - the skills and commands the party loaded, the latest load of each, newest
   first. Only a pinned one (its file's frontmatter sets
   `forward-compaction-keep: true`, `FORWARD_COMPACTION_KEEP_SKILLS` names it,
-  or that list holds `*`) and one the frontier's `keep_skills` names is
-  carried whole, under `## Skills in force, as loaded`, its heading saying
-  `pinned` or `named in your keep_skills`. Every other one is listed under
+  or that list holds `*`) is carried whole, under `## Skills in force, as
+  loaded`, its heading saying `pinned`. Every other one is listed under
   `## Skills not carried`, after one sentence saying its text is gone and the
   `Skill` tool loads it again, as `- {name} ({source}, {path}): {description}`,
   the description its frontmatter's, left out when it has none. A sub-agent's
@@ -320,6 +332,17 @@ it. It holds, each section only when it has content:
   loads it again. A skill Claude Code loaded
   without saying which party loaded it is named, not carried, in every
   party's wake, with the call that loads it again;
+- the files the party touched, newest first, at most 15 paths, each tagged R
+  read, E edited or W written (its strongest touch), from its finished `Read`,
+  `Edit`, `MultiEdit`, `Write` and `NotebookEdit` calls; a denied or failed
+  call touched nothing;
+- the shell commands the party ran, newest first, under `## Shell commands
+  you ran, newest first`: each finished `Bash` call's command verbatim under its
+  `description`, a failed one too (it is the command to rerun), a denied one
+  never, never their output; at most 20, a command run again kept at its
+  newest run, the older ones named as not carried;
+- the task list as last set, from `TodoWrite` or `TaskCreate`/`TaskUpdate`,
+  whichever moved last, carried whole, never fitted;
 - the agents, listed at install (at most 50 rows): for main every agent, for a
   sub-agent only the agents it spawned (`parentId` its own id); then each agent
   the party spawned that the list no longer holds, as `not in the list
@@ -328,23 +351,10 @@ it. It holds, each section only when it has content:
 - the background shells and crons, from the newest Stop event, with its age.
   The list is session-wide, not per agent; before any Stop event it says the
   running shells are unknown;
-- the shell commands the party ran, newest first, under `## Shell commands
-  you ran, newest first`: each finished `Bash` call's command verbatim under its
-  `description`, a failed one too (it is the command to rerun), a denied one
-  never, never their output; at most 20, a command run again kept at its
-  newest run, the older ones named as not carried;
-- the files the party touched, newest first, at most 15 paths, each tagged R
-  read, E edited or W written (its strongest touch), from its finished `Read`,
-  `Edit`, `MultiEdit`, `Write` and `NotebookEdit` calls; a denied or failed
-  call touched nothing;
-- the task list as last set, from `TodoWrite` or `TaskCreate`/`TaskUpdate`,
-  whichever moved last, carried whole, never fitted;
-- the files the frontier asked to carry, each at most 250 lines; then the
-  party's files for later, one line each, `- {path} lines {lines} — {why}`
-  (`lines` and `why` when given), under `## Files for later, not loaded` and
-  one sentence saying their content is not in the context and to read each at
-  the step that needs it; then the load files not carried and the files for
-  later found gone, with why;
+- the files the frontier asked to carry, each at most 250 lines;
+- the storage, when it lists an entry, under `## Storage — files in
+  {absolute storage folder}/`: one line per entry, `{name} — {description}`;
+- the load files not carried, with why;
 - in a mechanical wake only, under `## Files you were working on, newest
   first, read at install`: the 5 newest files the party touched, read from
   disk at install, each at most 250 lines with the same `[N more lines not
@@ -353,8 +363,7 @@ it. It holds, each section only when it has content:
   recent files because it fires uninvited. One that could not be read is
   named in place with why. A frontier's wake carries only the files the
   frontier asked for, and the wake an error falls back to, built without
-  any read, carries neither these files nor the plan file, and lists the
-  files for later unchecked.
+  any read, carries neither these files nor the plan file.
 
 Its size is held to a budget of half Claude Code's ask point (the
 `autoCompactThreshold` that `$.session.usage` reports, held at or below the
@@ -377,12 +386,22 @@ not carried, never cut. The room left goes to the messages after the call: the
 oldest are dropped whole until the rest fits, and the frontier message says
 how many were dropped.
 
-The frontier message carries the frontier verbatim, tells the model to
-continue from its `## Next`, and says how many later messages
-follow. A mechanical wake replaces it with a message saying no frontier was
-written (or that the stored one never installed, naming the sections it
-lacked), how many of the newest messages were kept and how many are gone,
-and to re-establish the objective from the user's messages or the brief.
+The frontier message opens `[forward-compaction: frontier] Below is your
+frontier as forward-compaction holds it: continue from its ## Next`, with
+`, within the standing orders above` while an order is live, then `In your
+next forward_compaction call send only changes, by item number; whatever you
+leave out stays.` The frontier follows, rendered from the lists, never from
+text the model wrote whole: `## Objective`, `## Decisions`, `## Done`,
+`## Remaining`, `## Next`, `## Blocked`, `## Findings`, each list's live
+items one per line as `[n] text`, a list with no item left out. A frontier
+with no objective or next names what it lacks; then the message says how
+many later messages follow. No model-facing text names the path of a list's
+file or of the history. A mechanical wake replaces it with a message saying
+the party had not called `forward_compaction` (since its last wake, when it
+holds a frontier), how many of the newest messages were kept and how many
+are gone; with no frontier held it says to re-establish the objective and
+next step from the user's messages or the brief, and with one held it shows
+it as it stands, to continue from.
 
 Each install writes one line, measured: it waits for the party's first
 reading after the install, and is an info row in the logs, never on screen.
@@ -531,11 +550,12 @@ With the defaults, on a 200k sub-agent max context (on 1M the ceiling is
 
 | Path | What | Retention |
 | --- | --- | --- |
-| `~/.local/state/forward-compaction/logs/decisions/{session}.jsonl` (`$PLUGIN_LOG_DIR/forward-compaction/decisions/` when set) | decision rows: every frontier stored (with `orders` and `lifted`, its counts of standing orders carried and lifted, `notes`, the count of changes its receipt named, `later`, the count of files listed for later after it, `keep`, `{kept, pinned, unknown}`, when it named `keep_skills`, and `dropFiles`, `{dropped, unknown}`, when it named `drop_files`), every nudge (with `notice`, its count since the party's last install, and `last`, true for the last one before the ceiling), every `finish-notice` row (`{party, tokens, start}`), every compaction decision (an installing one with `skills`, `{carried, listed}`, the skills carried whole and the lines under `## Skills not carried`, and `later`, the files listed for later), every `landed` row (`{party, kind, before, after, line}`, `kind` being `frontier` or `mechanical`, `before` and `after` the measured readings or `null`, written with the landed line), every `ignore` row (`{party, label, model, judged, matched}`, `judged` being `managed`, `ignored` or `unknown`, `matched` the ignore-list entry or `null`, written when a party's judgement is first made or changes), every `window` row (`{party, label, model, maxContext, source, ceiling}`, with `unknown` on the `fallback` source, written when a sub-agent's max context is first known or changes); a held-ask streak is one folded `skips` row, written when the streak closes and stamped with its last ask's time, so it can follow later rows; rows past the first 500 that come before the environment layer is read are counted in one `rows-lost` row | a file over 8 MiB moves to `.1`; other sessions' files older than 14 days, then all but the newest 200, are deleted |
+| `~/.local/state/forward-compaction/logs/decisions/{session}.jsonl` (`$PLUGIN_LOG_DIR/forward-compaction/decisions/` when set) | decision rows: every frontier stored (with `argChars`, the characters the call's arguments held; `lists`, per list it changed `{added, removed, edited, skipped}`; `frontier`, `{chars, items}` after it; `storage`, `{added, removed}`; `warned`, true when the size warning fired; `files`, the files to load; `notes`, the count of notes its result named; `writeFailed`, the files it could not write, when any; and `incomplete`, the texts it lacks, when any), every nudge (with `notice`, its count since the party's last install, and `last`, true for the last one before the ceiling), every `finish-notice` row (`{party, tokens, start}`), every compaction decision (an installing one with `skills`, `{carried, listed}`, the skills carried whole and the lines under `## Skills not carried`, `frontier`, `{chars, items}`, and `storage`, the entries listed), every `landed` row (`{party, kind, before, after, line}`, `kind` being `frontier` or `mechanical`, `before` and `after` the measured readings or `null`, written with the landed line), every `ignore` row (`{party, label, model, judged, matched}`, `judged` being `managed`, `ignored` or `unknown`, `matched` the ignore-list entry or `null`, written when a party's judgement is first made or changes), every `window` row (`{party, label, model, maxContext, source, ceiling}`, with `unknown` on the `fallback` source, written when a sub-agent's max context is first known or changes); a held-ask streak is one folded `skips` row, written when the streak closes and stamped with its last ask's time, so it can follow later rows; rows past the first 500 that come before the environment layer is read are counted in one `rows-lost` row | a file over 8 MiB moves to `.1`; other sessions' files older than 14 days, then all but the newest 200, are deleted |
 | `~/.local/state/forward-compaction/logs/{errors,warnings,info}.jsonl` (`$PLUGIN_LOG_DIR/forward-compaction/` when set) | the plugin's errors, warnings and info: every decision event lands at its level — errors and warnings in their files, every other operational event (nudge, stored, each compaction decision, party, skill, tool-registered, look-back, the lines said) in `info.jsonl`, a held-ask streak folded into its first row and one `skips` row. Each row's `event` names what happened (never a bare `error` or `warning`), and an error or warning row's `where` names the function that raised it. One failure is one row: a tool that fails to register writes one error row and one screen line, and is tried again at each `turn.start`: at once for its first three tries, then after a wait of 30 seconds that doubles with each failure, up to 15 minutes, for the rest of the session. Rows a write could not append (the lock held past its 10-second wait, the writer killed at its 15-second bound, any failure) stay queued, order kept, and are retried with the next write: a row may be written twice, never lost or torn. Only past 2,000 held rows are the oldest dropped, and their count goes to `errors.jsonl` (`plugin-log-rows-dropped`) once a write succeeds. A lock stage or broken lock whose writer died is cleared | a level file over 20 MiB moves to `.1`, the older ones to `.2` … `.5`, the oldest of five deleted |
-| `debug.jsonl` in the same directory (with `FORWARD_COMPACTION_DEBUG` on) | a row at every step: each hook entry (hook, party, trigger, model), each `$` answer the plugin decides on (`session.usage` figures, the `agent.list` count, each `turn.step` reading with its four counts and model, `fs.stat` results), the options and variables resolved, each ratio base and each ratio, measured or not and why, with the base's characters and tokens and the characters and reading now, each wake's section sizes and files, its `skills` and `later` counts, each nudge sent or withheld and why, and every decision row whole; numbers as the API gave them | as the level files: `.1` … `.5` |
+| `debug.jsonl` in the same directory (with `FORWARD_COMPACTION_DEBUG` on) | a row at every step: each hook entry (hook, party, trigger, model), each `$` answer the plugin decides on (`session.usage` figures, the `agent.list` count, each `turn.step` reading with its four counts and model, `fs.stat` results), the options and variables resolved, each ratio base and each ratio, measured or not and why, with the base's characters and tokens and the characters and reading now, each wake's section sizes and files, its `skills` and `storage` counts, each nudge sent or withheld and why, and every decision row whole; numbers as the API gave them | as the level files: `.1` … `.5` |
 | `issues.md` in the same directory | notes a model appends when the plugin gave it trouble, as each tool answer asks | not managed by the plugin |
-| anything else | none: the recorded facts and the stored frontiers live in memory only | — |
+| `~/.local/state/forward-compaction/{project}/{session}/`, each sub-agent's under `agents/{agent id}/` in it; `{project}` the name of the session's project directory without a leading dot | the party's frontier, written by the plugin alone when a call changes it: `orders.json` and `data/{decisions,done,remaining,blocked,findings}.json`, each `{next_id, items: [{id, text}]}` in shown order; `data/{objective,next}.json`, `{text}`; `storage.json`, the listed `[{name, description}]`; `storage/{name}.md`, each value. What leaves goes to `history/`: `history/{list}.jsonl`, one line `{id, text, left}` (`removed` or `edited`) per value that left; `history/{objective,next}.jsonl`, one `{text}` per text replaced; `history/storage/{name}`, a storage value replaced or removed, numbered before `.md` when the name is taken; `history/unreadable/{file}`, the content of a live file that could not be parsed at start, copied there before the first write over it. No file holds a date or a time. At the start of a chat process or a sub-agent the party's frontier is loaded from them; every list's next number is past every number its history holds; an unreadable live file is logged and read as an empty list, its next number also past every number its own text names, and left as it is until a call changes that list. What left is appended to the history before the live file that no longer holds it is written. A party with no `orders.json` takes the standing orders the previous build kept in Claude Code's session state as its first numbered orders | nothing is ever deleted |
+| anything else | none: the recorded facts live in memory only | — |
 
 Only errors reach the screen, and the log too. Warning, info and debug rows
 go to their files, or nowhere when no log can hold them; while the log fails,

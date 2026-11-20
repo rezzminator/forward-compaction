@@ -25,8 +25,8 @@ describe('lastNudge', () => {
 
 const TOOL = 'mcp__forward-compaction__forward_compaction';
 const DEV_TOOL = 'mcp__forward-compaction-dev__forward_compaction';
-const ARGS = 'with objective, decisions, done, remaining and next, and in load_files the files you will read again';
-const FINISH = 'If the whole work finishes first, call it before the final report, with remaining "none", next "write the final report" and all the report needs in done and findings: the compaction can land before your next request, and the report is then written from the frontier.';
+const ARGS = 'with only what changed in your frontier, by item number, and in load_files the files you will read again';
+const FINISH = 'If the whole work finishes first, call it before the final report, with the finished steps removed from remaining, next "write the final report", and all the report needs added to done and findings: the compaction can land before your next request, and the report is then written from the frontier.';
 const END = 'No such tool? Carry on.';
 
 describe('nudgeText (R29)', () => {
@@ -53,7 +53,7 @@ describe('nudgeText (R29)', () => {
 
   it('is the first notice to main when only the size is given, with the exact text', () => {
     expect(nudgeText({ tokens: 55_400 })).toBe(
-      'forward-compaction: context 55k and increasing. At your first milestone, call mcp__forward-compaction__forward_compaction with objective, decisions, done, remaining and next, and in load_files the files you will read again. A step that needs all of this context may reach its own milestone first. If the whole work finishes first, call it before the final report, with remaining "none", next "write the final report" and all the report needs in done and findings: the compaction can land before your next request, and the report is then written from the frontier. No such tool? Carry on.',
+      'forward-compaction: context 55k and increasing. At your first milestone, call mcp__forward-compaction__forward_compaction with only what changed in your frontier, by item number, and in load_files the files you will read again. A step that needs all of this context may reach its own milestone first. If the whole work finishes first, call it before the final report, with the finished steps removed from remaining, next "write the final report", and all the report needs added to done and findings: the compaction can land before your next request, and the report is then written from the frontier. No such tool? Carry on.',
     );
   });
 
@@ -73,13 +73,13 @@ describe('nudgeText (R29)', () => {
 describe('finishText', () => {
   it('tells main, with the exact text, to compact when the whole work is finished, before the final report', () => {
     expect(finishText({ tokens: 126_800 })).toBe(
-      'forward-compaction: context 127k. Nothing to do yet. When the whole work is finished, call mcp__forward-compaction__forward_compaction before the final report, so the user\'s reply meets a small context: objective, decisions, done, remaining "none" and next "write the final report", with all the report needs in done and findings, as the compaction can land before your next request and the report is then written from the frontier. No such tool? Carry on.',
+      'forward-compaction: context 127k. Nothing to do yet. When the whole work is finished, call mcp__forward-compaction__forward_compaction before the final report, so the user\'s reply meets a small context: the finished steps removed from remaining, next "write the final report", and all the report needs added to done and findings, as the compaction can land before your next request and the report is then written from the frontier. No such tool? Carry on.',
     );
   });
 
   it('names the registered tool', () => {
     expect(finishText({ tokens: 100_000, tool: DEV_TOOL })).toBe(
-      `forward-compaction: context 100k. Nothing to do yet. When the whole work is finished, call ${DEV_TOOL} before the final report, so the user's reply meets a small context: objective, decisions, done, remaining "none" and next "write the final report", with all the report needs in done and findings, as the compaction can land before your next request and the report is then written from the frontier. No such tool? Carry on.`,
+      `forward-compaction: context 100k. Nothing to do yet. When the whole work is finished, call ${DEV_TOOL} before the final report, so the user's reply meets a small context: the finished steps removed from remaining, next "write the final report", and all the report needs added to done and findings, as the compaction can land before your next request and the report is then written from the frontier. No such tool? Carry on.`,
     );
   });
 });
@@ -98,7 +98,7 @@ describe('noticeFor', () => {
 
   it('sends the finish notice once to a party with a finish start, and none to one without', () => {
     const parties = new Parties();
-    const text = 'forward-compaction: context 120k. Nothing to do yet. When the whole work is finished, call mcp__forward-compaction__forward_compaction before the final report, so the user\'s reply meets a small context: objective, decisions, done, remaining "none" and next "write the final report", with all the report needs in done and findings, as the compaction can land before your next request and the report is then written from the frontier. No such tool? Carry on.';
+    const text = 'forward-compaction: context 120k. Nothing to do yet. When the whole work is finished, call mcp__forward-compaction__forward_compaction before the final report, so the user\'s reply meets a small context: the finished steps removed from remaining, next "write the final report", and all the report needs added to done and findings, as the compaction can land before your next request and the report is then written from the frontier. No such tool? Carry on.';
     expect(noticeFor(parties, 'main', 120_000, MARKS, ['haiku'])).toEqual({ level: 0, withheld: 'below-start', sent: { row: { event: 'finish-notice', party: 'main', tokens: 120_000, start: 100_000 }, text } });
     expect(noticeFor(parties, 'main', 130_000, MARKS, ['haiku'])).toEqual({ level: 0, withheld: 'below-start' });
     expect(noticeFor(new Parties(), 'agent:a1', 120_000, { start: 150_000, every: 50_000, ceiling: 600_000 }, ['haiku'])).toEqual({ level: 0, withheld: 'below-start' });

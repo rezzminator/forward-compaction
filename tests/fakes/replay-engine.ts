@@ -7,11 +7,17 @@
 import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { gunzipSync } from 'node:zlib';
 import { register } from '../../plugins/forward-compaction/hooks/forward-compaction.ts';
 import { onInto } from './engine.ts';
 import type { PATHS, Row } from '../../scripts/replay/recorder.ts';
+import { STATE_DIR } from '../../plugins/forward-compaction/src/disk.ts';
+
+/** Options added after the live fixture was recorded: unset in a replay of a recording no row of which reads them. A name leaves the list when `npm run replay:record` records it. */
+export const OPTIONS_SINCE_RECORDING: readonly string[] = ['FORWARD_COMPACTION_FRONTIER_WARN_CHARS'];
+/** The session's directory a recording made before the plugin read it answers: the plugin only names its own folder after it. */
+export const REPLAY_ROOT = '/replay/project';
 
 type Fn = (...args: any[]) => any;
 export type Outcome = { seq?: number; result?: any; error?: { message: string; code?: unknown } };
@@ -31,7 +37,11 @@ export type Replay = { replayed: Invocation[]; unrecorded: string[] };
  * - `harness`: a utility or an effect, answered by the harness deterministically, so the plugin may add, drop or
  *   reorder these calls: session.id the recorded id, clock.now the recorded timeline time, clock.after a timer that
  *   never fires, process.run the plugin's argv really run in the replay sandbox, ui.log captured, tool.register the
- *   recorded registration of that tool name.
+ *   recorded registration of that tool name, fs.write and fs.exists the plugin's own files, held by the harness,
+ *   session.root the recorded answer or, in a recording made before the plugin asked, REPLAY_ROOT.
+ * Two reads a recording made before the plugin asked cannot hold: an fs.read of a file the harness holds is answered
+ * from it, and one of the plugin's own frontier folder never recorded is ENOENT (the build that recorded kept none);
+ * an env.get of a variable in OPTIONS_SINCE_RECORDING that no row reads is unset (the build that recorded had no such option).
  */
 export const ANSWERS: Record<(typeof PATHS)[number], { from: 'recorded'; subject?: true } | { from: 'harness'; sync?: true }> = {
   'agent.list': { from: 'recorded' },
@@ -51,6 +61,9 @@ export const ANSWERS: Record<(typeof PATHS)[number], { from: 'recorded'; subject
   // a Models API lookup: the URL names the model asked about
   'http.fetch': { from: 'recorded', subject: true },
   'session.id': { from: 'harness' },
+  'session.root': { from: 'harness' },
+  'fs.write': { from: 'harness' },
+  'fs.exists': { from: 'harness' },
   'clock.now': { from: 'harness' },
   'clock.after': { from: 'harness', sync: true },
   'process.run': { from: 'harness' },
@@ -125,6 +138,7 @@ async function drive(recorded: Invocation[], root: string): Promise<Replay> {
   const signal = new AbortController().signal;
   const world = recorded.flatMap((inv) => inv.calls).sort((a, b) => a.seq! - b.seq!);
   const held = new Map<string, { value: unknown; version: number }>();
+  const files = new Map<string, string>();
   const home = world.find((c) => c.path === 'env.get' && c.args[0] === 'HOME' && typeof c.result === 'string')?.result as string | undefined;
   /** The seq of the next timeline event: every call recorded before it happened by now. */
   let now = 0;
@@ -179,7 +193,10 @@ async function drive(recorded: Invocation[], root: string): Promise<Replay> {
               unrecorded.push(line);
               return new Error(line);
             });
-          } else if (path === 'clock.after') result = { cancel: () => undefined }; // a timer never fires in replay
+          } else if (path === 'session.root') result = world.find((c) => c.path === 'session.root' && !c.error)?.result ?? REPLAY_ROOT;
+          else if (path === 'fs.write') result = void files.set(args[0] as string, args[1] as string);
+          else if (path === 'fs.exists') result = files.has(args[0] as string);
+          else if (path === 'clock.after') result = { cancel: () => undefined }; // a timer never fires in replay
           else if (path === 'state.get') result = held.get(JSON.stringify(args[0])) ?? { value: undefined, version: 0 };
           else if (path === 'state.set') {
             const version = (held.get(JSON.stringify(args[0]))?.version ?? 0) + 1;
@@ -199,6 +216,13 @@ async function drive(recorded: Invocation[], root: string): Promise<Replay> {
       const exact = pool.find((p) => !p.used && p.call.path === path && norm(p.call.args) === norm(args));
       if (exact) exact.used = true;
       const call = exact?.call ?? latest((c) => c.path === path && subject(c));
+      const own = path === 'fs.read' && (files.has(args[0] as string) || (!call && home !== undefined && String(args[0]).startsWith(`${home}/${STATE_DIR}/`) && !String(args[0]).startsWith(`${home}/${STATE_DIR}/logs/`)));
+      if (own || (path === 'env.get' && OPTIONS_SINCE_RECORDING.includes(String(args[0])) && !world.some((c) => c.path === 'env.get' && norm(c.args[0]) === norm(args[0])))) {
+        const text = path === 'fs.read' ? files.get(args[0] as string) : undefined;
+        const error = path === 'fs.read' && text === undefined ? { message: `ENOENT: no such file, ${String(args[0])}`, code: 'ENOENT' } : undefined;
+        out.calls.push({ path, args, ...(error ? { error } : { result: text }) });
+        return error ? Promise.reject(failure(error)) : Promise.resolve(text);
+      }
       if (!call) throw missing();
       out.calls.push({ path, args, ...(call.error ? { error: call.error } : { result: call.result }) });
       if (call.sync) {
@@ -300,7 +324,7 @@ async function drive(recorded: Invocation[], root: string): Promise<Replay> {
 
 export const A1 = 'a1b2c3d4e5';
 export const FORWARD = 'mcp__forward-compaction__forward_compaction';
-export const SECTIONS = { objective: 'Replay the synthetic fixture.', decisions: 'none', done: 'Recorded it.', remaining: 'Replay it.', next: 'Check I3 and I5.' };
+export const SECTIONS = { objective: 'Replay the synthetic fixture.', next: 'Check I3 and I5.', done: { add: ['Recorded it.'] }, remaining: { add: ['Replay it.'] } };
 export const SKILL_TEXT = 'Base directory for this skill: /HOME/project/.claude/skills/replay-rules\n\n# Replay rules\nThe marker for this skill is replay-rules-marker-7f3a.';
 export const BRIEF = 'Brief for agent one: read the filler and compact.';
 /** The handle the synthetic session's `$.session.authorize()` answers: the recorder writes none of it to a row. */
@@ -331,7 +355,8 @@ export async function recordSynthetic(dir: string): Promise<string> {
     clock: { now: async () => (now += 1000), after: () => ({ cancel: () => undefined }) },
     env: { get: async (name: string) => env[name] },
     fs: {
-      write: async (path: string, text: string) => writeFileSync(join(dir, path), text),
+      write: async (path: string, text: string) => (mkdirSync(dirname(join(dir, path)), { recursive: true }), writeFileSync(join(dir, path), text)),
+      exists: async () => false,
       read: async (path: string) => { throw Object.assign(new Error(`ENOENT: ${path}`), { code: 'ENOENT' }); },
       stat: async (path: string) => { throw Object.assign(new Error(`ENOENT: ${path}`), { code: 'ENOENT' }); },
     },
@@ -340,6 +365,7 @@ export async function recordSynthetic(dir: string): Promise<string> {
     session: {
       authorize: async () => ({ handle: SYNTHETIC_HANDLE, kind: 'bearer' }),
       id: async () => '00000000-0000-0000-0000-000000000000',
+      root: async () => '/HOME/project',
       usage: async () => ({ context: { tokens: 0, window: 1_000_000 } }),
       version: async () => ({ version: 'synthetic' }),
       compact: async () => ({ skip: 'synthetic' }),

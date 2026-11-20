@@ -17,7 +17,7 @@ afterEach(() => {
 
 const FORWARD = 'mcp__forward-compaction__forward_compaction';
 const LOOK_BACK = 'mcp__forward-compaction__look_back';
-const SECTIONS = { objective: 'Fix the audit.', decisions: 'none', done: 'Item 20.', remaining: 'Item 21.', next: 'Write its test.' };
+const SECTIONS = { objective: 'Fix the audit.', next: 'Write its test.', done: { add: ['Item 20.'] }, remaining: { add: ['Item 21.'] } };
 const A1 = 'a1b2c3d4e5';
 
 async function begin(script: Script = {}): Promise<Fake> {
@@ -221,6 +221,6 @@ describe('L8 + L9: one row per registration failure, and every error and warning
     expect((await call()).result).toBe('not ours');
     f.advance(30_000);
     await turn();
-    expect((await call()).result).toMatch(/^Frontier stored/);
+    expect((await call()).result.split('\n')[5]).toMatch(/^Frontier stored\. /);
   });
 });

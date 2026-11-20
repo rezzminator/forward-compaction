@@ -1,14 +1,14 @@
 import type { Landing } from './wake';
 import { ignoredBy, type RatioBase } from './window';
-import { keptOrders, type LiftedOrder, type StandingOrder } from './orders';
 import type { PlanSeen } from './plan';
 import type { LoadFile } from './frontier';
-import { keptLater } from './carry';
+import { emptyHeld, renderFrontier, type Held, type Item, type StorageEntry } from './lists';
+import type { PartyFiles } from './disk';
+import { storageDir } from './storage';
 import type { SubagentWindow } from './options';
 
-/** A frontier the model wrote, held in memory until a door installs it. */
+/** A `forward_compaction` call since the party's last wake, held until a door installs the frontier: the frontier itself is the party's held lists (`PartyState.held`), rendered at the wake. */
 export type StoredFrontier = {
-  text: string;
   loadFiles: LoadFile[];
   /** The `forward_compaction` call that stored it: the anchor `splitAtCall` finds in the messages. */
   toolUseId: string;
@@ -16,14 +16,6 @@ export type StoredFrontier = {
   storedAtTokens?: number;
   /** The ledger's next seq when it was stored: what the ledger records for the party from it, the model never saw (ledger.ts `factsFor` `since`). */
   since: number;
-  /** The standing orders it carried (the tool's `standing_orders`). */
-  standingOrders?: StandingOrder[];
-  /** The orders lifted since the last install: its own `lifted`, plus a replaced frontier's still unshown, each shown once in its wake. */
-  lifted?: LiftedOrder[];
-  /** The required sections it lacks (frontier.ts `ParsedFrontier.missing`): it installs without them, its wake naming each. */
-  missing?: string[];
-  /** The skills and commands its wake carries whole (the tool's `keep_skills`), for that one wake. */
-  keepSkills?: string[];
   /** Store order across all parties. */
   seq: number;
 };
@@ -59,8 +51,12 @@ export type PartyState = {
   /** An installed wake whose landed line waits for the party's first reading after it. */
   landing?: Landing;
   stored?: StoredFrontier;
-  /** The standing orders of the party's last stored frontier: the next frontier carries or lifts each; an install or a dropped frontier keeps them. */
-  orders?: StandingOrder[];
+  /** The party's frontier as the plugin holds it, loaded from its files at first touch in this process (disk.ts); absent until then. */
+  held?: Held;
+  /** The party's files, and what waits to be written to them. */
+  files?: PartyFiles;
+  /** The party's `forward_compaction` call being applied: the next one waits for it, so each applies on the one before. */
+  calling?: Promise<unknown>;
   lastDecision?: AskDecision;
   /** False from a skip until a request completes: the next ask is then a prompt too long (D8). */
   answeredSinceSkip: boolean;
@@ -81,8 +77,6 @@ export type PartyState = {
   installs: number;
   /** An install happened in the party's current turn: the turn-end door (P1) does not fire again. */
   installedThisTurn: boolean;
-  /** The files for later its frontiers listed (carry.ts `laterApply`), named in every wake until one leaves; absent until a frontier or `$.state` sets it. */
-  later?: LoadFile[];
   /** The judgement last returned by `judged`. */
   judged?: Judgement;
   /** The max context, source and unknown reason of the last window row returned for the party (`windowed`). */
@@ -160,27 +154,12 @@ export class Parties {
     return { event: 'window', party: key, label: state.label, model: state.model, ...window, ceiling };
   }
 
-  /** Stores the party's frontier, the latest winning; returns the one it replaced. */
+  /** Records the party's call, the latest winning; returns the one it follows. */
   store(key: string, frontier: Omit<StoredFrontier, 'seq'>): StoredFrontier | undefined {
     const state = this.get(key);
     const replaced = state.stored;
-    const standing = frontier.standingOrders ?? [];
-    const unshown = (replaced?.lifted ?? []).filter((l) => !standing.some((o) => o.order === l.order)); // an order carried again is no longer lifted
-    state.stored = { ...frontier, lifted: [...unshown, ...(frontier.lifted ?? [])], seq: ++this.seq };
-    state.orders = [...standing];
+    state.stored = { ...frontier, seq: ++this.seq };
     return replaced;
-  }
-
-  /** The orders `$.state` kept for the party before a plugin reload, when usable; a frontier stored in this process wins, and nothing kept adds no party. */
-  restoreOrders(key: string, kept: unknown): void {
-    const orders = keptOrders(kept);
-    if (orders !== undefined) this.get(key).orders ??= orders;
-  }
-
-  /** The files for later `$.state` kept for the party before a plugin reload, when usable; a list set in this process wins. */
-  restoreLater(key: string, kept: unknown): void {
-    const later = keptLater(kept);
-    if (later !== undefined) this.get(key).later ??= later;
   }
 
   /** The judgement and model `$.state` kept for the party before a plugin reload, when usable; what this process already knows wins. */
@@ -343,4 +322,10 @@ export class Parties {
   forget(key: string): void {
     this.states.delete(key);
   }
+}
+
+/** What a wake shows of a party's held frontier: its live orders, its storage listing (with no files, none) and its lists rendered. */
+export function heldShown(party: { held?: Held; files?: PartyFiles }): { orders: Item[]; storage?: { dir: string; entries: StorageEntry[] }; frontier: string } {
+  const held = party.held ?? emptyHeld();
+  return { orders: held.lists.orders.items, ...(party.files !== undefined ? { storage: { dir: storageDir(party.files), entries: held.storage } } : {}), frontier: renderFrontier(held) };
 }

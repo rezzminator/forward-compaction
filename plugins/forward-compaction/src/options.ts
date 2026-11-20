@@ -42,6 +42,8 @@ export const DEFAULT_CEILING_NATIVE = false;
 export const DEFAULT_IGNORE_MODELS: readonly string[] = ['haiku'];
 /** Skills and commands pinned in every wake by name, as frontmatter's forward-compaction-keep pins one by its file: none. */
 export const DEFAULT_KEEP_SKILLS: readonly string[] = [];
+/** The frontier's size, in characters of every live item, the objective and next, past which a call's result asks the model to merge old items: 1.5 times the 8,000 a whole-rewrite frontier stayed near, a design budget to tune, never a measured size. */
+export const DEFAULT_FRONTIER_WARN_CHARS = 12_000;
 /** The debug log (`debug.jsonl`): a row at every step. */
 export const DEFAULT_DEBUG = true;
 
@@ -100,6 +102,7 @@ export const OPTION_ENV = {
   ceilingNative: 'FORWARD_COMPACTION_CEILING_NATIVE',
   ignoreModels: 'FORWARD_COMPACTION_IGNORE_MODELS',
   keepSkills: 'FORWARD_COMPACTION_KEEP_SKILLS',
+  frontierWarnChars: 'FORWARD_COMPACTION_FRONTIER_WARN_CHARS',
   debug: 'FORWARD_COMPACTION_DEBUG',
 } as const;
 
@@ -126,6 +129,8 @@ export type ResolvedOptions = {
   ignoreModels: string[];
   /** Skill and command names every wake carries whole, as given, trimmed; `*` names every one (carry.ts `KEEP_ALL`). */
   keepSkills: string[];
+  /** The frontier's size in characters past which a call's result warns (lists.ts `sizeLines`). */
+  frontierWarnChars: number;
   debug: boolean;
   /** One line per option that was invalid and fell back; empty when all were valid. */
   errors: string[];
@@ -197,6 +202,9 @@ export function resolveOptions(env: OptionEnvironment = {}): ResolvedOptions {
   const subagent = { ...sizes('subagent', DEFAULT_SUBAGENT), ...(subagentMax !== undefined ? { maxContext: subagentMax } : {}) };
   const ceilingNative = flag('ceilingNative', DEFAULT_CEILING_NATIVE);
   const debug = flag('debug', DEFAULT_DEBUG);
+  // A count of characters: a percentage has nothing to be of.
+  const rawWarn = fromEnv('frontierWarnChars'), warn = rawWarn === undefined ? undefined : parseSize(rawWarn);
+  const frontierWarnChars = warn === undefined ? DEFAULT_FRONTIER_WARN_CHARS : warn.ok && 'tokens' in warn.value ? warn.value.tokens : (badEnv('frontierWarnChars', warn.ok ? `a character count, not a percentage: ${JSON.stringify(rawWarn)}` : warn.error, String(DEFAULT_FRONTIER_WARN_CHARS)), DEFAULT_FRONTIER_WARN_CHARS);
   // Unset is the default; set empty (or only commas) is a list of none: the one option whose empty value is a value.
   const rawIgnore = env.vars?.[OPTION_ENV.ignoreModels];
   const ignoreModels = rawIgnore === undefined ? [...DEFAULT_IGNORE_MODELS] : rawIgnore.split(',').map((entry) => entry.trim().toLowerCase()).filter((entry) => entry !== '');
@@ -205,5 +213,5 @@ export function resolveOptions(env: OptionEnvironment = {}): ResolvedOptions {
   // The decision log lives in the plugin's log directory (PLUGIN_LOG_DIR, else under HOME); with neither, there is none.
   const base = pluginLogDir(env.pluginLogDir, env.home, 'forward-compaction');
   const logFile = base === undefined ? undefined : `${base}/decisions/.jsonl`;
-  return { main, subagent, ceilingNative, ...(logFile ? { logFile } : {}), ignoreModels, keepSkills, debug, errors };
+  return { main, subagent, ceilingNative, ...(logFile ? { logFile } : {}), ignoreModels, keepSkills, frontierWarnChars, debug, errors };
 }

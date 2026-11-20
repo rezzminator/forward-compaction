@@ -39,10 +39,10 @@ export type NudgeInput = {
 };
 
 /** The sections a frontier call names, the same words in every notice. */
-const ARGS = 'with objective, decisions, done, remaining and next, and in load_files the files you will read again';
+const ARGS = 'with only what changed in your frontier, by item number, and in load_files the files you will read again';
 
 /** The first notices leave the timing to the party, so they close on its exception: main's on the end of the whole work, a sub-agent's, whose context ends with its report, on when it may skip. Later notices carry none. */
-const FINISH_RULE = 'If the whole work finishes first, call it before the final report, with remaining "none", next "write the final report" and all the report needs in done and findings: the compaction can land before your next request, and the report is then written from the frontier.';
+const FINISH_RULE = 'If the whole work finishes first, call it before the final report, with the finished steps removed from remaining, next "write the final report", and all the report needs added to done and findings: the compaction can land before your next request, and the report is then written from the frontier.';
 const SKIP_RULES = ['Skip it if all your work ends within a few calls.', 'Skip it only if your work ends within a few calls.', 'Skip it only if the step in hand is your last.'];
 
 /** A notice's words by its count, each firmer than the one before; from the seventh on only the count of unanswered notices changes. */
@@ -76,7 +76,7 @@ export function nudgeText({ tokens, tool = DEFAULT_TOOL, party = 'main', notice 
  * now, and a frontier at the end of the whole work, before the final report, so the user's reply meets a small context.
  */
 export function finishText({ tokens, tool = DEFAULT_TOOL }: Pick<NudgeInput, 'tokens' | 'tool'>): string {
-  return `forward-compaction: context ${k(tokens)}. Nothing to do yet. When the whole work is finished, call ${tool} before the final report, so the user's reply meets a small context: objective, decisions, done, remaining "none" and next "write the final report", with all the report needs in done and findings, as the compaction can land before your next request and the report is then written from the frontier. No such tool? Carry on.`;
+  return `forward-compaction: context ${k(tokens)}. Nothing to do yet. When the whole work is finished, call ${tool} before the final report, so the user's reply meets a small context: the finished steps removed from remaining, next "write the final report", and all the report needs added to done and findings, as the compaction can land before your next request and the report is then written from the frontier. No such tool? Carry on.`;
 }
 
 /** The marks a notice is decided by, in tokens (window.ts `Marks`); only main has a finish start. */

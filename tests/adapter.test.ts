@@ -4,9 +4,9 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { fakeEngine, usage, type Script } from './fakes/engine.ts';
 
 const FORWARD = 'mcp__forward-compaction__forward_compaction';
-const SECTIONS = { objective: 'Ship U5.', decisions: 'none', done: 'The fake.', remaining: 'The adapter.', next: 'Wire session.compact.' };
+const SECTIONS = { objective: 'Ship U5.', next: 'Wire session.compact.', done: { add: ['The fake.'] }, remaining: { add: ['The adapter.'] } };
 /** The frontier the plugin assembles from SECTIONS. */
-const FRONTIER = '## Objective\nShip U5.\n\n## Decisions\nnone\n\n## Done\nThe fake.\n\n## Remaining\nThe adapter.\n\n## Next\nWire session.compact.';
+const FRONTIER = '## Objective\nShip U5.\n\n## Done\n[1] The fake.\n\n## Remaining\n[1] The adapter.\n\n## Next\nWire session.compact.';
 const A1 = 'a1b2c3d4e5';
 
 type Fake = ReturnType<typeof fakeEngine>;
@@ -99,19 +99,19 @@ describe('forward_compaction tool answers (R31)', () => {
   it('stores a frontier missing a section and names what it lacks', async () => {
     const f = await begin();
     const r = await f.dispatch('tool.call', { tool: FORWARD, tool_use_id: 'tu-x', objective: 'x' }, async () => ({ result: 'not ours' }));
-    expect(r.result).toMatch(/^Frontier stored \(\d+ characters, 0 files\), missing a MANDATORY section: the wake will name each one it lacks\./);
-    expect(r.result).toContain('Stored with 4 changes:\n- decisions was missing: your frontier is stored without it.\n- done was missing: your frontier is stored without it.');
+    expect(r.result.split('\n').slice(0, 2)).toEqual(['objective set', 'Frontier: 1 characters in 0 items']);
+    expect(r.result.split('\n')[2]).toMatch(/^Frontier stored, without next: send it before it installs, or the wake names it missing\. It installs /);
   });
 
   it('skips a bad or absent load file (stat ENOENT) and keeps the good ones, each note naming the entry the model sent', async () => {
     const f = await begin({ files: { '/work/b.ts': { content: 'b' } } });
     const r = await f.dispatch('tool.call', { tool: FORWARD, tool_use_id: 'tu-x', ...SECTIONS, load_files: [{ path: 'rel.ts', why: 'x' }, { path: '/work/b.ts', why: 'x' }, { path: '/work/gone.ts', why: 'x' }] }, async () => ({ result: 'not ours' }));
-    expect(r.result).toContain(', 1 files).');
-    expect(r.result).toContain(`- load_files[0].path "rel.ts" is relative: carried as ${f.home}/rel.ts, in the session's directory.\n- load_files[0] ${f.home}/rel.ts: no such file: skipped.`);
-    expect(r.result).toContain('- load_files[2] /work/gone.ts: no such file: skipped.');
+    expect(r.result).toContain('\nFrontier stored with 1 file to load. ');
+    expect(r.result).toContain(`\nload_files[0].path "rel.ts" is relative: carried as ${f.home}/rel.ts, in the session's directory.\nload_files[0] ${f.home}/rel.ts: no such file: skipped.`);
+    expect(r.result).toContain('\nload_files[2] /work/gone.ts: no such file: skipped.\n');
     const bare = await f.dispatch('tool.call', { tool: FORWARD, ...SECTIONS }, async () => ({ result: 'not ours' }));
     expect(bare.result).toContain('Frontier stored');
-    expect(bare.result).toContain('- the call has no tool_use_id, so the wake cannot place it: at the install your frontier is carried with the newest messages that fit, not every message after this call.');
+    expect(bare.result).toContain('\nthe call has no tool_use_id, so the wake cannot place it: at the install your frontier is carried with the newest messages that fit, not every message after this call.');
   });
 });
 
@@ -259,7 +259,7 @@ describe('session.compact', () => {
     expect(r).toHaveProperty('messages');
     expect(r.messages[1].text).toMatch(/^\[forward-compaction: no frontier written by the model\]/);
     expect(f.texts().some((t) => /^error in session\.compact for general-purpose a1b2c3: .+; a mechanical wake was installed\.$/.test(t))).toBe(true);
-    expect([r.tokensBefore, (await rows(f)).filter((row) => row.where === 'compactFailed').map((row) => [row.skills, row.later])]).toEqual([64_000, [[{ carried: 0, listed: 0 }, 0]]]); // the same reading C1-C10 decides on, and the wake's counts
+    expect([r.tokensBefore, (await rows(f)).filter((row) => row.where === 'compactFailed').map((row) => [row.skills, row.storage])]).toEqual([64_000, [[{ carried: 0, listed: 0 }, 0]]]); // the same reading C1-C10 decides on, and the wake's counts
   });
 
   it("returns next(e)'s result when the mechanical wake throws too (R35)", async () => {
@@ -294,7 +294,7 @@ describe('nudges (R37)', () => {
     await step(f, 79_000);
     expect((await read('tu-3')).context ?? []).toEqual([]);
     await step(f, 80_000);
-    expect((await read('tu-4')).context?.at(-1)).toBe('forward-compaction: context 80k, and every request re-sends all of it. At the end of the step in hand, call mcp__forward-compaction__forward_compaction with objective, decisions, done, remaining and next, and in load_files the files you will read again: that is your milestone. If the whole work finishes first, call it before the final report, with remaining "none", next "write the final report" and all the report needs in done and findings: the compaction can land before your next request, and the report is then written from the frontier. No such tool? Carry on.');
+    expect((await read('tu-4')).context?.at(-1)).toBe('forward-compaction: context 80k, and every request re-sends all of it. At the end of the step in hand, call mcp__forward-compaction__forward_compaction with only what changed in your frontier, by item number, and in load_files the files you will read again: that is your milestone. If the whole work finishes first, call it before the final report, with the finished steps removed from remaining, next "write the final report", and all the report needs added to done and findings: the compaction can land before your next request, and the report is then written from the frontier. No such tool? Carry on.');
   });
 
   it('a held ask adds no nudge of its own: the level already delivered is not repeated', async () => {
@@ -447,7 +447,7 @@ describe('ignored models: FORWARD_COMPACTION_IGNORE_MODELS, Haiku by default', (
     await spawn(f);
     await haikuStep(f, 30_000);
     const r = await store(f, A1);
-    expect(r.result).toMatch(/^Frontier stored \(\d+ characters, 0 files\)\./);
+    expect(r.result.split('\n')[5]).toMatch(/^Frontier stored\. Claude Code has not asked to compact you yet: /);
     expect(r.result).not.toContain('refused');
     await haikuStep(f, 64_000);
     const wake = await f.dispatch('session.compact', { trigger: 'auto', agentId: A1, messages: transcript() }, async () => ({ skip: 'native ran' }));
@@ -587,7 +587,7 @@ describe('audit r4: readings only, measured landed lines, the milestone nudge, l
   it('M1 nudges on the last reading alone: results delivered since it add nothing until the next reading, and main past its finish start reads the finish notice once', async () => {
     const f = await begin({ env: { FORWARD_COMPACTION_MAIN_NUDGE_START: '150000', FORWARD_COMPACTION_MAIN_NUDGE_EVERY: '50000', FORWARD_COMPACTION_MAIN_CEILING: '600000' } });
     await step(f, 126_800);
-    expect((await read(f, 'tu-1', 70_000)).context).toEqual(['forward-compaction: context 127k. Nothing to do yet. When the whole work is finished, call mcp__forward-compaction__forward_compaction before the final report, so the user\'s reply meets a small context: objective, decisions, done, remaining "none" and next "write the final report", with all the report needs in done and findings, as the compaction can land before your next request and the report is then written from the frontier. No such tool? Carry on.']);
+    expect((await read(f, 'tu-1', 70_000)).context).toEqual(['forward-compaction: context 127k. Nothing to do yet. When the whole work is finished, call mcp__forward-compaction__forward_compaction before the final report, so the user\'s reply meets a small context: the finished steps removed from remaining, next "write the final report", and all the report needs added to done and findings, as the compaction can land before your next request and the report is then written from the frontier. No such tool? Carry on.']);
     expect((await read(f, 'tu-2', 77_000)).context ?? []).toEqual([]);
     await step(f, 173_100);
     expect((await read(f, 'tu-3')).context?.at(-1)).toContain('context 173k and increasing.');
@@ -603,7 +603,7 @@ describe('audit r4: readings only, measured landed lines, the milestone nudge, l
     expect(r.result).toContain("it installs at Claude Code's next ask, from about 63k context. The newest messages after this call that fit are kept verbatim behind it");
     expect(r.result).not.toContain('you are at');
     const wake = await ask(f, transcript(), A1);
-    expect(wake.messages[1].text.startsWith('[forward-compaction: frontier] Below is the frontier you wrote with forward_compaction: continue from its ## Next.')).toBe(true);
+    expect(wake.messages[1].text.startsWith('[forward-compaction: frontier] Below is your frontier as forward-compaction holds it: continue from its ## Next.')).toBe(true);
     expect((await rows(f)).filter((row) => row.event === 'stored')).toEqual([expect.objectContaining({ tokens: 41_200 })]);
   });
 
@@ -655,7 +655,7 @@ describe('audit r4: readings only, measured landed lines, the milestone nudge, l
   it('M3 nudges with the milestone wording, verbatim', async () => {
     const f = await begin();
     await step(f, 51_000);
-    expect((await read(f, 'tu-1')).context?.at(-1)).toBe('forward-compaction: context 51k and increasing. At your first milestone, call mcp__forward-compaction__forward_compaction with objective, decisions, done, remaining and next, and in load_files the files you will read again. A step that needs all of this context may reach its own milestone first. If the whole work finishes first, call it before the final report, with remaining "none", next "write the final report" and all the report needs in done and findings: the compaction can land before your next request, and the report is then written from the frontier. No such tool? Carry on.');
+    expect((await read(f, 'tu-1')).context?.at(-1)).toBe('forward-compaction: context 51k and increasing. At your first milestone, call mcp__forward-compaction__forward_compaction with only what changed in your frontier, by item number, and in load_files the files you will read again. A step that needs all of this context may reach its own milestone first. If the whole work finishes first, call it before the final report, with the finished steps removed from remaining, next "write the final report", and all the report needs added to done and findings: the compaction can land before your next request, and the report is then written from the frontier. No such tool? Carry on.');
   });
 
   it("L6 stores and carries every load file, with no room and no count cap, each up to 250 lines with where to Read the rest", async () => {
@@ -669,7 +669,7 @@ describe('audit r4: readings only, measured landed lines, the milestone nudge, l
     chars = 160_000;
     await step(f, 64_000, A1);
     const r = await f.dispatch('tool.call', { tool: FORWARD, tool_use_id: 'tu-h', agentId: A1, ...SECTIONS, load_files: [mid, big, ...many].map((path) => ({ path, why: 'needed' })) }, async () => ({ result: 'not ours' }));
-    expect(r.result).toContain('characters, 12 files).');
+    expect(r.result).toContain('\nFrontier stored with 12 files to load. ');
     const wake = (await ask(f, transcript(), A1)).messages[0].text;
     expect(wake).toContain('## Files you asked to carry\n### /work/mid.md — needed\n' + 'm'.repeat(2_000_000));
     expect(wake).toContain('### /work/big.md lines 1-250 — needed\nb1\n');

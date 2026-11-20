@@ -106,10 +106,10 @@ export function turnEndDoor({ main, reason, stored, installedThisTurn }: TurnEnd
   return { compact: true };
 }
 
-/** The warning rows of an install the user should know of: a frontier missing a MANDATORY section, and one whose call is not in the messages compacted (`placed` false), carried with the newest messages that fit. */
+/** The warning rows of an install the user should know of: a frontier without its objective or next, and one whose call is not in the messages compacted (`placed` false), carried with the newest messages that fit. */
 export function installWarnings(label: string, toolUseId: string, missing: readonly string[], placed: boolean): { line: string; row: Record<string, unknown> }[] {
   return [
-    ...(missing.length === 0 ? [] : [{ line: `forward-compaction: ${label}'s frontier installed without ${andList(missing)}, the MANDATORY ${missing.length === 1 ? 'section' : 'sections'} it lacked.`, row: { event: 'install-incomplete', missing } }]),
+    ...(missing.length === 0 ? [] : [{ line: `forward-compaction: ${label}'s frontier installed without ${andList(missing)}: its wake asks the model to re-establish ${missing.length === 1 ? 'it' : 'them'}.`, row: { event: 'install-incomplete', missing } }]),
     ...(placed ? [] : [{ line: `forward-compaction: ${label}'s forward_compaction call ${toolUseId || '(no tool_use_id)'} is not in its transcript: its frontier installed with the newest messages that fit instead of every message after the call.`, row: { event: 'install-unplaced', toolUseId } }]),
   ];
 }

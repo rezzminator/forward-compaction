@@ -5,7 +5,7 @@ import { expect } from 'vitest';
 import { fakeEngine, usage, type Script } from './engine.ts';
 
 export const FORWARD = 'mcp__forward-compaction__forward_compaction';
-export const SECTIONS = { objective: 'Ship U5.', decisions: 'none', done: 'The fake.', remaining: 'The adapter.', next: 'Wire session.compact.' };
+export const SECTIONS = { objective: 'Ship U5.', next: 'Wire session.compact.', done: { add: ['The fake.'] }, remaining: { add: ['The adapter.'] } };
 export const A1 = 'a1b2c3d4e5';
 
 export type Fake = ReturnType<typeof fakeEngine>;

@@ -55,7 +55,7 @@ describe('resolveOptions', () => {
     expect(resolveOptions()).toEqual({
       main: { ceiling: { percent: 60 }, nudgeStart: { percent: 15 }, nudgeEvery: { percent: 5 }, finishStart: { tokens: 100_000 } },
       subagent: { ceiling: { percent: 80 }, nudgeStart: { tokens: 165_000 }, nudgeEvery: { tokens: 65_000 } },
-      ceilingNative: false, ignoreModels: ['haiku'], keepSkills: [], debug: true, errors: [],
+      ceilingNative: false, ignoreModels: ['haiku'], keepSkills: [], frontierWarnChars: 12_000, debug: true, errors: [],
     });
   });
 
@@ -73,6 +73,7 @@ describe('resolveOptions', () => {
       ceilingNative: 'FORWARD_COMPACTION_CEILING_NATIVE',
       ignoreModels: 'FORWARD_COMPACTION_IGNORE_MODELS',
       keepSkills: 'FORWARD_COMPACTION_KEEP_SKILLS',
+      frontierWarnChars: 'FORWARD_COMPACTION_FRONTIER_WARN_CHARS',
       debug: 'FORWARD_COMPACTION_DEBUG',
     });
   });
@@ -115,6 +116,16 @@ describe('resolveOptions', () => {
       'forward-compaction: env FORWARD_COMPACTION_MAIN_MAX_CONTEXT is invalid (a max context is a token count, not a percentage: "50%"); using the default main\'s window',
       'forward-compaction: env FORWARD_COMPACTION_SUBAGENT_MAX_CONTEXT is invalid (not an integer, a k/m value or a percentage: "big"); using the default each sub-agent\'s model\'s max context',
     ]);
+  });
+
+  it.each([
+    ['20000', 20_000, []],
+    ['15k', 15_000, []],
+    ['10%', 12_000, ['forward-compaction: env FORWARD_COMPACTION_FRONTIER_WARN_CHARS is invalid (a character count, not a percentage: "10%"); using the default 12000']],
+    ['lots', 12_000, ['forward-compaction: env FORWARD_COMPACTION_FRONTIER_WARN_CHARS is invalid (not an integer, a k/m value or a percentage: "lots"); using the default 12000']],
+  ])('reads the frontier warning threshold %j as %j characters', (raw, want, errors) => {
+    const options = resolveOptions({ vars: { FORWARD_COMPACTION_FRONTIER_WARN_CHARS: raw } });
+    expect([options.frontierWarnChars, options.errors]).toEqual([want, errors]);
   });
 
   it('reads the native flag, and treats a blank value as unset with no error (R4)', () => {
