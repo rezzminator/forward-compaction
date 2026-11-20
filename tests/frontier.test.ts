@@ -36,7 +36,7 @@ describe('the forward_compaction tool as registered', () => {
   it('names its caps once, and the schema agrees with them', () => {
     expect([LOAD_FILE_MAX_LINES, WHY_MAX_CHARS]).toEqual([250, 200]);
     expect(FORWARD_INPUT_SCHEMA.properties.load_files).not.toHaveProperty('maxItems');
-    expect(FORWARD_INPUT_SCHEMA.properties.load_files.description).toBe('Files carried into the new context, read when it installs: each up to 250 lines; a longer file or range carries its first 250 and names where to Read the rest. Pass lines ranges to carry only what you need.');
+    expect(FORWARD_INPUT_SCHEMA.properties.load_files.description).toBe('Files the next step reads, read into the new context when it installs: each up to 250 lines; a longer file or range carries its first 250 and names where to Read the rest. Pass lines ranges to carry only what you need. A file only a later step needs takes later: true.');
     expect(FORWARD_INPUT_SCHEMA.properties.load_files.items.properties.why.description).toBe('What you need it for, one line; past 200 characters it is cut.');
   });
 

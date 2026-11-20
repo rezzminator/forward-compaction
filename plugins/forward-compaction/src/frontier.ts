@@ -38,7 +38,7 @@ export const FORWARD_INPUT_SCHEMA = {
     findings: { type: 'string', description: SECTIONS[6].description },
     load_files: {
       type: 'array',
-      description: 'Files carried into the new context, read when it installs: each up to 250 lines; a longer file or range carries its first 250 and names where to Read the rest. Pass lines ranges to carry only what you need.',
+      description: 'Files the next step reads, read into the new context when it installs: each up to 250 lines; a longer file or range carries its first 250 and names where to Read the rest. Pass lines ranges to carry only what you need. A file only a later step needs takes later: true.',
       items: {
         type: 'object',
         additionalProperties: false,
