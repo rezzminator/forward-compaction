@@ -73,10 +73,10 @@ export function nudgeText({ tokens, tool = DEFAULT_TOOL, party = 'main', notice 
 
 /**
  * What main reads once, with a tool result, when its context passes the finish start before any nudge: nothing to do
- * now, and a frontier at the end of the whole work, before the final report, so the person's reply meets a small context.
+ * now, and a frontier at the end of the whole work, before the final report, so the user's reply meets a small context.
  */
 export function finishText({ tokens, tool = DEFAULT_TOOL }: Pick<NudgeInput, 'tokens' | 'tool'>): string {
-  return `forward-compaction: context ${k(tokens)}. Nothing to do yet. When the whole work is finished, call ${tool} before the final report, so the person's reply meets a small context: objective, decisions, done, remaining "none" and next "write the final report", with all the report needs in done and findings, as the compaction can land before your next request and the report is then written from the frontier. No such tool? Carry on.`;
+  return `forward-compaction: context ${k(tokens)}. Nothing to do yet. When the whole work is finished, call ${tool} before the final report, so the user's reply meets a small context: objective, decisions, done, remaining "none" and next "write the final report", with all the report needs in done and findings, as the compaction can land before your next request and the report is then written from the frontier. No such tool? Carry on.`;
 }
 
 /** The marks a notice is decided by, in tokens (window.ts `Marks`); only main has a finish start. */

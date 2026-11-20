@@ -118,7 +118,7 @@ describe("a sub-agent's runs, and what arrives between a frontier and its instal
     expect(text).toContain(`## Agents, listed at install\n- ${C1} collector not in the list (finished, stopped or gone): Diff-check cluster 1\n`);
   });
 
-  it("carries main's notification and the person's message that arrived between its frontier and the install, and only those, into the wake", async () => {
+  it("carries main's notification and the user's message that arrived between its frontier and the install, and only those, into the wake", async () => {
     const f = await begin();
     await f.dispatch('prompt.submit', { text: '<task-notification>old agent done</task-notification>', origin: { kind: 'task-notification' } }, async () => ({}));
     await step(f, 30_000);
@@ -130,7 +130,7 @@ describe("a sub-agent's runs, and what arrives between a frontier and its instal
     const arrived = text.slice(from, text.indexOf('\n## ', from + 1));
     expect(text).toContain(ARRIVED);
     expect(arrived).toMatch(/\(task-notification\)\n<task-notification>gitter done: abc123<\/task-notification>/);
-    expect(arrived).toMatch(/\(person\)\nand also check the logs/);
+    expect(arrived).toMatch(/\(user\)\nand also check the logs/);
     expect(arrived).not.toContain('old agent done');
     expect(text).toMatch(/## Notifications delivered to you\n### [^\n]+ \(task-notification\)\n<task-notification>old agent done/);
   });

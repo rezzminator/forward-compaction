@@ -17,7 +17,7 @@ describe('a frontier missing a MANDATORY section is stored and installs without 
     expect(r.result).toContain('- next was missing: your frontier is stored without it.\nCall forward_compaction again with every MANDATORY section to replace it before it installs.\nforward-compaction is experimental.');
     const wake = await f.dispatch('session.compact', { trigger: 'auto', messages: transcript() }, async () => ({ skip: 'native ran' }));
     expect(wake.messages[1].text).toContain('=== frontier ===\n## Objective\nShip U5, cut off mid-wo\n=== end of frontier ===');
-    expect(wake.messages[1].text).toContain("Your frontier was missing decisions, done, remaining and next: re-establish them from the person's messages and the messages below.");
+    expect(wake.messages[1].text).toContain("Your frontier was missing decisions, done, remaining and next: re-establish them from the user's messages and the messages below.");
     const r2 = await rows(f);
     expect(r2.filter((row) => row.event === 'stored').map((row) => row.incomplete ?? null)).toEqual([['decisions', 'done', 'remaining', 'next']]);
     expect(r2.filter((row) => row.event === 'compact').map((row) => [row.decision, row.incomplete ?? null])).toEqual([['install', ['decisions', 'done', 'remaining', 'next']]]);

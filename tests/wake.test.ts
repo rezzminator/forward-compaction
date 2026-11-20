@@ -17,7 +17,7 @@ const assistant = (text: string, uses: { id: string; tool: string; input?: Recor
 });
 const results = (...answers: [string, string][]): Msg => ({ role: 'user', text: '', toolUses: [], toolResults: answers.map(([id, text]) => ({ tool_use_id: id, text })), handle: `h-res-${answers[0]![0]}` });
 
-const noFacts: WakeFacts = { person: [], notices: [], received: [], skills: [], unattributedSkills: [] };
+const noFacts: WakeFacts = { user: [], notices: [], received: [], skills: [], unattributedSkills: [] };
 const T0 = Date.UTC(2026, 9, 23, 10, 0, 0);
 // 3.5 characters a token stands in for the ratio the adapter measures (window.ts `charsPerToken`).
 const base = { tokens: 41_200, askPoint: 67_000, now: T0 + 60_000, charsPerToken: 3.5 };
@@ -210,13 +210,13 @@ describe('buildWake (R20)', () => {
   it('sizes the facts against the kept tail: facts get the kept texts, and a smaller tail is re-asked until it is stable', () => {
     const seen: string[][] = [];
     const filler = Array.from({ length: 6 }, (_, i) => user(`m${i} ${'x'.repeat(900)}`, `e${i}`));
-    // the person's words in a message already kept are left out; each dropped message puts its words back in the facts
+    // the user's words in a message already kept are left out; each dropped message puts its words back in the facts
     const input = {
       ...mainInput([call, res, ...filler]), askPoint: 3000, toolUseId: 't9', frontier,
       facts: (kept: readonly string[]): WakeFacts => {
         seen.push([...kept]);
-        const person = filler.filter((m) => !kept.includes(m.text)).map((m, i) => ({ at: T0 + i, text: m.text }));
-        return { ...noFacts, person };
+        const user = filler.filter((m) => !kept.includes(m.text)).map((m, i) => ({ at: T0 + i, text: m.text }));
+        return { ...noFacts, user };
       },
     };
     const wake = buildWake(input);
@@ -224,7 +224,7 @@ describe('buildWake (R20)', () => {
     const finalKept = wake.messages.slice(2).map((m) => m.text);
     expect(seen.at(-1)).toEqual(finalKept);
     expect(wake.kept).toBeLessThan(6);
-    // the person's words are carried whole, outside B: each filler message is in the wake exactly once, kept or in the facts
+    // the user's words are carried whole, outside B: each filler message is in the wake exactly once, kept or in the facts
     const all = wake.messages.map((m) => m.text).join('\n');
     for (const m of filler) expect(all.split(m.text).length - 1).toBe(1);
   });
@@ -243,7 +243,7 @@ describe('buildWake (R20)', () => {
 
   it('counts the F sections that hold content', () => {
     const wake = buildWake({
-      ...mainInput([call, res], { person: [{ at: T0, text: 'fix it' }], skills: [{ skill: 'god-speed', text: 'rules', source: 'user' }] }),
+      ...mainInput([call, res], { user: [{ at: T0, text: 'fix it' }], skills: [{ skill: 'god-speed', text: 'rules', source: 'user' }] }),
       toolUseId: 't9', frontier,
     });
     expect(wake.facts).toBe(2);
@@ -259,25 +259,25 @@ describe('F sections', () => {
     return { wake, f: (wake.messages[0] as BuiltMessage).text };
   };
 
-  it('puts the person messages oldest first under the (n of m) heading, with ISO times', () => {
-    const { f } = wakeOf({ f: { person: [{ at: T0, text: 'fix the parser' }, { at: T0 + 1000, text: 'also add tests' }] } });
-    expect(f).toContain("## The person's messages, oldest first (2 of 2 recorded)");
+  it('puts the user messages oldest first under the (n of m) heading, with ISO times', () => {
+    const { f } = wakeOf({ f: { user: [{ at: T0, text: 'fix the parser' }, { at: T0 + 1000, text: 'also add tests' }] } });
+    expect(f).toContain("## The user's messages, oldest first (2 of 2 recorded)");
     expect(f.indexOf('fix the parser')).toBeLessThan(f.indexOf('also add tests'));
     expect(f).toContain('### 2026-10-23T10:00:00.000Z\nfix the parser');
   });
 
-  it('carries the newest ten person messages whole, however much of B they take', () => {
-    const person = Array.from({ length: 5 }, (_, i) => ({ at: T0 + i * 1000, text: `p${i} ${'w'.repeat(3000)}` }));
-    const { f } = wakeOf({ askPoint: 2000, f: { person } });
-    expect(f).toContain("## The person's messages, oldest first (5 of 5 recorded)");
+  it('carries the newest ten user messages whole, however much of B they take', () => {
+    const user = Array.from({ length: 5 }, (_, i) => ({ at: T0 + i * 1000, text: `p${i} ${'w'.repeat(3000)}` }));
+    const { f } = wakeOf({ askPoint: 2000, f: { user } });
+    expect(f).toContain("## The user's messages, oldest first (5 of 5 recorded)");
     for (let i = 0; i < 5; i++) expect(f).toContain(`p${i} ${'w'.repeat(3000)}`);
     expect(f.indexOf('p3 ')).toBeLessThan(f.indexOf('p4 '));
   });
 
-  it('carries at most the newest ten person messages, and counts the older ones left out', () => {
-    const person = Array.from({ length: 12 }, (_, i) => ({ at: T0 + i * 1000, text: `ask${i}.` }));
-    const { f } = wakeOf({ f: { person } });
-    expect(f).toContain("## The person's messages, oldest first (10 of 12 recorded; the 2 oldest recorded are not carried: look_back finds them)");
+  it('carries at most the newest ten user messages, and counts the older ones left out', () => {
+    const user = Array.from({ length: 12 }, (_, i) => ({ at: T0 + i * 1000, text: `ask${i}.` }));
+    const { f } = wakeOf({ f: { user } });
+    expect(f).toContain("## The user's messages, oldest first (10 of 12 recorded; the 2 oldest recorded are not carried: look_back finds them)");
     expect(f).toContain('ask2.');
     expect(f).toContain('ask11.');
     expect(f).not.toContain('ask1.');
@@ -285,10 +285,10 @@ describe('F sections', () => {
 
   it('carries every answer to a question beside the ten newest typed messages, each marked as an answer', () => {
     const answer = { at: T0, text: 'Which quote?\nAnswer: Segment', answer: 'Segment' };
-    const person = [answer, ...Array.from({ length: 11 }, (_, i) => ({ at: T0 + (i + 1) * 1000, text: `ask${i}.` }))];
-    const { f } = wakeOf({ f: { person } });
-    expect(f).toContain("## The person's messages, oldest first (11 of 12 recorded, 1 of them answering your questions; the 1 oldest recorded are not carried: look_back finds them)");
-    expect(f).toContain('### 2026-10-23T10:00:00.000Z (the person answering your question)\nWhich quote?\nAnswer: Segment');
+    const user = [answer, ...Array.from({ length: 11 }, (_, i) => ({ at: T0 + (i + 1) * 1000, text: `ask${i}.` }))];
+    const { f } = wakeOf({ f: { user } });
+    expect(f).toContain("## The user's messages, oldest first (11 of 12 recorded, 1 of them answering your questions; the 1 oldest recorded are not carried: look_back finds them)");
+    expect(f).toContain('### 2026-10-23T10:00:00.000Z (the user answering your question)\nWhich quote?\nAnswer: Segment');
     expect(f).not.toContain('ask0.');
     expect(f).toContain('ask10.');
   });
@@ -335,19 +335,19 @@ describe('F sections', () => {
     expect(mechanicalWake({ ...mainInput([call, res]), reason: { kind: 'reactive' } }).messages[0]!.text).toContain(`compacted by forward-compaction ${PLUGIN_VERSION}.`);
   });
 
-  it("M3: names each image of the person's kept messages as not carried, never a silent placeholder", () => {
-    const { f } = wakeOf({ f: { person: [{ at: T0, text: 'this screen [Image #1] and [Image #12]' }] } });
+  it("M3: names each image of the user's kept messages as not carried, never a silent placeholder", () => {
+    const { f } = wakeOf({ f: { user: [{ at: T0, text: 'this screen [Image #1] and [Image #12]' }] } });
     expect(f).toContain('this screen [Image #1] (image not carried: the wake cannot hold images) and [Image #12] (image not carried: the wake cannot hold images)');
   });
 
-  it('states no person message with the ledger start, and without one when there is no start', () => {
-    expect(wakeOf({ f: { startedAt: T0 } }).f).toContain(`## The person's messages\n(none recorded since 2026-10-23T10:00:00.000Z)`);
-    expect(wakeOf({}).f).toContain("## The person's messages\n(none recorded)");
+  it('states no user message with the ledger start, and without one when there is no start', () => {
+    expect(wakeOf({ f: { startedAt: T0 } }).f).toContain(`## The user's messages\n(none recorded since 2026-10-23T10:00:00.000Z)`);
+    expect(wakeOf({}).f).toContain("## The user's messages\n(none recorded)");
   });
 
-  it('counts the person messages the kept tail holds in the heading, beside the ones shown', () => {
-    const { f } = wakeOf({ f: { person: [{ at: T0, text: 'fix the parser' }, { at: T0 + 1000, text: 'also add tests' }], personInTail: 1 } });
-    expect(f).toContain("## The person's messages, oldest first (2 of 3 recorded; 1 is in the messages below)");
+  it('counts the user messages the kept tail holds in the heading, beside the ones shown', () => {
+    const { f } = wakeOf({ f: { user: [{ at: T0, text: 'fix the parser' }, { at: T0 + 1000, text: 'also add tests' }], userInTail: 1 } });
+    expect(f).toContain("## The user's messages, oldest first (2 of 3 recorded; 1 is in the messages below)");
   });
 
   it('promises the frontier only on a frontier wake, never on a mechanical one', () => {
@@ -358,9 +358,9 @@ describe('F sections', () => {
     expect(mech).toContain('You wrote no frontier: the note after these facts says what happened.');
   });
 
-  it('says every person message is in the messages below when the tail holds them all, never that none was recorded', () => {
-    const f = wakeOf({ f: { startedAt: T0, personInTail: 3 } }).f;
-    expect(f).toContain("## The person's messages\n(all 3 are in the messages below)");
+  it('says every user message is in the messages below when the tail holds them all, never that none was recorded', () => {
+    const f = wakeOf({ f: { startedAt: T0, userInTail: 3 } }).f;
+    expect(f).toContain("## The user's messages\n(all 3 are in the messages below)");
     expect(f).not.toContain('none recorded');
   });
 
@@ -369,10 +369,10 @@ describe('F sections', () => {
     expect(wakeOf({ f: { startedAt: T0, startReason: 'startup' } }).f).not.toContain('resumed');
   });
 
-  it('carries a sub-agent brief verbatim, and no person section', () => {
-    const { f } = wakeOf({ f: { brief: { text: 'Review the diff.' }, person: [{ at: T0, text: 'hi' }] } }, 'subagent');
+  it('carries a sub-agent brief verbatim, and no user section', () => {
+    const { f } = wakeOf({ f: { brief: { text: 'Review the diff.' }, user: [{ at: T0, text: 'hi' }] } }, 'subagent');
     expect(f).toContain('## Your brief\nReview the diff.');
-    expect(f).not.toContain("person's messages");
+    expect(f).not.toContain("user's messages");
   });
 
   it('carries a brief whole however much of B it takes, and names one that was never recorded', () => {
@@ -559,10 +559,10 @@ describe('F sections', () => {
   it('with no measured ratio carries every file and every message after the call, unfitted, and reports each section size', () => {
     const files = [{ path: '/abs/huge.ts', why: 'h', content: 'h'.repeat(500_000) }, { path: '/abs/gone.ts', why: 'g', problem: 'ENOENT' }];
     const tail = Array.from({ length: 40 }, (_, i) => user(`after ${i} ${'y'.repeat(5_000)}`, `t${i}`));
-    const wake = buildWake({ ...mainInput([call, res, ...tail], { person: [{ at: T0, text: 'p'.repeat(100_000) }] }), charsPerToken: undefined, askPoint: 2000, files, toolUseId: 't9', frontier: '## Next\nx' });
+    const wake = buildWake({ ...mainInput([call, res, ...tail], { user: [{ at: T0, text: 'p'.repeat(100_000) }] }), charsPerToken: undefined, askPoint: 2000, files, toolUseId: 't9', frontier: '## Next\nx' });
     expect(wake).toMatchObject({ kept: 40, dropped: 0, carried: ['/abs/huge.ts'], notCarried: ['/abs/gone.ts'] });
     expect((wake.messages[0] as BuiltMessage).text).toContain('p'.repeat(100_000));
-    expect(wake.sizes.map((s) => s.section)).toEqual(expect.arrayContaining(["## The person's messages, oldest first (1 of 1 recorded)", '## Files you asked to carry', '## Files not carried']));
+    expect(wake.sizes.map((s) => s.section)).toEqual(expect.arrayContaining(["## The user's messages, oldest first (1 of 1 recorded)", '## Files you asked to carry', '## Files not carried']));
     expect(wake.sizes.find((s) => s.section === '## Files you asked to carry')!.chars).toBeGreaterThan(500_000);
     expect(wake.headChars).toBe((wake.messages[1] as BuiltMessage).text.length);
   });
@@ -587,7 +587,7 @@ describe('mechanicalWake (R23)', () => {
     expect(h.text).toContain('Your context reached 120k tokens, past the 100k ceiling,');
     expect(h.text).toContain(`${wake.dropped} older messages are gone (look_back finds an exact detail)`);
     expect(h.text).toContain(`your newest ${wake.kept} messages below`);
-    expect(h.text).toContain("Re-establish them from the person's messages");
+    expect(h.text).toContain("Re-establish them from the user's messages");
     expect(wake.dropped).toBeGreaterThan(0);
     expect(wake.messages.slice(2)).toEqual(msgs.slice(wake.dropped));
     expect(wake.messages[2]).toBe(msgs[wake.dropped]);
@@ -601,7 +601,7 @@ describe('mechanicalWake (R23)', () => {
   });
 
   it('has the same facts as the frontier wake, and no load files or siblings', () => {
-    const wake = mechanicalWake({ ...mainInput(msgs, { person: [{ at: T0, text: 'fix it' }] }), reason: { kind: 'reactive' } });
+    const wake = mechanicalWake({ ...mainInput(msgs, { user: [{ at: T0, text: 'fix it' }] }), reason: { kind: 'reactive' } });
     const f = (wake.messages[0] as BuiltMessage).text;
     expect(f).toContain('fix it');
     expect(f).not.toContain('beside the frontier');
@@ -618,7 +618,7 @@ describe('mechanicalWake (R23)', () => {
       facts: (kept: readonly string[]): WakeFacts => {
         seen.push([...kept]);
         // past 50 calls the fact stops flipping, so the old endless loop ends and the call count below names it
-        return { ...noFacts, person: ++calls <= 50 && kept.includes(four[0]!.text) ? [{ at: T0, text: 'p'.repeat(1200) }] : [{ at: T0, text: 'p' }] };
+        return { ...noFacts, user: ++calls <= 50 && kept.includes(four[0]!.text) ? [{ at: T0, text: 'p'.repeat(1200) }] : [{ at: T0, text: 'p' }] };
       },
     };
     const wake = mechanicalWake(input);
@@ -691,10 +691,10 @@ describe("the mechanical wake re-places the party's newest files, as Claude Code
     expect(wake.text).not.toContain('## Files you were working on');
   });
 
-  it('names each MANDATORY section a stored frontier lacks, to re-establish from the person or the brief', () => {
+  it('names each MANDATORY section a stored frontier lacks, to re-establish from the user or the brief', () => {
     const call = assistant('writing', [{ id: 't9', tool: 'mcp__forward-compaction__forward_compaction' }]);
     const head = (party: 'main' | 'subagent', missing?: string[]) => (buildWake({ ...mainInput([call, results(['t9', 'ok'])]), party, toolUseId: 't9', frontier: '## Objective\nx', ...(missing ? { missing } : {}) }).messages[1] as BuiltMessage).text;
-    expect(head('main', ['decisions', 'done', 'next'])).toContain("Your frontier was missing decisions, done and next: re-establish them from the person's messages and the messages below.");
+    expect(head('main', ['decisions', 'done', 'next'])).toContain("Your frontier was missing decisions, done and next: re-establish them from the user's messages and the messages below.");
     expect(head('subagent', ['next'])).toContain('Your frontier was missing next: re-establish it from your brief and the messages below.');
     expect(head('main')).toContain('Nothing happened after you wrote it. Continue from ## Next.');
     expect(head('main')).not.toContain('Your frontier was missing');
@@ -710,7 +710,7 @@ describe('the plan file and plan mode, when the session has them, ride in every 
 
   it('carries the plan file with its path and content, and the plan-mode section while plan mode is on', () => {
     for (const text of facts({ mode: true, path: '/plans/p.md', content: '# Plan\n1. do it' })) {
-      expect(text).toContain('## Plan mode\nThe session is in plan mode: plan, never act, until the person approves the plan; your plan file is /plans/p.md.');
+      expect(text).toContain('## Plan mode\nThe session is in plan mode: plan, never act, until the user approves the plan; your plan file is /plans/p.md.');
       expect(text).toContain('## Plan file\n/plans/p.md\n# Plan\n1. do it');
     }
   });

@@ -3,7 +3,7 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fakeEngine, usage, type Script } from './fakes/engine.ts';
 
-// The adapter's wiring of session-lifetime facts: a new turn ends the request-too-long inference (D8), the person's
+// The adapter's wiring of session-lifetime facts: a new turn ends the request-too-long inference (D8), the user's
 // messages outlive a plugin reload through the host's session state, finished tool calls record the party's work, and a
 // sub-agent far past its nudges has every call run, unrefused.
 
@@ -54,7 +54,7 @@ describe('the prompts across a plugin reload', () => {
     await after.dispatch('prompt.submit', { text: 'typed after the reload', origin: { kind: 'composer' } }, async () => ({}));
     await step(after, 125_000);
     const r = await ask(after);
-    expect(r.messages[0].text).toContain("## The person's messages, oldest first (2 of 2 recorded)\n### ");
+    expect(r.messages[0].text).toContain("## The user's messages, oldest first (2 of 2 recorded)\n### ");
     expect(r.messages[0].text.indexOf('typed before the reload')).toBeLessThan(r.messages[0].text.indexOf('typed after the reload'));
     expect(r.messages[0].text.indexOf('typed before the reload')).toBeGreaterThan(-1);
   });
@@ -132,8 +132,8 @@ describe('a sub-agent far past its nudges', () => {
   });
 });
 
-describe("the person's answers to AskUserQuestion", () => {
-  it("records main's answered questions as the person's words and carries each into the wake beside the ten newest typed", async () => {
+describe("the user's answers to AskUserQuestion", () => {
+  it("records main's answered questions as the user's words and carries each into the wake beside the ten newest typed", async () => {
     const f = await begin();
     const questions = [{ question: 'What should notes and guidance show?', header: 'Quotes', options: [], multiSelect: false }];
     const result = { questions, answers: { 'What should notes and guidance show?': 'Quote if verbatim, else segment' }, annotations: {} };
@@ -141,8 +141,8 @@ describe("the person's answers to AskUserQuestion", () => {
     for (let i = 0; i < 11; i++) await f.dispatch('prompt.submit', { text: `typed ${i}.`, origin: { kind: 'composer' } }, async () => ({}));
     await step(f, 125_000);
     const text = (await ask(f)).messages[0].text;
-    expect(text).toContain("## The person's messages, oldest first (11 of 12 recorded, 1 of them answering your questions; the 1 oldest recorded are not carried: look_back finds them)");
-    expect(text).toMatch(/### \S+ \(the person answering your question\)\nWhat should notes and guidance show\?\nAnswer: Quote if verbatim, else segment\n/);
+    expect(text).toContain("## The user's messages, oldest first (11 of 12 recorded, 1 of them answering your questions; the 1 oldest recorded are not carried: look_back finds them)");
+    expect(text).toMatch(/### \S+ \(the user answering your question\)\nWhat should notes and guidance show\?\nAnswer: Quote if verbatim, else segment\n/);
     expect(text).not.toContain('typed 0.');
     expect(text).toContain('typed 10.');
   });

@@ -28,7 +28,7 @@ describe('look_back arguments and tool contract (R1–R2)', () => {
     expect(schema.anyOf).toBeUndefined();
     const description = api('LOOK_BACK_DESCRIPTION');
     expect(description.length).toBeLessThanOrEqual(450);
-    for (const phrase of ['latest compaction', 'error', 'code', 'value', 'user', 'person']) expect(description).toContain(phrase);
+    for (const phrase of ['latest compaction', 'error', 'code', 'value', 'user']) expect(description).toContain(phrase);
   });
   it.each([
     [{ query: ' ERROR "two words" port ' }, { query: 'ERROR "two words" port', terms: ['ERROR', 'two words', 'port'] }],

@@ -8,7 +8,7 @@ export { descriptionOf, keepNote, keepOutcome, keptLater, laterApply, laterCheck
 export const FORWARD_TOOL = 'forward_compaction';
 
 export const FORWARD_TOOL_DESCRIPTION =
-  'Compacts your large context at a clean milestone. Stores your frontier; at your next compaction it and recorded facts replace all before this call, the newest later messages that fit stay verbatim, the rest named as not carried. The person\'s binding orders go in standing_orders. Write what only a later step needs to a file, list it in load_files with later: true, and name that step in remaining or next. Always stores. Example: forward_compaction({"objective": "…", "decisions": "…", "done": "…", "remaining": "…", "next": "…", "load_files": [{"path": "…"}]}). Exact old detail later → look_back.';
+  'Compacts your large context at a clean milestone. Stores your frontier; at your next compaction it and recorded facts replace all before this call, the newest later messages that fit stay verbatim, the rest named as not carried. The user\'s binding orders go in standing_orders. Write what only a later step needs to a file, list it in load_files with later: true, and name that step in remaining or next. Always stores. Example: forward_compaction({"objective": "…", "decisions": "…", "done": "…", "remaining": "…", "next": "…", "load_files": [{"path": "…"}]}). Exact old detail later → look_back.';
 
 /**
  * The frontier's sections in the order they are assembled: the argument, its heading, whether it is required, and what it
@@ -16,7 +16,7 @@ export const FORWARD_TOOL_DESCRIPTION =
  */
 const SECTIONS = [
   { key: 'objective', heading: 'Objective', required: true, description: 'MANDATORY: what the work is for and what done means.' },
-  { key: 'decisions', heading: 'Decisions', required: true, description: 'MANDATORY: every ruling the person gave on how something gets done, in the person\'s words, each with its undo when one exists; "none" when there are none. Rules binding the rest of the work go in standing_orders.' },
+  { key: 'decisions', heading: 'Decisions', required: true, description: 'MANDATORY: every ruling the user gave on how something gets done, in the user\'s words, each with its undo when one exists; "none" when there are none. Rules binding the rest of the work go in standing_orders.' },
   { key: 'done', heading: 'Done', required: true, description: 'MANDATORY: finished pieces, each with how it was verified; every figure with the command that produced it.' },
   { key: 'remaining', heading: 'Remaining', required: true, description: 'MANDATORY: every step left, in order; "none" when nothing is left. A plan file you update at each milestone may stand in: name its path here and put it in load_files.' },
   { key: 'next', heading: 'Next', required: true, description: 'MANDATORY: the first concrete action after the wake.' },
@@ -63,26 +63,26 @@ export const FORWARD_INPUT_SCHEMA = {
     },
     standing_orders: {
       type: 'array',
-      description: "Every order of the person's that binds the rest of the work (a prohibition, a limit, a rule), each in every frontier until the person lifts it.",
+      description: "Every order of the user's that binds the rest of the work (a prohibition, a limit, a rule), each in every frontier until the user lifts it.",
       // Open, so an entry still carrying a key an older schema had (`at`) is read for its order, never refused.
       items: {
         type: 'object',
         required: ['order'],
         properties: {
-          order: { type: 'string', description: "The person's words, verbatim." },
+          order: { type: 'string', description: "The user's words, verbatim." },
         },
       },
     },
     lifted: {
       type: 'array',
-      description: 'Orders your last frontier carried that the person has since lifted.',
+      description: 'Orders your last frontier carried that the user has since lifted.',
       items: {
         type: 'object',
         additionalProperties: false,
         required: ['order', 'by'],
         properties: {
           order: { type: 'string', description: 'The order, exactly as your last frontier carried it.' },
-          by: { type: 'string', description: "The person's words that lifted it, verbatim." },
+          by: { type: 'string', description: "The user's words that lifted it, verbatim." },
         },
       },
     },

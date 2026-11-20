@@ -46,7 +46,7 @@ describe('the forward_compaction tool as registered', () => {
     for (const name of SECTIONS) expect(FORWARD_INPUT_SCHEMA.properties[name as 'objective']).toMatchObject({ type: 'string', description: expect.any(String) });
     for (const name of REQUIRED) expect(FORWARD_INPUT_SCHEMA.properties[name as 'objective'].description).toMatch(/^MANDATORY: /);
     expect(FORWARD_INPUT_SCHEMA.properties.objective.description).toBe('MANDATORY: what the work is for and what done means.');
-    expect(FORWARD_INPUT_SCHEMA.properties.decisions.description).toBe("MANDATORY: every ruling the person gave on how something gets done, in the person's words, each with its undo when one exists; \"none\" when there are none. Rules binding the rest of the work go in standing_orders.");
+    expect(FORWARD_INPUT_SCHEMA.properties.decisions.description).toBe("MANDATORY: every ruling the user gave on how something gets done, in the user's words, each with its undo when one exists; \"none\" when there are none. Rules binding the rest of the work go in standing_orders.");
     expect(FORWARD_INPUT_SCHEMA.properties.done.description).toBe('MANDATORY: finished pieces, each with how it was verified; every figure with the command that produced it.');
     expect(FORWARD_INPUT_SCHEMA.properties.remaining.description).toBe('MANDATORY: every step left, in order; "none" when nothing is left. A plan file you update at each milestone may stand in: name its path here and put it in load_files.');
     expect(FORWARD_INPUT_SCHEMA.properties.next.description).toBe('MANDATORY: the first concrete action after the wake.');
@@ -57,7 +57,7 @@ describe('the forward_compaction tool as registered', () => {
     expect(files.items.properties.later).toEqual({ type: 'boolean', description: 'true: not read in; listed by path and why in every wake until load_files names it again or drop_files drops it.' });
     expect(FORWARD_INPUT_SCHEMA.properties.drop_files).toEqual({ type: 'array', items: { type: 'string' }, description: 'Paths listed for later (load_files later: true) that no step needs any more.' });
     expect(FORWARD_INPUT_SCHEMA.properties.keep_skills).toEqual({ type: 'array', items: { type: 'string' }, description: 'Skills or commands whose text this one wake carries whole; any other is listed by name and description, to load again with the Skill tool.' });
-    expect(FORWARD_INPUT_SCHEMA.properties.standing_orders.items).toEqual({ type: 'object', required: ['order'], properties: { order: { type: 'string', description: "The person's words, verbatim." } } });
+    expect(FORWARD_INPUT_SCHEMA.properties.standing_orders.items).toEqual({ type: 'object', required: ['order'], properties: { order: { type: 'string', description: "The user's words, verbatim." } } });
   });
 });
 

@@ -31,14 +31,14 @@ const iso = (at: number): string => new Date(at).toISOString();
 /**
  * Per-section shares of the budget B (D18), design budgets and never measured sizes: what arrived after the frontier a quarter,
  * sibling results a tenth, coordinator notices and the shell commands run a twentieth each; the rest of B goes to the messages
- * kept after the call. The person's newest messages or the brief, the task list, the skills in force (within their own
+ * kept after the call. The user's newest messages or the brief, the task list, the skills in force (within their own
  * character limits below) and the load files (each within LOAD_FILE_MAX_LINES) are what a woken model most needs, so they
  * are carried outside any share.
  */
 const SHARE = { arrived: 0.25, notices: 0.05, siblings: 0.1, commands: 0.05 } as const;
 /** The plugin version that builds a wake, named in its facts header so a chat on an old build is visible; tests/layout.test.ts pins it to plugin.json. */
 export const PLUGIN_VERSION = '2.3.1';
-/** An image the person attached: a built wake message holds only text (`session.compact`'s messages), so each is named, never silently gone. */
+/** An image the user attached: a built wake message holds only text (`session.compact`'s messages), so each is named, never silently gone. */
 const IMAGE = /\[Image #\d+\]/g;
 const IMAGE_NOTE = '$& (image not carried: the wake cannot hold images)';
 /** The most commands the wake carries, newest first: the recipes a woken party reruns sit in its last few, a glance, not a history. */
@@ -51,7 +51,7 @@ export const RECENT_FILES_KEPT = 5;
 export const AGENTS_MAX_ROWS = 50;
 /**
  * B = half the ask point, a design budget: half leaves the woken party room to work before its next ask (D18). B bounds the
- * kept tail, not the whole wake: the facts sections' shares (`SHARE`) sum to 0.45×B, and the person's words, the task list, the
+ * kept tail, not the whole wake: the facts sections' shares (`SHARE`) sum to 0.45×B, and the user's words, the task list, the
  * skills and the load files are carried outside B, so a wake heavy with them keeps no tail and can start at or past its ask point.
  */
 export function wakeBudget(askPoint: number): number {
@@ -119,9 +119,9 @@ export function fitTail<M extends WakeMessage>(messages: readonly M[], budgetTok
 
 /** What the ledger gives for a party (ledger.ts `Facts` fits); only what the wake renders. */
 export type WakeFacts = {
-  person: readonly { at: number; text: string; answer?: string }[];
-  /** Person messages the ledger left out because the tail holds them. */
-  personInTail?: number;
+  user: readonly { at: number; text: string; answer?: string }[];
+  /** User messages the ledger left out because the tail holds them. */
+  userInTail?: number;
   notices: readonly { at: number; origin: string; text: string }[];
   /** What reached the party after it stored its frontier and the kept tail lacks (ledger.ts `Facts`); absent on a mechanical wake. */
   arrived?: readonly { at: number; origin: string; text: string }[];
@@ -248,7 +248,7 @@ function renderFacts<M>(input: Shared<M>, facts: WakeFacts, { siblings, files, r
   const sections: Section[] = [];
   const sub = input.party === 'subagent';
 
-  // Above all: the person's standing orders, binding and carried whole, outside every budget.
+  // Above all: the user's standing orders, binding and carried whole, outside every budget.
   const orders = ordersSection(input.orders?.standing ?? [], input.orders?.lifted ?? []);
   if (orders !== undefined) sections.push(section(orders));
 
@@ -261,28 +261,28 @@ function renderFacts<M>(input: Shared<M>, facts: WakeFacts, { siblings, files, r
 
   // Plan mode binds what the party may do, and the plan file is the work's own record: both whole, outside every budget, as Claude Code carries them.
   const plan = input.plan;
-  if (plan?.mode) sections.push(section(`## Plan mode\nThe session is in plan mode: plan, never act, until the person approves the plan${plan.path === undefined ? '' : `; your plan file is ${plan.path}`}.`));
+  if (plan?.mode) sections.push(section(`## Plan mode\nThe session is in plan mode: plan, never act, until the user approves the plan${plan.path === undefined ? '' : `; your plan file is ${plan.path}`}.`));
   if (plan?.path !== undefined && plan.content !== undefined) sections.push(section(`## Plan file\n${plan.path}\n${plan.content}`));
   else if (plan?.path !== undefined && plan.problem !== undefined) sections.push({ text: `## Plan file\n${plan.path}\n(could not be read: ${plan.problem})`, content: false });
 
   if (sub) {
     if (facts.brief === undefined) sections.push({ text: '## Your brief\n(not recorded: this agent was spawned before forward-compaction started in this process)', content: false });
     else sections.push(section(`## Your brief\n${facts.brief.text}`));
-  } else if (facts.person.length === 0 && (facts.personInTail ?? 0) > 0) {
-    sections.push({ text: `## The person's messages\n(all ${facts.personInTail} are in the messages below)`, content: false });
-  } else if (facts.person.length === 0) {
-    sections.push({ text: `## The person's messages\n(none recorded${facts.startedAt === undefined ? '' : ` since ${iso(facts.startedAt)}`})`, content: false });
+  } else if (facts.user.length === 0 && (facts.userInTail ?? 0) > 0) {
+    sections.push({ text: `## The user's messages\n(all ${facts.userInTail} are in the messages below)`, content: false });
+  } else if (facts.user.length === 0) {
+    sections.push({ text: `## The user's messages\n(none recorded${facts.startedAt === undefined ? '' : ` since ${iso(facts.startedAt)}`})`, content: false });
   } else {
-    const shown = keptSaid(facts.person).map((p) => `### ${iso(p.at)}${p.answer === undefined ? '' : ' (the person answering your question)'}\n${p.text.replace(IMAGE, IMAGE_NOTE)}`);
-    const count = facts.person.length;
-    const inTail = facts.personInTail ?? 0;
+    const shown = keptSaid(facts.user).map((p) => `### ${iso(p.at)}${p.answer === undefined ? '' : ' (the user answering your question)'}\n${p.text.replace(IMAGE, IMAGE_NOTE)}`);
+    const count = facts.user.length;
+    const inTail = facts.userInTail ?? 0;
     const left = count - shown.length;
-    const answers = facts.person.filter((p) => p.answer !== undefined).length;
+    const answers = facts.user.filter((p) => p.answer !== undefined).length;
     // `recorded`: the count is the plugin's own record, which a restart begins again; the transcript may hold older ones.
     const carried = `${shown.length} of ${count + inTail} recorded${answers === 0 ? '' : `, ${answers} of them answering your questions`}`;
     const notes = [...(left === 0 ? [] : [`the ${left} oldest recorded are not carried: look_back finds them`]), ...(inTail === 0 ? [] : [`${inTail} ${inTail === 1 ? 'is' : 'are'} in the messages below`])];
     const heading = `(${[carried, ...notes].join('; ')})`;
-    sections.push(section([`## The person's messages, oldest first ${heading}`, ...shown].join('\n')));
+    sections.push(section([`## The user's messages, oldest first ${heading}`, ...shown].join('\n')));
   }
 
   const inbox = sub ? { entries: facts.received, title: 'Messages delivered to you' } : { entries: facts.notices, title: 'Notifications delivered to you' };
@@ -445,8 +445,8 @@ function assemble<M extends WakeMessage>(
 
 /** The head's clause when standing orders bind: the next step is taken within them. */
 const within = (orders: Shared<never>['orders']): string => ((orders?.standing.length ?? 0) > 0 ? ', within the standing orders above' : '');
-/** Where a woken party finds what its frontier did not say: the person's messages (main) or its brief. */
-const sourceOf = (party: 'main' | 'subagent'): string => (party === 'main' ? "the person's messages" : 'your brief');
+/** Where a woken party finds what its frontier did not say: the user's messages (main) or its brief. */
+const sourceOf = (party: 'main' | 'subagent'): string => (party === 'main' ? "the user's messages" : 'your brief');
 
 /**
  * The wake for a stored frontier: facts, the frontier verbatim, then every message after the `forward_compaction` call.

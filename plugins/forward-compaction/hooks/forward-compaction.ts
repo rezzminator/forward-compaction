@@ -2,7 +2,7 @@ import type { EngineInterface, On, PluginOptions, Register, SessionCompactInput,
 import { bounded, unlessAborted } from '../src/bounded';
 import { changesNote, descriptionOf, keepNote, keepOutcome, laterApply, laterNote, laterChecked, pinnedBy, experimental, isAbsolutePath, parseFrontier, loadFileNote, receipt, parseLineRanges, sliceFile, LOAD_FILE_MAX_CHARS, toolInput, type FileCheck, type LoadFile } from '../src/frontier';
 import { answersOf, workOf, type CallAnswer } from '../src/work';
-import { newLedger, markStart, addEntry, deliveryOf, runStartOf, resolveSpawn, attributeSkill, shellsOf, factsFor, promptsKept, restorePrompts, skillsKept, restoreSkills, liftSources, isPersonOrigin, keyOf, originKind, type Ledger, type PartyKey } from '../src/ledger';
+import { newLedger, markStart, addEntry, deliveryOf, runStartOf, resolveSpawn, attributeSkill, shellsOf, factsFor, promptsKept, restorePrompts, skillsKept, restoreSkills, liftSources, isUserOrigin, keyOf, originKind, type Ledger, type PartyKey } from '../src/ledger';
 import { splitAtCall, buildWake, mechanicalWake, landedLine, recentFiles, type WakeFile, type AgentRow, type Landing } from '../src/wake';
 import { wakeRow } from '../src/wake-row';
 import { planFrom, planRead, PLAN_ROWS, type WakePlan } from '../src/plan';
@@ -41,7 +41,7 @@ type State = {
   toolsAbandoned?: boolean; // Registering the tools has not finished within ENSURE_TOOLS_TIMEOUT_MS: no hook waits on it until it settles, and a late finish still names the tools.
   toolsSettled?: boolean; // Every tool is registered: no hook registers or sets a timer again.
   warned: Set<string>; pending: string[]; pendingLost: number; // pendingLost: rows that found no room while the environment layer was read (register.ts `holdPending`), counted in one row once it is.
-  logFailures: Set<string>; // The log-write failures already shown: a log that cannot be written fails every flush the same way, and the person hears each failure once.
+  logFailures: Set<string>; // The log-write failures already shown: a log that cannot be written fails every flush the same way, and the user hears each failure once.
   rowsWriting: number; // Rows the decision append in flight carries; 0 when none is.
   levelRowsWriting: number; // Level-log rows queued or being written: what a cut end flush may lose from the level log.
   levelLinks: number; levelBatched: number; // Level-log rows whose write is chained, and rows queued for the burst's one append.
@@ -63,7 +63,7 @@ type State = {
   installedSince: Set<string>; // Parties this plugin compacted since their last reading: a fall in that reading is no unseen compaction.
 };
 
-/** A line on the person's screen: Claude Code already names the plugin in front of it, so the line never names it again. */
+/** A line on the user's screen: Claude Code already names the plugin in front of it, so the line never names it again. */
 function show($: EngineInterface, line: string): void { $.ui.log(screenLine(line)); }
 
 const screenLine = (line: string): string => line.replace(/^forward-compaction: /, '');
@@ -318,7 +318,7 @@ async function registerTool(st: State, $: EngineInterface, kind: ToolKind): Prom
     record(st, $, { event: 'tool-registered', tool });
   } catch (error) {
     const row = { event: 'tool-register-failed', where: 'registerTool', tool: spec.name, error: message(error), tries: st.toolTries[kind], next: (st.toolDue[kind] = nextTry(st.toolTries[kind], await $.clock.now())) };
-    if (st.warned.has(`register-failed:${kind}`)) return record(st, $, row); // a retry's failure: its row, the person told once
+    if (st.warned.has(`register-failed:${kind}`)) return record(st, $, row); // a retry's failure: its row, the user told once
     st.warned.add(`register-failed:${kind}`);
     say(st, $, `forward-compaction: registering the ${spec.name} tool failed: ${message(error)}; ${lost} until a later hook registers it`, 'error', row);
   }
@@ -414,7 +414,7 @@ async function ensureTools(st: State, $: EngineInterface, signal?: AbortSignal):
     await st.registering;
     if (Object.values(have()).every(Boolean)) st.toolsSettled = true;
   })();
-  // A hang here would hold every turn of every chat: past the limit the turn goes on, and the person is told. The dispatch's abort ends the wait too: its timer may never fire, and a hook that waits on past its abort starves the hooks worker.
+  // A hang here would hold every turn of every chat: past the limit the turn goes on, and the user is told. The dispatch's abort ends the wait too: its timer may never fire, and a hook that waits on past its abort starves the hooks worker.
   const outcome = await bounded(registered, ENSURE_TOOLS_TIMEOUT_MS, (ms, fn) => afterOrNever(st, $, ms, fn, 'registering the tools'), signal);
   if (!outcome.timedOut) return;
   st.toolsAbandoned = true;
@@ -579,7 +579,7 @@ function installed(st: State, $: EngineInterface, key: string, landing: Landing 
   st.installedSince.add(key);
 }
 
-/** M2: an installed wake's landed line and `landed` row, at the party's first reading after it (`after`), or at its end with `after` unknown. A chosen frontier's line is a routine info row in the logs; a mechanical wake lost the model's frontier, so the person sees it. */
+/** M2: an installed wake's landed line and `landed` row, at the party's first reading after it (`after`), or at its end with `after` unknown. A chosen frontier's line is a routine info row in the logs; a mechanical wake lost the model's frontier, so the user sees it. */
 function land(st: State, $: EngineInterface, key: string, landing: Landing | undefined, after?: number): void {
   if (landing !== undefined) { const line = landedLine(landing, after), row = { event: 'landed', party: key, kind: landing.kind, before: landing.before ?? null, after: after ?? null, line: screenLine(line) }; say(st, $, line, 'info', row); }
 }
@@ -716,24 +716,24 @@ async function turnEnds(st: State, $: EngineInterface, e: TurnCompleteInput): Pr
   }
 }
 
-/** What the person typed is a fact of main's; a message from anywhere else is a notice. */
+/** What the user typed is a fact of main's; a message from anywhere else is a notice. */
 async function noteSubmit(st: State, $: EngineInterface, e: PromptSubmitInput): Promise<void> {
   if (e.isMeta) return;
   const at = await $.clock.now();
   const origin = originKind(e.origin);
   st.pendingCommand = e.command?.name;
-  st.ledger = isPersonOrigin(origin)
-    ? addEntry(st.ledger, { kind: 'person', party: 'main', at, text: e.text, ...(e.command ? { command: e.command.name } : {}) })
+  st.ledger = isUserOrigin(origin)
+    ? addEntry(st.ledger, { kind: 'user', party: 'main', at, text: e.text, ...(e.command ? { command: e.command.name } : {}) })
     : addEntry(st.ledger, { kind: 'notice', party: 'main', at, origin, text: e.text });
-  if (isPersonOrigin(origin)) await keepKept(st, $, 'main');
+  if (isUserOrigin(origin)) await keepKept(st, $, 'main');
 }
 
-/** The files a finished call touched and the task list it set, as the party's work (src/work.ts); main's answered AskUserQuestion, as the person's words. */
+/** The files a finished call touched and the task list it set, as the party's work (src/work.ts); main's answered AskUserQuestion, as the user's words. */
 async function noteWork(st: State, $: EngineInterface, party: PartyKey, e: Record<string, unknown>, answer: ToolCallResult): Promise<void> {
   for (const fact of workOf(String(e.tool), toolInput(e), answer as CallAnswer)) st.ledger = addEntry(st.ledger, { kind: 'work', party, at: await $.clock.now(), fact });
   const answered = party === 'main' ? answersOf(String(e.tool), toolInput(e), answer as CallAnswer) : undefined;
   if (answered === undefined) return;
-  st.ledger = addEntry(st.ledger, { kind: 'person', party: 'main', at: await $.clock.now(), text: answered.text, answer: answered.said });
+  st.ledger = addEntry(st.ledger, { kind: 'user', party: 'main', at: await $.clock.now(), text: answered.text, answer: answered.said });
   await keepKept(st, $, 'main');
 }
 

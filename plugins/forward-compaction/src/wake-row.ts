@@ -29,7 +29,7 @@ const WAKE_ORIGINS: ReadonlySet<string> = new Set(['unclassified', 'coordinator'
 
 /**
  * What a user-role row draws in the engine's place, or undefined where the engine draws it: only a message the wake
- * built (stamped one of `WAKE_ORIGINS`; the person's own typing never folds) and only while folded.
+ * built (stamped one of `WAKE_ORIGINS`; the user's own typing never folds) and only while folded.
  */
 export function wakeRow(row: RowProps): RowNode | undefined {
   if (row.isExpanded || !WAKE_ORIGINS.has(row.origin.kind)) return undefined;

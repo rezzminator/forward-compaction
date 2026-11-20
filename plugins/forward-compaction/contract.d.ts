@@ -1,5 +1,5 @@
-/** One prompt a party received, as the plugin keeps it for a session: the person's message, the brief or a coordinator's message. */
-export type ForwardCompactionPrompt = { kind: 'person' | 'received' | 'brief'; at: number; text: string; command?: string; origin?: string; description?: string; subagentType?: string; spawnedBy?: string };
+/** One prompt a party received, as the plugin keeps it for a session: the user's message, the brief or a coordinator's message. */
+export type ForwardCompactionPrompt = { kind: 'user' | 'received' | 'brief'; at: number; text: string; command?: string; origin?: string; description?: string; subagentType?: string; spawnedBy?: string };
 
 /** One skill a party loaded, as the plugin keeps it for a session: its latest text. */
 export type ForwardCompactionSkill = { at: number; skill: string; text: string; how: 'skill-tool' | 'typed-command' | 'preload' | 'ambiguous'; source?: string; path?: string; keep?: true; description?: string };
@@ -7,7 +7,7 @@ export type ForwardCompactionSkill = { at: number; skill: string; text: string; 
 /** One file a party's frontiers listed for a later step (`load_files` with `later: true`): its path, ranges and why, never its content. */
 export type ForwardCompactionLater = { path: string; lines?: string; why?: string; later?: true };
 
-/** One standing order a party's last stored frontier carried: the person's words verbatim (an entry an older version kept with an `at` is read for its order alone). */
+/** One standing order a party's last stored frontier carried: the user's words verbatim (an entry an older version kept with an `at` is read for its order alone). */
 export type ForwardCompactionOrder = { order: string };
 
 /** A party's last ignore judgement and the model it was made on, so a plugin reload writes no `ignore` row for a judgement that holds. */

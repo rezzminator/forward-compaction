@@ -10,11 +10,11 @@ This is the full behaviour of the plugin: every rule, limit and edge case the co
   is stored, never summarized, and installed verbatim; one missing a
   MANDATORY section is stored and installs as it is, its wake naming each
   section it lacks.
-- 🧾 **Facts are recorded, never reconstructed.** The person's messages (main
+- 🧾 **Facts are recorded, never reconstructed.** The user's messages (main
   chat) or the brief (sub-agent), the messages delivered to it, the skills
   loaded, the agents and the background shells come from typed hook events as
   they happened. Nothing is grepped out of a transcript or re-read from disk.
-  Each party's newest prompts (the person's ten newest typed messages and every
+  Each party's newest prompts (the user's ten newest typed messages and every
   answer they gave to an AskUserQuestion, or a sub-agent's brief and the ten
   newest delivered to it) and the skills it loaded
   (the latest text of each), the standing orders of its last stored
@@ -24,7 +24,7 @@ This is the full behaviour of the plugin: every rule, limit and edge case the co
   compacts: the newest messages from the call on stay in the new context as
   they were, as many as fit, and any left out are named as not carried. Anything delivered between
   the call and the install that those messages lack (a notification of an
-  agent or command finishing, the person's message, a coordinator's message)
+  agent or command finishing, the user's message, a coordinator's message)
   is carried in the wake under its own heading, as the model has not read it.
 - 👥 **Every party.** The main chat and every sub-agent use the same tool;
   each has its own stored frontier, nudges, readings and ceiling. A model on
@@ -91,7 +91,7 @@ and no ceiling, and an automatic ask from it with nothing stored is held as
    The finish rule: the main chat also compacts when its whole work is
    finished, before its final report, with `remaining` "none" and `next`
    "write the final report". A finished chat otherwise holds a large context
-   until the person replies, and a reply after the prompt cache expired
+   until the user replies, and a reply after the prompt cache expired
    re-sends all of it. The main chat reads the rule in its first three
    nudges, and before any nudge in one line of its own, the finish notice:
    once since its last install, when its context reaches
@@ -122,8 +122,8 @@ needs no ToolSearch.
 
 - `objective`, `decisions`, `done`, `remaining`, `next` (required, each
   description opening `MANDATORY:`): non-blank strings — what the work is for
-  and what done means; every ruling the person gave on how something gets
-  done, in the person's words, each with its undo when one exists, `none`
+  and what done means; every ruling the user gave on how something gets
+  done, in the user's words, each with its undo when one exists, `none`
   when there are none; the finished pieces, each with how it was verified,
   every figure with the command that produced it; every step left, in order,
   `none` when nothing is left, or the path of a plan file the party updates at
@@ -134,7 +134,7 @@ needs no ToolSearch.
 - A frontier missing a required section (absent, not a string, or blank) is
   stored, never refused, and installs at the same doors as a complete one:
   the frontier message names each missing section and says to re-establish it
-  from the person's messages (main) or the brief (sub-agent), and a warning
+  from the user's messages (main) or the brief (sub-agent), and a warning
   row names them. The decision log's `stored` row and the installing
   `compact` row name the sections as `incomplete`. A later call with every
   required section replaces it.
@@ -180,21 +180,21 @@ needs no ToolSearch.
   frontier's wake carries whole; the wake after lists them again unless a
   frontier names them again. A name the party never loaded is named in the
   receipt, and one that is pinned already is said to be.
-- `standing_orders` (optional): the person's orders that bind the rest of the
-  work (a prohibition, a limit, a rule), each `{order}`: the person's words
+- `standing_orders` (optional): the user's orders that bind the rest of the
+  work (a prohibition, a limit, a rule), each `{order}`: the user's words
   verbatim. Every entry with a non-blank `order` is kept, whatever else it
   holds; no message is looked up to keep it. The model names them; the plugin
-  never guesses one from the person's wording. The plugin remembers the standing orders of each party's last stored
-  frontier, across installs, the mechanical wake, the person's own `/compact`
+  never guesses one from the user's wording. The plugin remembers the standing orders of each party's last stored
+  frontier, across installs, the mechanical wake, the user's own `/compact`
   and a plugin reload. The party's next frontier carries each one again with the
   same `order` text, or lifts it; an order it leaves out is carried on by the
   plugin from that memory, and the receipt names it.
-- `lifted` (optional): the orders the person has lifted, each `{order, by}`:
-  `order` exactly the text the last frontier carried, `by` the person's words
+- `lifted` (optional): the orders the user has lifted, each `{order, by}`:
+  `order` exactly the text the last frontier carried, `by` the user's words
   that lifted it, verbatim. A lift counts only when `by` is found in a message
-  the plugin recorded for the party: the person's messages for the main
+  the plugin recorded for the party: the user's messages for the main
   chat, its brief or a message delivered to it for a sub-agent. Words match
-  across spacing and letter case: a model that rejoins the person's lines or
+  across spacing and letter case: a model that rejoins the user's lines or
   re-cases a word still quotes them. Only a lift clears a remembered order; a
   lift whose words no such message holds leaves the order binding, the
   receipt names it, and the wake shows the claimed words beside the order. A
@@ -253,22 +253,22 @@ keep every character, and the expanded view draws them as Claude Code does.
 A row folds only when Claude Code marks its message as built by a hook
 (origin `unclassified` in the main view, `coordinator` in a sub-agent's view,
 where it sits under "From main") and it opens as a wake message does, so the
-same text typed or pasted by the person is drawn whole.
+same text typed or pasted by the user is drawn whole.
 
 The facts message opens with the plugin version that built the wake
 (`compacted by forward-compaction 2.2.5`), so a chat on an old build shows
 it. It holds, each section only when it has content:
 
 - the standing orders, first, under `## Standing orders — binding until the
-  person lifts them`: each order the frontier carried on its own list line, with a
+  user lifts them`: each order the frontier carried on its own list line, with a
   lift no recorded message proves shown beside it, carried
   whole, outside the budget; then each order lifted since the last install,
-  once, with the person's lifting words, and never again. A mechanical wake
+  once, with the user's lifting words, and never again. A mechanical wake
   carries the party's remembered orders the same way, and the frontier
   message and the mechanical wake's message both say to continue within
   them;
 - what arrived after the frontier and the kept messages lack: every
-  notification, message from the person or the coordinator, and message that
+  notification, message from the user or the coordinator, and message that
   resumed a sub-agent, verbatim, first;
 - plan mode and the plan file, when the party's plan-mode attachments
   (Claude Code's `prompt.attachment` rows `plan_mode`, `plan_mode_reentry`,
@@ -278,11 +278,11 @@ it. It holds, each section only when it has content:
   in plan mode or after it ended; a plan file not written yet is left out,
   one that could not be read is named. Both are carried whole, outside the
   budget;
-- the brief (sub-agent), verbatim, or the person's newest ten typed messages
+- the brief (sub-agent), verbatim, or the user's newest ten typed messages
   and every answer they gave to an AskUserQuestion, however old (main chat),
   oldest first, always carried whole, whatever their size. An answer, which
   reaches the model as the tool's result, never as a prompt, is headed
-  `(the person answering your question)` and holds each question, its
+  `(the user answering your question)` and holds each question, its
   `Answer:` and any `Notes:`. The heading counts what is carried of the messages
   the plugin recorded (`N of M recorded`; a restart begins the record again),
   the answers among it, and the oldest recorded typed messages left out, which
@@ -367,7 +367,7 @@ was last compacted, so the system prompt, tools and skills every reading
 counts cancel. It is unmeasured until the reading has grown 5,000
 tokens past the base, or outside 1 to 8 characters a token, and unmeasured
 nothing is fitted: a frontier's wake carries the facts, the files and every
-message after the call, and a mechanical wake keeps no earlier message. The standing orders, the brief or the person's newest ten typed messages and every answer,
+message after the call, and a mechanical wake keeps no earlier message. The standing orders, the brief or the user's newest ten typed messages and every answer,
 and the task list are carried whole, outside the budget; the skills and
 commands within their own limits above, the plan file whole, and the files
 each within 250 lines, are outside it too. Every other section has a share — what arrived after the frontier 25%,
@@ -382,7 +382,7 @@ continue from its `## Next`, and says how many later messages
 follow. A mechanical wake replaces it with a message saying no frontier was
 written (or that the stored one never installed, naming the sections it
 lacked), how many of the newest messages were kept and how many are gone,
-and to re-establish the objective from the person's messages or the brief.
+and to re-establish the objective from the user's messages or the brief.
 
 Each install writes one line, measured: it waits for the party's first
 reading after the install, and is an info row in the logs, never on screen.
@@ -396,9 +396,9 @@ end, with after said as unknown, never guessed.
 
 ### What else happens at a compaction
 
-- A person's `/compact` runs Claude Code's own summary untouched; a stored
+- A user's `/compact` runs Claude Code's own summary untouched; a stored
   frontier is dropped, and the screen says so.
-- A message the person sends after the call does not cancel a stored frontier:
+- A message the user sends after the call does not cancel a stored frontier:
   it is among the messages kept after the call.
 - A stored frontier whose call is no longer in the party's transcript
   (something else compacted it), or that came with no `tool_use_id`, still
@@ -424,8 +424,8 @@ end, with after said as unknown, never guessed.
 
 `look_back` (`mcp__forward-compaction__look_back`), its schema in the prompt's
 tool list like `forward_compaction`'s (not deferred), searches only the caller's
-own transcript before its latest compaction, for an exact detail the wake no
-longer holds. Supply `query` (case-insensitive words; double quotes keep a
+own transcript before its latest compaction, however many compactions ago, back
+to the start of the transcript, for an exact detail the wake no longer holds. Supply `query` (case-insensitive words; double quotes keep a
 phrase whole) or `entry: N` to fetch one entry whole. Results rank by how
 many terms an entry holds, then newest first. Every call is logged as a
 compaction miss, with what was looked up.

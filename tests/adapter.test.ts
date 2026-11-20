@@ -587,7 +587,7 @@ describe('audit r4: readings only, measured landed lines, the milestone nudge, l
   it('M1 nudges on the last reading alone: results delivered since it add nothing until the next reading, and main past its finish start reads the finish notice once', async () => {
     const f = await begin({ env: { FORWARD_COMPACTION_MAIN_NUDGE_START: '150000', FORWARD_COMPACTION_MAIN_NUDGE_EVERY: '50000', FORWARD_COMPACTION_MAIN_CEILING: '600000' } });
     await step(f, 126_800);
-    expect((await read(f, 'tu-1', 70_000)).context).toEqual(['forward-compaction: context 127k. Nothing to do yet. When the whole work is finished, call mcp__forward-compaction__forward_compaction before the final report, so the person\'s reply meets a small context: objective, decisions, done, remaining "none" and next "write the final report", with all the report needs in done and findings, as the compaction can land before your next request and the report is then written from the frontier. No such tool? Carry on.']);
+    expect((await read(f, 'tu-1', 70_000)).context).toEqual(['forward-compaction: context 127k. Nothing to do yet. When the whole work is finished, call mcp__forward-compaction__forward_compaction before the final report, so the user\'s reply meets a small context: objective, decisions, done, remaining "none" and next "write the final report", with all the report needs in done and findings, as the compaction can land before your next request and the report is then written from the frontier. No such tool? Carry on.']);
     expect((await read(f, 'tu-2', 77_000)).context ?? []).toEqual([]);
     await step(f, 173_100);
     expect((await read(f, 'tu-3')).context?.at(-1)).toContain('context 173k and increasing.');

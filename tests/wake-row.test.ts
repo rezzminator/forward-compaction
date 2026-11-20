@@ -24,7 +24,7 @@ describe('wakeRow: what a user-role transcript row draws', () => {
     ['the expanded view keeps the facts whole', row(FACTS, { isExpanded: true }), undefined],
     ['the expanded view keeps the frontier whole', row(FRONTIER, { isExpanded: true }), undefined],
     ['the expanded view keeps the mechanical note whole', row(MECHANICAL, { isExpanded: true }), undefined],
-    ['the same text typed by the person stays whole', row(FRONTIER, { origin: { kind: 'composer' } }), undefined],
+    ['the same text typed by the user stays whole', row(FRONTIER, { origin: { kind: 'composer' } }), undefined],
     ['the same text from a task notification stays whole', row(FACTS, { origin: { kind: 'task-notification' } }), undefined],
     ['an opening that is not at the start is no wake message', row(`see ${FRONTIER}`), undefined],
     ['any other message the engine left unclassified stays whole', row('[forward-compaction: nudge] context 173k and increasing.'), undefined],

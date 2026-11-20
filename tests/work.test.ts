@@ -63,10 +63,10 @@ describe("workSummary: a party's files and tasks", () => {
   });
 });
 
-describe("answersOf: the person's answer to an AskUserQuestion call", () => {
+describe("answersOf: the user's answer to an AskUserQuestion call", () => {
   const questions = [{ question: 'Which quote?', header: 'Quotes', options: [], multiSelect: false }, { question: 'Which account pays?', header: 'Account', options: [], multiSelect: false }];
 
-  it("renders every question with its answer and notes, and keeps the person's own words apart", () => {
+  it("renders every question with its answer and notes, and keeps the user's own words apart", () => {
     const result = { questions, answers: { 'Which quote?': 'Quote if verbatim, else segment', 'Which account pays?': 'Account 2' }, annotations: { 'Which account pays?': { notes: 'never the default one' } } };
     expect(answersOf('AskUserQuestion', { questions }, { result, text: 'Your questions have been answered' })).toEqual({
       text: 'Which quote?\nAnswer: Quote if verbatim, else segment\nWhich account pays?\nAnswer: Account 2\nNotes: never the default one',
@@ -74,7 +74,7 @@ describe("answersOf: the person's answer to an AskUserQuestion call", () => {
     });
   });
 
-  it('carries a question the person turned back as the text the model read, with no words of theirs to lift an order', () => {
+  it('carries a question the user turned back as the text the model read, with no words of theirs to lift an order', () => {
     const text = 'The user wants to clarify these questions.\nQuestions asked:\n- "Which quote?"\n  Answer: Remove both';
     expect(answersOf('AskUserQuestion', { questions }, { isError: true, text })).toEqual({ text, said: '' });
   });

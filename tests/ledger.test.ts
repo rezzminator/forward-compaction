@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
   promptsKept, restorePrompts, PROMPTS_KEPT, skillsKept, restoreSkills, liftSources,
-  PERSON_ORIGINS, addEntry, attributeSkill, deliveryOf, factsFor, isPersonOrigin, markStart, newLedger, resolveSpawn, runStartOf, shellsOf,
+  PERSON_ORIGINS, addEntry, attributeSkill, deliveryOf, factsFor, isUserOrigin, markStart, newLedger, resolveSpawn, runStartOf, shellsOf,
   type EntryInput, type Ledger, type PartyKey,
 } from '../plugins/forward-compaction/src/ledger.ts';
 
-const person = (text: string, at = 1): EntryInput => ({ kind: 'person', party: 'main', text, at });
+const user = (text: string, at = 1): EntryInput => ({ kind: 'user', party: 'main', text, at });
 const skill = (party: PartyKey, name: string, text: string, at = 1): EntryInput => ({
   kind: 'skill', party, skill: name, text, how: 'skill-tool', at,
 });
@@ -70,22 +70,22 @@ describe('attributeSkill (D5)', () => {
 describe('PERSON_ORIGINS', () => {
   it('holds composer, bridge and sdk, and nothing that is a notification or a peer', () => {
     expect([...PERSON_ORIGINS].sort()).toEqual(['bridge', 'composer', 'sdk']);
-    expect(isPersonOrigin('composer')).toBe(true);
-    expect(isPersonOrigin('task-notification')).toBe(false);
-    expect(isPersonOrigin('peer')).toBe(false);
-    expect(isPersonOrigin(undefined)).toBe(false);
+    expect(isUserOrigin('composer')).toBe(true);
+    expect(isUserOrigin('task-notification')).toBe(false);
+    expect(isUserOrigin('peer')).toBe(false);
+    expect(isUserOrigin(undefined)).toBe(false);
   });
 });
 
 describe('addEntry', () => {
   it('numbers entries in ledger order and keeps the clock value it was given', () => {
-    const ledger = build(person('a', 100), person('b', 250));
+    const ledger = build(user('a', 100), user('b', 250));
     expect(ledger.entries.map((e) => [e.seq, e.at])).toEqual([[1, 100], [2, 250]]);
   });
 
   it('returns a new ledger and leaves the old one as it was', () => {
     const before = newLedger();
-    const after = addEntry(before, person('a'));
+    const after = addEntry(before, user('a'));
     expect(before.entries).toHaveLength(0);
     expect(after.entries).toHaveLength(1);
   });
@@ -93,7 +93,7 @@ describe('addEntry', () => {
   it('replaces the previous shells entry (R10) and facts carry the latest at', () => {
     const ledger = build(
       { kind: 'shells', tasks: [{ id: 's1', type: 'shell', status: 'running', description: 'd', command: 'sleep 1' }], crons: [], at: 10 },
-      person('x', 20),
+      user('x', 20),
       { kind: 'shells', tasks: [], crons: [{ id: 'c1', schedule: '* * * * *', recurring: true, prompt: 'p' }], at: 30 },
     );
     expect(ledger.entries.filter((e) => e.kind === 'shells')).toHaveLength(1);
@@ -105,7 +105,7 @@ describe('addEntry', () => {
 
   it('gives a replaced shells entry a seq after the entries before it', () => {
     const ledger = build(
-      { kind: 'shells', tasks: [], crons: [], at: 1 }, person('x'), { kind: 'shells', tasks: [], crons: [], at: 2 },
+      { kind: 'shells', tasks: [], crons: [], at: 1 }, user('x'), { kind: 'shells', tasks: [], crons: [], at: 2 },
     );
     expect(ledger.entries.map((e) => e.seq)).toEqual([2, 3]);
   });
@@ -113,7 +113,7 @@ describe('addEntry', () => {
 
 describe('markStart', () => {
   it('records when and why the ledger started, and keeps the entries', () => {
-    const ledger = markStart(build(person('a')), 5000, 'resume');
+    const ledger = markStart(build(user('a')), 5000, 'resume');
     expect(ledger.startedAt).toBe(5000);
     expect(ledger.startReason).toBe('resume');
     expect(factsFor(ledger, 'main', none)).toMatchObject({ startedAt: 5000, startReason: 'resume' });
@@ -155,40 +155,40 @@ describe('runStartOf', () => {
 });
 
 describe('factsFor', () => {
-  it('leaves out a person message already in the kept tail, exactly or contained (R9)', () => {
-    const ledger = build(person('fix the parser'), person('also add tests'));
-    expect(factsFor(ledger, 'main', { keptTexts: ['also add tests'] }).person.map((e) => e.text)).toEqual(['fix the parser']);
-    expect(factsFor(ledger, 'main', { keptTexts: ['ok: fix the parser, thanks'] }).person.map((e) => e.text))
+  it('leaves out a user message already in the kept tail, exactly or contained (R9)', () => {
+    const ledger = build(user('fix the parser'), user('also add tests'));
+    expect(factsFor(ledger, 'main', { keptTexts: ['also add tests'] }).user.map((e) => e.text)).toEqual(['fix the parser']);
+    expect(factsFor(ledger, 'main', { keptTexts: ['ok: fix the parser, thanks'] }).user.map((e) => e.text))
       .toEqual(['also add tests']);
   });
 
-  it('counts the person messages left out because the tail holds them, so the wake never calls them unrecorded', () => {
-    const ledger = build(person('fix the parser'), person('also add tests'));
-    expect(factsFor(ledger, 'main', { keptTexts: ['fix the parser', 'also add tests'] })).toMatchObject({ person: [], personInTail: 2 });
-    expect(factsFor(ledger, 'main', { keptTexts: ['also add tests'] }).personInTail).toBe(1);
-    expect(factsFor(ledger, 'main', none).personInTail).toBe(0);
+  it('counts the user messages left out because the tail holds them, so the wake never calls them unrecorded', () => {
+    const ledger = build(user('fix the parser'), user('also add tests'));
+    expect(factsFor(ledger, 'main', { keptTexts: ['fix the parser', 'also add tests'] })).toMatchObject({ user: [], userInTail: 2 });
+    expect(factsFor(ledger, 'main', { keptTexts: ['also add tests'] }).userInTail).toBe(1);
+    expect(factsFor(ledger, 'main', none).userInTail).toBe(0);
   });
 
   it('keeps everything when nothing is kept, and never drops on an empty text', () => {
-    const ledger = build(person(''), person('hello'));
-    expect(factsFor(ledger, 'main', { keptTexts: ['anything'] }).person.map((e) => e.text)).toEqual(['', 'hello']);
+    const ledger = build(user(''), user('hello'));
+    expect(factsFor(ledger, 'main', { keptTexts: ['anything'] }).user.map((e) => e.text)).toEqual(['', 'hello']);
   });
 
-  it('lists the person messages oldest first, and notices and received apart from them', () => {
+  it('lists the user messages oldest first, and notices and received apart from them', () => {
     const ledger = build(
-      person('one'),
+      user('one'),
       { kind: 'notice', party: 'main', origin: 'task-notification', text: 'bg done', at: 2 },
-      person('two'),
+      user('two'),
       { kind: 'received', party: 'agent:a1', origin: 'coordinator', text: 'to a1', at: 3 },
       { kind: 'received', party: 'agent:a2', origin: 'coordinator', text: 'to a2', at: 4 },
     );
     const main = factsFor(ledger, 'main', none);
-    expect(main.person.map((e) => e.text)).toEqual(['one', 'two']);
+    expect(main.user.map((e) => e.text)).toEqual(['one', 'two']);
     expect(main.notices.map((e) => e.text)).toEqual(['bg done']);
     expect(main.received).toEqual([]);
     const a1 = factsFor(ledger, 'agent:a1', none);
     expect(a1.received.map((e) => e.text)).toEqual(['to a1']);
-    expect(a1.person).toEqual([]);
+    expect(a1.user).toEqual([]);
     expect(a1.notices).toEqual([]);
   });
 
@@ -261,7 +261,7 @@ describe('factsFor', () => {
   });
 
   it('has no shells before any Stop event', () => {
-    expect(factsFor(build(person('a')), 'main', none).shells).toBeUndefined();
+    expect(factsFor(build(user('a')), 'main', none).shells).toBeUndefined();
   });
 });
 
@@ -289,7 +289,7 @@ describe('shellsOf', () => {
 });
 
 describe('the prompts kept across a plugin reload', () => {
-  const said = (n: number) => Array.from({ length: n }, (_, i) => i).reduce((l, i) => addEntry(l, { kind: 'person', party: 'main', at: i, text: `m${i}`, ...(i === 0 ? { command: 'god-speed' } : {}) }), newLedger());
+  const said = (n: number) => Array.from({ length: n }, (_, i) => i).reduce((l, i) => addEntry(l, { kind: 'user', party: 'main', at: i, text: `m${i}`, ...(i === 0 ? { command: 'god-speed' } : {}) }), newLedger());
   const agent = (n: number) => Array.from({ length: n }, (_, i) => i).reduce(
     (l, i) => addEntry(l, { kind: 'received', party: 'agent:a1', at: 100 + i, origin: 'coordinator', text: `r${i}` }),
     addEntry(newLedger(), { kind: 'brief', party: 'agent:a1', at: 1, text: 'the brief', subagentType: 'general-purpose', spawnedBy: 'main' }),
@@ -298,7 +298,7 @@ describe('the prompts kept across a plugin reload', () => {
   it("keeps main's newest ten messages, oldest first, with their command", () => {
     expect(PROMPTS_KEPT).toBe(10);
     expect(promptsKept(said(12), 'main').map((p) => p.text)).toEqual(['m2', 'm3', 'm4', 'm5', 'm6', 'm7', 'm8', 'm9', 'm10', 'm11']);
-    expect(promptsKept(said(1), 'main')).toEqual([{ kind: 'person', at: 0, text: 'm0', command: 'god-speed' }]);
+    expect(promptsKept(said(1), 'main')).toEqual([{ kind: 'user', at: 0, text: 'm0', command: 'god-speed' }]);
   });
 
   it("keeps a sub-agent's brief and its coordinator's newest ten, and no other party's", () => {
@@ -309,10 +309,10 @@ describe('the prompts kept across a plugin reload', () => {
   });
 
   it('puts them back ahead of what was recorded since, each once, leaving out anything else', () => {
-    const since = addEntry(newLedger(), { kind: 'person', party: 'main', at: 50, text: 'after the reload' });
-    const back = restorePrompts(since, 'main', [{ kind: 'person', at: 1, text: 'a', command: 'x' }, { kind: 'person', at: 'no', text: 'b' }, null, { kind: 'received', at: 2, text: 'not main' }, { kind: 'person', at: 50, text: 'after the reload' }]);
-    expect(back.entries.map((e) => (e as { text: string }).text)).toEqual(['a', 'after the reload']);
-    expect(factsFor(back, 'main', { keptTexts: [] }).person.map((p) => p.text)).toEqual(['a', 'after the reload']);
+    const since = addEntry(newLedger(), { kind: 'user', party: 'main', at: 50, text: 'after the reload' });
+    const back = restorePrompts(since, 'main', [{ kind: 'user', at: 1, text: 'a', command: 'x' }, { kind: 'user', at: 'no', text: 'b' }, null, { kind: 'received', at: 2, text: 'not main' }, { kind: 'person', at: 3, text: 'saved by the previous build' }, { kind: 'user', at: 50, text: 'after the reload' }]);
+    expect(back.entries.map((e) => (e as { text: string }).text)).toEqual(['a', 'saved by the previous build', 'after the reload']);
+    expect(factsFor(back, 'main', { keptTexts: [] }).user.map((p) => p.text)).toEqual(['a', 'saved by the previous build', 'after the reload']);
   });
 
   it("puts a sub-agent's brief back only when it has none, and its coordinator's messages under it", () => {
@@ -330,15 +330,15 @@ describe('the prompts kept across a plugin reload', () => {
     expect(restorePrompts(own, 'main', { at: 1 })).toBe(own);
   });
   it('keeps every answer to a question, however old, besides the ten newest typed messages', () => {
-    const answer: EntryInput = { kind: 'person', party: 'main', at: 0, text: 'Which quote?\nAnswer: Segment', answer: 'Segment' };
-    const l = build(answer, ...Array.from({ length: 11 }, (_, i) => person(`m${i}`, i + 1)));
+    const answer: EntryInput = { kind: 'user', party: 'main', at: 0, text: 'Which quote?\nAnswer: Segment', answer: 'Segment' };
+    const l = build(answer, ...Array.from({ length: 11 }, (_, i) => user(`m${i}`, i + 1)));
     expect(promptsKept(l, 'main').map((p) => p.text)).toEqual(['Which quote?\nAnswer: Segment', 'm1', 'm2', 'm3', 'm4', 'm5', 'm6', 'm7', 'm8', 'm9', 'm10']);
     const back = restorePrompts(newLedger(), 'main', promptsKept(l, 'main'));
-    expect(back.entries[0]).toMatchObject({ kind: 'person', text: 'Which quote?\nAnswer: Segment', answer: 'Segment' });
+    expect(back.entries[0]).toMatchObject({ kind: 'user', text: 'Which quote?\nAnswer: Segment', answer: 'Segment' });
   });
 
-  it("lifts orders with only the person's own words of an answer, never the question the model wrote", () => {
-    const l = build({ kind: 'person', party: 'main', at: 5, text: 'Shall I push?\nAnswer: Not yet', answer: 'Not yet' }, person('typed', 6));
+  it("lifts orders with only the user's own words of an answer, never the question the model wrote", () => {
+    const l = build({ kind: 'user', party: 'main', at: 5, text: 'Shall I push?\nAnswer: Not yet', answer: 'Not yet' }, user('typed', 6));
     expect(liftSources(l, 'main')).toEqual(['Not yet', 'typed']);
   });
 });
