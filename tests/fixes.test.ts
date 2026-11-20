@@ -197,6 +197,21 @@ describe('L7: a rejected turn-end install is an error', () => {
   });
 });
 
+describe('a turn-end install marks only the turn it ends', () => {
+  it("installs the next turn's frontier at that turn's end", async () => {
+    const call = (id: string) => [{ role: 'assistant', text: '', toolUses: [{ tool_use_id: id, tool: FORWARD, input: SECTIONS }], handle: `${id}-1` }, { role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: id, text: 'Frontier stored' }], handle: `${id}-2` }];
+    let messages = call('tu-1');
+    const f: Fake = await begin({ compact: () => f.dispatch('session.compact', { trigger: 'plugin', messages }, async () => ({ skip: 'native ran' })) });
+    await f.dispatch('tool.call', { tool: FORWARD, tool_use_id: 'tu-1', ...SECTIONS }, async () => ({ result: 'not ours' }));
+    await turnEnd(f);
+    await f.dispatch('turn.start', { text: 'Part 3', turnId: 't2' }, async () => ({}));
+    messages = call('tu-2');
+    await f.dispatch('tool.call', { tool: FORWARD, tool_use_id: 'tu-2', ...SECTIONS }, async () => ({ result: 'not ours' }));
+    await turnEnd(f);
+    expect((await rows(f)).filter((r) => r.event === 'compact').map((r) => `${r.trigger}:${r.decision}`)).toEqual(['plugin:install', 'plugin:install']);
+  });
+});
+
 describe('L8 + L9: one row per registration failure, and every error and warning row names its origin', () => {
   it('writes one error row and one screen line per tool that failed to register, each with its raising function and a specific event', async () => {
     const f = await begin({ registerError: 'no tools in this session', breakdown: { rawMaxTokens: 1_000_000, autocompactSource: 'model-default', autoCompactThreshold: 967_000 } });

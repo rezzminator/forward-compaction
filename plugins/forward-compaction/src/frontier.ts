@@ -13,12 +13,12 @@ export const FORWARD_TOOL_DESCRIPTION =
 
 /** What each list holds, as its field's description says it. */
 const LIST_DESCRIPTION: Record<ListName, string> = {
-  decisions: "Every ruling the user gave on how something gets done, in the user's words, each with its undo when one exists.",
+  decisions: "Every ruling the user gave on how something gets done, in the user's words, each with its undo when one exists. A question the user put on hold goes to blocked.",
   done: 'Finished pieces, each with how it was verified; every figure with the command that produced it.',
   remaining: 'Every step left, in order. An added step lands last, or before a step it names: {"before": 4, "text": "..."}.',
-  blocked: 'What waits on whom.',
+  blocked: "Every question or choice on hold until the user answers, in the user's words; removed once answered.",
   findings: 'Your own choices with why, errors verbatim, the commands and recipes you will need again.',
-  orders: "Every order of the user's that binds the rest of the work (a prohibition, a limit, a rule), in the user's words.",
+  orders: "One item per rule of the user's that binds the rest of the work (a prohibition, a limit, a rule), in the user's words. An instruction for one part of the work is no order: it goes to remaining. A rule the user lifts is removed by its number, never edited into a note; one the user changes is edited.",
 };
 
 /** One list field: its three operations, each optional. */
@@ -56,7 +56,7 @@ export const FORWARD_INPUT_SCHEMA = {
       properties: {
         add: {
           type: 'array',
-          description: '[{"name": "survey.md", "description": "one line the wake shows", "value": "the whole content"}] writes the file; without value it changes only the description.',
+          description: '[{"name": "survey.md", "description": "one line the wake shows", "value": "the whole content"}] writes the file; without value it lists a file you wrote in the storage folder, or changes a listed entry\'s description.',
           items: { type: 'object', additionalProperties: false, required: ['name'], properties: { name: { type: 'string' }, description: { type: 'string' }, value: { type: 'string' } } },
         },
         remove: { type: 'array', description: 'Names to stop listing: ["survey.md"].', items: { type: 'string' } },

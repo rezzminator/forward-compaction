@@ -1,4 +1,6 @@
 import type { Parties } from './parties';
+import { storageDir } from './storage';
+import { LISTS, itemLines, type Held, type ListName } from './lists';
 
 /** The tool's name as the installed copy registered it; a `-dev` copy's differs. */
 export const DEFAULT_TOOL = 'mcp__forward-compaction__forward_compaction';
@@ -36,10 +38,15 @@ export type NudgeInput = {
   notice?: number;
   /** No later nudge comes before the ceiling (`lastNudge`). */
   last?: boolean;
+  /** The party's storage folder, absolute; absent when the run keeps no files. */
+  storage?: string;
+  /** The party's held lists and texts by field name, items numbered, empty ones as none, shown by the first notice of a cycle so its call brings each up to date; absent when nothing is held. */
+  lists?: string;
 };
 
-/** The sections a frontier call names, the same words in every notice. */
-const ARGS = 'with only what changed in your frontier, by item number, and in load_files the files you will read again';
+/** What a frontier call sends and where each kind of material goes, the same words in every notice: storage names its folder when the party has one, so the model writes a file there once and lists it by name. */
+const args = (storage?: string): string =>
+  `with only what changed in your frontier, by item number: remove what is finished or lifted; what only a later step reads goes in storage (${storage === undefined ? 'its value in storage.add' : `write it as a .md file in ${storage}/, then storage.add its name and description`}); load_files only the files the next step reads`;
 
 /** The first notices leave the timing to the party, so they close on its exception: main's on the end of the whole work, a sub-agent's, whose context ends with its report, on when it may skip. Later notices carry none. */
 const FINISH_RULE = 'If the whole work finishes first, call it before the final report, with the finished steps removed from remaining, next "write the final report", and all the report needs added to done and findings: the compaction can land before your next request, and the report is then written from the frontier.';
@@ -50,9 +57,9 @@ function nudgeBody(notice: number, size: string, call: string): string {
   switch (notice) {
     case 1: return `context ${size} and increasing. At your first milestone, call ${call}. A step that needs all of this context may reach its own milestone first.`;
     case 2: return `context ${size}, and every request re-sends all of it. At the end of the step in hand, call ${call}: that is your milestone.`;
-    case 3: return `context ${size}. Start no new step: finish the one in hand, then call ${call}. What later steps need travels in the frontier and load_files.`;
+    case 3: return `context ${size}. Start no new step: finish the one in hand, then call ${call}. What later steps need travels in the frontier and storage.`;
     case 4: return `context ${size}. Compact now: your next call is ${call}. An unfinished step goes in remaining and next: a frontier needs no finished step.`;
-    case 5: return `context ${size}. Nothing ahead needs this context: the frontier and load_files carry what you will use, and look_back finds any exact old detail. Stop and call ${call}.`;
+    case 5: return `context ${size}. Nothing ahead needs this context: the frontier, storage and load_files carry what you will use, and look_back finds any exact old detail. Stop and call ${call}.`;
     case 6: return `context ${size}, ${notice - 1} notices unanswered. Leave the work where it stands, finished or not, and call ${call}.`;
     default: return `context ${size}, ${notice - 1} notices unanswered. Call ${call}, and nothing else: all other work waits for the wake.`;
   }
@@ -63,12 +70,23 @@ function nudgeBody(notice: number, size: string, call: string): string {
  * worded by how many notices the party has had since its last compaction, so no two read alike and each is firmer
  * than the one before. The last one before the ceiling says what the plugin does next. It names no window and no ceiling.
  */
-export function nudgeText({ tokens, tool = DEFAULT_TOOL, party = 'main', notice = 1, last = false }: NudgeInput): string {
-  const size = k(tokens), call = `${tool} ${ARGS}`, count = Math.max(1, Math.floor(notice));
+export function nudgeText({ tokens, tool = DEFAULT_TOOL, party = 'main', notice = 1, last = false, storage, lists }: NudgeInput): string {
+  const size = k(tokens), call = `${tool} ${args(storage)}`, count = Math.max(1, Math.floor(notice));
   const said = last
     ? `context ${size}. Last notice: the plugin compacts this context itself before another comes, with no frontier from you, and you wake on its recorded facts alone. To wake on your own account of the work, call ${call} now.`
     : [nudgeBody(count, size, call), ...(count > SKIP_RULES.length ? [] : [party === 'main' ? FINISH_RULE : SKIP_RULES[count - 1]])].join(' ');
-  return `forward-compaction: ${said} No such tool? Carry on.`;
+  const upkeep = lists === undefined || last ? '' : ` Your lists as held:\n${lists}\nBring each up to date with what happened since, by item number: remove what is finished, lifted or wrong (an instruction for one part of the work is finished with that part); edit what changed; add each new rule of the user's to orders, one rule per item, each ruling on how a piece of work is done to decisions, and what waits on the user to blocked.`;
+  return `forward-compaction: ${said}${upkeep} No such tool? Carry on.`;
+}
+
+/** A party's held lists and texts as the first notice of a cycle shows them: by field name, so each maps to its call field, items numbered, an empty one as none so the model sees every list it can fill, nothing held yet included. */
+export function heldLists(held: Held | undefined): string {
+  const text = (name: 'objective' | 'next'): string => `${name}: ${held?.[name] ?? 'none'}`;
+  const items = (name: ListName): string => {
+    const list = held?.lists[name];
+    return list === undefined || list.items.length === 0 ? `${name}: none` : `${name}:\n${itemLines(list).join('\n')}`;
+  };
+  return [text('objective'), ...LISTS.map(items), text('next')].join('\n');
 }
 
 /**
@@ -102,8 +120,8 @@ export function noticeFor(parties: Parties, key: string, tokens: number | undefi
   const level = nudgeLevel(tokens, marks.start, marks.every), ignored = parties.ignored(key, ignore) !== undefined;
   const withheld = level === 0 ? 'below-start' : ignored ? 'ignored-model' : !parties.nudgeDue(key, level, tokens, marks) ? 'not-due' : undefined;
   if (withheld === undefined) {
-    const notice = parties.get(key).nudges, last = lastNudge(tokens, marks.every, marks.ceiling);
-    return { level, sent: { row: { event: 'nudge', party: key, level, notice, last, tokens, start: marks.start, every: marks.every }, text: nudgeText({ tokens, tool, party: key === 'main' ? 'main' : 'subagent', notice, last }) } };
+    const { nudges: notice, files, held } = parties.get(key), last = lastNudge(tokens, marks.every, marks.ceiling), lists = notice === 1 ? heldLists(held) : undefined;
+    return { level, sent: { row: { event: 'nudge', party: key, level, notice, last, tokens, start: marks.start, every: marks.every }, text: nudgeText({ tokens, tool, party: key === 'main' ? 'main' : 'subagent', notice, last, ...(files !== undefined ? { storage: storageDir(files) } : {}), ...(lists !== undefined ? { lists } : {}) }) } };
   }
   if (ignored || marks.finish === undefined || !parties.finishDue(key, tokens, marks.finish, marks.every)) return { level, withheld };
   return { level, withheld, sent: { row: { event: 'finish-notice', party: key, tokens, start: marks.finish }, text: finishText({ tokens, tool }) } };

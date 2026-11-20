@@ -507,13 +507,13 @@ async function applyForward(st: State, $: EngineInterface, e: Record<string, unk
     let call = parseCall(input);
     if ((call.loadFiles ?? []).some((file) => !isAbsolutePath(file.path))) call = parseCall(input, await Promise.resolve().then(() => $.session.cwd()).catch((error: unknown) => (dbg(st, $, 'session.cwd-failed', { error: message(error) }), undefined))); // the session's directory, read only for a relative load file; unknown when the read fails
     const checked: string[] = [], carried: LoadFile[] = [];
-    for (const [i, file] of (call.loadFiles ?? []).entries()) { const note = loadFileNote(call.loadAt[i]!, file.path, await statFile(st, $, file.path)); if (note === undefined) carried.push(file); else checked.push(note); }
     const toolUseId = typeof e.tool_use_id === 'string' ? e.tool_use_id : ''; if (toolUseId === '') checked.push('the call has no tool_use_id, so the wake cannot place it: at the install your frontier is carried with the newest messages that fit, not every message after this call.');
     const tokens = party.reading, m = marks(st, key); // the last reading: the call's own context is measured only by the next request
     const applied = applyCall(party.held ?? emptyHeld(), call), files = party.files;
     const storage = files !== undefined ? await storageApply(fs, files, applied.held.storage, call.storage) : { entries: applied.held.storage, lines: [], notes: call.storage === undefined ? [] : ['storage: this run has no folder for your frontier, so there is no storage folder: nothing stored.'], count: { added: 0, removed: 0 } };
     party.held = { ...applied.held, storage: storage.entries }; for (const c of applied.changed) files?.changed(c.key, c.left);
     const problems = await writeDue(st, $, key, 'answerForward');
+    for (const [i, file] of (call.loadFiles ?? []).entries()) { const note = loadFileNote(call.loadAt[i]!, file.path, await statFile(st, $, file.path)); if (note === undefined) carried.push(file); else checked.push(note); } // after the write, so a storage file this call adds is found
     if (files === undefined) checked.push(NO_FOLDER);
     const loadFiles = call.loadFiles === undefined ? party.stored?.loadFiles ?? [] : carried; // a call that sends no load_files keeps the earlier call's
     const replaced = st.parties.store(key, { loadFiles, toolUseId, storedAtTokens: tokens, since: st.ledger.nextSeq });
@@ -710,14 +710,16 @@ async function turnEnds(st: State, $: EngineInterface, e: TurnCompleteInput): Pr
   if (key !== 'main') return land(st, $, key, st.parties.takeLanding(key));
   const party = st.parties.get('main');
   const door = turnEndDoor({ main: true, reason: e.reason, stored: party.stored !== undefined, installedThisTurn: party.installedThisTurn });
-  st.parties.turnEnded('main');
-  if (!door.compact) return;
-  try {
-    const out = await $.session.compact();
-    if (out.skip !== undefined) say(st, $, `forward-compaction: main's frontier did not install at turn end: ${out.skip}. It stays stored for the next turn end or ask.`, 'warning', { event: 'turn-end-skipped', where: 'turnEnds', party: 'main', skip: out.skip });
-  } catch (error) {
-    say(st, $, `forward-compaction: main's frontier did not install at turn end: ${message(error)}. It stays stored for the next turn end or ask.`, 'error', { event: 'turn-end-rejected', where: 'turnEnds', party: 'main', error: message(error) });
+  dbg(st, $, 'turn-end', { party: 'main', reason: e.reason, ...door });
+  if (door.compact) {
+    try {
+      const out = await $.session.compact();
+      if (out.skip !== undefined) say(st, $, `forward-compaction: main's frontier did not install at turn end: ${out.skip}. It stays stored for the next turn end or ask.`, 'warning', { event: 'turn-end-skipped', where: 'turnEnds', party: 'main', skip: out.skip });
+    } catch (error) {
+      say(st, $, `forward-compaction: main's frontier did not install at turn end: ${message(error)}. It stays stored for the next turn end or ask.`, 'error', { event: 'turn-end-rejected', where: 'turnEnds', party: 'main', error: message(error) });
+    }
   }
+  st.parties.turnEnded('main'); // after the turn-end install, which marks this turn: the next turn's end stays free to install
 }
 
 /** What the user typed is a fact of main's; a message from anywhere else is a notice. */

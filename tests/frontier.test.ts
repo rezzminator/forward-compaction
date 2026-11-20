@@ -34,11 +34,11 @@ describe('the forward_compaction tool as registered', () => {
     expect(FORWARD_INPUT_SCHEMA.properties.objective.description).toBe('What the work is for and what done means. Send it on your first call, then only when it changes.');
     expect(FORWARD_INPUT_SCHEMA.properties.next.description).toBe('Every call: the first concrete action after the wake.');
     expect(Object.fromEntries(LISTS.map((name) => [name, FORWARD_INPUT_SCHEMA.properties[name].description]))).toEqual({
-      orders: "Every order of the user's that binds the rest of the work (a prohibition, a limit, a rule), in the user's words.",
-      decisions: "Every ruling the user gave on how something gets done, in the user's words, each with its undo when one exists.",
+      orders: "One item per rule of the user's that binds the rest of the work (a prohibition, a limit, a rule), in the user's words. An instruction for one part of the work is no order: it goes to remaining. A rule the user lifts is removed by its number, never edited into a note; one the user changes is edited.",
+      decisions: "Every ruling the user gave on how something gets done, in the user's words, each with its undo when one exists. A question the user put on hold goes to blocked.",
       done: 'Finished pieces, each with how it was verified; every figure with the command that produced it.',
       remaining: 'Every step left, in order. An added step lands last, or before a step it names: {"before": 4, "text": "..."}.',
-      blocked: 'What waits on whom.',
+      blocked: "Every question or choice on hold until the user answers, in the user's words; removed once answered.",
       findings: 'Your own choices with why, errors verbatim, the commands and recipes you will need again.',
     });
     const done = FORWARD_INPUT_SCHEMA.properties.done.properties;
