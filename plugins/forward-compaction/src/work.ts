@@ -54,8 +54,8 @@ export type WorkCommand = { command: string; description?: string };
 export type WorkSummary = { files: { path: string; tag: FileTag }[]; commands: WorkCommand[]; tasks: string[] };
 
 /**
- * The person's answer to an AskUserQuestion call, which reaches the model as the call's result, never as a prompt: `text`
- * each question with its answer and notes, `said` the person's own words alone (a lift may quote only those, never the
+ * The user's answer to an AskUserQuestion call, which reaches the model as the call's result, never as a prompt: `text`
+ * each question with its answer and notes, `said` the user's own words alone (a lift may quote only those, never the
  * question the model wrote). A call turned back or holding no answers record is carried as the text the model read.
  */
 export function answersOf(tool: string, input: Record<string, unknown>, answer: CallAnswer): { text: string; said: string } | undefined {

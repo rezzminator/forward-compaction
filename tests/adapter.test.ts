@@ -259,7 +259,7 @@ describe('session.compact', () => {
     expect(r).toHaveProperty('messages');
     expect(r.messages[1].text).toMatch(/^\[forward-compaction: no frontier written by the model\]/);
     expect(f.texts().some((t) => /^error in session\.compact for general-purpose a1b2c3: .+; a mechanical wake was installed\.$/.test(t))).toBe(true);
-    expect(r.tokensBefore).toBe(64_000); // the same reading C1-C10 decides on
+    expect([r.tokensBefore, (await rows(f)).filter((row) => row.where === 'compactFailed').map((row) => [row.skills, row.later])]).toEqual([64_000, [[{ carried: 0, listed: 0 }, 0]]]); // the same reading C1-C10 decides on, and the wake's counts
   });
 
   it("returns next(e)'s result when the mechanical wake throws too (R35)", async () => {
@@ -327,20 +327,20 @@ describe('nudges (R37)', () => {
 });
 
 describe('skill attribution (R38)', () => {
-  it("attributes a skill.prompt during agent:a1's one Skill call to agent:a1, returns next(e) unchanged, and carries the text in its wake", async () => {
+  it("attributes a skill.prompt during agent:a1's one Skill call to agent:a1, returns next(e) unchanged, and lists it in its wake, its text left out", async () => {
     const f = await begin();
     await spawn(f);
     const answer = { text: 'expanded skill', marker: 1 };
     let inner: unknown;
     await f.dispatch('tool.call', { tool: 'Skill', tool_use_id: 'tu-skill', agentId: A1, skill: 'rules' }, async () => {
-      inner = await f.dispatch('skill.prompt', { skill: 'rules', text: 'RULES SKILL BODY', frontmatter: {} }, async () => answer);
+      inner = await f.dispatch('skill.prompt', { skill: 'rules', text: 'RULES SKILL BODY', frontmatter: { description: 'The house rules.' }, source: 'projectSettings', path: '/s/rules/SKILL.md' }, async () => answer);
       return { result: 'loaded' };
     });
     expect(inner).toBe(answer);
     await step(f, 125_000, A1);
     const r = await f.dispatch('session.compact', { trigger: 'auto', agentId: A1, messages: transcript('tu-none') }, async () => ({ skip: 'native ran' }));
-    expect(r).toHaveProperty('messages');
-    expect(r.messages[0].text).toContain('RULES SKILL BODY');
+    expect(r.messages[0].text).toContain('## Skills not carried\nTheir text is not in your context: load one again with the Skill tool before doing work it governs.\n- rules (projectSettings, /s/rules/SKILL.md): The house rules.');
+    expect(r.messages[0].text).not.toContain('RULES SKILL BODY');
   });
 });
 
@@ -587,7 +587,7 @@ describe('audit r4: readings only, measured landed lines, the milestone nudge, l
   it('M1 nudges on the last reading alone: results delivered since it add nothing until the next reading, and main past its finish start reads the finish notice once', async () => {
     const f = await begin({ env: { FORWARD_COMPACTION_MAIN_NUDGE_START: '150000', FORWARD_COMPACTION_MAIN_NUDGE_EVERY: '50000', FORWARD_COMPACTION_MAIN_CEILING: '600000' } });
     await step(f, 126_800);
-    expect((await read(f, 'tu-1', 70_000)).context).toEqual(['forward-compaction: context 127k. Nothing to do yet. When the whole work is finished, call mcp__forward-compaction__forward_compaction before the final report, so the person\'s reply meets a small context: objective, decisions, done, remaining "none" and next "write the final report", with all the report needs in done and findings, as the compaction can land before your next request and the report is then written from the frontier. No such tool? Carry on.']);
+    expect((await read(f, 'tu-1', 70_000)).context).toEqual(['forward-compaction: context 127k. Nothing to do yet. When the whole work is finished, call mcp__forward-compaction__forward_compaction before the final report, so the user\'s reply meets a small context: objective, decisions, done, remaining "none" and next "write the final report", with all the report needs in done and findings, as the compaction can land before your next request and the report is then written from the frontier. No such tool? Carry on.']);
     expect((await read(f, 'tu-2', 77_000)).context ?? []).toEqual([]);
     await step(f, 173_100);
     expect((await read(f, 'tu-3')).context?.at(-1)).toContain('context 173k and increasing.');

@@ -10,21 +10,21 @@ This is the full behaviour of the plugin: every rule, limit and edge case the co
   is stored, never summarized, and installed verbatim; one missing a
   MANDATORY section is stored and installs as it is, its wake naming each
   section it lacks.
-- 🧾 **Facts are recorded, never reconstructed.** The person's messages (main
+- 🧾 **Facts are recorded, never reconstructed.** The user's messages (main
   chat) or the brief (sub-agent), the messages delivered to it, the skills
   loaded, the agents and the background shells come from typed hook events as
   they happened. Nothing is grepped out of a transcript or re-read from disk.
-  Each party's newest prompts (the person's ten newest typed messages and every
+  Each party's newest prompts (the user's ten newest typed messages and every
   answer they gave to an AskUserQuestion, or a sub-agent's brief and the ten
   newest delivered to it) and the skills it loaded
-  (the latest text of each), and the standing orders of its last stored
-  frontier, are also held in Claude Code's session state, so a
+  (the latest text of each), the standing orders of its last stored
+  frontier, and its files for later, are also held in Claude Code's session state, so a
   plugin reload (`/reload-plugins`) does not lose them. The files touched and the task list come from each finished tool call.
 - ⏩ **The messages after the call are kept.** The model need not stop after it
   compacts: the newest messages from the call on stay in the new context as
   they were, as many as fit, and any left out are named as not carried. Anything delivered between
   the call and the install that those messages lack (a notification of an
-  agent or command finishing, the person's message, a coordinator's message)
+  agent or command finishing, the user's message, a coordinator's message)
   is carried in the wake under its own heading, as the model has not read it.
 - 👥 **Every party.** The main chat and every sub-agent use the same tool;
   each has its own stored frontier, nudges, readings and ceiling. A model on
@@ -91,7 +91,7 @@ and no ceiling, and an automatic ask from it with nothing stored is held as
    The finish rule: the main chat also compacts when its whole work is
    finished, before its final report, with `remaining` "none" and `next`
    "write the final report". A finished chat otherwise holds a large context
-   until the person replies, and a reply after the prompt cache expired
+   until the user replies, and a reply after the prompt cache expired
    re-sends all of it. The main chat reads the rule in its first three
    nudges, and before any nudge in one line of its own, the finish notice:
    once since its last install, when its context reaches
@@ -116,14 +116,14 @@ and no ceiling, and an automatic ask from it with nothing stored is held as
 
 ### The tool
 
-`forward_compaction({objective, decisions, done, remaining, next, blocked, findings, load_files, drop_skills, standing_orders, lifted})`,
+`forward_compaction({objective, decisions, done, remaining, next, blocked, findings, load_files, drop_files, keep_skills, standing_orders, lifted})`,
 with its schema in the prompt's tool list (not deferred), so a nudged model
 needs no ToolSearch.
 
 - `objective`, `decisions`, `done`, `remaining`, `next` (required, each
   description opening `MANDATORY:`): non-blank strings — what the work is for
-  and what done means; every ruling the person gave on how something gets
-  done, in the person's words, each with its undo when one exists, `none`
+  and what done means; every ruling the user gave on how something gets
+  done, in the user's words, each with its undo when one exists, `none`
   when there are none; the finished pieces, each with how it was verified,
   every figure with the command that produced it; every step left, in order,
   `none` when nothing is left, or the path of a plan file the party updates at
@@ -134,7 +134,7 @@ needs no ToolSearch.
 - A frontier missing a required section (absent, not a string, or blank) is
   stored, never refused, and installs at the same doors as a complete one:
   the frontier message names each missing section and says to re-establish it
-  from the person's messages (main) or the brief (sub-agent), and a warning
+  from the user's messages (main) or the brief (sub-agent), and a warning
   row names them. The decision log's `stored` row and the installing
   `compact` row name the sections as `incomplete`. A later call with every
   required section replaces it.
@@ -146,7 +146,7 @@ needs no ToolSearch.
   each heading followed by its argument verbatim and a blank line between
   sections. The frontier has no length cap: it is stored and installed
   whole, never trimmed.
-- `load_files` (optional): `{path, lines?, why?}` entries, as many as the
+- `load_files` (optional): `{path, lines?, why?, later?}` entries, as many as the
   party needs, each a path to a regular file, `lines` a range like `10-40` or
   `1-60,160-185`, `why` one line. A relative path is resolved against the
   session's directory (`$.session.cwd()`), or carried as given when that read
@@ -161,31 +161,40 @@ needs no ToolSearch.
   L]`, N the lines left in the ranges or the file and L the next one. There is
   no room for the files together. A file that is missing, or whose ranges
   hold no line, is named under `## Files not carried` with why.
-- `drop_skills` (optional): at most 32 names of skills or commands the party
-  loaded and no longer needs. A name is dropped only when two frontiers in a
-  row name it: the second one's wake leaves it out, and so does every later
-  wake until the party loads it again. A frontier that does not name it starts
-  the count again. A skill or command whose file's frontmatter sets
-  `forward-compaction-keep: true`, or that `FORWARD_COMPACTION_KEEP_SKILLS`
-  names, is never dropped, whoever asks; the wake
-  marks it `pinned: never dropped`. A pin exempts it from `drop_skills` only:
-  it is cut and fitted to the skills' limits like any other. The receipt says, per name, whether it
-  was dropped, waits for the next frontier, is pinned, or was never loaded.
-- `standing_orders` (optional): the person's orders that bind the rest of the
-  work (a prohibition, a limit, a rule), each `{order}`: the person's words
+  An entry with `later: true` is a file for later: never read, it is listed
+  under `## Files for later, not loaded` by its path, `lines` and `why`, in
+  every wake of the party, the frontier's and the mechanical one alike, and
+  kept across a plugin reload. A frontier that names its path again without
+  `later` carries it whole and ends the listing; one that names it again with
+  `later` replaces the entry; a path named twice is listed once, at its last
+  entry. The list has no cap. At each wake every file for later is checked
+  with `$.fs.stat`: one that is missing, not a regular file or could not be
+  checked is named once under `## Files not carried` with why and leaves the
+  list. A `later` that is neither `true` nor `false` is named in the receipt,
+  and the file is carried whole.
+- `drop_files` (optional): paths listed for later that no step needs any
+  more, each resolved as a `load_files` path is; each leaves the list, even
+  when the same call lists it for later again, and one the list does not
+  hold is named in the receipt.
+- `keep_skills` (optional): names of skills or commands whose text this one
+  frontier's wake carries whole; the wake after lists them again unless a
+  frontier names them again. A name the party never loaded is named in the
+  receipt, and one that is pinned already is said to be.
+- `standing_orders` (optional): the user's orders that bind the rest of the
+  work (a prohibition, a limit, a rule), each `{order}`: the user's words
   verbatim. Every entry with a non-blank `order` is kept, whatever else it
   holds; no message is looked up to keep it. The model names them; the plugin
-  never guesses one from the person's wording. The plugin remembers the standing orders of each party's last stored
-  frontier, across installs, the mechanical wake, the person's own `/compact`
+  never guesses one from the user's wording. The plugin remembers the standing orders of each party's last stored
+  frontier, across installs, the mechanical wake, the user's own `/compact`
   and a plugin reload. The party's next frontier carries each one again with the
   same `order` text, or lifts it; an order it leaves out is carried on by the
   plugin from that memory, and the receipt names it.
-- `lifted` (optional): the orders the person has lifted, each `{order, by}`:
-  `order` exactly the text the last frontier carried, `by` the person's words
+- `lifted` (optional): the orders the user has lifted, each `{order, by}`:
+  `order` exactly the text the last frontier carried, `by` the user's words
   that lifted it, verbatim. A lift counts only when `by` is found in a message
-  the plugin recorded for the party: the person's messages for the main
+  the plugin recorded for the party: the user's messages for the main
   chat, its brief or a message delivered to it for a sub-agent. Words match
-  across spacing and letter case: a model that rejoins the person's lines or
+  across spacing and letter case: a model that rejoins the user's lines or
   re-cases a word still quotes them. Only a lift clears a remembered order; a
   lift whose words no such message holds leaves the order binding, the
   receipt names it, and the wake shows the claimed words beside the order. A
@@ -193,12 +202,17 @@ needs no ToolSearch.
 
 The result is a receipt saying when the frontier installs — for the main chat
 at the end of this turn, for a sub-agent at Claude Code's next ask (with
-where that ask comes) — and, when it replaced one, that it did. It prints no
+where that ask comes) — and, when it replaced one, that it did. It names the
+files listed for later after the call, each `drop_files` path it dropped or
+did not hold, and, per `keep_skills` name, whether the next wake carries it
+whole, it is pinned already, or the party never loaded it. It prints no
 context size: the plugin measures none for that moment. A call is always stored. When the plugin left
 something out, skipped it or carried it on, the receipt ends with
 `Stored with N changes:` and one line each: an unknown field (carried under
 `## Findings` with its name), a section that is missing, blank or not a
-string, a bad `drop_skills` name, a bad `standing_orders` or `lifted` entry, a
+string, a `drop_files` or `keep_skills` value that is no list or an entry
+that is no non-blank string, a `later` that is no boolean, a bad
+`standing_orders` or `lifted` entry, a
 standing order the frontier left out (carried on), a lift whose words no
 recorded message holds (the order still binding), a lift of no remembered
 order, a `load_files` entry with no path, resolved from a relative path, with
@@ -239,22 +253,22 @@ keep every character, and the expanded view draws them as Claude Code does.
 A row folds only when Claude Code marks its message as built by a hook
 (origin `unclassified` in the main view, `coordinator` in a sub-agent's view,
 where it sits under "From main") and it opens as a wake message does, so the
-same text typed or pasted by the person is drawn whole.
+same text typed or pasted by the user is drawn whole.
 
 The facts message opens with the plugin version that built the wake
 (`compacted by forward-compaction 2.2.5`), so a chat on an old build shows
 it. It holds, each section only when it has content:
 
 - the standing orders, first, under `## Standing orders — binding until the
-  person lifts them`: each order the frontier carried on its own list line, with a
+  user lifts them`: each order the frontier carried on its own list line, with a
   lift no recorded message proves shown beside it, carried
   whole, outside the budget; then each order lifted since the last install,
-  once, with the person's lifting words, and never again. A mechanical wake
+  once, with the user's lifting words, and never again. A mechanical wake
   carries the party's remembered orders the same way, and the frontier
   message and the mechanical wake's message both say to continue within
   them;
 - what arrived after the frontier and the kept messages lack: every
-  notification, message from the person or the coordinator, and message that
+  notification, message from the user or the coordinator, and message that
   resumed a sub-agent, verbatim, first;
 - plan mode and the plan file, when the party's plan-mode attachments
   (Claude Code's `prompt.attachment` rows `plan_mode`, `plan_mode_reentry`,
@@ -264,11 +278,11 @@ it. It holds, each section only when it has content:
   in plan mode or after it ended; a plan file not written yet is left out,
   one that could not be read is named. Both are carried whole, outside the
   budget;
-- the brief (sub-agent), verbatim, or the person's newest ten typed messages
+- the brief (sub-agent), verbatim, or the user's newest ten typed messages
   and every answer they gave to an AskUserQuestion, however old (main chat),
   oldest first, always carried whole, whatever their size. An answer, which
   reaches the model as the tool's result, never as a prompt, is headed
-  `(the person answering your question)` and holds each question, its
+  `(the user answering your question)` and holds each question, its
   `Answer:` and any `Notes:`. The heading counts what is carried of the messages
   the plugin recorded (`N of M recorded`; a restart begins the record again),
   the answers among it, and the oldest recorded typed messages left out, which
@@ -277,12 +291,24 @@ it. It holds, each section only when it has content:
   `[Image #N] (image not carried: the wake cannot hold images)`. A resumed
   sub-agent's resuming message is a delivered message, never part of its
   brief;
-- the newest ten messages delivered to the sub-agent (its coordinator's, and
-  the notifications that resumed it) or the notifications delivered (main
-  chat);
+- the newest ten messages delivered to the sub-agent (its coordinator's, the
+  returns of the agents it started, and the notifications that resumed it) or
+  the notifications delivered (main chat); one delivered into a running
+  sub-agent is recorded from the row Claude Code appends as it delivers it
+  (`session.append`, door `delivery`), as the model reads it, and one that
+  resumes it from the turn it starts;
 - the results of the tool calls made in the same response as the frontier;
-- the skills and commands in force, as they were loaded, within Claude Code's
-  own limits after its compaction: newest loaded first, each cut past 20,000
+- the skills and commands the party loaded, the latest load of each, newest
+  first. Only a pinned one (its file's frontmatter sets
+  `forward-compaction-keep: true`, `FORWARD_COMPACTION_KEEP_SKILLS` names it,
+  or that list holds `*`) and one the frontier's `keep_skills` names is
+  carried whole, under `## Skills in force, as loaded`, its heading saying
+  `pinned` or `named in your keep_skills`. Every other one is listed under
+  `## Skills not carried`, after one sentence saying its text is gone and the
+  `Skill` tool loads it again, as `- {name} ({source}, {path}): {description}`,
+  the description its frontmatter's, left out when it has none. A sub-agent's
+  skills follow the same rule as the main chat's. The skills carried whole
+  stay within Claude Code's own limits after its compaction: newest loaded first, each cut past 20,000
   characters to its first characters and Claude Code's marker
   `[... skill content truncated for compaction; use Read on the skill path if
   you need the full text]`, and all of them together within 100,000
@@ -295,7 +321,10 @@ it. It holds, each section only when it has content:
   without saying which party loaded it is named, not carried, in every
   party's wake, with the call that loads it again;
 - the agents, listed at install (at most 50 rows): for main every agent, for a
-  sub-agent only the agents it spawned (`parentId` its own id);
+  sub-agent only the agents it spawned (`parentId` its own id); then each agent
+  the party spawned that the list no longer holds, as `not in the list
+  (finished, stopped or gone)`, so a frontier's "still running" is not
+  trusted; past the cap the newest of those stay;
 - the background shells and crons, from the newest Stop event, with its age.
   The list is session-wide, not per agent; before any Stop event it says the
   running shells are unknown;
@@ -310,8 +339,12 @@ it. It holds, each section only when it has content:
   call touched nothing;
 - the task list as last set, from `TodoWrite` or `TaskCreate`/`TaskUpdate`,
   whichever moved last, carried whole, never fitted;
-- the files the frontier asked to carry, each at most 250 lines, and the ones
-  not carried with why;
+- the files the frontier asked to carry, each at most 250 lines; then the
+  party's files for later, one line each, `- {path} lines {lines} — {why}`
+  (`lines` and `why` when given), under `## Files for later, not loaded` and
+  one sentence saying their content is not in the context and to read each at
+  the step that needs it; then the load files not carried and the files for
+  later found gone, with why;
 - in a mechanical wake only, under `## Files you were working on, newest
   first, read at install`: the 5 newest files the party touched, read from
   disk at install, each at most 250 lines with the same `[N more lines not
@@ -320,7 +353,8 @@ it. It holds, each section only when it has content:
   recent files because it fires uninvited. One that could not be read is
   named in place with why. A frontier's wake carries only the files the
   frontier asked for, and the wake an error falls back to, built without
-  any read, carries neither these files nor the plan file.
+  any read, carries neither these files nor the plan file, and lists the
+  files for later unchecked.
 
 Its size is held to a budget of half Claude Code's ask point (the
 `autoCompactThreshold` that `$.session.usage` reports, held at or below the
@@ -333,7 +367,7 @@ was last compacted, so the system prompt, tools and skills every reading
 counts cancel. It is unmeasured until the reading has grown 5,000
 tokens past the base, or outside 1 to 8 characters a token, and unmeasured
 nothing is fitted: a frontier's wake carries the facts, the files and every
-message after the call, and a mechanical wake keeps no earlier message. The standing orders, the brief or the person's newest ten typed messages and every answer,
+message after the call, and a mechanical wake keeps no earlier message. The standing orders, the brief or the user's newest ten typed messages and every answer,
 and the task list are carried whole, outside the budget; the skills and
 commands within their own limits above, the plan file whole, and the files
 each within 250 lines, are outside it too. Every other section has a share — what arrived after the frontier 25%,
@@ -348,7 +382,7 @@ continue from its `## Next`, and says how many later messages
 follow. A mechanical wake replaces it with a message saying no frontier was
 written (or that the stored one never installed, naming the sections it
 lacked), how many of the newest messages were kept and how many are gone,
-and to re-establish the objective from the person's messages or the brief.
+and to re-establish the objective from the user's messages or the brief.
 
 Each install writes one line, measured: it waits for the party's first
 reading after the install, and is an info row in the logs, never on screen.
@@ -362,9 +396,9 @@ end, with after said as unknown, never guessed.
 
 ### What else happens at a compaction
 
-- A person's `/compact` runs Claude Code's own summary untouched; a stored
+- A user's `/compact` runs Claude Code's own summary untouched; a stored
   frontier is dropped, and the screen says so.
-- A message the person sends after the call does not cancel a stored frontier:
+- A message the user sends after the call does not cancel a stored frontier:
   it is among the messages kept after the call.
 - A stored frontier whose call is no longer in the party's transcript
   (something else compacted it), or that came with no `tool_use_id`, still
@@ -390,8 +424,8 @@ end, with after said as unknown, never guessed.
 
 `look_back` (`mcp__forward-compaction__look_back`), its schema in the prompt's
 tool list like `forward_compaction`'s (not deferred), searches only the caller's
-own transcript before its latest compaction, for an exact detail the wake no
-longer holds. Supply `query` (case-insensitive words; double quotes keep a
+own transcript before its latest compaction, however many compactions ago, back
+to the start of the transcript, for an exact detail the wake no longer holds. Supply `query` (case-insensitive words; double quotes keep a
 phrase whole) or `entry: N` to fetch one entry whole. Results rank by how
 many terms an entry holds, then newest first. Every call is logged as a
 compaction miss, with what was looked up.
@@ -497,9 +531,9 @@ With the defaults, on a 200k sub-agent max context (on 1M the ceiling is
 
 | Path | What | Retention |
 | --- | --- | --- |
-| `~/.local/state/forward-compaction/logs/decisions/{session}.jsonl` (`$PLUGIN_LOG_DIR/forward-compaction/decisions/` when set) | decision rows: every frontier stored (with `orders` and `lifted`, its counts of standing orders carried and lifted, and `notes`, the count of changes its receipt named), every nudge (with `notice`, its count since the party's last install, and `last`, true for the last one before the ceiling), every `finish-notice` row (`{party, tokens, start}`), every compaction decision, every `landed` row (`{party, kind, before, after, line}`, `kind` being `frontier` or `mechanical`, `before` and `after` the measured readings or `null`, written with the landed line), every `ignore` row (`{party, label, model, judged, matched}`, `judged` being `managed`, `ignored` or `unknown`, `matched` the ignore-list entry or `null`, written when a party's judgement is first made or changes), every `window` row (`{party, label, model, maxContext, source, ceiling}`, with `unknown` on the `fallback` source, written when a sub-agent's max context is first known or changes); a held-ask streak is one folded `skips` row, written when the streak closes and stamped with its last ask's time, so it can follow later rows; rows past the first 500 that come before the environment layer is read are counted in one `rows-lost` row | a file over 8 MiB moves to `.1`; other sessions' files older than 14 days, then all but the newest 200, are deleted |
+| `~/.local/state/forward-compaction/logs/decisions/{session}.jsonl` (`$PLUGIN_LOG_DIR/forward-compaction/decisions/` when set) | decision rows: every frontier stored (with `orders` and `lifted`, its counts of standing orders carried and lifted, `notes`, the count of changes its receipt named, `later`, the count of files listed for later after it, `keep`, `{kept, pinned, unknown}`, when it named `keep_skills`, and `dropFiles`, `{dropped, unknown}`, when it named `drop_files`), every nudge (with `notice`, its count since the party's last install, and `last`, true for the last one before the ceiling), every `finish-notice` row (`{party, tokens, start}`), every compaction decision (an installing one with `skills`, `{carried, listed}`, the skills carried whole and the lines under `## Skills not carried`, and `later`, the files listed for later), every `landed` row (`{party, kind, before, after, line}`, `kind` being `frontier` or `mechanical`, `before` and `after` the measured readings or `null`, written with the landed line), every `ignore` row (`{party, label, model, judged, matched}`, `judged` being `managed`, `ignored` or `unknown`, `matched` the ignore-list entry or `null`, written when a party's judgement is first made or changes), every `window` row (`{party, label, model, maxContext, source, ceiling}`, with `unknown` on the `fallback` source, written when a sub-agent's max context is first known or changes); a held-ask streak is one folded `skips` row, written when the streak closes and stamped with its last ask's time, so it can follow later rows; rows past the first 500 that come before the environment layer is read are counted in one `rows-lost` row | a file over 8 MiB moves to `.1`; other sessions' files older than 14 days, then all but the newest 200, are deleted |
 | `~/.local/state/forward-compaction/logs/{errors,warnings,info}.jsonl` (`$PLUGIN_LOG_DIR/forward-compaction/` when set) | the plugin's errors, warnings and info: every decision event lands at its level — errors and warnings in their files, every other operational event (nudge, stored, each compaction decision, party, skill, tool-registered, look-back, the lines said) in `info.jsonl`, a held-ask streak folded into its first row and one `skips` row. Each row's `event` names what happened (never a bare `error` or `warning`), and an error or warning row's `where` names the function that raised it. One failure is one row: a tool that fails to register writes one error row and one screen line, and is tried again at each `turn.start`: at once for its first three tries, then after a wait of 30 seconds that doubles with each failure, up to 15 minutes, for the rest of the session. Rows a write could not append (the lock held past its 10-second wait, the writer killed at its 15-second bound, any failure) stay queued, order kept, and are retried with the next write: a row may be written twice, never lost or torn. Only past 2,000 held rows are the oldest dropped, and their count goes to `errors.jsonl` (`plugin-log-rows-dropped`) once a write succeeds. A lock stage or broken lock whose writer died is cleared | a level file over 20 MiB moves to `.1`, the older ones to `.2` … `.5`, the oldest of five deleted |
-| `debug.jsonl` in the same directory (with `FORWARD_COMPACTION_DEBUG` on) | a row at every step: each hook entry (hook, party, trigger, model), each `$` answer the plugin decides on (`session.usage` figures, the `agent.list` count, each `turn.step` reading with its four counts and model, `fs.stat` results), the options and variables resolved, each ratio base and each ratio, measured or not and why, with the base's characters and tokens and the characters and reading now, each wake's section sizes and files, each nudge sent or withheld and why, and every decision row whole; numbers as the API gave them | as the level files: `.1` … `.5` |
+| `debug.jsonl` in the same directory (with `FORWARD_COMPACTION_DEBUG` on) | a row at every step: each hook entry (hook, party, trigger, model), each `$` answer the plugin decides on (`session.usage` figures, the `agent.list` count, each `turn.step` reading with its four counts and model, `fs.stat` results), the options and variables resolved, each ratio base and each ratio, measured or not and why, with the base's characters and tokens and the characters and reading now, each wake's section sizes and files, its `skills` and `later` counts, each nudge sent or withheld and why, and every decision row whole; numbers as the API gave them | as the level files: `.1` … `.5` |
 | `issues.md` in the same directory | notes a model appends when the plugin gave it trouble, as each tool answer asks | not managed by the plugin |
 | anything else | none: the recorded facts and the stored frontiers live in memory only | — |
 

@@ -8,8 +8,8 @@ import { addEntry, liftSources, newLedger } from '../plugins/forward-compaction/
 import { Parties } from '../plugins/forward-compaction/src/parties.ts';
 import { buildWake, mechanicalWake, type BuiltMessage, type WakeFacts, type WakeMessage } from '../plugins/forward-compaction/src/wake.ts';
 
-// Standing orders: the person's binding orders, carried by every frontier in `standing_orders`, remembered per party
-// across installs, the person's /compact and a plugin reload, carried on by the plugin when a frontier drops one without the person's lifting words,
+// Standing orders: the user's binding orders, carried by every frontier in `standing_orders`, remembered per party
+// across installs, the user's /compact and a plugin reload, carried on by the plugin when a frontier drops one without the user's lifting words,
 // and rendered above the frontier in every wake, the mechanical one included.
 
 const ORDER = { order: 'do not spawn more' };
@@ -23,7 +23,7 @@ describe('parseFrontier: standing_orders and lifted', () => {
     expect(parseFrontier({ ...valid, standing_orders: [ORDER] })).toMatchObject({ standingOrders: [ORDER] });
   });
 
-  it("keeps every non-blank order whatever else its entry holds, with no message of the person's holding it", () => {
+  it("keeps every non-blank order whatever else its entry holds, with no message of the user's holding it", () => {
     const orders = [{ order: 'never run any git command.', at: '2026-10-29' }, { order: 'Write no files.' }, { order: 'Land it on develop', at: 'yesterday' }];
     expect(parseFrontier({ ...valid, standing_orders: orders }, { remembered: [], said: [], party: 'main' })).toMatchObject({
       standingOrders: [{ order: 'never run any git command.' }, { order: 'Write no files.' }, { order: 'Land it on develop' }],
@@ -31,7 +31,7 @@ describe('parseFrontier: standing_orders and lifted', () => {
     });
   });
 
-  it("lifts an order in the person's words across spacing and letter case, whenever they were said", () => {
+  it("lifts an order in the user's words across spacing and letter case, whenever they were said", () => {
     const order = { order: 'Delete END TO END' };
     const said = ['God speed', 'Alright, write this plane DOWN\n\nWe will do THIS plan'];
     const by = 'Alright, write this plane DOWN We will do THIS plan';
@@ -42,8 +42,8 @@ describe('parseFrontier: standing_orders and lifted', () => {
   it('skips every bad order entry and names it, one line each, never quoting the order', () => {
     const out = parseFrontier({ ...valid, standing_orders: [{ order: ' ' }, { order: 'x', at: 'yesterday' }, ORDER], lifted: [{ order: 'x' }] });
     expect(out.notes).toEqual([
-      "standing_orders[0].order must be a non-blank string, the person's words verbatim: skipped.",
-      "lifted[0].by must be a non-blank string, the person's words that lifted the order, verbatim: skipped.",
+      "standing_orders[0].order must be a non-blank string, the user's words verbatim: skipped.",
+      "lifted[0].by must be a non-blank string, the user's words that lifted the order, verbatim: skipped.",
     ]);
     expect(out.standingOrders).toEqual([{ order: 'x' }, ORDER]);
     expect(parseFrontier({ ...valid, standing_orders: 'do not spawn' }).notes).toEqual(['standing_orders must be an array of {order}: none read from it.']);
@@ -53,7 +53,7 @@ describe('parseFrontier: standing_orders and lifted', () => {
   it('carries a remembered order the frontier left out, naming it', () => {
     const out = parseFrontier(valid, memory());
     expect(out.standingOrders).toEqual([ORDER]);
-    expect(out.notes).toEqual(['order "do not spawn more" was left out of your frontier and is carried on: it binds until the person lifts it.']);
+    expect(out.notes).toEqual(['order "do not spawn more" was left out of your frontier and is carried on: it binds until the user lifts it.']);
     expect(parseFrontier({ ...valid, standing_orders: [ORDER] }, memory())).toMatchObject({ standingOrders: [ORDER], lifted: [], notes: [] });
   });
 
@@ -64,8 +64,8 @@ describe('parseFrontier: standing_orders and lifted', () => {
     expect(bad.standingOrders).toEqual([{ order: ORDER.order, liftClaimed: 'spawn as many as you like' }, second]);
     expect(bad.lifted).toEqual([]);
     expect(bad.notes).toEqual([
-      'order "do not spawn more" still binding: no message from the person contains "spawn as many as you like"; the wake shows your lift beside it.',
-      'order "never push" was left out of your frontier and is carried on: it binds until the person lifts it.',
+      'order "do not spawn more" still binding: no message from the user contains "spawn as many as you like"; the wake shows your lift beside it.',
+      'order "never push" was left out of your frontier and is carried on: it binds until the user lifts it.',
     ]);
     expect(parseFrontier({ ...valid, standing_orders: [second], lifted: [{ order: ORDER.order, by: 'spawn two more' }] }, m)).toMatchObject({
       standingOrders: [second], lifted: [{ order: ORDER.order, by: 'spawn two more' }], notes: [],
@@ -85,7 +85,7 @@ describe('parseFrontier: standing_orders and lifted', () => {
     const own = parseFrontier({ ...valid, standing_orders: [ORDER], lifted: [{ order: ORDER.order, by }] }, { remembered: [ORDER], said, party: 'main' });
     expect(own.standingOrders).toEqual([{ ...ORDER, liftClaimed: by }]);
     expect(own.lifted).toEqual([]);
-    expect(own.notes).toEqual([`order "do not spawn more" still binding: no message from the person contains "${by}"; the wake shows your lift beside it.`]);
+    expect(own.notes).toEqual([`order "do not spawn more" still binding: no message from the user contains "${by}"; the wake shows your lift beside it.`]);
     expect(parseFrontier({ ...valid, standing_orders: [ORDER], lifted: [{ order: ORDER.order, by: 'spawn two more chats' }] }, { remembered: [ORDER], said, party: 'main' })).toMatchObject({
       standingOrders: [], lifted: [{ order: ORDER.order, by: 'spawn two more chats' }], notes: [],
     });
@@ -98,14 +98,14 @@ describe('parseFrontier: standing_orders and lifted', () => {
 });
 
 describe('the sources a lift is checked against', () => {
-  it("are main's person messages, and a sub-agent's brief and delivered messages, never a notice or another party's", () => {
+  it("are main's user messages, and a sub-agent's brief and delivered messages, never a notice or another party's", () => {
     let l = newLedger();
-    l = addEntry(l, { kind: 'person', party: 'main', at: 1, text: 'person said' });
+    l = addEntry(l, { kind: 'user', party: 'main', at: 1, text: 'user said' });
     l = addEntry(l, { kind: 'notice', party: 'main', at: 2, origin: 'task-notification', text: 'a notice' });
     l = addEntry(l, { kind: 'brief', party: 'agent:a1', at: 3, text: 'the brief', spawnedBy: 'main' });
     l = addEntry(l, { kind: 'received', party: 'agent:a1', at: 4, origin: 'coordinator', text: 'delivered' });
     l = addEntry(l, { kind: 'received', party: 'agent:b2', at: 5, origin: 'coordinator', text: 'to another' });
-    expect(liftSources(l, 'main')).toEqual(['person said']);
+    expect(liftSources(l, 'main')).toEqual(['user said']);
     expect(liftSources(l, 'agent:a1')).toEqual(['the brief', 'delivered']);
   });
 });
@@ -159,7 +159,7 @@ describe('the wake renders the standing orders above the frontier', () => {
   type Msg = WakeMessage & { handle: string };
   const call: Msg = { role: 'assistant', text: 'compacting', toolUses: [{ tool_use_id: 't9', tool: 'mcp__forward-compaction__forward_compaction', input: {} }], handle: 'h1' };
   const answer: Msg = { role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: 't9', text: 'Frontier stored' }], handle: 'h2' };
-  const facts: WakeFacts = { person: [{ at: Date.UTC(2026, 9, 27, 14, 53), text: 'Alright, do not spawn more' }], notices: [], received: [], skills: [], unattributedSkills: [] };
+  const facts: WakeFacts = { user: [{ at: Date.UTC(2026, 9, 27, 14, 53), text: 'Alright, do not spawn more' }], notices: [], received: [], skills: [], unattributedSkills: [] };
   const shared = { messages: [call, answer], party: 'main' as const, tokens: 41_000, askPoint: 63_000, now: 0, charsPerToken: 3.5, facts: () => facts };
 
   it('opens the facts with the binding section, whole, before every other section and the frontier, an unproven lift beside its order', () => {
@@ -173,9 +173,9 @@ describe('the wake renders the standing orders above the frontier', () => {
       `- ${ORDER.order}`,
       '- never force-push',
       '  (your frontier lifted it with "force it", but no message recorded for you holds those words: it still binds)',
-      '### Lifted, no longer binding', 'never push', 'The person lifted it: "push it now"',
+      '### Lifted, no longer binding', 'never push', 'The user lifted it: "push it now"',
     ].join('\n'));
-    expect(f.indexOf(ORDERS_HEADING)).toBeLessThan(f.indexOf("## The person's messages"));
+    expect(f.indexOf(ORDERS_HEADING)).toBeLessThan(f.indexOf("## The user's messages"));
     expect((wake.messages[1] as BuiltMessage).text).toContain('continue from its ## Next, within the standing orders above.');
     expect(wake.sizes[0]).toEqual({ section: ORDERS_HEADING, chars: sections[0]!.length });
   });
@@ -197,7 +197,7 @@ describe('the wake renders the standing orders above the frontier', () => {
   });
 });
 
-// The adapter, end to end: the bug as it happened (2026-10-27): frontier A quoted the person's "do not spawn more",
+// The adapter, end to end: the bug as it happened (2026-10-27): frontier A quoted the user's "do not spawn more",
 // frontier B dropped it and was accepted without it, and the woken agent spawned 12 paid chats.
 type Fake = ReturnType<typeof fakeEngine>;
 const fakes: Fake[] = [];
@@ -237,7 +237,7 @@ const A = { standing_orders: [ORDER] };
 // Each case drives several frontier cycles over a 200k-character transcript through the hooks:
 // CPU-bound seconds that a loaded host stretches past vitest's 5 s default.
 describe('the dropped standing order, replayed', { timeout: 30_000 }, () => {
-  it('stores frontier B without the order and carries it on, keeps it binding on a lift nobody said, and lifts it in the words the person sent', async () => {
+  it('stores frontier B without the order and carries it on, keeps it binding on a lift nobody said, and lifts it in the words the user sent', async () => {
     const f = await begin();
     await say(f, 'Alright, do not spawn more, let these finish and finilize it');
     expect(await frontier(f, 'tu-a', A)).toContain('Frontier stored');
@@ -251,7 +251,7 @@ describe('the dropped standing order, replayed', { timeout: 30_000 }, () => {
 
     const invented = await frontier(f, 'tu-c', { lifted: [{ order: ORDER.order, by: 'spawn as many chats as you need' }] });
     expect(invented).toContain('Frontier stored');
-    expect(invented).toContain('order "do not spawn more" still binding: no message from the person contains "spawn as many chats as you need"; the wake shows your lift beside it.');
+    expect(invented).toContain('order "do not spawn more" still binding: no message from the user contains "spawn as many chats as you need"; the wake shows your lift beside it.');
     expect((await ask(f, transcript('tu-c'))).messages[0].text).toContain(`${ORDERS_HEADING}\n- ${ORDER.order}\n  (your frontier lifted it with "spawn as many chats as you need", but no message recorded for you holds those words: it still binds)`);
 
     await say(f, 'ok, spawn as many chats as you need');
@@ -275,7 +275,7 @@ describe('the dropped standing order, replayed', { timeout: 30_000 }, () => {
     expect(mech.messages[0].text).toContain(`${ORDERS_HEADING}\n- ${ORDER.order}`);
   });
 
-  it("keeps the order across the person's /compact: the next frontier has it carried on", async () => {
+  it("keeps the order across the user's /compact: the next frontier has it carried on", async () => {
     const f = await begin();
     await frontier(f, 'tu-a', A);
     expect(await ask(f, transcript('tu-a'), 'manual')).toEqual({ skip: 'native ran' });

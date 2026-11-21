@@ -3,7 +3,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fakeEngine, usage } from './fakes/engine.ts';
 
-// A decision log that cannot be written fails every append the same way. The person is told once per distinct
+// A decision log that cannot be written fails every append the same way. The user is told once per distinct
 // failure, not on every row, while every hook keeps deciding as if the log were fine.
 
 type Fake = ReturnType<typeof fakeEngine>;
@@ -43,7 +43,7 @@ const failures = (texts: string[]) => texts.filter((line) => line.includes('writ
 const lost = (texts: string[]) => texts.filter((line) => line.includes('not written to'));
 
 describe('a decision log that cannot be written, through the adapter', () => {
-  it('tells the person once for the same failure across many rows', async () => {
+  it('tells the user once for the same failure across many rows', async () => {
     const cc = engine(() => 'EACCES: permission denied');
     await cc.start();
     for (let i = 0; i < 4; i++) await cc.ask();
@@ -57,7 +57,7 @@ describe('a decision log that cannot be written, through the adapter', () => {
     expect(failures(cc.texts())).toEqual([]);
   });
 
-  it('tells the person once when the same failure carries a varying number', async () => {
+  it('tells the user once when the same failure carries a varying number', async () => {
     let size = 4_194_304;
     const cc = engine(() => `EFBIG: ${size++} bytes, over the 4 MiB limit`);
     await cc.start();
@@ -65,7 +65,7 @@ describe('a decision log that cannot be written, through the adapter', () => {
     expect(failures(cc.texts())).toEqual([`writing the decision log for ${PATH} failed: EFBIG: 4194304 bytes, over the 4 MiB limit; its 1 row is kept and written with the next`]);
   });
 
-  it('tells the person again when the failure is a different one, and promises no next write at session end', async () => {
+  it('tells the user again when the failure is a different one, and promises no next write at session end', async () => {
     let n = 0;
     let ending = false;
     const cc = engine(() => (ending ? 'EIO: i/o error' : n++ < 2 ? 'EACCES: permission denied' : 'ENOSPC: no space left'));

@@ -1,5 +1,4 @@
 import { describe, expect, it } from 'vitest';
-import { DROP_MAX } from '../plugins/forward-compaction/src/drop.ts';
 import {
   FORWARD_INPUT_SCHEMA,
   FORWARD_TOOL,
@@ -31,22 +30,23 @@ describe('the forward_compaction tool as registered', () => {
     expect(FORWARD_TOOL_DESCRIPTION).not.toContain('"frontier"');
     expect(FORWARD_TOOL_DESCRIPTION).toContain('standing_orders');
     expect(FORWARD_TOOL_DESCRIPTION).toContain('the newest later messages that fit stay verbatim, the rest named as not carried');
+    expect(FORWARD_TOOL_DESCRIPTION).toContain('Write what only a later step needs to a file, list it in load_files with later: true, and name that step in remaining or next.');
   });
 
   it('names its caps once, and the schema agrees with them', () => {
     expect([LOAD_FILE_MAX_LINES, WHY_MAX_CHARS]).toEqual([250, 200]);
     expect(FORWARD_INPUT_SCHEMA.properties.load_files).not.toHaveProperty('maxItems');
-    expect(FORWARD_INPUT_SCHEMA.properties.load_files.description).toBe('Files carried into the new context, read when it installs: each up to 250 lines; a longer file or range carries its first 250 and names where to Read the rest. Pass lines ranges to carry only what you need.');
+    expect(FORWARD_INPUT_SCHEMA.properties.load_files.description).toBe('Files the next step reads, read into the new context when it installs: each up to 250 lines; a longer file or range carries its first 250 and names where to Read the rest. Pass lines ranges to carry only what you need. A file only a later step needs takes later: true.');
     expect(FORWARD_INPUT_SCHEMA.properties.load_files.items.properties.why.description).toBe('What you need it for, one line; past 200 characters it is cut.');
   });
 
   it('closes the schema: five required sections, two optional ones, load_files each with a path, standing orders each with its words', () => {
     expect(FORWARD_INPUT_SCHEMA).toMatchObject({ type: 'object', additionalProperties: false, required: REQUIRED });
-    expect(Object.keys(FORWARD_INPUT_SCHEMA.properties)).toEqual([...SECTIONS, 'load_files', 'drop_skills', 'standing_orders', 'lifted']);
+    expect(Object.keys(FORWARD_INPUT_SCHEMA.properties)).toEqual([...SECTIONS, 'load_files', 'drop_files', 'keep_skills', 'standing_orders', 'lifted']);
     for (const name of SECTIONS) expect(FORWARD_INPUT_SCHEMA.properties[name as 'objective']).toMatchObject({ type: 'string', description: expect.any(String) });
     for (const name of REQUIRED) expect(FORWARD_INPUT_SCHEMA.properties[name as 'objective'].description).toMatch(/^MANDATORY: /);
     expect(FORWARD_INPUT_SCHEMA.properties.objective.description).toBe('MANDATORY: what the work is for and what done means.');
-    expect(FORWARD_INPUT_SCHEMA.properties.decisions.description).toBe("MANDATORY: every ruling the person gave on how something gets done, in the person's words, each with its undo when one exists; \"none\" when there are none. Rules binding the rest of the work go in standing_orders.");
+    expect(FORWARD_INPUT_SCHEMA.properties.decisions.description).toBe("MANDATORY: every ruling the user gave on how something gets done, in the user's words, each with its undo when one exists; \"none\" when there are none. Rules binding the rest of the work go in standing_orders.");
     expect(FORWARD_INPUT_SCHEMA.properties.done.description).toBe('MANDATORY: finished pieces, each with how it was verified; every figure with the command that produced it.');
     expect(FORWARD_INPUT_SCHEMA.properties.remaining.description).toBe('MANDATORY: every step left, in order; "none" when nothing is left. A plan file you update at each milestone may stand in: name its path here and put it in load_files.');
     expect(FORWARD_INPUT_SCHEMA.properties.next.description).toBe('MANDATORY: the first concrete action after the wake.');
@@ -54,29 +54,32 @@ describe('the forward_compaction tool as registered', () => {
     for (const name of SECTIONS.filter((n) => !REQUIRED.includes(n))) expect(FORWARD_INPUT_SCHEMA.properties[name as 'blocked'].description).toMatch(/^Optional: /);
     const files = FORWARD_INPUT_SCHEMA.properties.load_files;
     expect(files).toMatchObject({ type: 'array', items: { additionalProperties: false, required: ['path'] } });
-    expect(FORWARD_INPUT_SCHEMA.properties.standing_orders.items).toEqual({ type: 'object', required: ['order'], properties: { order: { type: 'string', description: "The person's words, verbatim." } } });
+    expect(files.items.properties.later).toEqual({ type: 'boolean', description: 'true: not read in; listed by path and why in every wake until load_files names it again or drop_files drops it.' });
+    expect(FORWARD_INPUT_SCHEMA.properties.drop_files).toEqual({ type: 'array', items: { type: 'string' }, description: 'Paths listed for later (load_files later: true) that no step needs any more.' });
+    expect(FORWARD_INPUT_SCHEMA.properties.keep_skills).toEqual({ type: 'array', items: { type: 'string' }, description: 'Skills or commands whose text this one wake carries whole; any other is listed by name and description, to load again with the Skill tool.' });
+    expect(FORWARD_INPUT_SCHEMA.properties.standing_orders.items).toEqual({ type: 'object', required: ['order'], properties: { order: { type: 'string', description: "The user's words, verbatim." } } });
   });
 });
 
 describe('parseFrontier assembles the sections and keeps their text whole', () => {
   it('assembles the five required sections in order, Decisions right after Objective, and no load files when none are given', () => {
-    expect(parseFrontier(valid)).toEqual({ frontier: text, loadFiles: [], loadAt: [], dropSkills: [], standingOrders: [], lifted: [], missing: [], notes: [] });
+    expect(parseFrontier(valid)).toEqual({ frontier: text, loadFiles: [], loadAt: [], dropFiles: [], keepSkills: [], standingOrders: [], lifted: [], missing: [], notes: [] });
   });
 
   it('places the optional sections after them, Blocked before Findings, and leaves out an absent or blank one', () => {
-    expect(parseFrontier({ findings: 'f', ...valid, blocked: 'b' })).toEqual({ frontier: `${text}\n\n## Blocked\nb\n\n## Findings\nf`, loadFiles: [], loadAt: [], dropSkills: [], standingOrders: [], lifted: [], missing: [], notes: [] });
-    expect(parseFrontier({ ...valid, findings: 'f' })).toEqual({ frontier: `${text}\n\n## Findings\nf`, loadFiles: [], loadAt: [], dropSkills: [], standingOrders: [], lifted: [], missing: [], notes: [] });
-    expect(parseFrontier({ ...valid, blocked: '  ' })).toEqual({ frontier: text, loadFiles: [], loadAt: [], dropSkills: [], standingOrders: [], lifted: [], missing: [], notes: [] });
+    expect(parseFrontier({ findings: 'f', ...valid, blocked: 'b' })).toEqual({ frontier: `${text}\n\n## Blocked\nb\n\n## Findings\nf`, loadFiles: [], loadAt: [], dropFiles: [], keepSkills: [], standingOrders: [], lifted: [], missing: [], notes: [] });
+    expect(parseFrontier({ ...valid, findings: 'f' })).toEqual({ frontier: `${text}\n\n## Findings\nf`, loadFiles: [], loadAt: [], dropFiles: [], keepSkills: [], standingOrders: [], lifted: [], missing: [], notes: [] });
+    expect(parseFrontier({ ...valid, blocked: '  ' })).toEqual({ frontier: text, loadFiles: [], loadAt: [], dropFiles: [], keepSkills: [], standingOrders: [], lifted: [], missing: [], notes: [] });
   });
 
   it('keeps a section\'s own headings, blank lines, trailing space and Windows line ends untouched', () => {
     const own = 'x  \r\n\r\n### Goal\r\n## Notes\r\n';
-    expect(parseFrontier({ ...valid, objective: own })).toEqual({ frontier: text.replace('ship it', own), loadFiles: [], loadAt: [], dropSkills: [], standingOrders: [], lifted: [], missing: [], notes: [] });
+    expect(parseFrontier({ ...valid, objective: own })).toEqual({ frontier: text.replace('ship it', own), loadFiles: [], loadAt: [], dropFiles: [], keepSkills: [], standingOrders: [], lifted: [], missing: [], notes: [] });
   });
 
   it('keeps a load file as given, lines and why included', () => {
     const files = [{ path: '/a/b.ts', lines: '1-60,160-185', why: 'the parser' }, { path: 'C:\\a\\b.ts', why: 'win' }];
-    expect(parseFrontier({ ...valid, load_files: files })).toEqual({ frontier: text, loadFiles: files, loadAt: [0, 1], dropSkills: [], standingOrders: [], lifted: [], missing: [], notes: [] });
+    expect(parseFrontier({ ...valid, load_files: files })).toEqual({ frontier: text, loadFiles: files, loadAt: [0, 1], dropFiles: [], keepSkills: [], standingOrders: [], lifted: [], missing: [], notes: [] });
   });
 
   it('takes a frontier of any length whole, never refused or trimmed for size', () => {
@@ -91,7 +94,7 @@ describe('parseFrontier assembles the sections and keeps their text whole', () =
 
 describe('parseFrontier stores whatever it is sent and names what it left out', () => {
   it('V1 an unknown field is carried under findings with its name, the old frontier argument included (R14)', () => {
-    expect(notes({ ...valid, drop: [] })).toEqual(['unknown field "drop" carried under findings. The fields are objective, decisions, done, remaining, next, blocked, findings, load_files, drop_skills, standing_orders and lifted.']);
+    expect(notes({ ...valid, drop: [] })).toEqual(['unknown field "drop" carried under findings. The fields are objective, decisions, done, remaining, next, blocked, findings, load_files, drop_files, keep_skills, standing_orders and lifted.']);
     expect(parseFrontier({ ...valid, notes: 'keep the cache warm' }).frontier).toBe(`${text}\n\n## Findings\n[notes, an argument forward_compaction does not take]\nkeep the cache warm`);
     expect(parseFrontier({ ...valid, findings: 'mine', extra: { a: 1 } }).frontier).toBe(`${text}\n\n## Findings\nmine\n\n[extra, an argument forward_compaction does not take]\n{"a":1}`);
   });
@@ -145,7 +148,7 @@ describe('parseFrontier stores whatever it is sent and names what it left out', 
 
   it('V4 names every bad argument, one line each, and stores an input with nothing in it', () => {
     expect(notes({ done: 'd', extra: 1, findings: {} })).toEqual([
-      'unknown field "extra" carried under findings. The fields are objective, decisions, done, remaining, next, blocked, findings, load_files, drop_skills, standing_orders and lifted.',
+      'unknown field "extra" carried under findings. The fields are objective, decisions, done, remaining, next, blocked, findings, load_files, drop_files, keep_skills, standing_orders and lifted.',
       'objective was missing: your frontier is stored without it.',
       'decisions was missing: your frontier is stored without it.',
       'remaining was missing: your frontier is stored without it.',
@@ -194,11 +197,18 @@ describe('parseFrontier stores whatever it is sent and names what it left out', 
     expect(parseFrontier({ ...valid, load_files: [{ why: 'x' }, { path: '/b', why: 'x' }] })).toMatchObject({ loadFiles: [{ path: '/b', why: 'x' }], loadAt: [1] });
   });
 
-  it('drop_skills: a bad name is skipped, a non-array drops none, and names past the cap are not used', () => {
-    expect(parseFrontier({ ...valid, drop_skills: ['a', '', 3] })).toMatchObject({ dropSkills: ['a'], notes: ['drop_skills[1] must be a non-blank string: skipped.', 'drop_skills[2] must be a non-blank string: skipped.'] });
-    expect(parseFrontier({ ...valid, drop_skills: 'a' })).toMatchObject({ dropSkills: [], notes: ['drop_skills must be an array of skill or command names: none dropped.'] });
-    const many = Array.from({ length: DROP_MAX + 2 }, (_, i) => `s${i}`);
-    expect(parseFrontier({ ...valid, drop_skills: many })).toMatchObject({ dropSkills: many.slice(0, DROP_MAX), notes: [expect.stringContaining('over the')] });
+  it('keep_skills and drop_files: a bad entry is skipped, a non-array keeps or drops none, and a relative path is resolved', () => {
+    expect(parseFrontier({ ...valid, keep_skills: ['a', '', 3] })).toMatchObject({ keepSkills: ['a'], notes: ['keep_skills[1] must be a non-blank string: skipped.', 'keep_skills[2] must be a non-blank string: skipped.'] });
+    expect(parseFrontier({ ...valid, keep_skills: 'a' })).toMatchObject({ keepSkills: [], notes: ['keep_skills must be an array of skill or command names: none kept.'] });
+    expect(parseFrontier({ ...valid, drop_files: ['/a', ' ', 'b.md'] }, undefined, '/work')).toMatchObject({ dropFiles: ['/a', '/work/b.md'], notes: ['drop_files[1] must be a non-blank string: skipped.', 'drop_files[1] "b.md" is relative: carried as /work/b.md, in the session\'s directory.'] });
+    expect(parseFrontier({ ...valid, drop_files: '/a' })).toMatchObject({ dropFiles: [], notes: ['drop_files must be an array of paths: none dropped.'] });
+  });
+
+  it('load_files later: true lists the file for later, false or absent carries it whole, any other value is named and carries it whole', () => {
+    const mixed = parseFrontier({ ...valid, load_files: [{ path: '/a', why: 'w', later: true }, { path: '/b', later: false }, { path: '/c' }] });
+    expect([mixed.loadFiles, mixed.notes]).toEqual([[{ path: '/a', why: 'w', later: true }, { path: '/b' }, { path: '/c' }], []]);
+    const bad = parseFrontier({ ...valid, load_files: [{ path: '/a', later: 'yes' }] });
+    expect([bad.loadFiles, bad.notes]).toEqual([[{ path: '/a' }], ['load_files[0].later must be true or false; got string: /a carried whole.']]);
   });
 });
 

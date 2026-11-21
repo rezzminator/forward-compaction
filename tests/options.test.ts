@@ -17,7 +17,7 @@ describe('parseSize and sizeTokens', () => {
     expect(parseSize('abc')).toEqual({ ok: false, error: 'not an integer, a k/m value or a percentage: "abc"' });
   });
 
-  it('writes a size the way a person does', () => {
+  it('writes a size the way a user does', () => {
     expect(formatSize({ percent: 60 })).toBe('60%');
     expect(formatSize({ tokens: 50_000 })).toBe('50000');
   });

@@ -5,9 +5,9 @@
 **Claude Code compaction without the wait. The model writes its own handoff while it still remembers everything, so your exact words carry through.**
 
 [![Claude Code plugin](https://img.shields.io/badge/Claude%20Code-plugin-D97757)](https://docs.claude.com/en/docs/claude-code/plugins)
-[![Version](https://img.shields.io/badge/version-2.3.1-blue)](./CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-2.4.0-blue)](./CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
-[![Tests](https://img.shields.io/badge/tests-678%20passing-brightgreen)](#development)
+[![Tests](https://img.shields.io/badge/tests-722%20passing-brightgreen)](#development)
 [![Built with Professor](https://img.shields.io/badge/built%20with-Professor-8A2BE2)](https://github.com/rezzminator/professor)
 
 </div>
@@ -35,7 +35,7 @@ forward-compaction turns this around. As the context grows, the model is told ho
 - **Faster main-chat compactions.** The median is 24.2 s instead of 54.9 s: the time the model spends writing its handoff, plus 0.085 s to install it.
 - **Less context left behind.** About 8k tokens remain instead of 18.6k, so every later request carries less.
 - **Your words, verbatim.** Your ten newest messages, every answer you gave to the model's questions, and the standing orders it recorded from you ("never push without asking") come through word for word.
-- **Work in flight survives.** The messages after the handoff call stay exactly as they were. The skills in use, the files touched, the shell commands run and the task list come along too.
+- **Work in flight survives.** The messages after the handoff call stay exactly as they were. The files touched, the shell commands run and the task list come along too, and the skills in use as a list to load again, so a skill's text costs nothing until it is needed.
 - **Every sub-agent too.** Each sub-agent compacts the same way and keeps its own brief.
 - **A safety net.** A chat that never writes a handoff is compacted automatically at a ceiling, keeping your messages and its newest work.
 - **A way back.** `look_back` searches the chat's own transcript from before the compaction for an exact detail the handoff left out.
@@ -66,7 +66,7 @@ Cost is one read of the context being compacted ($0.20/M cached), the text writt
 
 ## Install
 
-You need Claude Code with function hooks, an early-access feature. The plugin is tested on Claude Code 2.1.309.
+You need Claude Code with function hooks, an early-access feature. The plugin is tested on Claude Code 2.1.325.
 
 **1. Turn on function hooks and lower the compaction window**, in the shell that starts Claude Code:
 
@@ -133,7 +133,7 @@ The main chat also writes its handoff when its whole work is finished, before it
 
 After a compaction the model's context holds, oldest first:
 
-1. **The facts the plugin recorded as they happened:** your standing orders; anything that arrived after the handoff call; the plan file when in plan mode; your ten newest messages and every answer you gave (or the sub-agent's brief); the skills in use; the agents and background shells; the shell commands it ran; the files it touched; the task list; and any files the handoff asked to carry.
+1. **The facts the plugin recorded as they happened:** your standing orders; anything that arrived after the handoff call; the plan file when in plan mode; your ten newest messages and every answer you gave (or the sub-agent's brief); the skills in use, each listed by name and description, its text carried only when it is pinned or the handoff's `keep_skills` names it; the files the handoff listed for later, by path and why, never read in; the agents and background shells; the shell commands it ran; the files it touched; the task list; and any files the handoff asked to carry.
 2. **The handoff, word for word**, with an instruction to continue from its next action.
 3. **The messages after the call, word for word**, as many as fit. Any dropped are named as not carried.
 
@@ -150,7 +150,10 @@ The model writes its handoff with one call, one argument per section:
 ```text
 forward_compaction({
   "objective": "…", "decisions": "…", "done": "…", "remaining": "…", "next": "…",
-  "load_files": [{ "path": "/abs/plan.md", "why": "the plan I am executing" }]
+  "load_files": [
+    { "path": "/abs/plan.md", "why": "the plan I am executing" },
+    { "path": "/abs/release-steps.md", "why": "step 5's checklist", "later": true }
+  ]
 })
 ```
 
@@ -164,8 +167,9 @@ forward_compaction({
 | `blocked`, `findings` | no | What waits on whom; the model's own notes, errors and commands it will need again. |
 | `standing_orders` | no | Your orders that bind the rest of the work, in your exact words. The plugin keeps them across compactions until you lift them. |
 | `lifted` | no | Orders you have lifted, with the words you lifted them with. |
-| `load_files` | no | Files to read back in after the compaction, up to 250 lines each; a binary file is named, never carried. |
-| `drop_skills` | no | Skills no longer needed, dropped once two handoffs in a row name them. |
+| `load_files` | no | Files to read back in after the compaction, up to 250 lines each; a binary file is named, never carried. One marked `"later": true` is never read in: every compaction lists it by path and why until a handoff names it again or drops it. |
+| `drop_files` | no | Files listed for later that no step needs any more. |
+| `keep_skills` | no | Skills and commands whose text the next compaction carries whole; every other one is listed by name and description, to load again with the Skill tool. |
 
 The call is never refused. The reply says when the handoff will install and names anything it left out. A handoff missing a required section is stored and installs as it is, the compaction naming each section it lacks; a complete one sent later replaces it.
 
@@ -194,7 +198,7 @@ A **size** is a token count (`100000`), a number with a k or m suffix (`100k`, `
 | `FORWARD_COMPACTION_SUBAGENT_NUDGE_EVERY` | size | `65k` | How much a sub-agent's context grows between nudges. |
 | `FORWARD_COMPACTION_CEILING_NATIVE` | flag | `0` | `1`: at the ceiling with no handoff, Claude Code's own summary runs instead of the automatic compaction. |
 | `FORWARD_COMPACTION_IGNORE_MODELS` | model list | `haiku` | Models that get no nudge and are compacted automatically at their ceiling; a handoff they write still installs ([Ignored models](./docs/spec.md#ignored-models)). |
-| `FORWARD_COMPACTION_KEEP_SKILLS` | name list | `none` | Skills and commands never dropped after a compaction, comma-separated; a skill file's `forward-compaction-keep: true` frontmatter does the same. |
+| `FORWARD_COMPACTION_KEEP_SKILLS` | name list | `none` | Skills and commands whose text every compaction carries whole, comma-separated, `*` for all of them; a skill file's `forward-compaction-keep: true` frontmatter does the same. Every other one is listed by name and description. |
 | `FORWARD_COMPACTION_DEBUG` | flag | `1` | `0`: no `debug.jsonl`, the row the plugin writes at every step. |
 
 An example `settings.json`:
@@ -239,7 +243,7 @@ It is reminded at each nudge point, more firmly each time. At its ceiling (60% o
 <details>
 <summary><b>Does a sub-agent with a <code>tools:</code> allowlist get the tool?</b></summary>
 
-The plugin cannot see a sub-agent's tool list, so it nudges it anyway, and the nudge tells it to carry on if the tool is not in its list. Such a sub-agent is compacted automatically at its ceiling, keeping its brief, its skills and its newest messages.
+The plugin cannot see a sub-agent's tool list, so it nudges it anyway, and the nudge tells it to carry on if the tool is not in its list. Such a sub-agent is compacted automatically at its ceiling, keeping its brief, the list of its skills and its newest messages.
 </details>
 
 <details>

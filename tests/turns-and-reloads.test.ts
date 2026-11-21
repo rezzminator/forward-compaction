@@ -3,7 +3,7 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fakeEngine, usage, type Script } from './fakes/engine.ts';
 
-// The adapter's wiring of session-lifetime facts: a new turn ends the request-too-long inference (D8), the person's
+// The adapter's wiring of session-lifetime facts: a new turn ends the request-too-long inference (D8), the user's
 // messages outlive a plugin reload through the host's session state, finished tool calls record the party's work, and a
 // sub-agent far past its nudges has every call run, unrefused.
 
@@ -54,7 +54,7 @@ describe('the prompts across a plugin reload', () => {
     await after.dispatch('prompt.submit', { text: 'typed after the reload', origin: { kind: 'composer' } }, async () => ({}));
     await step(after, 125_000);
     const r = await ask(after);
-    expect(r.messages[0].text).toContain("## The person's messages, oldest first (2 of 2 recorded)\n### ");
+    expect(r.messages[0].text).toContain("## The user's messages, oldest first (2 of 2 recorded)\n### ");
     expect(r.messages[0].text.indexOf('typed before the reload')).toBeLessThan(r.messages[0].text.indexOf('typed after the reload'));
     expect(r.messages[0].text.indexOf('typed before the reload')).toBeGreaterThan(-1);
   });
@@ -63,18 +63,20 @@ describe('the prompts across a plugin reload', () => {
     const state = new Map<string, { value: unknown; version: number }>();
     const before = await begin({ state });
     await before.dispatch('agent.spawn', { tool_use_id: 'tu-spawn', prompt: 'Brief for agent one', description: 'one', subagentType: 'general-purpose', provider: { kind: 'local' } }, async () => ({ model: 'sonnet', agentId: 'a1b2c3d4e5' }));
-    await before.dispatch('session.receive', { agentId: 'a1b2c3d4e5', origin: { kind: 'coordinator' }, text: 'also check the docs' }, async () => ({}));
+    const note = '<system-reminder>\nThe coordinator sent a message while you were working:\nalso check the docs\n\nAddress this before completing your current task.\n</system-reminder>';
+    await before.dispatch('session.append', { door: 'delivery', origin: { kind: 'coordinator' }, uuid: 'u-1', agentId: 'a1b2c3d4e5', message: { type: 'attachment', name: 'queued_command', role: 'user', content: [{ type: 'text', text: note }] } }, async (e: unknown) => e);
     const after = await begin({ state, agents: () => [{ id: 'a1b2c3d4e5', type: 'general-purpose', status: 'running', description: 'one' }] });
     await after.dispatch('turn.step', { turnId: 't1', index: 0, model: 'claude-sonnet-4-5', messageCount: 4, agentId: 'a1b2c3d4e5' }, async () => ({ turnId: 't1', index: 0, answer: '', toolUses: [], stopReason: 'tool_use', ...usage(170_000) }));
     const r = await after.dispatch('session.compact', { trigger: 'auto', agentId: 'a1b2c3d4e5', messages }, async () => ({ skip: 'native ran' }));
     expect(r.messages[0].text).toContain('## Your brief\nBrief for agent one');
-    expect(r.messages[0].text).toContain('also check the docs');
+    expect(r.messages[0].text).toContain(`(coordinator)\n${note}`);
   });
 });
 
 describe('the skills across a plugin reload', () => {
-  it("carries main's skills loaded before a reload into the wake after it, one loaded since winning", async () => {
+  it("carries main's skills loaded before a reload into the wake after it, one loaded since winning, every one pinned by FORWARD_COMPACTION_KEEP_SKILLS=* set at the reload", async () => {
     const state = new Map<string, { value: unknown; version: number }>();
+    const env = { FORWARD_COMPACTION_KEEP_SKILLS: '*' };
     const before = await begin({ state });
     for (const [skill, text] of [['god-speed', 'GOD SPEED BODY'], ['ponytail', 'OLD PONYTAIL']]) {
       await before.dispatch('tool.call', { tool: 'Skill', tool_use_id: `tu-${skill}`, skill }, async () => {
@@ -82,16 +84,14 @@ describe('the skills across a plugin reload', () => {
         return { result: 'loaded' };
       });
     }
-    const after = await begin({ state });
+    const after = await begin({ state, env });
     await after.dispatch('tool.call', { tool: 'Skill', tool_use_id: 'tu-p2', skill: 'ponytail' }, async () => {
       await after.dispatch('skill.prompt', { skill: 'ponytail', text: 'NEW PONYTAIL', frontmatter: {} }, async () => ({ text: 'NEW PONYTAIL' }));
       return { result: 'loaded' };
     });
     await step(after, 125_000);
     const facts = (await ask(after)).messages[0].text;
-    expect(facts).toContain('## Skills in force, as loaded');
-    expect(facts).toContain('GOD SPEED BODY');
-    expect(facts).toContain('NEW PONYTAIL');
+    expect(facts).toContain('## Skills in force, as loaded\n### ponytail (unknown source, pinned)\nNEW PONYTAIL\n### god-speed (unknown source, pinned)\nGOD SPEED BODY');
     expect(facts).not.toContain('OLD PONYTAIL');
   });
 });
@@ -132,8 +132,8 @@ describe('a sub-agent far past its nudges', () => {
   });
 });
 
-describe("the person's answers to AskUserQuestion", () => {
-  it("records main's answered questions as the person's words and carries each into the wake beside the ten newest typed", async () => {
+describe("the user's answers to AskUserQuestion", () => {
+  it("records main's answered questions as the user's words and carries each into the wake beside the ten newest typed", async () => {
     const f = await begin();
     const questions = [{ question: 'What should notes and guidance show?', header: 'Quotes', options: [], multiSelect: false }];
     const result = { questions, answers: { 'What should notes and guidance show?': 'Quote if verbatim, else segment' }, annotations: {} };
@@ -141,8 +141,8 @@ describe("the person's answers to AskUserQuestion", () => {
     for (let i = 0; i < 11; i++) await f.dispatch('prompt.submit', { text: `typed ${i}.`, origin: { kind: 'composer' } }, async () => ({}));
     await step(f, 125_000);
     const text = (await ask(f)).messages[0].text;
-    expect(text).toContain("## The person's messages, oldest first (11 of 12 recorded, 1 of them answering your questions; the 1 oldest recorded are not carried: look_back finds them)");
-    expect(text).toMatch(/### \S+ \(the person answering your question\)\nWhat should notes and guidance show\?\nAnswer: Quote if verbatim, else segment\n/);
+    expect(text).toContain("## The user's messages, oldest first (11 of 12 recorded, 1 of them answering your questions; the 1 oldest recorded are not carried: look_back finds them)");
+    expect(text).toMatch(/### \S+ \(the user answering your question\)\nWhat should notes and guidance show\?\nAnswer: Quote if verbatim, else segment\n/);
     expect(text).not.toContain('typed 0.');
     expect(text).toContain('typed 10.');
   });

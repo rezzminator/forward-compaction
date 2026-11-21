@@ -17,7 +17,7 @@ const assistant = (text: string, uses: { id: string; tool: string; input?: Recor
 });
 const results = (...answers: [string, string][]): Msg => ({ role: 'user', text: '', toolUses: [], toolResults: answers.map(([id, text]) => ({ tool_use_id: id, text })), handle: `h-res-${answers[0]![0]}` });
 
-const noFacts: WakeFacts = { person: [], notices: [], received: [], skills: [], unattributedSkills: [] };
+const noFacts: WakeFacts = { user: [], notices: [], received: [], skills: [], unattributedSkills: [] };
 const T0 = Date.UTC(2026, 9, 23, 10, 0, 0);
 // 3.5 characters a token stands in for the ratio the adapter measures (window.ts `charsPerToken`).
 const base = { tokens: 41_200, askPoint: 67_000, now: T0 + 60_000, charsPerToken: 3.5 };
@@ -210,13 +210,13 @@ describe('buildWake (R20)', () => {
   it('sizes the facts against the kept tail: facts get the kept texts, and a smaller tail is re-asked until it is stable', () => {
     const seen: string[][] = [];
     const filler = Array.from({ length: 6 }, (_, i) => user(`m${i} ${'x'.repeat(900)}`, `e${i}`));
-    // the person's words in a message already kept are left out; each dropped message puts its words back in the facts
+    // the user's words in a message already kept are left out; each dropped message puts its words back in the facts
     const input = {
       ...mainInput([call, res, ...filler]), askPoint: 3000, toolUseId: 't9', frontier,
       facts: (kept: readonly string[]): WakeFacts => {
         seen.push([...kept]);
-        const person = filler.filter((m) => !kept.includes(m.text)).map((m, i) => ({ at: T0 + i, text: m.text }));
-        return { ...noFacts, person };
+        const user = filler.filter((m) => !kept.includes(m.text)).map((m, i) => ({ at: T0 + i, text: m.text }));
+        return { ...noFacts, user };
       },
     };
     const wake = buildWake(input);
@@ -224,7 +224,7 @@ describe('buildWake (R20)', () => {
     const finalKept = wake.messages.slice(2).map((m) => m.text);
     expect(seen.at(-1)).toEqual(finalKept);
     expect(wake.kept).toBeLessThan(6);
-    // the person's words are carried whole, outside B: each filler message is in the wake exactly once, kept or in the facts
+    // the user's words are carried whole, outside B: each filler message is in the wake exactly once, kept or in the facts
     const all = wake.messages.map((m) => m.text).join('\n');
     for (const m of filler) expect(all.split(m.text).length - 1).toBe(1);
   });
@@ -243,7 +243,7 @@ describe('buildWake (R20)', () => {
 
   it('counts the F sections that hold content', () => {
     const wake = buildWake({
-      ...mainInput([call, res], { person: [{ at: T0, text: 'fix it' }], skills: [{ skill: 'god-speed', text: 'rules', source: 'user' }] }),
+      ...mainInput([call, res], { user: [{ at: T0, text: 'fix it' }], skills: [{ skill: 'god-speed', text: 'rules', source: 'user' }] }),
       toolUseId: 't9', frontier,
     });
     expect(wake.facts).toBe(2);
@@ -259,25 +259,25 @@ describe('F sections', () => {
     return { wake, f: (wake.messages[0] as BuiltMessage).text };
   };
 
-  it('puts the person messages oldest first under the (n of m) heading, with ISO times', () => {
-    const { f } = wakeOf({ f: { person: [{ at: T0, text: 'fix the parser' }, { at: T0 + 1000, text: 'also add tests' }] } });
-    expect(f).toContain("## The person's messages, oldest first (2 of 2 recorded)");
+  it('puts the user messages oldest first under the (n of m) heading, with ISO times', () => {
+    const { f } = wakeOf({ f: { user: [{ at: T0, text: 'fix the parser' }, { at: T0 + 1000, text: 'also add tests' }] } });
+    expect(f).toContain("## The user's messages, oldest first (2 of 2 recorded)");
     expect(f.indexOf('fix the parser')).toBeLessThan(f.indexOf('also add tests'));
     expect(f).toContain('### 2026-10-23T10:00:00.000Z\nfix the parser');
   });
 
-  it('carries the newest ten person messages whole, however much of B they take', () => {
-    const person = Array.from({ length: 5 }, (_, i) => ({ at: T0 + i * 1000, text: `p${i} ${'w'.repeat(3000)}` }));
-    const { f } = wakeOf({ askPoint: 2000, f: { person } });
-    expect(f).toContain("## The person's messages, oldest first (5 of 5 recorded)");
+  it('carries the newest ten user messages whole, however much of B they take', () => {
+    const user = Array.from({ length: 5 }, (_, i) => ({ at: T0 + i * 1000, text: `p${i} ${'w'.repeat(3000)}` }));
+    const { f } = wakeOf({ askPoint: 2000, f: { user } });
+    expect(f).toContain("## The user's messages, oldest first (5 of 5 recorded)");
     for (let i = 0; i < 5; i++) expect(f).toContain(`p${i} ${'w'.repeat(3000)}`);
     expect(f.indexOf('p3 ')).toBeLessThan(f.indexOf('p4 '));
   });
 
-  it('carries at most the newest ten person messages, and counts the older ones left out', () => {
-    const person = Array.from({ length: 12 }, (_, i) => ({ at: T0 + i * 1000, text: `ask${i}.` }));
-    const { f } = wakeOf({ f: { person } });
-    expect(f).toContain("## The person's messages, oldest first (10 of 12 recorded; the 2 oldest recorded are not carried: look_back finds them)");
+  it('carries at most the newest ten user messages, and counts the older ones left out', () => {
+    const user = Array.from({ length: 12 }, (_, i) => ({ at: T0 + i * 1000, text: `ask${i}.` }));
+    const { f } = wakeOf({ f: { user } });
+    expect(f).toContain("## The user's messages, oldest first (10 of 12 recorded; the 2 oldest recorded are not carried: look_back finds them)");
     expect(f).toContain('ask2.');
     expect(f).toContain('ask11.');
     expect(f).not.toContain('ask1.');
@@ -285,10 +285,10 @@ describe('F sections', () => {
 
   it('carries every answer to a question beside the ten newest typed messages, each marked as an answer', () => {
     const answer = { at: T0, text: 'Which quote?\nAnswer: Segment', answer: 'Segment' };
-    const person = [answer, ...Array.from({ length: 11 }, (_, i) => ({ at: T0 + (i + 1) * 1000, text: `ask${i}.` }))];
-    const { f } = wakeOf({ f: { person } });
-    expect(f).toContain("## The person's messages, oldest first (11 of 12 recorded, 1 of them answering your questions; the 1 oldest recorded are not carried: look_back finds them)");
-    expect(f).toContain('### 2026-10-23T10:00:00.000Z (the person answering your question)\nWhich quote?\nAnswer: Segment');
+    const user = [answer, ...Array.from({ length: 11 }, (_, i) => ({ at: T0 + (i + 1) * 1000, text: `ask${i}.` }))];
+    const { f } = wakeOf({ f: { user } });
+    expect(f).toContain("## The user's messages, oldest first (11 of 12 recorded, 1 of them answering your questions; the 1 oldest recorded are not carried: look_back finds them)");
+    expect(f).toContain('### 2026-10-23T10:00:00.000Z (the user answering your question)\nWhich quote?\nAnswer: Segment');
     expect(f).not.toContain('ask0.');
     expect(f).toContain('ask10.');
   });
@@ -335,19 +335,19 @@ describe('F sections', () => {
     expect(mechanicalWake({ ...mainInput([call, res]), reason: { kind: 'reactive' } }).messages[0]!.text).toContain(`compacted by forward-compaction ${PLUGIN_VERSION}.`);
   });
 
-  it("M3: names each image of the person's kept messages as not carried, never a silent placeholder", () => {
-    const { f } = wakeOf({ f: { person: [{ at: T0, text: 'this screen [Image #1] and [Image #12]' }] } });
+  it("M3: names each image of the user's kept messages as not carried, never a silent placeholder", () => {
+    const { f } = wakeOf({ f: { user: [{ at: T0, text: 'this screen [Image #1] and [Image #12]' }] } });
     expect(f).toContain('this screen [Image #1] (image not carried: the wake cannot hold images) and [Image #12] (image not carried: the wake cannot hold images)');
   });
 
-  it('states no person message with the ledger start, and without one when there is no start', () => {
-    expect(wakeOf({ f: { startedAt: T0 } }).f).toContain(`## The person's messages\n(none recorded since 2026-10-23T10:00:00.000Z)`);
-    expect(wakeOf({}).f).toContain("## The person's messages\n(none recorded)");
+  it('states no user message with the ledger start, and without one when there is no start', () => {
+    expect(wakeOf({ f: { startedAt: T0 } }).f).toContain(`## The user's messages\n(none recorded since 2026-10-23T10:00:00.000Z)`);
+    expect(wakeOf({}).f).toContain("## The user's messages\n(none recorded)");
   });
 
-  it('counts the person messages the kept tail holds in the heading, beside the ones shown', () => {
-    const { f } = wakeOf({ f: { person: [{ at: T0, text: 'fix the parser' }, { at: T0 + 1000, text: 'also add tests' }], personInTail: 1 } });
-    expect(f).toContain("## The person's messages, oldest first (2 of 3 recorded; 1 is in the messages below)");
+  it('counts the user messages the kept tail holds in the heading, beside the ones shown', () => {
+    const { f } = wakeOf({ f: { user: [{ at: T0, text: 'fix the parser' }, { at: T0 + 1000, text: 'also add tests' }], userInTail: 1 } });
+    expect(f).toContain("## The user's messages, oldest first (2 of 3 recorded; 1 is in the messages below)");
   });
 
   it('promises the frontier only on a frontier wake, never on a mechanical one', () => {
@@ -358,9 +358,9 @@ describe('F sections', () => {
     expect(mech).toContain('You wrote no frontier: the note after these facts says what happened.');
   });
 
-  it('says every person message is in the messages below when the tail holds them all, never that none was recorded', () => {
-    const f = wakeOf({ f: { startedAt: T0, personInTail: 3 } }).f;
-    expect(f).toContain("## The person's messages\n(all 3 are in the messages below)");
+  it('says every user message is in the messages below when the tail holds them all, never that none was recorded', () => {
+    const f = wakeOf({ f: { startedAt: T0, userInTail: 3 } }).f;
+    expect(f).toContain("## The user's messages\n(all 3 are in the messages below)");
     expect(f).not.toContain('none recorded');
   });
 
@@ -369,10 +369,10 @@ describe('F sections', () => {
     expect(wakeOf({ f: { startedAt: T0, startReason: 'startup' } }).f).not.toContain('resumed');
   });
 
-  it('carries a sub-agent brief verbatim, and no person section', () => {
-    const { f } = wakeOf({ f: { brief: { text: 'Review the diff.' }, person: [{ at: T0, text: 'hi' }] } }, 'subagent');
+  it('carries a sub-agent brief verbatim, and no user section', () => {
+    const { f } = wakeOf({ f: { brief: { text: 'Review the diff.' }, user: [{ at: T0, text: 'hi' }] } }, 'subagent');
     expect(f).toContain('## Your brief\nReview the diff.');
-    expect(f).not.toContain("person's messages");
+    expect(f).not.toContain("user's messages");
   });
 
   it('carries a brief whole however much of B it takes, and names one that was never recorded', () => {
@@ -398,45 +398,51 @@ describe('F sections', () => {
 
   it('carries a skill up to 20,000 characters whatever the wake budget, outside it', () => {
     // askPoint 2000 at 3.5 characters a token: B is 3,500 characters
-    const f = wakeOf({ askPoint: 2000, f: { skills: [{ skill: 'big', text: 'b'.repeat(20_000), source: 'user' }, { skill: 'also', text: 'a'.repeat(1000), source: 'user' }] } }).f;
-    expect(f).toContain('### big (user)\n' + 'b'.repeat(20_000) + '\n');
-    expect(f).toContain('### also (user)\n' + 'a'.repeat(1000));
+    const f = wakeOf({ askPoint: 2000, f: { skills: [{ skill: 'big', text: 'b'.repeat(20_000), source: 'user', keep: true }, { skill: 'also', text: 'a'.repeat(1000), source: 'user', keep: true }] } }).f;
+    expect(f).toContain('### big (user, pinned)\n' + 'b'.repeat(20_000) + '\n');
+    expect(f).toContain('### also (user, pinned)\n' + 'a'.repeat(1000));
     expect(f).not.toContain('skill content truncated');
     expect(f).not.toContain('## Skills not carried');
   });
 
-  it("cuts a skill past 20,000 characters to Claude Code's own marker, a pinned one too, and names the unattributed ones", () => {
+  it("carries a pinned skill or one keep_skills names whole, cut past 20,000 characters to Claude Code's own marker, and lists every other one and the unattributed ones", () => {
     const marker = '\n\n[... skill content truncated for compaction; use Read on the skill path if you need the full text]';
-    const f = wakeOf({
+    const { f, wake } = wakeOf({
+      keepSkills: ['small', 'huge'],
       f: {
         skills: [
           { skill: 'small', text: 'tiny', source: 'user', path: '/s/SKILL.md' },
           { skill: 'huge', text: 'h'.repeat(40_000), source: 'plugin' },
           { skill: 'pinned', text: 'p'.repeat(20_001), source: 'user', keep: true },
+          { skill: 'listed', text: 'LISTED BODY', source: 'user', path: '/s/l/SKILL.md', description: 'What it is for.' },
+          { skill: 'bare', text: 'BARE BODY', source: 'plugin' },
         ],
         unattributedSkills: [{ skill: 'mystery' }],
       },
-    }).f;
-    expect(f).toContain('## Skills in force, as loaded (one you no longer need: name it in drop_skills on two frontiers in a row)\n### small (user, /s/SKILL.md)\ntiny');
-    expect(f).toContain('### huge (plugin)\n' + 'h'.repeat(20_000 - marker.length) + marker + '\n');
-    expect(f).toMatch(new RegExp(`### pinned \\([^)]*pinned[^)]*\\)\\n${'p'.repeat(20_000 - marker.length)}\\n\\n\\[\\.\\.\\. skill content truncated`));
-    expect(f).toContain('## Skills not carried\n- mystery: loaded in this session by an unidentified party; call Skill mystery if it applies to you.');
+    });
+    expect(f).toContain('## Skills in force, as loaded\n### small (user, /s/SKILL.md, named in your keep_skills)\ntiny');
+    expect(f).toContain('### huge (plugin, named in your keep_skills)\n' + 'h'.repeat(20_000 - marker.length) + marker + '\n');
+    expect(f).toContain('### pinned (user, pinned)\n' + 'p'.repeat(20_000 - marker.length) + marker + '\n');
+    expect(f).toContain('## Skills not carried\nTheir text is not in your context: load one again with the Skill tool before doing work it governs.\n- listed (user, /s/l/SKILL.md): What it is for.\n- bare (plugin)\n- mystery: loaded in this session by an unidentified party; call Skill mystery if it applies to you.');
+    expect(f).not.toContain('LISTED BODY');
+    expect(f).not.toContain('BARE BODY');
+    expect([wake.skills, wake.facts]).toEqual([{ carried: 3, listed: 3 }, 3]);
   });
 
   it('takes skills newest first within 100,000 characters, skipping one that does not fit and carrying a smaller one after it', () => {
     const skills = [
-      ...['s1', 's2', 's3', 's4'].map((skill) => ({ skill, text: skill.repeat(15_000), source: 'user' })), // each cut to 20,000: 80,000
-      { skill: 's5', text: 'x'.repeat(19_000), source: 'user' }, // 99,000
+      ...['s1', 's2', 's3', 's4'].map((skill) => ({ skill, text: skill.repeat(15_000), source: 'user', keep: true as const })), // each cut to 20,000: 80,000
+      { skill: 's5', text: 'x'.repeat(19_000), source: 'user', keep: true as const }, // 99,000
       { skill: 'big', text: 'y'.repeat(5_000), source: 'user', path: '/s/big/SKILL.md', keep: true as const }, // 1,000 left: skipped, pin or not
-      { skill: 'nopath', text: 'z'.repeat(2_000), source: 'plugin' }, // skipped
-      { skill: 'tiny', text: 'ok', source: 'user' }, // fits in what is left
+      { skill: 'nopath', text: 'z'.repeat(2_000), source: 'plugin', keep: true as const }, // skipped
+      { skill: 'tiny', text: 'ok', source: 'user', keep: true as const }, // fits in what is left
     ];
     const f = wakeOf({ f: { skills } }).f;
-    expect(f.indexOf('### s1 (user)')).toBeLessThan(f.indexOf('### s4 (user)'));
-    expect(f).toContain('### s5 (user)\n' + 'x'.repeat(19_000));
-    expect(f).toContain('### tiny (user)\nok');
+    expect(f.indexOf('### s1 (user, pinned)')).toBeLessThan(f.indexOf('### s4 (user, pinned)'));
+    expect(f).toContain('### s5 (user, pinned)\n' + 'x'.repeat(19_000));
+    expect(f).toContain('### tiny (user, pinned)\nok');
     expect(f).not.toContain('yyyyy');
-    expect(f).toContain('## Skills not carried\n- big: over the 100,000-character room for skills; call Skill big or Read /s/big/SKILL.md if it applies to you.\n- nopath: over the 100,000-character room for skills; call Skill nopath if it applies to you.');
+    expect(f).toContain('## Skills not carried\nTheir text is not in your context: load one again with the Skill tool before doing work it governs.\n- big: over the 100,000-character room for skills; call Skill big or Read /s/big/SKILL.md if it applies to you.\n- nopath: over the 100,000-character room for skills; call Skill nopath if it applies to you.');
   });
 
   it('lists agents (at most 50) or says why it could not', () => {
@@ -462,6 +468,20 @@ describe('F sections', () => {
     expect(f).not.toMatch(/a0 general|a1 general|a3 collector/);
     expect(wakeOf({ agents: rows.slice(0, 2), self: 'a0' }, 'subagent').f).not.toContain('## Agents');
     expect(wakeOf({ agents: rows }).f).toContain('- a0 general-purpose running: me\n- a1 general-purpose running: sibling\n- a2 collector running: child\n- a3 collector running: sibling\'s child');
+  });
+
+  it('names a child the party spawned that the list no longer holds, after the listed ones and within the row cap', () => {
+    const rows = [{ id: 'a2', type: 'collector', status: 'running', description: 'child', parentId: 'a0' }];
+    const children = [{ id: 'a2', subagentType: 'collector', description: 'child' }, { id: 'a4', subagentType: 'collector', description: 'finished child' }, { id: 'a5' }];
+    const gone = '(finished, stopped or gone)';
+    expect(wakeOf({ agents: rows, self: 'a0', f: { children } }, 'subagent').f).toContain(`## Agents, listed at install\n- a2 collector running: child\n- a4 collector not in the list ${gone}: finished child\n- a5 not in the list ${gone}\n\n`);
+    expect(wakeOf({ agents: [], self: 'a0', f: { children: children.slice(1, 2) } }, 'subagent').f).toContain(`## Agents, listed at install\n- a4 collector not in the list ${gone}: finished child\n\n`);
+    const many = Array.from({ length: 50 }, (_, i) => ({ id: `m${i}`, type: 'general-purpose', status: 'running', description: `job ${i}` }));
+    const f = wakeOf({ agents: many, f: { children: [{ id: 'm0' }, { id: 'x1' }] } }).f;
+    expect(f).toContain('- m49 general-purpose running: job 49\n(1 more not listed)');
+    expect(f).not.toContain('x1 not in the list');
+    const newest = wakeOf({ agents: many.slice(0, 48), f: { children: [{ id: 'x1' }, { id: 'x2' }, { id: 'x3' }] } }).f;
+    expect(newest).toContain(`- m47 general-purpose running: job 47\n- x2 not in the list ${gone}\n- x3 not in the list ${gone}\n(1 more not listed)\n\n`);
   });
 
   it('states the unknown shells when no Stop event came (R24)', () => {
@@ -515,6 +535,17 @@ describe('F sections', () => {
     expect(f).toContain('## Files not carried\n- /abs/gone.ts: lines 10-40 out of range (5 lines)\n- /abs/err.ts: EACCES: permission denied');
   });
 
+  it('lists the files for later by path, lines and why, never their content, and names one gone as not carried, on a mechanical wake too', () => {
+    const later = { listed: [{ path: '/abs/plan.md', lines: '1-40', why: 'step 4', later: true as const }, { path: '/abs/notes.md', later: true as const }], gone: [{ path: '/abs/gone.md', problem: 'no such file' }] };
+    const block = '## Files for later, not loaded\nTheir content is not in your context: read each with the Read tool (or the shell) at the step that needs it.\n- /abs/plan.md lines 1-40 — step 4\n- /abs/notes.md\n\n## Files not carried\n- /abs/gone.md: no such file';
+    const { f, wake } = wakeOf({ later, files: [{ path: '/abs/a.ts', content: 'A' }] });
+    expect(f).toContain(`## Files you asked to carry\n### /abs/a.ts\nA\n\n${block}`);
+    expect([wake.later, wake.carried, wake.notCarried]).toEqual([2, ['/abs/a.ts'], ['/abs/gone.md']]);
+    const mechanical = mechanicalWake({ ...mainInput([user('before')]), reason: { kind: 'reactive' }, later });
+    expect((mechanical.messages[0] as BuiltMessage).text).toContain(block);
+    expect(mechanical.later).toBe(2);
+  });
+
   it('carries every load file it could read, with no room and no count cap, whatever the ask point or ratio', () => {
     const files = Array.from({ length: 12 }, (_, i) => ({ path: `/abs/${i}.ts`, why: `f${i}`, content: String(i).repeat(60_000) }));
     for (const charsPerToken of [2.5, undefined]) {
@@ -528,10 +559,10 @@ describe('F sections', () => {
   it('with no measured ratio carries every file and every message after the call, unfitted, and reports each section size', () => {
     const files = [{ path: '/abs/huge.ts', why: 'h', content: 'h'.repeat(500_000) }, { path: '/abs/gone.ts', why: 'g', problem: 'ENOENT' }];
     const tail = Array.from({ length: 40 }, (_, i) => user(`after ${i} ${'y'.repeat(5_000)}`, `t${i}`));
-    const wake = buildWake({ ...mainInput([call, res, ...tail], { person: [{ at: T0, text: 'p'.repeat(100_000) }] }), charsPerToken: undefined, askPoint: 2000, files, toolUseId: 't9', frontier: '## Next\nx' });
+    const wake = buildWake({ ...mainInput([call, res, ...tail], { user: [{ at: T0, text: 'p'.repeat(100_000) }] }), charsPerToken: undefined, askPoint: 2000, files, toolUseId: 't9', frontier: '## Next\nx' });
     expect(wake).toMatchObject({ kept: 40, dropped: 0, carried: ['/abs/huge.ts'], notCarried: ['/abs/gone.ts'] });
     expect((wake.messages[0] as BuiltMessage).text).toContain('p'.repeat(100_000));
-    expect(wake.sizes.map((s) => s.section)).toEqual(expect.arrayContaining(["## The person's messages, oldest first (1 of 1 recorded)", '## Files you asked to carry', '## Files not carried']));
+    expect(wake.sizes.map((s) => s.section)).toEqual(expect.arrayContaining(["## The user's messages, oldest first (1 of 1 recorded)", '## Files you asked to carry', '## Files not carried']));
     expect(wake.sizes.find((s) => s.section === '## Files you asked to carry')!.chars).toBeGreaterThan(500_000);
     expect(wake.headChars).toBe((wake.messages[1] as BuiltMessage).text.length);
   });
@@ -556,7 +587,7 @@ describe('mechanicalWake (R23)', () => {
     expect(h.text).toContain('Your context reached 120k tokens, past the 100k ceiling,');
     expect(h.text).toContain(`${wake.dropped} older messages are gone (look_back finds an exact detail)`);
     expect(h.text).toContain(`your newest ${wake.kept} messages below`);
-    expect(h.text).toContain("Re-establish them from the person's messages");
+    expect(h.text).toContain("Re-establish them from the user's messages");
     expect(wake.dropped).toBeGreaterThan(0);
     expect(wake.messages.slice(2)).toEqual(msgs.slice(wake.dropped));
     expect(wake.messages[2]).toBe(msgs[wake.dropped]);
@@ -570,7 +601,7 @@ describe('mechanicalWake (R23)', () => {
   });
 
   it('has the same facts as the frontier wake, and no load files or siblings', () => {
-    const wake = mechanicalWake({ ...mainInput(msgs, { person: [{ at: T0, text: 'fix it' }] }), reason: { kind: 'reactive' } });
+    const wake = mechanicalWake({ ...mainInput(msgs, { user: [{ at: T0, text: 'fix it' }] }), reason: { kind: 'reactive' } });
     const f = (wake.messages[0] as BuiltMessage).text;
     expect(f).toContain('fix it');
     expect(f).not.toContain('beside the frontier');
@@ -587,7 +618,7 @@ describe('mechanicalWake (R23)', () => {
       facts: (kept: readonly string[]): WakeFacts => {
         seen.push([...kept]);
         // past 50 calls the fact stops flipping, so the old endless loop ends and the call count below names it
-        return { ...noFacts, person: ++calls <= 50 && kept.includes(four[0]!.text) ? [{ at: T0, text: 'p'.repeat(1200) }] : [{ at: T0, text: 'p' }] };
+        return { ...noFacts, user: ++calls <= 50 && kept.includes(four[0]!.text) ? [{ at: T0, text: 'p'.repeat(1200) }] : [{ at: T0, text: 'p' }] };
       },
     };
     const wake = mechanicalWake(input);
@@ -660,10 +691,10 @@ describe("the mechanical wake re-places the party's newest files, as Claude Code
     expect(wake.text).not.toContain('## Files you were working on');
   });
 
-  it('names each MANDATORY section a stored frontier lacks, to re-establish from the person or the brief', () => {
+  it('names each MANDATORY section a stored frontier lacks, to re-establish from the user or the brief', () => {
     const call = assistant('writing', [{ id: 't9', tool: 'mcp__forward-compaction__forward_compaction' }]);
     const head = (party: 'main' | 'subagent', missing?: string[]) => (buildWake({ ...mainInput([call, results(['t9', 'ok'])]), party, toolUseId: 't9', frontier: '## Objective\nx', ...(missing ? { missing } : {}) }).messages[1] as BuiltMessage).text;
-    expect(head('main', ['decisions', 'done', 'next'])).toContain("Your frontier was missing decisions, done and next: re-establish them from the person's messages and the messages below.");
+    expect(head('main', ['decisions', 'done', 'next'])).toContain("Your frontier was missing decisions, done and next: re-establish them from the user's messages and the messages below.");
     expect(head('subagent', ['next'])).toContain('Your frontier was missing next: re-establish it from your brief and the messages below.');
     expect(head('main')).toContain('Nothing happened after you wrote it. Continue from ## Next.');
     expect(head('main')).not.toContain('Your frontier was missing');
@@ -679,7 +710,7 @@ describe('the plan file and plan mode, when the session has them, ride in every 
 
   it('carries the plan file with its path and content, and the plan-mode section while plan mode is on', () => {
     for (const text of facts({ mode: true, path: '/plans/p.md', content: '# Plan\n1. do it' })) {
-      expect(text).toContain('## Plan mode\nThe session is in plan mode: plan, never act, until the person approves the plan; your plan file is /plans/p.md.');
+      expect(text).toContain('## Plan mode\nThe session is in plan mode: plan, never act, until the user approves the plan; your plan file is /plans/p.md.');
       expect(text).toContain('## Plan file\n/plans/p.md\n# Plan\n1. do it');
     }
   });

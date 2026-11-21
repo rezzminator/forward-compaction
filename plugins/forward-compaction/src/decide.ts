@@ -106,7 +106,7 @@ export function turnEndDoor({ main, reason, stored, installedThisTurn }: TurnEnd
   return { compact: true };
 }
 
-/** The warning rows of an install the person should know of: a frontier missing a MANDATORY section, and one whose call is not in the messages compacted (`placed` false), carried with the newest messages that fit. */
+/** The warning rows of an install the user should know of: a frontier missing a MANDATORY section, and one whose call is not in the messages compacted (`placed` false), carried with the newest messages that fit. */
 export function installWarnings(label: string, toolUseId: string, missing: readonly string[], placed: boolean): { line: string; row: Record<string, unknown> }[] {
   return [
     ...(missing.length === 0 ? [] : [{ line: `forward-compaction: ${label}'s frontier installed without ${andList(missing)}, the MANDATORY ${missing.length === 1 ? 'section' : 'sections'} it lacked.`, row: { event: 'install-incomplete', missing } }]),

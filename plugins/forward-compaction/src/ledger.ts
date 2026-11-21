@@ -14,8 +14,8 @@ export type ShellTask = { id: string; type: string; status: string; description:
 export type CronJob = { id: string; schedule: string; recurring: boolean; prompt: string };
 
 type Base = { seq: number; at: number };
-/** `answer`: an answer to the model's AskUserQuestion, `text` the questions with it, `answer` the person's own words alone. */
-export type PersonEntry = Base & { kind: 'person'; party: 'main'; text: string; command?: string; answer?: string };
+/** `answer`: an answer to the model's AskUserQuestion, `text` the questions with it, `answer` the user's own words alone. */
+export type UserEntry = Base & { kind: 'user'; party: 'main'; text: string; command?: string; answer?: string };
 export type NoticeEntry = Base & { kind: 'notice'; party: 'main'; origin: string; text: string };
 export type ReceivedEntry = Base & { kind: 'received'; party: PartyKey; origin: string; text: string };
 export type BriefEntry = Base & {
@@ -23,18 +23,20 @@ export type BriefEntry = Base & {
 };
 export type SkillEntry = Base & {
   kind: 'skill'; party: PartyKey; skill: string; text: string; source?: string; path?: string; how: SkillHow; keep?: true;
+  /** Its frontmatter's `description` (carry.ts `descriptionOf`): what a wake that lists the skill instead of carrying it says of it. */
+  description?: string;
 };
 export type ShellsEntry = Base & { kind: 'shells'; tasks: ShellTask[]; crons: CronJob[] };
 export type WorkEntry = Base & { kind: 'work'; party: PartyKey; fact: WorkFact };
-export type LedgerEntry = PersonEntry | NoticeEntry | ReceivedEntry | BriefEntry | SkillEntry | ShellsEntry | WorkEntry;
+export type LedgerEntry = UserEntry | NoticeEntry | ReceivedEntry | BriefEntry | SkillEntry | ShellsEntry | WorkEntry;
 type Without<T, K extends string> = T extends unknown ? Omit<T, K> : never;
 export type EntryInput = Without<LedgerEntry, 'seq'>;
 
 export type Ledger = { startedAt?: number; startReason?: string; nextSeq: number; entries: readonly LedgerEntry[] };
 
-/** Prompt origins that are the person typing (composer, a bridge client, the SDK); any other origin is a notice. */
+/** Prompt origins that are the user typing (composer, a bridge client, the SDK); any other origin is a notice. */
 export const PERSON_ORIGINS: ReadonlySet<string> = new Set(['composer', 'bridge', 'sdk']);
-export function isPersonOrigin(kind: string | undefined): boolean {
+export function isUserOrigin(kind: string | undefined): boolean {
   return kind !== undefined && PERSON_ORIGINS.has(kind);
 }
 
@@ -47,6 +49,27 @@ export function shellsOf(e: Record<string, unknown>, stopping?: string): { tasks
   const tasks = list(e.background_tasks).map((t) => ({ id: String(t.id), type: String(t.type), status: String(t.status), description: String(t.description ?? ''), ...(typeof t.command === 'string' ? { command: t.command } : {}) }));
   const crons = list(e.session_crons).map((c) => ({ id: String(c.id), schedule: String(c.schedule), recurring: c.recurring === true, prompt: String(c.prompt ?? '') }));
   return { tasks: tasks.filter((t) => t.id !== stopping), crons };
+}
+
+/**
+ * A row delivered into a running sub-agent (`session.append` door `delivery`: a child agent's return, a coordinator's note) as
+ * the received fact, its text the row's text blocks, what the model reads; none for main, whose deliveries arrive through
+ * prompt.submit, or for a row with no text.
+ */
+export function deliveryOf(e: { agentId?: string; origin: unknown; message: { content: readonly { type: string; [field: string]: unknown }[] } }, at: number): EntryInput | undefined {
+  const text = e.message.content.flatMap((b) => (b.type === 'text' && typeof b.text === 'string' ? [b.text] : [])).join('\n');
+  if (e.agentId === undefined || e.agentId === '' || text === '') return undefined;
+  return { kind: 'received', party: keyOf(e.agentId), origin: originKind(e.origin), text, at };
+}
+
+/**
+ * The message a sub-agent's later run begins with (`turn.start`: what woke it) as the received fact; none when it is empty, or
+ * when the party's newest received fact is that text as a resume, which agent.spawn recorded already.
+ */
+export function runStartOf(ledger: Ledger, party: PartyKey, text: string, at: number): EntryInput | undefined {
+  const last = [...ledger.entries].reverse().find((e): e is ReceivedEntry => e.kind === 'received' && e.party === party);
+  if (text === '' || (last?.origin === 'resume' && last.text === text)) return undefined;
+  return { kind: 'received', party, origin: 'run-start', text, at };
 }
 
 export function newLedger(): Ledger {
@@ -64,7 +87,7 @@ export function addEntry(ledger: Ledger, entry: EntryInput): Ledger {
   return { ...ledger, nextSeq: ledger.nextSeq + 1, entries: [...kept, { ...entry, seq: ledger.nextSeq } as LedgerEntry] };
 }
 
-/** The most prompts a party keeps, for its wake and across a plugin reload: the person's messages (main) or its coordinator's (a sub-agent, its brief besides), the newest ten, the owner's ruling. */
+/** The most prompts a party keeps, for its wake and across a plugin reload: the user's messages (main) or its coordinator's (a sub-agent, its brief besides), the newest ten, the owner's ruling. */
 export const PROMPTS_KEPT = 10;
 
 /** The messages kept, oldest first: the newest PROMPTS_KEPT typed and every answer to a question however old, a ruling the work rests on (the owner's ruling, 2026-10-28). */
@@ -75,9 +98,9 @@ export function keptSaid<T extends object>(said: readonly T[]): T[] {
 }
 
 /** A prompt as `$.state` keeps it: a ledger entry without its seq and party. */
-export type KeptPrompt = { kind: 'person' | 'received' | 'brief'; at: number; text: string; command?: string; answer?: string; origin?: string; description?: string; subagentType?: string; spawnedBy?: string };
-type PromptEntry = PersonEntry | ReceivedEntry | BriefEntry;
-const isPrompt = (e: LedgerEntry, party: PartyKey): e is PromptEntry => (e.kind === 'person' || e.kind === 'received' || e.kind === 'brief') && e.party === party;
+export type KeptPrompt = { kind: 'user' | 'received' | 'brief'; at: number; text: string; command?: string; answer?: string; origin?: string; description?: string; subagentType?: string; spawnedBy?: string };
+type PromptEntry = UserEntry | ReceivedEntry | BriefEntry;
+const isPrompt = (e: LedgerEntry, party: PartyKey): e is PromptEntry => (e.kind === 'user' || e.kind === 'received' || e.kind === 'brief') && e.party === party;
 const promptKey = (p: { kind: string; at: number; text: string }): string => `${p.kind}\u0000${p.at}\u0000${p.text}`;
 
 /** A party's prompts to keep, oldest first: main's newest PROMPTS_KEPT messages; a sub-agent's brief and its coordinator's newest PROMPTS_KEPT. */
@@ -93,9 +116,10 @@ export function restorePrompts(ledger: Ledger, party: PartyKey, kept: unknown): 
   if (!Array.isArray(kept)) return ledger;
   const own = ledger.entries.filter((e): e is PromptEntry => isPrompt(e, party));
   const seen = new Set(own.map(promptKey));
-  const kinds = party === 'main' ? ['person'] : ['brief', 'received'];
+  const kinds = party === 'main' ? ['user'] : ['brief', 'received'];
   const hasBrief = own.some((e) => e.kind === 'brief');
-  const back = kept.filter((p): p is KeptPrompt => p !== null && typeof p === 'object' && kinds.includes(p.kind) && typeof p.at === 'number' && typeof p.text === 'string')
+  const back = kept.map((p) => (p !== null && typeof p === 'object' && (p as { kind?: unknown }).kind === 'person' ? { ...p, kind: 'user' } : p)) // the build before this one saved the user's messages as kind 'person'
+    .filter((p): p is KeptPrompt => p !== null && typeof p === 'object' && kinds.includes(p.kind) && typeof p.at === 'number' && typeof p.text === 'string')
     .filter((p) => !seen.has(promptKey(p)) && !(p.kind === 'brief' && hasBrief));
   if (back.length === 0) return ledger;
   const restored = back.map((p, i) => ({ ...p, party, seq: ledger.nextSeq + i, ...(p.kind === 'brief' ? { spawnedBy: (p.spawnedBy ?? 'unknown') as PartyKey } : {}), ...(p.kind === 'received' ? { origin: p.origin ?? 'unknown' } : {}) }) as LedgerEntry);
@@ -108,7 +132,7 @@ const latestPerSkill = (skills: SkillEntry[]): SkillEntry[] => {
 };
 
 /** A skill as `$.state` keeps it: a skill entry without its seq and party. */
-export type KeptSkill = { at: number; skill: string; text: string; how: SkillHow; source?: string; path?: string; keep?: true };
+export type KeptSkill = { at: number; skill: string; text: string; how: SkillHow; source?: string; path?: string; keep?: true; description?: string };
 
 /** A party's skills to keep: the latest text of each skill it loaded, oldest first. */
 export function skillsKept(ledger: Ledger, party: PartyKey): KeptSkill[] {
@@ -127,9 +151,9 @@ export function restoreSkills(ledger: Ledger, party: PartyKey, kept: unknown): L
 }
 
 /** A preload skill is first filed under `spawn:{tool_use_id}`; once the spawn returns, it belongs to the child. */
-/** The texts a standing order's lift may quote (orders.ts): main's messages from the person; a sub-agent's brief and the messages delivered to it. */
+/** The texts a standing order's lift may quote (orders.ts): main's messages from the user; a sub-agent's brief and the messages delivered to it. */
 export function liftSources(ledger: Ledger, party: PartyKey): string[] {
-  const kinds = party === 'main' ? ['person'] : ['brief', 'received'];
+  const kinds = party === 'main' ? ['user'] : ['brief', 'received'];
   return ledger.entries.filter((e) => kinds.includes(e.kind) && 'party' in e && e.party === party).map((e) => (e as { answer?: string }).answer ?? (e as { text: string }).text);
 }
 
@@ -161,13 +185,15 @@ export function attributeSkill(input: {
 }
 
 export type Facts = {
-  person: PersonEntry[];
-  /** Person messages left out because the kept tail already holds them. */
-  personInTail: number;
+  user: UserEntry[];
+  /** User messages left out because the kept tail already holds them. */
+  userInTail: number;
   notices: NoticeEntry[];
-  /** Every delivery to the party recorded from seq `since` (its frontier stored) that the kept tail does not hold, oldest first: the model wrote its frontier without them. Left out of person, notices and received. */
+  /** Every delivery to the party recorded from seq `since` (its frontier stored) that the kept tail does not hold, oldest first: the model wrote its frontier without them. Left out of user, notices and received. */
   arrived: { at: number; origin: string; text: string }[];
   brief?: BriefEntry;
+  /** The agents the party spawned, from their briefs, oldest first, each once with its latest description: the wake names one `$.agent.list` no longer lists. */
+  children: { id: string; subagentType?: string; description?: string }[];
   received: ReceivedEntry[];
   skills: SkillEntry[];
   unattributedSkills: SkillEntry[];
@@ -191,17 +217,24 @@ export function factsFor(ledger: Ledger, party: PartyKey, opts: { keptTexts: rea
   // Latest text per skill name wins before the kept filter: an older version is stale, not "already there".
   const newestFirst = (who: PartyKey) => latestPerSkill(mine('skill', who).reverse());
   const carried = new Set(newestFirst(party).map((s) => s.skill));
-  const delivered = entries.filter((e): e is PersonEntry | NoticeEntry | ReceivedEntry => (e.kind === 'person' || e.kind === 'notice' || e.kind === 'received') && e.party === party);
-  const arrived = delivered.filter((e) => !before(e) && e.text !== '' && fresh(e)).map((e) => ({ at: e.at, origin: e.kind === 'person' ? 'person' : e.origin, text: e.text }));
-  const person = mine('person', party).filter(before);
-  const kept = person.filter(fresh);
+  const delivered = entries.filter((e): e is UserEntry | NoticeEntry | ReceivedEntry => (e.kind === 'user' || e.kind === 'notice' || e.kind === 'received') && e.party === party);
+  const arrived = delivered.filter((e) => !before(e) && e.text !== '' && fresh(e)).map((e) => ({ at: e.at, origin: e.kind === 'user' ? 'user' : e.origin, text: e.text }));
+  const user = mine('user', party).filter(before);
+  const kept = user.filter(fresh);
   const shells = entries.find((e): e is ShellsEntry => e.kind === 'shells');
+  const children = new Map<string, Facts['children'][number]>();
+  for (const e of entries) {
+    if (e.kind !== 'brief' || e.spawnedBy !== party || !e.party.startsWith('agent:')) continue; // a `spawn:` party never got its id
+    const id = e.party.slice('agent:'.length);
+    children.set(id, { id, ...(e.subagentType !== undefined ? { subagentType: e.subagentType } : {}), ...(e.description !== undefined ? { description: e.description } : {}) });
+  }
   return {
-    person: kept,
-    personInTail: person.length - kept.length,
+    user: kept,
+    userInTail: user.length - kept.length,
     notices: mine('notice', party).filter(before).filter(fresh),
     arrived,
     brief: mine('brief', party).filter(fresh).at(-1),
+    children: [...children.values()],
     received: mine('received', party).filter(before).filter(fresh),
     skills: newestFirst(party).filter(fresh),
     unattributedSkills: newestFirst('unknown').filter((s) => !carried.has(s.skill)).filter(fresh),

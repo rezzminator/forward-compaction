@@ -1,23 +1,23 @@
-// Standing orders: the person's orders that bind the rest of the work, carried verbatim by every frontier in
-// `standing_orders` and remembered per party, so the plugin carries every one a frontier leaves out until the person lifts it.
-// The plugin never guesses an order from the person's wording: the model names it, the plugin holds it.
+// Standing orders: the user's orders that bind the rest of the work, carried verbatim by every frontier in
+// `standing_orders` and remembered per party, so the plugin carries every one a frontier leaves out until the user lifts it.
+// The plugin never guesses an order from the user's wording: the model names it, the plugin holds it.
 
 /**
- * One standing order as the frontier carries it: the person's words verbatim. `liftClaimed`: the words of a lift the
+ * One standing order as the frontier carries it: the user's words verbatim. `liftClaimed`: the words of a lift the
  * frontier sent for it that no recorded message holds, so it still binds; the wake shows them beside it.
  */
 export type StandingOrder = { order: string; liftClaimed?: string };
-/** An order the person lifted: its text as a previous frontier carried it, and the person's lifting words. */
+/** An order the user lifted: its text as a previous frontier carried it, and the user's lifting words. */
 export type LiftedOrder = { order: string; by: string };
 
 /** What the drop check holds a frontier to: the party's remembered orders and the texts a lift may quote. */
 export type OrderMemory = { remembered: readonly StandingOrder[]; said: readonly string[]; party: 'main' | 'subagent' };
 
-export const ORDERS_HEADING = '## Standing orders — binding until the person lifts them';
+export const ORDERS_HEADING = '## Standing orders — binding until the user lifts them';
 
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 const blank = (v: unknown): boolean => typeof v !== 'string' || v.trim() === '';
-/** Text as a match reads it: one space for every run of whitespace, lower case. A model quoting the person rejoins lines and re-cases words; the words stay the person's. */
+/** Text as a match reads it: one space for every run of whitespace, lower case. A model quoting the user rejoins lines and re-cases words; the words stay the user's. */
 const plain = (text: string): string => text.replace(/\s+/g, ' ').trim().toLowerCase();
 /** Whether `said` holds `words`, across spacing and letter case. */
 const holds = (said: string, words: string): boolean => plain(said).includes(plain(words));
@@ -35,14 +35,14 @@ function wellFormed(standing: unknown, lifted: unknown): { standing: StandingOrd
   if (standing !== undefined && !Array.isArray(standing)) notes.push('standing_orders must be an array of {order}: none read from it.');
   else for (const [i, o] of (standing ?? []).entries()) {
     const { order } = isObject(o) ? o : ({} as Record<string, unknown>);
-    if (blank(order)) notes.push(`standing_orders[${i}].order must be a non-blank string, the person's words verbatim: skipped.`);
+    if (blank(order)) notes.push(`standing_orders[${i}].order must be a non-blank string, the user's words verbatim: skipped.`);
     else kept.standing.push({ order: order as string });
   }
   if (lifted !== undefined && !Array.isArray(lifted)) notes.push('lifted must be an array of {order, by}: none read from it.');
   else for (const [i, l] of (lifted ?? []).entries()) {
     const { order, by } = isObject(l) ? l : ({} as Record<string, unknown>);
     if (blank(order)) notes.push(`lifted[${i}].order must be a non-blank string, the order's text as your last frontier carried it: skipped.`);
-    else if (blank(by)) notes.push(`lifted[${i}].by must be a non-blank string, the person's words that lifted the order, verbatim: skipped.`);
+    else if (blank(by)) notes.push(`lifted[${i}].by must be a non-blank string, the user's words that lifted the order, verbatim: skipped.`);
     else kept.asked.push({ order: order as string, by: by as string });
   }
   return { standing: kept.standing, asked: kept.asked, notes };
@@ -50,7 +50,7 @@ function wellFormed(standing: unknown, lifted: unknown): { standing: StandingOrd
 
 /**
  * The orders the frontier stores: those it carries and those the party's last frontier carried that it left out, minus
- * those the person lifted. An order leaves only on a lift whose `by` (trimmed) is contained in one of `said` after the one
+ * those the user lifted. An order leaves only on a lift whose `by` (trimmed) is contained in one of `said` after the one
  * that gave the order, in ledger order. No order is
  * lost: a lift without such words leaves the order binding with its words as `liftClaimed`, and an order the frontier
  * left out is carried on, each named in the notes. A lift naming no order is ignored.
@@ -61,7 +61,7 @@ export function carryOrders(memory: OrderMemory, standing: unknown, lifted: unkn
   const known = new Map<string, StandingOrder>();
   // A remembered order's earlier claimed lift is not this frontier's: each order starts from its words alone.
   for (const o of [...memory.remembered, ...read.standing]) if (!known.has(o.order)) known.set(o.order, { order: o.order });
-  const sources = memory.party === 'main' ? 'no message from the person' : 'neither your brief nor any message delivered to you';
+  const sources = memory.party === 'main' ? 'no message from the user' : 'neither your brief nor any message delivered to you';
   const gone = new Map<string, LiftedOrder>();
   for (const l of read.asked) {
     const order = known.get(l.order);
@@ -71,7 +71,7 @@ export function carryOrders(memory: OrderMemory, standing: unknown, lifted: unkn
     else if (order.liftClaimed === undefined) (order.liftClaimed = l.by), notes.push(`order "${l.order}" still binding: ${sources} contains "${l.by}"; the wake shows your lift beside it.`);
   }
   const carried = new Set(read.standing.map((o) => o.order));
-  for (const o of memory.remembered) if (!carried.has(o.order) && !gone.has(o.order) && known.get(o.order)?.liftClaimed === undefined) notes.push(`order "${o.order}" was left out of your frontier and is carried on: it binds until the person lifts it.`);
+  for (const o of memory.remembered) if (!carried.has(o.order) && !gone.has(o.order) && known.get(o.order)?.liftClaimed === undefined) notes.push(`order "${o.order}" was left out of your frontier and is carried on: it binds until the user lifts it.`);
   return { standing: [...known.values()].filter((o) => !gone.has(o.order)), lifted: [...gone.values()], notes };
 }
 
@@ -87,6 +87,6 @@ export function ordersSection(standing: readonly StandingOrder[], lifted: readon
   return [
     ORDERS_HEADING,
     ...standing.flatMap((o) => [`- ${o.order}`, ...(o.liftClaimed === undefined ? [] : [`  (your frontier lifted it with "${o.liftClaimed}", but no message recorded for you holds those words: it still binds)`])]),
-    ...lifted.flatMap((l) => ['### Lifted, no longer binding', l.order, `The person lifted it: "${l.by}"`]),
+    ...lifted.flatMap((l) => ['### Lifted, no longer binding', l.order, `The user lifted it: "${l.by}"`]),
   ].join('\n');
 }

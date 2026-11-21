@@ -78,7 +78,7 @@ export function sizeTokens(size: Size, window: number): number {
   return 'tokens' in size ? size.tokens : Math.round((window * size.percent) / 100);
 }
 
-/** A size as a person writes it: "60%" or "150000". */
+/** A size as a user writes it: "60%" or "150000". */
 export function formatSize(size: Size): string {
   return 'tokens' in size ? String(size.tokens) : `${size.percent}%`;
 }
@@ -124,14 +124,14 @@ export type ResolvedOptions = {
   logFile?: string;
   /** Lower-cased ignore-list entries; empty when the variable is set empty. */
   ignoreModels: string[];
-  /** Skill and command names never dropped from a wake, as given, trimmed. */
+  /** Skill and command names every wake carries whole, as given, trimmed; `*` names every one (carry.ts `KEEP_ALL`). */
   keepSkills: string[];
   debug: boolean;
   /** One line per option that was invalid and fell back; empty when all were valid. */
   errors: string[];
 };
 
-/** What the person set in the environment, read by the adapter: each variable's value by name, and the lines for any that could not be read. */
+/** What the user set in the environment, read by the adapter: each variable's value by name, and the lines for any that could not be read. */
 export type OptionEnvironment = {
   pluginLogDir?: string;
   home?: string;
@@ -139,7 +139,7 @@ export type OptionEnvironment = {
   readErrors?: readonly string[];
 };
 
-/** A nudge start at or past the ceiling in the same unit: both are kept, the person is told. Across units only the max context decides. */
+/** A nudge start at or past the ceiling in the same unit: both are kept, the user is told. Across units only the max context decides. */
 function nudgeAfterCeiling(party: 'main' | 'subagent', { nudgeStart: start, ceiling }: PartySizes): string | undefined {
   const past = 'tokens' in start && 'tokens' in ceiling ? start.tokens >= ceiling.tokens : 'percent' in start && 'percent' in ceiling ? start.percent >= ceiling.percent : false;
   if (!past) return undefined;
