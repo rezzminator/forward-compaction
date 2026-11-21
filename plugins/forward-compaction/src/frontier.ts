@@ -9,7 +9,7 @@ import { LISTS, listApply, textApply, TEXTS, type Held, type Left, type ListCoun
 export const FORWARD_TOOL = 'forward_compaction';
 
 export const FORWARD_TOOL_DESCRIPTION =
-  'Compacts your context at a clean milestone once it is large. The plugin keeps your frontier as numbered lists and you send only changes: add texts, remove or edit by number; an item or section you leave out stays as it is. At your next compaction the lists and recorded facts replace everything before this call; the newest later messages that fit stay verbatim. Always stores; the result echoes each change. Example: forward_compaction({"next": "Run the gate", "done": {"add": ["Parser merged, 41 tests pass"]}, "remaining": {"remove": [3]}}). Exact old detail later → look_back.';
+  'Compacts your large context at a clean milestone. The plugin keeps your frontier as numbered lists; send only changes: add texts, remove or edit by number; what you leave out stays. MANDATORY: keep it clean: each call removes what is finished, lifted or wrong, edits what changed. At the next compaction the lists and recorded facts replace all before this call; the newest later messages that fit stay verbatim. Always stores. Example: forward_compaction({"next": "Run the gate", "done": {"add": ["Parser merged, 41 tests pass"]}, "remaining": {"remove": [3]}}). Exact old detail later → look_back.';
 
 /** What each list holds, as its field's description says it. */
 const LIST_DESCRIPTION: Record<ListName, string> = {
@@ -18,7 +18,8 @@ const LIST_DESCRIPTION: Record<ListName, string> = {
   remaining: 'Every step left, in order. An added step lands last, or before a step it names: {"before": 4, "text": "..."}.',
   blocked: "Every question or choice on hold until the user answers, in the user's words; removed once answered.",
   findings: 'Your own choices with why, errors verbatim, the commands and recipes you will need again.',
-  orders: "One item per rule of the user's that binds the rest of the work (a prohibition, a limit, a rule), in the user's words. An instruction for one part of the work is no order: it goes to remaining. A rule the user lifts is removed by its number, never edited into a note; one the user changes is edited.",
+  orders:
+    "Every rule of the user's that binds the rest of the work (a prohibition, a limit, a rule), in the user's words; several may share one item. An instruction for one part of the work is no order: it goes to remaining. A rule the user changes is edited. A rule the user lifts leaves entirely, never kept as a LIFTED note: remove its item, or edit the item down to its other rules. Example: [2] reads 'Never push. Tests go in tests/. One CHANGELOG line per fix.' and the user drops the CHANGELOG rule. Wrong: {\"edit\": [{\"id\": 2, \"text\": \"Never push. Tests go in tests/. LIFTED: one CHANGELOG line per fix.\"}]}. Right: {\"edit\": [{\"id\": 2, \"text\": \"Never push. Tests go in tests/.\"}]}.",
 };
 
 /** One list field: its three operations, each optional. */
@@ -229,7 +230,7 @@ export function applyCall(held: Held, call: ParsedCall): Applied {
     const changes = [call.lists[name], ...(call.extra[name] !== undefined ? [{ add: call.extra[name] }] : [])].filter((c) => c !== undefined);
     if (name === 'orders') out.lines.push(...objective.lines), out.notes.push(...objective.notes);
     for (const change of changes) {
-      const r = listApply(name, out.held.lists[name], change);
+      const r = listApply(name, out.held.lists[name], change, held.rounds);
       out.held.lists[name] = r.list;
       out.lines.push(...r.lines), out.notes.push(...r.notes);
       const c = out.counts[name] ?? { added: 0, removed: 0, edited: 0, skipped: 0 };

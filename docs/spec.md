@@ -276,8 +276,9 @@ The facts message opens with the plugin version that built the wake
 it. It holds, each section only when it has content:
 
 - the standing orders, first, under `## Standing orders — binding until the
-  user lifts them`: each live order on its own line as `[n] text`, carried
-  whole, outside the budget. A mechanical wake carries them the same way,
+  user lifts them`: each live order on its own line as `[n] text`, with the
+  unchanged tag the frontier message describes, carried whole, outside the
+  budget. A mechanical wake carries them the same way,
   and the frontier message and the mechanical wake's message both say to
   continue within them;
 - what arrived after the frontier and the kept messages lack: every
@@ -393,8 +394,17 @@ next forward_compaction call send only changes, by item number; whatever you
 leave out stays.` The frontier follows, rendered from the lists, never from
 text the model wrote whole: `## Objective`, `## Decisions`, `## Done`,
 `## Remaining`, `## Next`, `## Blocked`, `## Findings`, each list's live
-items one per line as `[n] text`, a list with no item left out. A frontier
-with no objective or next names what it lacks; then the message says how
+items one per line as `[n] text`, a list with no item left out. An item of
+any list, an order included, ends with ` [N rounds unchanged]` (` [1 round
+unchanged]`) once N compactions were installed since it was added or last
+edited, and with nothing before its first; the first nudge of a cycle shows
+its held lists the same way. The plugin counts the rounds, the model writes
+none, and a tag sent back at the end of an add or edit text is stripped.
+Where a tag shows, the opening line, and that nudge, add `An item tagged [N
+rounds unchanged] has passed N compactions with no change: keep it only
+while it is still true and still needed, and a standing order until the user
+lifts it.` The objective, the next and the storage entries carry no tag. A
+frontier with no objective or next names what it lacks; then the message says how
 many later messages follow. No model-facing text names the path of a list's
 file or of the history. A mechanical wake replaces it with a message saying
 the party had not called `forward_compaction` (since its last wake, when it
@@ -554,7 +564,7 @@ With the defaults, on a 200k sub-agent max context (on 1M the ceiling is
 | `~/.local/state/forward-compaction/logs/{errors,warnings,info}.jsonl` (`$PLUGIN_LOG_DIR/forward-compaction/` when set) | the plugin's errors, warnings and info: every decision event lands at its level — errors and warnings in their files, every other operational event (nudge, stored, each compaction decision, party, skill, tool-registered, look-back, the lines said) in `info.jsonl`, a held-ask streak folded into its first row and one `skips` row. Each row's `event` names what happened (never a bare `error` or `warning`), and an error or warning row's `where` names the function that raised it. One failure is one row: a tool that fails to register writes one error row and one screen line, and is tried again at each `turn.start`: at once for its first three tries, then after a wait of 30 seconds that doubles with each failure, up to 15 minutes, for the rest of the session. Rows a write could not append (the lock held past its 10-second wait, the writer killed at its 15-second bound, any failure) stay queued, order kept, and are retried with the next write: a row may be written twice, never lost or torn. Only past 2,000 held rows are the oldest dropped, and their count goes to `errors.jsonl` (`plugin-log-rows-dropped`) once a write succeeds. A lock stage or broken lock whose writer died is cleared | a level file over 20 MiB moves to `.1`, the older ones to `.2` … `.5`, the oldest of five deleted |
 | `debug.jsonl` in the same directory (with `FORWARD_COMPACTION_DEBUG` on) | a row at every step: each hook entry (hook, party, trigger, model), each `$` answer the plugin decides on (`session.usage` figures, the `agent.list` count, each `turn.step` reading with its four counts and model, `fs.stat` results), the options and variables resolved, each ratio base and each ratio, measured or not and why, with the base's characters and tokens and the characters and reading now, each wake's section sizes and files, its `skills` and `storage` counts, each nudge sent or withheld and why, and every decision row whole; numbers as the API gave them | as the level files: `.1` … `.5` |
 | `issues.md` in the same directory | notes a model appends when the plugin gave it trouble, as each tool answer asks | not managed by the plugin |
-| `~/.local/state/forward-compaction/{project}/{session}/`, each sub-agent's under `agents/{agent id}/` in it; `{project}` the name of the session's project directory without a leading dot | the party's frontier, written by the plugin alone when a call changes it: `orders.json` and `data/{decisions,done,remaining,blocked,findings}.json`, each `{next_id, items: [{id, text}]}` in shown order; `data/{objective,next}.json`, `{text}`; `storage.json`, the listed `[{name, description}]`; `storage/{name}.md`, each value. What leaves goes to `history/`: `history/{list}.jsonl`, one line `{id, text, left}` (`removed` or `edited`) per value that left; `history/{objective,next}.jsonl`, one `{text}` per text replaced; `history/storage/{name}`, a storage value replaced or removed, numbered before `.md` when the name is taken; `history/unreadable/{file}`, the content of a live file that could not be parsed at start, copied there before the first write over it. No file holds a date or a time. At the start of a chat process or a sub-agent the party's frontier is loaded from them; every list's next number is past every number its history holds; an unreadable live file is logged and read as an empty list, its next number also past every number its own text names, and left as it is until a call changes that list. What left is appended to the history before the live file that no longer holds it is written. A party with no `orders.json` takes the standing orders the previous build kept in Claude Code's session state as its first numbered orders | nothing is ever deleted |
+| `~/.local/state/forward-compaction/{project}/{session}/`, each sub-agent's under `agents/{agent id}/` in it; `{project}` the name of the session's project directory without a leading dot | the party's frontier, written by the plugin alone when a call changes it: `orders.json` and `data/{decisions,done,remaining,blocked,findings}.json`, each `{next_id, items: [{id, text, round}]}` in shown order, `round` the party's count of installed compactions when the item was added or last edited, left out at 0; `data/{objective,next}.json`, `{text}`; `storage.json`, the listed `[{name, description}]`; `storage/{name}.md`, each value; `rounds.json`, `{rounds}`, that count, written right after each install of a party that holds a list item. What leaves goes to `history/`: `history/{list}.jsonl`, one line `{id, text, left}` (`removed` or `edited`) per value that left; `history/{objective,next}.jsonl`, one `{text}` per text replaced; `history/storage/{name}`, a storage value replaced or removed, numbered before `.md` when the name is taken; `history/unreadable/{file}`, the content of a live file that could not be parsed at start, copied there before the first write over it. No file holds a date or a time. At the start of a chat process or a sub-agent the party's frontier is loaded from them; every list's next number is past every number its history holds; an unreadable live file is logged and read as an empty list, its next number also past every number its own text names, and left as it is until a call changes that list. What left is appended to the history before the live file that no longer holds it is written. A party with no `orders.json` takes the standing orders the previous build kept in Claude Code's session state as its first numbered orders | nothing is ever deleted |
 | anything else | none: the recorded facts live in memory only | — |
 
 Only errors reach the screen, and the log too. Warning, info and debug rows

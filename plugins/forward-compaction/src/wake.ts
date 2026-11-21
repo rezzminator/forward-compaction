@@ -5,7 +5,7 @@ import { keptSaid, PROMPTS_KEPT } from './ledger';
 import { experimental, EXPERIMENTAL_OPENING } from './frontier';
 import { fitSkills, pinned, SKILLS_LISTED_NOTE, SKILLS_MAX_CHARS } from './carry';
 import { ordersSection } from './orders';
-import type { Item, StorageEntry } from './lists';
+import { unchangedNote, type Item, type StorageEntry } from './lists';
 import { storageSection } from './storage';
 import type { WakePlan } from './plan';
 import { WAKE_OPENING } from './wake-row';
@@ -179,8 +179,8 @@ type Shared<M> = {
   tool?: string;
   /** The level-log directory, where the issues file the wake's last line names lives. */
   logDir?: string;
-  /** The party's live standing orders (lists.ts); absent or empty, no section. */
-  orders?: readonly Item[];
+  /** The party's live standing orders (lists.ts), and its count of installed compactions, against which each order's rounds unchanged are counted; absent or empty, no section. */
+  orders?: readonly Item[]; rounds?: number;
   /** The party's storage folder, absolute, and its listed entries (storage.ts); none listed, no section. */
   storage?: { dir: string; entries: readonly StorageEntry[] };
   /** Plan mode and the plan file, when the party's plan-mode attachments named them; absent, no section. */
@@ -252,7 +252,7 @@ function renderFacts<M>(input: Shared<M>, facts: WakeFacts, { siblings, files, r
   const sub = input.party === 'subagent';
 
   // Above all: the user's standing orders, binding and carried whole, outside every budget.
-  const orders = ordersSection(input.orders ?? []);
+  const orders = ordersSection(input.orders ?? [], input.rounds);
   if (orders !== undefined) sections.push(section(orders));
 
   // Then: what the model has not seen, which a notification-driven party would otherwise wait on forever.
@@ -456,7 +456,7 @@ export function buildWake<M extends WakeMessage>(input: BuildWakeInput<M>): Wake
   const split = splitAtCall(input.messages, input.toolUseId);
   const missing = input.missing ?? [];
   return assemble(input, split?.tail ?? input.messages, { siblings: split?.siblings ?? [], files: input.files ?? [] }, ({ kept, dropped }) => {
-    const lines = [`${WAKE_OPENING.frontier} Below is your frontier as forward-compaction holds it: continue from its ## Next${within(input.orders)}. ${CHANGES_ONLY}`, `=== frontier ===\n${input.frontier}\n=== end of frontier ===`];
+    const lines = [`${WAKE_OPENING.frontier} Below is your frontier as forward-compaction holds it: continue from its ## Next${within(input.orders)}. ${CHANGES_ONLY}${unchangedNote(input.frontier, ordersSection(input.orders ?? [], input.rounds))}`, `=== frontier ===\n${input.frontier}\n=== end of frontier ===`];
     if (missing.length > 0) lines.push(`Your frontier has no ${andList(missing)}: re-establish ${missing.length === 1 ? 'it' : 'them'} from ${sourceOf(input.party)} and the messages below, and send ${missing.length === 1 ? 'it' : 'them'} in your next forward_compaction call.`);
     // The receipt's own experimental line moves to the wake's end, where it is read last.
     if (split?.own !== undefined) lines.push(`Your forward_compaction call returned:\n${split.own.split(`\n${EXPERIMENTAL_OPENING}`)[0]}`);
@@ -477,7 +477,7 @@ export function mechanicalWake<M extends WakeMessage>(input: MechanicalWakeInput
   return assemble(input, input.messages, { siblings: [], files: [], recent: input.recent ?? [], mechanical: true }, ({ kept, dropped }) => experimental(
     frontier === ''
       ? `${reached}: the facts above and your newest ${kept} messages below, kept verbatim; ${dropped} older messages are gone (look_back finds an exact detail). No objective or next step was written. Re-establish them from ${source} and the messages below, then continue${within(input.orders)}; call ${input.tool ?? DEFAULT_TOOL} at your next milestone.`
-      : `${reached}: the facts above, your frontier below as forward-compaction holds it, unchanged since your last call, and your newest ${kept} messages after this one, kept verbatim; ${dropped} older messages are gone (look_back finds an exact detail). Continue from where the messages leave off, or from its ## Next${within(input.orders)}; call ${input.tool ?? DEFAULT_TOOL} at your next milestone. ${CHANGES_ONLY}\n\n=== frontier ===\n${frontier}\n=== end of frontier ===`,
+      : `${reached}: the facts above, your frontier below as forward-compaction holds it, unchanged since your last call, and your newest ${kept} messages after this one, kept verbatim; ${dropped} older messages are gone (look_back finds an exact detail). Continue from where the messages leave off, or from its ## Next${within(input.orders)}; call ${input.tool ?? DEFAULT_TOOL} at your next milestone. ${CHANGES_ONLY}${unchangedNote(frontier, ordersSection(input.orders ?? [], input.rounds))}\n\n=== frontier ===\n${frontier}\n=== end of frontier ===`,
     input.logDir),
   'none');
 }

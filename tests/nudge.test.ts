@@ -29,7 +29,8 @@ const DEV_TOOL = 'mcp__forward-compaction-dev__forward_compaction';
 const ARGS = 'with only what changed in your frontier, by item number: remove what is finished or lifted; what only a later step reads goes in storage (its value in storage.add); load_files only the files the next step reads';
 const FINISH = 'If the whole work finishes first, call it before the final report, with the finished steps removed from remaining, next "write the final report", and all the report needs added to done and findings: the compaction can land before your next request, and the report is then written from the frontier.';
 const END = 'No such tool? Carry on.';
-const UPKEEP = "Bring each up to date with what happened since, by item number: remove what is finished, lifted or wrong (an instruction for one part of the work is finished with that part); edit what changed; add each new rule of the user's to orders, one rule per item, each ruling on how a piece of work is done to decisions, and what waits on the user to blocked.";
+const UPKEEP = "MANDATORY: keep these lists clean. Bring each up to date with what happened since, by item number, so it holds only what is still true and still needed: remove what is finished, lifted or wrong (an instruction for one part of the work is finished with that part); edit what changed, and a lifted rule inside an item that holds other rules is edited out of it whole, never left as a note; add each new rule of the user's to orders, each ruling on how a piece of work is done to decisions, and what waits on the user to blocked.";
+const NOTE = ' An item tagged [N rounds unchanged] has passed N compactions with no change: keep it only while it is still true and still needed, and a standing order until the user lifts it.';
 
 describe('nudgeText (R29)', () => {
   it('gives every notice since the last compaction its own text, each firmer than the one before', () => {
@@ -124,14 +125,15 @@ describe('noticeFor', () => {
       sent: { row: { event: 'nudge', party: 'agent:a1', level: 9, notice: 2, last: true, tokens: 550_000, start: 150_000, every: 50_000 }, text: `forward-compaction: context 550k. Last notice: the plugin compacts this context itself before another comes, with no frontier from you, and you wake on its recorded facts alone. To wake on your own account of the work, call ${TOOL} ${ARGS} now. ${END}` },
     });
   });
-  it('shows a party holding a frontier every list by its field name, empty ones as none, in the first notice of a cycle only, asking for their upkeep', () => {
+  it('shows a party holding a frontier every list by its field name, empty ones as none, each item with the rounds it has passed unchanged, in the first notice of a cycle only, asking for their upkeep', () => {
     const parties = new Parties(), held = emptyHeld();
     held.objective = 'Fix the parser';
+    held.rounds = 2;
     held.lists.orders.items.push({ id: 1, text: 'no new dependencies' });
-    held.lists.decisions.items.push({ id: 2, text: 'dates stay strings' });
+    held.lists.decisions.items.push({ id: 2, text: 'dates stay strings', round: 2 });
     parties.get('main').held = held;
     expect(noticeFor(parties, 'main', 160_000, MARKS, ['haiku'])?.sent?.text).toBe(
-      `forward-compaction: context 160k and increasing. At your first milestone, call ${TOOL} ${ARGS}. A step that needs all of this context may reach its own milestone first. ${FINISH} Your lists as held:\nobjective: Fix the parser\norders:\n[1] no new dependencies\ndecisions:\n[2] dates stay strings\ndone: none\nremaining: none\nblocked: none\nfindings: none\nnext: none\n${UPKEEP} ${END}`,
+      `forward-compaction: context 160k and increasing. At your first milestone, call ${TOOL} ${ARGS}. A step that needs all of this context may reach its own milestone first. ${FINISH} Your lists as held:\nobjective: Fix the parser\norders:\n[1] no new dependencies [2 rounds unchanged]\ndecisions:\n[2] dates stay strings\ndone: none\nremaining: none\nblocked: none\nfindings: none\nnext: none\n${UPKEEP}${NOTE} ${END}`,
     );
     expect(noticeFor(parties, 'main', 210_000, MARKS, ['haiku'])?.sent?.text).toBe(
       `forward-compaction: context 210k, and every request re-sends all of it. At the end of the step in hand, call ${TOOL} ${ARGS}: that is your milestone. ${FINISH} ${END}`,

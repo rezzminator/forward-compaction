@@ -2,7 +2,7 @@ import type { Landing } from './wake';
 import { ignoredBy, type RatioBase } from './window';
 import type { PlanSeen } from './plan';
 import type { LoadFile } from './frontier';
-import { emptyHeld, renderFrontier, type Held, type Item, type StorageEntry } from './lists';
+import { emptyHeld, renderFrontier, roundPassed, type Held, type Item, type StorageEntry } from './lists';
 import type { PartyFiles } from './disk';
 import { storageDir } from './storage';
 import type { SubagentWindow } from './options';
@@ -290,7 +290,8 @@ export class Parties {
 
   /**
    * A compaction installed: the frontier goes, the nudges and the finish notice start over from the next reading's level, and no reading
-   * stands until the next request measures one, whose landing line then goes out. Returns a landing still waiting from an earlier install.
+   * stands until the next request measures one, whose landing line then goes out. A party holding any item has passed one more round: its count
+   * moves, due in its file. Returns a landing still waiting from an earlier install.
    */
   installed(key: string, landing?: Landing): Landing | undefined {
     const earlier = this.get(key).landing;
@@ -309,7 +310,9 @@ export class Parties {
       landing,
       installedThisTurn: true,
     });
-    this.get(key).installs += 1;
+    const state = this.get(key), passed = state.held === undefined ? undefined : roundPassed(state.held);
+    state.installs += 1;
+    if (passed !== state.held) (state.held = passed), state.files?.changed('rounds');
     return earlier;
   }
 
@@ -325,7 +328,7 @@ export class Parties {
 }
 
 /** What a wake shows of a party's held frontier: its live orders, its storage listing (with no files, none) and its lists rendered. */
-export function heldShown(party: { held?: Held; files?: PartyFiles }): { orders: Item[]; storage?: { dir: string; entries: StorageEntry[] }; frontier: string } {
+export function heldShown(party: { held?: Held; files?: PartyFiles }): { orders: Item[]; rounds: number; storage?: { dir: string; entries: StorageEntry[] }; frontier: string } {
   const held = party.held ?? emptyHeld();
-  return { orders: held.lists.orders.items, ...(party.files !== undefined ? { storage: { dir: storageDir(party.files), entries: held.storage } } : {}), frontier: renderFrontier(held) };
+  return { orders: held.lists.orders.items, rounds: held.rounds ?? 0, ...(party.files !== undefined ? { storage: { dir: storageDir(party.files), entries: held.storage } } : {}), frontier: renderFrontier(held) };
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { emptyHeld, emptyList, frontierSize, listApply, renderFrontier, sizeLines, textApply, type List } from '../plugins/forward-compaction/src/lists.ts';
+import { emptyHeld, emptyList, frontierSize, listApply, renderFrontier, roundPassed, sizeLines, textApply, unchangedNote, type List } from '../plugins/forward-compaction/src/lists.ts';
 
 const list = (...texts: string[]): List => ({ next_id: texts.length + 1, items: texts.map((text, i) => ({ id: i + 1, text })) });
 const shown = (l: List): string[] => l.items.map((item) => `[${item.id}] ${item.text}`);
@@ -38,6 +38,16 @@ describe('listApply: one call\'s change to one list, by item number', () => {
     expect([out.left, out.count]).toEqual([[{ id: 2, text: 'b', left: 'edited' }, { id: 1, text: 'a', left: 'removed' }], { added: 1, removed: 1, edited: 1, skipped: 1 }]);
   });
 
+  it('stamps an added or edited item with the round it happened in, leaves an untouched one its own, and stamps none at round 0', () => {
+    const before: List = { next_id: 4, items: [{ id: 1, text: 'a' }, { id: 2, text: 'b', round: 1 }, { id: 3, text: 'c', round: 1 }] };
+    expect(listApply('done', before, { edit: [{ id: 3, text: 'C' }], add: ['d'] }, 2).list).toEqual({ next_id: 5, items: [{ id: 1, text: 'a' }, { id: 2, text: 'b', round: 1 }, { id: 3, text: 'C', round: 2 }, { id: 4, text: 'd', round: 2 }] });
+    expect(listApply('done', emptyList(), { add: ['a'] }).list).toEqual({ next_id: 2, items: [{ id: 1, text: 'a' }] });
+  });
+
+  it('drops a tag the model copied back from a wake, in an add and in an edit', () => {
+    expect(shown(listApply('done', list('a'), { add: ['b [2 rounds unchanged]'], edit: [{ id: 1, text: 'A [1 round unchanged] ' }] }).list)).toEqual(['[1] A', '[2] b']);
+  });
+
   it('in remaining, places a step before a live one, and last before a number not live', () => {
     const out = listApply('remaining', list('one', 'three'), { remove: [1], add: [{ before: 2, text: 'two' }, { before: 1, text: 'four' }, { before: 'x', text: 'five' }] });
     expect([shown(out.list), out.notes]).toEqual([['[3] two', '[2] three', '[4] four', '[5] five'], ['remaining.add[2].before must be a step number; got string: added last.', 'remaining.add[1].before: [1] is not a live step: added last.']]);
@@ -71,6 +81,16 @@ describe('the frontier rendered from the lists, and its size', () => {
   it('shows each section with content under its heading, items as [n] text, an empty list with no heading, orders apart', () => {
     expect(renderFrontier(held)).toBe('## Objective\nship it\n\n## Decisions\n[1] one\n[4] four\n\n## Next\nwire the hook\n\n## Findings\n[1] f');
     expect(renderFrontier(emptyHeld())).toBe('');
+  });
+
+  it('ends each item with the rounds it has passed unchanged, none before its first, and says what the tag means only where one shows', () => {
+    const aged = { ...held, rounds: 3, lists: { ...held.lists, decisions: { next_id: 5, items: [{ id: 1, text: 'one' }, { id: 4, text: 'four', round: 2 }] }, findings: { next_id: 2, items: [{ id: 1, text: 'f', round: 3 }] } } };
+    expect(renderFrontier(aged)).toBe('## Objective\nship it\n\n## Decisions\n[1] one [3 rounds unchanged]\n[4] four [1 round unchanged]\n\n## Next\nwire the hook\n\n## Findings\n[1] f');
+    expect([unchangedNote(undefined, renderFrontier(aged)), unchangedNote(renderFrontier(held), undefined)]).toEqual([' An item tagged [N rounds unchanged] has passed N compactions with no change: keep it only while it is still true and still needed, and a standing order until the user lifts it.', '']);
+  });
+
+  it('counts a round for a frontier holding an item, and none for one holding no item', () => {
+    expect([roundPassed(held).rounds, roundPassed({ ...held, rounds: 2 }).rounds, roundPassed({ ...emptyHeld(), objective: 'x' }).rounds]).toEqual([1, 3, undefined]);
   });
 
   it('counts the characters of every live item, the objective and next', () => {

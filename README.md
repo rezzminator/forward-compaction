@@ -7,7 +7,7 @@
 [![Claude Code plugin](https://img.shields.io/badge/Claude%20Code-plugin-D97757)](https://docs.claude.com/en/docs/claude-code/plugins)
 [![Version](https://img.shields.io/badge/version-2.3.1-blue)](./CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
-[![Tests](https://img.shields.io/badge/tests-760%20passing-brightgreen)](#development)
+[![Tests](https://img.shields.io/badge/tests-766%20passing-brightgreen)](#development)
 [![Built with Professor](https://img.shields.io/badge/built%20with-Professor-8A2BE2)](https://github.com/rezzminator/professor)
 
 </div>
@@ -165,7 +165,7 @@ forward_compaction({
 | `storage` | Markdown files the model keeps for a later step, each with a description; every compaction lists them, and the model reads or edits them with Read and Edit. |
 | `load_files` | Files to read back in after the compaction, up to 250 lines each; a binary file is named, never carried. |
 
-Each list takes `{add, remove, edit}`: texts to add, item numbers to remove, `{id, text}` to replace an item's text. An item's number never changes and is never reused. The call is never refused: the reply gives the new numbers and one line per change, names anything it skipped, gives the handoff's size, warns past `FORWARD_COMPACTION_FRONTIER_WARN_CHARS`, and says when the handoff will install. Everything is written to disk as it arrives, and what leaves a list, a text or the storage goes to a history folder beside it, so a restarted chat keeps every number; [State on disk](./docs/spec.md#state-on-disk) has the layout.
+Each list takes `{add, remove, edit}`: texts to add, item numbers to remove, `{id, text}` to replace an item's text. An item's number never changes and is never reused. At a compaction each list item shows how many compactions it has passed unchanged (`[3 rounds unchanged]`), counted by the plugin, so the model sees what has gone stale and removes it. The call is never refused: the reply gives the new numbers and one line per change, names anything it skipped, gives the handoff's size, warns past `FORWARD_COMPACTION_FRONTIER_WARN_CHARS`, and says when the handoff will install. Everything is written to disk as it arrives, and what leaves a list, a text or the storage goes to a history folder beside it, so a restarted chat keeps every number; [State on disk](./docs/spec.md#state-on-disk) has the layout.
 
 ### `look_back`
 

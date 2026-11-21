@@ -10,7 +10,7 @@ import { ANSWERS, SYNTHETIC_HANDLE, SYNTHETIC_MODEL, loadFixture, invocations, r
 import { DRAWN, ENV_NAMES, PATHS, PART_CHARS, RECORDED, STATE_KEYS, register as recorder, rowFiles, type Row } from '../scripts/replay/recorder.ts';
 import { contextTokens } from '../plugins/forward-compaction/src/decide.ts';
 import { applyCall, parseCall, toolInput } from '../plugins/forward-compaction/src/frontier.ts';
-import { emptyHeld, renderFrontier } from '../plugins/forward-compaction/src/lists.ts';
+import { emptyHeld, renderFrontier, roundPassed } from '../plugins/forward-compaction/src/lists.ts';
 import { WAKE_OPENING } from '../plugins/forward-compaction/src/wake-row.ts';
 import { resolveOptions, subagentWindow } from '../plugins/forward-compaction/src/options.ts';
 import { askPointOf, partyMarks } from '../plugins/forward-compaction/src/window.ts';
@@ -38,14 +38,14 @@ const nextWake = (view: View, key: string, after: number): Invocation | undefine
 const SECTION_KEYS = ['objective', 'decisions', 'done', 'remaining', 'next', 'blocked', 'findings'];
 /**
  * The frontier the wake after `call` installs. The plugin holds it as lists that every call of the party changes, so it
- * is each such call up to this one applied in order; the 2.1.325 recording's build installed the one call's sections
+ * is each such call up to this one applied in order, a round passing at each wake between them; the 2.1.325 recording's build installed the one call's sections
  * whole, so its own outputs are held to that.
  */
 const frontierOf = (view: View, call: Invocation, recorded: boolean): string => {
   if (recorded) return SECTION_KEYS.flatMap((key) => (typeof toolInput(call.input)[key] === 'string' && (toolInput(call.input)[key] as string).trim() !== '' ? [`## ${key[0]!.toUpperCase()}${key.slice(1)}\n${toolInput(call.input)[key]}`] : [])).join('\n\n');
   return renderFrontier(view
-    .filter((t) => t.seq <= call.seq && t.hook === 'tool.call' && isForward(t.input?.tool) && party(t.input) === party(call.input))
-    .reduce((held, t) => applyCall(held, parseCall(toolInput(t.input))).held, emptyHeld()));
+    .filter((t) => t.seq <= call.seq && party(t.input) === party(call.input) && ((t.hook === 'tool.call' && isForward(t.input?.tool)) || wakeOf(t) !== undefined))
+    .reduce((held, t) => (t.hook === 'tool.call' ? applyCall(held, parseCall(toolInput(t.input))).held : roundPassed(held)), emptyHeld()));
 };
 /** What a delivery reaching a sub-agent mid-turn (`session.append` door `delivery`) says: its row's text blocks. */
 const delivered = (inv: Invocation): string => (inv.input?.message?.content ?? []).filter((b: any) => b?.type === 'text' && typeof b.text === 'string').map((b: any) => b.text).join('\n');

@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { Parties, type StoredFrontier } from '../plugins/forward-compaction/src/parties.ts';
 import { nudgeLevel } from '../plugins/forward-compaction/src/nudge.ts';
+import { PartyFiles } from '../plugins/forward-compaction/src/disk.ts';
+import { emptyHeld } from '../plugins/forward-compaction/src/lists.ts';
 
 const LANDING = { kind: 'frontier' as const, label: 'main', before: 70_000, chars: 10, facts: 1, kept: 0, dropped: 0 };
 const frontier = (toolUseId: string, storedAtTokens = 41_200): Omit<StoredFrontier, 'seq'> => ({
@@ -264,6 +266,15 @@ describe('finishDue', () => {
 });
 
 describe('installed', () => {
+  it('counts one more round for a party holding an item, its count due in its file, and none for a party holding no item', () => {
+    const parties = new Parties(), files = new PartyFiles('/r'), held = emptyHeld();
+    held.lists.done.items.push({ id: 1, text: 'a' });
+    Object.assign(parties.get('main'), { held, files });
+    parties.get('agent:a1').held = emptyHeld();
+    parties.installed('main'), parties.installed('main'), parties.installed('agent:a1');
+    expect([parties.get('main').held?.rounds, [...files.dirty], parties.get('agent:a1').held?.rounds]).toEqual([2, ['rounds'], undefined]);
+  });
+
   it('clears the frontier, the nudges and the reading, counts the install, sets the turn mark and holds the landing', () => {
     const parties = new Parties();
     parties.read('main', 70_000);

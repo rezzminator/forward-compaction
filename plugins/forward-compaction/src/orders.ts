@@ -11,8 +11,8 @@ export function keptOrders(kept: unknown): string[] | undefined {
   return kept.flatMap((o) => (typeof o === 'object' && o !== null && typeof o.order === 'string' && o.order.trim() !== '' ? [o.order as string] : []));
 }
 
-/** The wake's first section: each live order as `[n] text`; undefined with none. */
-export function ordersSection(orders: readonly Item[]): string | undefined {
+/** The wake's first section: each live order as `[n] text`, with its rounds unchanged of the party's `rounds`; undefined with none. */
+export function ordersSection(orders: readonly Item[], rounds = 0): string | undefined {
   if (orders.length === 0) return undefined;
-  return [ORDERS_HEADING, ...itemLines({ next_id: 0, items: [...orders] })].join('\n');
+  return [ORDERS_HEADING, ...itemLines({ next_id: 0, items: [...orders] }, rounds)].join('\n');
 }

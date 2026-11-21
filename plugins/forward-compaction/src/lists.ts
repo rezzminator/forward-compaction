@@ -9,7 +9,8 @@ export type ListName = (typeof LISTS)[number];
 export const TEXTS = ['objective', 'next'] as const;
 export type TextName = (typeof TEXTS)[number];
 
-export type Item = { id: number; text: string };
+/** `round`: the party's count of installed compactions (`Held.rounds`) when the item was added or last edited; absent is 0. */
+export type Item = { id: number; text: string; round?: number };
 /** A list as it is held and kept on disk: its live items in shown order, and the next free number. */
 export type List = { next_id: number; items: Item[] };
 /** A value that left a list: removed, or replaced by an edit. */
@@ -17,14 +18,23 @@ export type Left = { id: number; text: string; left: 'removed' | 'edited' };
 /** One storage entry as the wake lists it (storage.ts). */
 export type StorageEntry = { name: string; description: string };
 
-/** Everything the plugin holds of one party's frontier. */
-export type Held = { objective?: string; next?: string; lists: Record<ListName, List>; storage: StorageEntry[] };
+/** Everything the plugin holds of one party's frontier. `rounds`: the compactions installed for the party while it held an item, absent is 0; each item's rounds unchanged are counted against it. */
+export type Held = { objective?: string; next?: string; lists: Record<ListName, List>; storage: StorageEntry[]; rounds?: number };
 
 export const emptyList = (): List => ({ next_id: 1, items: [] });
 export const emptyHeld = (): Held => ({ lists: Object.fromEntries(LISTS.map((name) => [name, emptyList()])) as Record<ListName, List>, storage: [] });
 
 /** Text as a match reads it: one space for every run of whitespace, lower case. A model sending an item again rejoins lines and re-cases words; the words stay its own. */
 export const plain = (text: string): string => text.replace(/\s+/g, ' ').trim().toLowerCase();
+
+/** What a wake and a nudge end an item with once it has passed `n` compactions with no change; nothing before its first. */
+export const unchangedTag = (n: number): string => (n < 1 ? '' : ` [${n} round${n === 1 ? '' : 's'} unchanged]`);
+const TAG = /\s*\[\d+ rounds? unchanged\]/;
+/** An item's text as sent, without a tag the model copied back from a wake. */
+const untagged = (text: string): string => text.replace(new RegExp(`${TAG.source}\\s*$`), '');
+/** What a wake and a nudge say once, after lists that show a tag; '' when none of `shown` does. */
+export const unchangedNote = (...shown: (string | undefined)[]): string =>
+  shown.some((text) => text !== undefined && TAG.test(text)) ? ' An item tagged [N rounds unchanged] has passed N compactions with no change: keep it only while it is still true and still needed, and a standing order until the user lifts it.' : '';
 
 export const kind = (v: unknown): string => (v === null ? 'null' : Array.isArray(v) ? 'array' : typeof v);
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
@@ -75,7 +85,7 @@ function readChange(name: ListName, change: unknown): { adds: Add[]; removes: { 
     if (before !== undefined && name !== 'remaining') out.notes.push(`${at}.before is for remaining only: added last.`);
     const step = name === 'remaining' && before !== undefined ? idOf(before) : undefined;
     if (name === 'remaining' && before !== undefined && step === undefined) out.notes.push(`${at}.before must be a step number; got ${kind(before)}: added last.`);
-    out.adds.push({ text: text as string, at, ...(step !== undefined ? { before: step } : {}) });
+    out.adds.push({ text: untagged(text as string), at, ...(step !== undefined ? { before: step } : {}) });
   }
   for (const [i, entry] of entries('remove', (v) => idOf(v) !== undefined).entries()) {
     const id = idOf(entry);
@@ -92,7 +102,7 @@ function readChange(name: ListName, change: unknown): { adds: Add[]; removes: { 
     const id = idOf(sent);
     if (id === undefined) out.notes.push(`${at}.id must be an item number; got ${kind(sent)}: skipped.`);
     else if (blank(text)) out.notes.push(`${at}.text ${typeof text === 'string' ? 'is blank' : `must be a text; got ${kind(text)}`}: skipped.`);
-    else out.edits.push({ id, text: text as string, at });
+    else out.edits.push({ id, text: untagged(text as string), at });
   }
   return out;
 }
@@ -101,9 +111,11 @@ function readChange(name: ListName, change: unknown): { adds: Add[]; removes: { 
  * One call's change to one list: removes and edits aim at the numbers the model saw, then the adds take the next free
  * numbers. A number both removed and edited is removed; a number that is not live, a blank text or a malformed entry is
  * skipped; an added text equal to a live item (`plain`) is skipped as `already [n]`; each with one note or line. In
- * `remaining` an add may name a live step to stand `before`; one that is not live puts it last. Never throws.
+ * `remaining` an add may name a live step to stand `before`; one that is not live puts it last. An item added or edited
+ * takes `round`, the party's count of installed compactions, from which its rounds unchanged are counted. Never throws.
  */
-export function listApply(name: ListName, list: List, change: unknown): ListOutcome {
+export function listApply(name: ListName, list: List, change: unknown, round = 0): ListOutcome {
+  const stamp = (item: Item): Item => (round > 0 ? Object.assign(item, { round }) : item);
   const read = readChange(name, change);
   const notes = [...read.notes];
   const seen = new Map(list.items.map((item) => [item.id, item]));
@@ -121,7 +133,7 @@ export function listApply(name: ListName, list: List, change: unknown): ListOutc
     if (item === undefined) notes.push(`${e.at}: [${e.id}] is not a live item: skipped.`);
     else if (removed.has(e.id)) notes.push(`${e.at}: [${e.id}] is also removed: removed.`);
     else if (item.text === e.text) notes.push(`${e.at}: [${e.id}] already reads so: unchanged.`);
-    else (left.push({ id: item.id, text: item.text, left: 'edited' }), edited.push(`Edited in ${name}: [${item.id}], was: ${item.text}`), (item.text = e.text));
+    else (left.push({ id: item.id, text: item.text, left: 'edited' }), edited.push(`Edited in ${name}: [${item.id}], was: ${item.text}`), (item.text = e.text), stamp(item));
   }
   const removedLines: string[] = [];
   const kept = items.filter((item) => {
@@ -138,7 +150,7 @@ export function listApply(name: ListName, list: List, change: unknown): ListOutc
       skipped.push(`Skipped in ${name}: already [${same.id}]`);
       continue;
     }
-    const item = { id: next++, text: a.text };
+    const item = stamp({ id: next++, text: a.text });
     const at = a.before === undefined ? -1 : kept.findIndex((it) => it.id === a.before);
     if (a.before !== undefined && at < 0) notes.push(`${a.at}.before: [${a.before}] is not a live step: added last.`);
     if (at < 0) kept.push(item);
@@ -174,16 +186,21 @@ export const SECTIONS: readonly { key: TextName | Exclude<ListName, 'orders'>; h
   { key: 'findings', heading: 'Findings' },
 ];
 
-/** A list's live items as the wake and the result show them. */
-export const itemLines = (list: List): string[] => list.items.map((item) => `[${item.id}] ${item.text}`);
+/** A list's live items as the wake and a nudge show them, each ending with the rounds it has passed unchanged of the party's `rounds` (`unchangedTag`). */
+export const itemLines = (list: List, rounds = 0): string[] => list.items.map((item) => `[${item.id}] ${item.text}${unchangedTag(rounds - (item.round ?? 0))}`);
 
 /** The frontier rendered from what is held: each section with content under its heading, an empty one left out; '' when nothing is held. */
 export function renderFrontier(held: Held): string {
   return SECTIONS.flatMap(({ key, heading }) => {
     if (key === 'objective' || key === 'next') return held[key] === undefined ? [] : [`## ${heading}\n${held[key]}`];
     const list = held.lists[key];
-    return list.items.length === 0 ? [] : [`## ${heading}\n${itemLines(list).join('\n')}`];
+    return list.items.length === 0 ? [] : [`## ${heading}\n${itemLines(list, held.rounds).join('\n')}`];
   }).join('\n\n');
+}
+
+/** `held` after one more installed compaction: a frontier holding any item has passed one more round, one holding none counts nothing and is returned as it is. */
+export function roundPassed(held: Held): Held {
+  return LISTS.some((name) => held.lists[name].items.length > 0) ? { ...held, rounds: (held.rounds ?? 0) + 1 } : held;
 }
 
 /** The frontier's size: the characters of every live item, the objective and next; the live items, and each list's items and characters. */

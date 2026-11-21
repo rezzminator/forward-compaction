@@ -1,6 +1,6 @@
 import type { Parties } from './parties';
 import { storageDir } from './storage';
-import { LISTS, itemLines, type Held, type ListName } from './lists';
+import { LISTS, itemLines, unchangedNote, type Held, type ListName } from './lists';
 
 /** The tool's name as the installed copy registered it; a `-dev` copy's differs. */
 export const DEFAULT_TOOL = 'mcp__forward-compaction__forward_compaction';
@@ -75,7 +75,7 @@ export function nudgeText({ tokens, tool = DEFAULT_TOOL, party = 'main', notice 
   const said = last
     ? `context ${size}. Last notice: the plugin compacts this context itself before another comes, with no frontier from you, and you wake on its recorded facts alone. To wake on your own account of the work, call ${call} now.`
     : [nudgeBody(count, size, call), ...(count > SKIP_RULES.length ? [] : [party === 'main' ? FINISH_RULE : SKIP_RULES[count - 1]])].join(' ');
-  const upkeep = lists === undefined || last ? '' : ` Your lists as held:\n${lists}\nBring each up to date with what happened since, by item number: remove what is finished, lifted or wrong (an instruction for one part of the work is finished with that part); edit what changed; add each new rule of the user's to orders, one rule per item, each ruling on how a piece of work is done to decisions, and what waits on the user to blocked.`;
+  const upkeep = lists === undefined || last ? '' : ` Your lists as held:\n${lists}\nMANDATORY: keep these lists clean. Bring each up to date with what happened since, by item number, so it holds only what is still true and still needed: remove what is finished, lifted or wrong (an instruction for one part of the work is finished with that part); edit what changed, and a lifted rule inside an item that holds other rules is edited out of it whole, never left as a note; add each new rule of the user's to orders, each ruling on how a piece of work is done to decisions, and what waits on the user to blocked.${unchangedNote(lists)}`;
   return `forward-compaction: ${said}${upkeep} No such tool? Carry on.`;
 }
 
@@ -84,7 +84,7 @@ export function heldLists(held: Held | undefined): string {
   const text = (name: 'objective' | 'next'): string => `${name}: ${held?.[name] ?? 'none'}`;
   const items = (name: ListName): string => {
     const list = held?.lists[name];
-    return list === undefined || list.items.length === 0 ? `${name}: none` : `${name}:\n${itemLines(list).join('\n')}`;
+    return list === undefined || list.items.length === 0 ? `${name}: none` : `${name}:\n${itemLines(list, held?.rounds).join('\n')}`;
   };
   return [text('objective'), ...LISTS.map(items), text('next')].join('\n');
 }

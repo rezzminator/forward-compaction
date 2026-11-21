@@ -42,6 +42,9 @@ describe('the wake renders the standing orders above everything', () => {
     expect(f.indexOf(ORDERS_HEADING)).toBeLessThan(f.indexOf("## The user's messages"));
     expect((wake.messages[1] as BuiltMessage).text.split('\n')[0]).toBe('[forward-compaction: frontier] Below is your frontier as forward-compaction holds it: continue from its ## Next, within the standing orders above. In your next forward_compaction call send only changes, by item number; whatever you leave out stays.');
     expect(wake.sizes[0]).toEqual({ section: ORDERS_HEADING, chars: sections[0]!.length });
+    const aged = buildWake({ ...shared, toolUseId: 't9', frontier: '## Next\nround 2', rounds: 2, orders: [orders[0]!, { ...orders[1]!, round: 2 }] });
+    expect(sectionOf((aged.messages[0] as BuiltMessage).text, ORDERS_HEADING)).toBe(`${ORDERS_HEADING}\n[1] ${ORDER} [2 rounds unchanged]\n[3] never force-push`);
+    expect((aged.messages[1] as BuiltMessage).text.split('\n')[0]).toBe('[forward-compaction: frontier] Below is your frontier as forward-compaction holds it: continue from its ## Next, within the standing orders above. In your next forward_compaction call send only changes, by item number; whatever you leave out stays. An item tagged [N rounds unchanged] has passed N compactions with no change: keep it only while it is still true and still needed, and a standing order until the user lifts it.');
   });
 
   it('carries them whole whatever the budget, and the mechanical wake carries them the same way', () => {
@@ -110,7 +113,7 @@ describe('the standing orders and the other lists, through the hooks and their f
     expect(await ordersIn(f, 'tu-b')).toBe(`${ORDERS_HEADING}\n[1] ${ORDER}`);
 
     expect((await call(f, 'tu-c', { next: 'spawn', lifted: [{ order: ORDER, by: 'spawn as many chats as you need' }] })).slice(0, 2)).toEqual(['next replaced', 'lifted is no field: to lift an order, send its number in orders.remove. Nothing lifted.']);
-    expect(await ordersIn(f, 'tu-c')).toBe(`${ORDERS_HEADING}\n[1] ${ORDER}`);
+    expect(await ordersIn(f, 'tu-c')).toBe(`${ORDERS_HEADING}\n[1] ${ORDER} [1 round unchanged]`);
 
     expect((await call(f, 'tu-d', { next: 'spawn', orders: { remove: [1] } })).slice(0, 2)).toEqual([`Removed from orders: [1] ${ORDER}`, 'next unchanged']);
     expect(await ordersIn(f, 'tu-d')).toBeUndefined();
@@ -142,15 +145,17 @@ describe('the standing orders and the other lists, through the hooks and their f
     const before = await begin({ home, files });
     expect((await call(before, 'tu-a', { ...FIRST, orders: { add: [ORDER] }, remaining: { add: ['round 2', 'round 3', 'round 4'] } })).slice(0, 5)).toEqual(['objective set', 'Added to orders: [1]', 'Added to done: [1]', 'Added to remaining: [1], [2], [3]', 'next set']);
     expect((await call(before, 'tu-b', { done: { add: ['round 2'] }, remaining: { remove: [1], edit: [{ id: 2, text: 'round 3, twice' }], add: ['round 5'] }, storage: { add: [{ name: 'API Survey', description: 'the API survey', value: '# s' }] } })).slice(0, 6)).toEqual(['Added to done: [2]', 'Added to remaining: [4]', 'Removed from remaining: [1] round 2', 'Edited in remaining: [2], was: round 3', `next kept: ${FIRST.next}`, 'Stored api-survey.md (3 characters)']);
+    await ask(before, transcript('tu-b'));
     const after = await begin({ home, files });
     expect((await call(after, 'tu-c', { objective: 'finish both rounds', orders: { add: ['never push'] }, remaining: { add: ['round 6'] }, storage: { add: [{ name: 'gate', description: 'the fence command', value: 'x' }], remove: ['api-survey.md'] } })).slice(0, 6)).toEqual(['objective replaced', 'Added to orders: [2]', 'Added to remaining: [5]', `next kept: ${FIRST.next}`, 'Stored gate.md (1 characters)', 'Storage no longer lists api-survey.md']);
     const wake = await ask(after, transcript('tu-c'));
-    expect(sectionOf(wake.messages[0].text, ORDERS_HEADING)).toBe(`${ORDERS_HEADING}\n[1] ${ORDER}\n[2] never push`);
+    expect(sectionOf(wake.messages[0].text, ORDERS_HEADING)).toBe(`${ORDERS_HEADING}\n[1] ${ORDER} [1 round unchanged]\n[2] never push`);
     expect(sectionOf(wake.messages[0].text, '## Storage')).toBe(`## Storage — files in ${root}/storage/\ngate.md — the fence command`);
     expect([files[`${root}/storage/gate.md`]?.content, files[`${root}/history/storage/api-survey.md`]?.content, files[`${root}/storage/api-survey.md`]?.content]).toEqual(['x', '# s', '# s']);
-    expect(wake.messages[1].text).toContain(`=== frontier ===\n## Objective\nfinish both rounds\n\n## Done\n[1] round 1\n[2] round 2\n\n## Remaining\n[2] round 3, twice\n[3] round 4\n[4] round 5\n[5] round 6\n\n## Next\n${FIRST.next}\n=== end of frontier ===`);
+    expect(wake.messages[1].text).toContain(`=== frontier ===\n## Objective\nfinish both rounds\n\n## Done\n[1] round 1 [1 round unchanged]\n[2] round 2 [1 round unchanged]\n\n## Remaining\n[2] round 3, twice [1 round unchanged]\n[3] round 4 [1 round unchanged]\n[4] round 5 [1 round unchanged]\n[5] round 6\n\n## Next\n${FIRST.next}\n=== end of frontier ===`);
+    expect(files[`${root}/rounds.json`]?.content).toBe('{\n  "rounds": 2\n}\n');
     expect([files[`${root}/history/remaining.jsonl`]?.content, files[`${root}/history/objective.jsonl`]?.content]).toEqual(['{"id":2,"text":"round 3","left":"edited"}\n{"id":1,"text":"round 2","left":"removed"}\n', '{"text":"finish the round"}\n']);
-    expect(JSON.parse(files[`${root}/data/remaining.json`]?.content ?? 'null')).toEqual({ next_id: 6, items: [{ id: 2, text: 'round 3, twice' }, { id: 3, text: 'round 4' }, { id: 4, text: 'round 5' }, { id: 5, text: 'round 6' }] });
+    expect(JSON.parse(files[`${root}/data/remaining.json`]?.content ?? 'null')).toEqual({ next_id: 6, items: [{ id: 2, text: 'round 3, twice' }, { id: 3, text: 'round 4' }, { id: 4, text: 'round 5' }, { id: 5, text: 'round 6', round: 1 }] });
   });
 
   it('holds a change it could not write, names the list and the error without the folder, logs it, and writes it at the next call', async () => {

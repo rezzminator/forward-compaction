@@ -40,6 +40,22 @@ describe('PartyFiles: write, history and load', () => {
     expect([loaded.held.lists.decisions, loaded.held.objective, loaded.problems]).toEqual([{ next_id: 4, items: [{ id: 1, text: 'a' }, { id: 3, text: 'C' }] }, 'goal 2', []]);
   });
 
+  it('keeps the round count and each item\'s round, never loads a count behind an item\'s own, and names a count it cannot read', async () => {
+    const fs = memFs();
+    const files = new PartyFiles(R);
+    const held = { ...emptyHeld(), rounds: 2 };
+    held.lists.done = listApply('done', held.lists.done, { add: ['a'] }, 2).list;
+    files.changed('done'), files.changed('rounds');
+    expect(await files.flush(fs, held)).toEqual([]);
+    expect([fs.files[`${R}/rounds.json`], fs.files[`${R}/data/done.json`]]).toEqual(['{\n  "rounds": 2\n}\n', '{\n  "next_id": 2,\n  "items": [\n    {\n      "id": 1,\n      "text": "a",\n      "round": 2\n    }\n  ]\n}\n']);
+    const loaded = await new PartyFiles(R).load(fs);
+    expect([loaded.held.rounds, loaded.held.lists.done.items, loaded.problems]).toEqual([2, [{ id: 1, text: 'a', round: 2 }], []]);
+    const behind = await new PartyFiles(R).load(memFs({ ...fs.files, [`${R}/rounds.json`]: '{"rounds": 1}' }));
+    expect([behind.held.rounds, behind.problems]).toEqual([2, []]);
+    const unread = await new PartyFiles(R).load(memFs({ ...fs.files, [`${R}/rounds.json`]: '{"rounds": "x"}' }));
+    expect([unread.held.rounds, unread.problems]).toEqual([2, [{ file: 'rounds.json', error: 'not a {rounds}' }]]);
+  });
+
   it('keeps a change it could not write due, and writes it at the next flush', async () => {
     const fs = memFs({}, { write: { [`${R}/orders.json`]: 'EACCES: permission denied' } });
     const files = new PartyFiles(R);
