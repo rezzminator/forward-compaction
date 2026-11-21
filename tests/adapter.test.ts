@@ -2,7 +2,8 @@ import { existsSync, readFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { fakeEngine, nudgeArgs, usage, type Script } from './fakes/engine.ts';
-import { level, logged, rows } from './fakes/session.ts';
+import { fromFacts, level, logged, rows } from './fakes/session.ts';
+import { START_END } from '../plugins/forward-compaction/src/kept.ts';
 
 const FORWARD = 'mcp__forward-compaction__forward_compaction';
 const SECTIONS = { objective: 'Ship U5.', next: 'Wire session.compact.', done: { add: ['The fake.'] }, remaining: { add: ['The adapter.'] } };
@@ -159,19 +160,22 @@ describe('the compaction window warning (R33)', () => {
 });
 
 describe('session.compact', () => {
-  it('installs a sub-agent frontier at an auto ask: [F, H, ...tail] with the tail objects unchanged, and the landed line (R34, R36)', async () => {
+  it('installs a sub-agent frontier at an auto ask: [start, end line, F, H, ...tail] with the start and the tail objects unchanged, and the landed line (R34, R36)', async () => {
     const f = await begin();
     await spawn(f);
     await step(f, 64_000, A1);
     await store(f, A1);
     const messages = transcript();
     const r = await f.dispatch('session.compact', { trigger: 'auto', agentId: A1, messages }, async () => ({ skip: 'native ran' }));
-    expect(r.messages).toHaveLength(4);
-    expect(r.messages[0].text).toMatch(/^\[forward-compaction: facts\]/);
-    expect(r.messages[0].text).toContain('Brief for agent one');
-    expect(r.messages[1].text).toContain(`=== frontier ===\n${FRONTIER}\n=== end of frontier ===`);
-    expect(r.messages.slice(2)).toEqual([messages[3], messages[4]]);
-    expect(r.messages[2]).toBe(messages[3]);
+    expect(r.messages).toHaveLength(6);
+    expect(r.messages[0]).toBe(messages[0]); // the brief, by handle
+    expect(r.messages[1]).toEqual({ role: 'assistant', text: START_END, toolUses: [] });
+    expect(r.messages[2].text).toMatch(/^\[forward-compaction: facts\]/);
+    expect(r.messages[2].text).toContain('Your brief is the first message above, kept verbatim.');
+    expect(r.messages[2].text).not.toContain('## Your brief');
+    expect(r.messages[3].text).toContain(`=== frontier ===\n${FRONTIER}\n=== end of frontier ===`);
+    expect(r.messages.slice(4)).toEqual([messages[3], messages[4]]);
+    expect(r.messages[4]).toBe(messages[3]);
     expect(r.tokensBefore).toBe(64_000); // the last reading, never an estimate beside it
     expect(r.tokensAfter).toBeUndefined(); // no character count stands in for it: the next reading measures it (M2)
     await step(f, 12_000, A1);
@@ -240,7 +244,7 @@ describe('session.compact', () => {
     await store(f, A1);
     const r = await f.dispatch('session.compact', { trigger: 'auto', agentId: A1, messages: transcript() }, async () => ({ skip: 'native ran' }));
     expect(r).toHaveProperty('messages');
-    expect(r.messages[1].text).toMatch(/^\[forward-compaction: no frontier written by the model\]/);
+    expect(fromFacts(r)[1]!.text).toMatch(/^\[forward-compaction: no frontier written by the model\]/);
     expect(f.texts().some((t) => /^error in session\.compact for general-purpose a1b2c3: .+; a mechanical wake was installed\.$/.test(t))).toBe(true);
     expect([r.tokensBefore, (await rows(f)).filter((row) => row.where === 'compactFailed').map((row) => [row.skills, row.storage])]).toEqual([64_000, [[{ carried: 0, listed: 0 }, 0]]]); // the same reading C1-C10 decides on, and the wake's counts
   });
@@ -324,8 +328,8 @@ describe('skill attribution (R38)', () => {
     expect(inner).toBe(answer);
     await step(f, 125_000, A1);
     const r = await f.dispatch('session.compact', { trigger: 'auto', agentId: A1, messages: transcript('tu-none') }, async () => ({ skip: 'native ran' }));
-    expect(r.messages[0].text).toContain('## Skills not carried\nTheir text is not in your context: load one again with the Skill tool before doing work it governs.\n- rules (projectSettings, /s/rules/SKILL.md): The house rules.');
-    expect(r.messages[0].text).not.toContain('RULES SKILL BODY');
+    expect(fromFacts(r)[0]!.text).toContain('## Skills not carried\nTheir text is not in your context: load one again with the Skill tool before doing work it governs.\n- rules (projectSettings, /s/rules/SKILL.md): The house rules.');
+    expect(fromFacts(r)[0]!.text).not.toContain('RULES SKILL BODY');
   });
 });
 
@@ -388,7 +392,7 @@ describe('ignored models: FORWARD_COMPACTION_IGNORE_MODELS, Haiku by default', (
     expect((await read(f, 'tu-1', A1)).context ?? []).toEqual([]); // past 80k, 100k and 120k: no nudge for an ignored model
     await haikuStep(f, 160_000);
     const r = await f.dispatch('session.compact', { trigger: 'auto', agentId: A1, messages: transcript() }, async () => ({ skip: 'native ran' }));
-    expect(r.messages[1].text).toMatch(/^\[forward-compaction: no frontier written by the model\] Your context reached 160k tokens, past the 160k ceiling/);
+    expect(fromFacts(r)[1]!.text).toMatch(/^\[forward-compaction: no frontier written by the model\] Your context reached 160k tokens, past the 160k ceiling/);
     const compacts = (await rows(f)).filter((row) => row.event === 'compact').map((row) => [row.decision, row.why, row.tokens, row.ceiling, row.matched]);
     expect(compacts).toEqual([['skip', 'ignored-model', 64_000, 160_000, 'haiku'], ['mechanical', 'ceiling', 160_000, 160_000, 'haiku']]);
   });
@@ -405,7 +409,7 @@ describe('ignored models: FORWARD_COMPACTION_IGNORE_MODELS, Haiku by default', (
     }
     expect(nudged).toEqual([130_000, 145_000]);
     await step(f, 160_000, A1);
-    expect((await f.dispatch('session.compact', { trigger: 'auto', agentId: A1, messages: transcript() }, async () => ({ skip: 'native ran' }))).messages[1].text).toMatch(/past the 160k ceiling/);
+    expect(fromFacts(await f.dispatch('session.compact', { trigger: 'auto', agentId: A1, messages: transcript() }, async () => ({ skip: 'native ran' })))[1]!.text).toMatch(/past the 160k ceiling/);
     for (const tokens of [40_000, 99_999, 100_000]) (await step(f, tokens, A1), await read(f, `tw-${tokens}`, A1));
     expect((await rows(f)).filter((r) => r.event === 'nudge').map((r) => [r.tokens, r.level, r.notice, r.last, r.start, r.every])).toEqual([[130_000, 1, 1, false, 130_000, 15_000], [145_000, 2, 2, true, 130_000, 15_000], [100_000, 1, 1, false, 100_000, 15_000]]);
   });
@@ -434,7 +438,7 @@ describe('ignored models: FORWARD_COMPACTION_IGNORE_MODELS, Haiku by default', (
     expect(r.result).not.toContain('refused');
     await haikuStep(f, 64_000);
     const wake = await f.dispatch('session.compact', { trigger: 'auto', agentId: A1, messages: transcript() }, async () => ({ skip: 'native ran' }));
-    expect(wake.messages[1].text).toContain('## Objective');
+    expect(fromFacts(wake)[1]!.text).toContain('## Objective');
     const all = await rows(f);
     expect(all.filter((row) => row.event === 'stored')).toHaveLength(1);
     expect(all.filter((row) => row.event === 'refused')).toEqual([]);
@@ -586,7 +590,7 @@ describe('audit r4: readings only, measured landed lines, the milestone nudge, l
     expect(r.result).toContain("it installs at Claude Code's next ask, from about 63k context. The newest messages after this call that fit are kept verbatim behind it");
     expect(r.result).not.toContain('you are at');
     const wake = await ask(f, transcript(), A1);
-    expect(wake.messages[1].text.startsWith('[forward-compaction: frontier] Below is your frontier as forward-compaction holds it: continue from its ## Next.')).toBe(true);
+    expect(fromFacts(wake)[1]!.text.startsWith('[forward-compaction: frontier] Below is your frontier as forward-compaction holds it: continue from its ## Next.')).toBe(true);
     expect((await rows(f)).filter((row) => row.event === 'stored')).toEqual([expect.objectContaining({ tokens: 41_200 })]);
   });
 
@@ -605,13 +609,14 @@ describe('audit r4: readings only, measured landed lines, the milestone nudge, l
   it('M2 writes the landed line at the first reading after the install, measured, beside a landed row', async () => {
     const f = await begin();
     expect(await installAgent(f)).toHaveProperty('messages');
-    await step(f, 41_000, A1);
+    // The first request after the install: 41k of context, 30k of it read from the prompt cache and 10,998 written.
+    await f.dispatch('turn.step', { turnId: 't1', index: 0, model: 'claude-sonnet-4-5', messageCount: 4, agentId: A1 }, async () => ({ turnId: 't1', index: 0, answer: '', toolUses: [], stopReason: 'tool_use', usage: { input_tokens: 2, cache_read_input_tokens: 30_000, cache_creation_input_tokens: 10_998 } }));
     await step(f, 42_000, A1);
     // One line, at the first reading after the install (41k), never the second.
     expect(await frontierLanded(f)).toEqual([expect.stringMatching(new RegExp(`^general-purpose a1b2c3 frontier landed — 64k → 41k context, measured; ${FRONTIER.length} characters, \\d+ facts, 2 messages kept verbatim\\.$`))]);
     const all = await rows(f);
     expect(all.filter((r) => r.event === 'compact' && r.decision === 'install')).toHaveLength(1);
-    expect(all.filter((r) => r.event === 'landed')).toEqual([expect.objectContaining({ party: `agent:${A1}`, kind: 'frontier', before: 64_000, after: 41_000 })]);
+    expect(all.filter((r) => r.event === 'landed')).toEqual([expect.objectContaining({ party: `agent:${A1}`, kind: 'frontier', before: 64_000, after: 41_000, read: 30_000, written: 10_998 })]);
   });
 
   it('M2 says at an agent end with no reading after its install that the size after was never measured', async () => {
@@ -653,7 +658,7 @@ describe('audit r4: readings only, measured landed lines, the milestone nudge, l
     await step(f, 64_000, A1);
     const r = await f.dispatch('tool.call', { tool: FORWARD, tool_use_id: 'tu-h', agentId: A1, ...SECTIONS, load_files: [mid, big, ...many].map((path) => ({ path, why: 'needed' })) }, async () => ({ result: 'not ours' }));
     expect(r.result).toContain('\nFrontier stored with 12 files to load. ');
-    const wake = (await ask(f, transcript(), A1)).messages[0].text;
+    const wake = fromFacts(await ask(f, transcript(), A1))[0]!.text;
     expect(wake).toContain('## Files you asked to carry\n### /work/mid.md — needed\n' + 'm'.repeat(2_000_000));
     expect(wake).toContain('### /work/big.md lines 1-250 — needed\nb1\n');
     expect(wake).toContain('\nb250\n[150 more lines not carried: Read /work/big.md from line 251]');
@@ -668,7 +673,7 @@ describe('audit r4: readings only, measured landed lines, the milestone nudge, l
       { id: B, type: 'code-builder', status: 'running', description: 'sibling' },
       { id: C, type: 'collector', status: 'running', description: 'child', parentId: A1 },
     ] });
-    const sub = (await installAgent(f)).messages[0].text;
+    const sub = fromFacts(await installAgent(f))[0]!.text;
     expect(sub).toContain(`## Agents, listed at install\n- ${C} collector running: child`);
     expect(sub).not.toContain(B);
     await step(f, 125_000);
@@ -716,7 +721,8 @@ describe('the ratio is measured on the growth since the base, so the fixed overh
     await step(f, 64_000, A1); // 19,200 tokens grown: 48,000 characters at 2.5
     await store(f, A1);
     const wake = await ask(f, work(48_000), A1);
-    expect(wake.messages[0].text).toContain(`## Your brief\n${BRIEF}`);
+    expect(wake.messages[0].text).toBe(BRIEF); // whole: the sub-agent's first message, kept by handle
+    expect(await debugRows(f, 'wake')).toEqual([expect.objectContaining({ party: `agent:${A1}`, start: 2, kept: 2 })]); // the brief and its end line before the facts, two messages after the call
     expect(await debugRows(f, 'ratio')).toEqual([expect.objectContaining({ party: `agent:${A1}`, at: 'compact', baseChars: 12_000, baseTokens: 44_800, chars: 60_000, reading: 64_000, ratio: 2.5 })]);
   });
 
@@ -752,7 +758,7 @@ describe('the ratio is measured on the growth since the base, so the fixed overh
     await step(f, 63_000, A1); // 3,000 tokens grown, under RATIO_MIN_GROWTH
     await store(f, A1);
     const wake = await ask(f, work(1_000), A1);
-    expect(wake.messages[0].text).toContain(`## Your brief\n${BRIEF}`);
+    expect(wake.messages[0].text).toBe(BRIEF); // whole: the sub-agent's first message, kept by handle
     expect(await debugRows(f, 'ratio-unmeasured')).toEqual([expect.objectContaining({ party: `agent:${A1}`, why: 'below-min-growth', baseChars: 12_000, baseTokens: 60_000, chars: 13_000, reading: 63_000 })]);
   });
 
@@ -762,7 +768,7 @@ describe('the ratio is measured on the growth since the base, so the fixed overh
     await step(f, 64_000, A1);
     await store(f, A1);
     const wake = await ask(f, work(200_000), A1);
-    expect(wake.messages[0].text).toContain(`## Your brief\n${BRIEF}`);
+    expect(wake.messages[0].text).toBe(BRIEF); // whole: the sub-agent's first message, kept by handle
     const [row] = await debugRows(f, 'ratio-unmeasured');
     expect(row).toMatchObject({ party: `agent:${A1}`, at: 'compact', why: 'out-of-range', baseChars: 12_000, baseTokens: 44_800, chars: 212_000, reading: 64_000 });
     expect(row!.delta).toBeCloseTo(200_000 / 19_200, 6);
@@ -775,7 +781,7 @@ describe('the ratio is measured on the growth since the base, so the fixed overh
     await step(f, 64_000, A1);
     await store(f, A1);
     const wake = await ask(f, work(48_000), A1);
-    expect(wake.messages[0].text).toContain(`## Your brief\n${BRIEF}`);
+    expect(wake.messages[0].text).toBe(BRIEF); // whole: the sub-agent's first message, kept by handle
     expect(await debugRows(f, 'session.messages-denied')).toContainEqual({ party: `agent:${A1}`, deny: 'agent a1b2c3d4e5 finished; no transcript saved' });
     expect(await debugRows(f, 'ratio-unmeasured')).toEqual([expect.objectContaining({ party: `agent:${A1}`, why: 'no-base', chars: null })]);
   });

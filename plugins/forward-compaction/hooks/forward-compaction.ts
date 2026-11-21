@@ -8,7 +8,8 @@ import { storageApply } from '../src/storage';
 import { keptOrders } from '../src/orders';
 import { answersOf, workOf, type CallAnswer } from '../src/work';
 import { newLedger, markStart, addEntry, deliveryOf, runStartOf, resolveSpawn, attributeSkill, shellsOf, factsFor, promptsKept, restorePrompts, skillsKept, restoreSkills, isUserOrigin, keyOf, originKind, type Ledger, type PartyKey } from '../src/ledger';
-import { splitAtCall, buildWake, mechanicalWake, landedLine, recentFiles, type AgentRow, type Landing } from '../src/wake';
+import { splitAtCall } from '../src/kept';
+import { buildWake, mechanicalWake, landedLine, recentFiles, type AgentRow, type Landing } from '../src/wake';
 import { wakeRow } from '../src/wake-row';
 import { planFrom, planRead, PLAN_ROWS, type WakePlan } from '../src/plan';
 import { decide, installWarnings, turnEndDoor, readingTokens, knownTrigger } from '../src/decide';
@@ -576,9 +577,9 @@ function installed(st: State, $: EngineInterface, key: string, landing: Landing 
   st.installedSince.add(key);
 }
 
-/** M2: an installed wake's landed line and `landed` row, at the party's first reading after it (`after`), or at its end with `after` unknown. A chosen frontier's line is a routine info row in the logs; a mechanical wake lost the model's frontier, so the user sees it. */
-function land(st: State, $: EngineInterface, key: string, landing: Landing | undefined, after?: number): void {
-  if (landing !== undefined) { const line = landedLine(landing, after), row = { event: 'landed', party: key, kind: landing.kind, before: landing.before ?? null, after: after ?? null, line: screenLine(line) }; say(st, $, line, 'info', row); }
+/** M2: an installed wake's landed line and `landed` row, at the party's first reading after it (`after`), or at its end with `after` unknown; `usage`, that first request's, puts in the row what it read from the prompt cache and what it wrote (a kept start is read, wake.ts `keptStart`). A chosen frontier's line is a routine info row in the logs; a mechanical wake lost the model's frontier, so the user sees it. */
+function land(st: State, $: EngineInterface, key: string, landing: Landing | undefined, after?: number, usage?: { cache_read_input_tokens?: number | null; cache_creation_input_tokens?: number | null } | null): void {
+  if (landing !== undefined) { const line = landedLine(landing, after), row = { event: 'landed', party: key, kind: landing.kind, before: landing.before ?? null, after: after ?? null, ...(usage == null ? {} : { read: usage.cache_read_input_tokens ?? null, written: usage.cache_creation_input_tokens ?? null }), line: screenLine(line) }; say(st, $, line, 'info', row); }
 }
 
 /** One session.compact ask, rows C1-C10: decide, then pass, hold, or install the frontier or a mechanical wake. */
@@ -618,7 +619,7 @@ async function compactAsk(st: State, $: EngineInterface, e: SessionCompactInput,
   const wake = action.action === 'install'
     ? buildWake({ ...shared, toolUseId: held!.toolUseId, frontier: shared.frontier, tool: st.toolNames.forward_compaction, files: await readLoadFiles(fsOf($).read, held!.loadFiles), missing })
     : mechanicalWake({ ...shared, tool: st.toolNames.forward_compaction, recent: await readLoadFiles(fsOf($).read, recentFiles(factsFor(st.ledger, key, { keptTexts: [] }).work?.files ?? []).map((path) => ({ path })), LOAD_FILE_MAX_CHARS), reason: action.why === 'ceiling' ? { kind: 'ceiling', ceiling: m!.ceiling } : { kind: 'reactive' } });
-  dbg(st, $, 'wake', { party: key, kind: action.action, ratio: shared.charsPerToken ?? null, askPoint: shared.askPoint, sizes: wake.sizes, headChars: wake.headChars, carried: wake.carried, notCarried: wake.notCarried, kept: wake.kept, dropped: wake.dropped, skills: wake.skills, storage: wake.storage });
+  dbg(st, $, 'wake', { party: key, kind: action.action, ratio: shared.charsPerToken ?? null, askPoint: shared.askPoint, sizes: wake.sizes, headChars: wake.headChars, carried: wake.carried, notCarried: wake.notCarried, start: wake.start, kept: wake.kept, dropped: wake.dropped, skills: wake.skills, storage: wake.storage });
   installed(st, $, key, action.action === 'install' ? { kind: 'frontier', label, before: tokens, chars: shared.frontier.length, facts: wake.facts, kept: wake.kept, dropped: wake.dropped } : { kind: 'mechanical', label, before: tokens, tokens, ceiling: m?.ceiling ?? 0 }, signal); await writeDue(st, $, key, 'compactAsk'); // the round count the install moved
   if (action.action === 'install') for (const w of installWarnings(label, held!.toolUseId, missing, splitAtCall(e.messages, held!.toolUseId) !== undefined)) say(st, $, w.line, 'warning', { ...w.row, where: 'compactAsk', party: key });
   record(st, $, { ...row, facts: wake.facts, kept: wake.kept, dropped: wake.dropped, skills: wake.skills, frontier: { chars: size.chars, items: size.items }, storage: wake.storage, ...(action.action === 'install' && missing.length > 0 ? { incomplete: missing } : {}) });
@@ -689,7 +690,7 @@ async function readStep(st: State, $: EngineInterface, e: TurnStepInput, r: Turn
     st.parties.rebase(key, undefined);
   }
   const m = marks(st, key), from = party.reading ?? null, absorb = party.absorbNext, floorBefore = party.held?.floor;
-  land(st, $, key, st.parties.read(key, tokens, m?.start === undefined ? 0 : nudgeLevel(tokens, m.start, m.every)), tokens); // with no absolute start a wake's first reading is the new floor: it has no level to absorb
+  land(st, $, key, st.parties.read(key, tokens, m?.start === undefined ? 0 : nudgeLevel(tokens, m.start, m.every)), tokens, u); // with no absolute start a wake's first reading is the new floor: it has no level to absorb
   const floor = party.held?.floor;
   dbg(st, $, 'reading', { party: key, tokens, level: m === undefined || floor === undefined ? 0 : nudgeLevel(tokens, nudgeStart(floor, m), m.every), from, absorb, floor: floor ?? null });
   if (floor !== floorBefore && party.files?.due && st.parties.judgement(key, judging(st)) === 'managed') await writeDue(st, $, key, 'readStep'); // a new floor is written at once, so a restarted party still knows how far it has grown

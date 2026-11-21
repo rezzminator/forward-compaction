@@ -48,6 +48,13 @@ export function transcript(id = 'tu-h') {
   ];
 }
 
+/** An installed wake from its facts message on, [facts, head, ...tail]: a sub-agent's kept start, its first messages and their end line, stands before them. */
+export function fromFacts(wake: { messages: { text: string }[] }): { text: string }[] {
+  const at = wake.messages.findIndex((m) => m.text.startsWith('[forward-compaction: facts]'));
+  if (at < 0) throw new Error(`no facts message in the wake: ${JSON.stringify(wake.messages.map((m) => m.text.slice(0, 80)))}`);
+  return wake.messages.slice(at);
+}
+
 /** The decision rows written this session, read once session.end has flushed them. */
 export async function rows(f: Fake): Promise<Record<string, unknown>[]> {
   await f.dispatch('session.end', { reason: 'other' }, async () => ({}));

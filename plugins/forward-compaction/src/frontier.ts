@@ -4,6 +4,7 @@
 import { k, andList } from './nudge';
 import type { WakeFile } from './wake';
 import { LISTS, listApply, textApply, TEXTS, type Held, type Left, type ListCount, type ListName, type TextName } from './lists';
+import { repairJson } from './repair';
 
 /** The tool's name as registered; the model sees `mcp__forward-compaction__forward_compaction`. */
 export const FORWARD_TOOL = 'forward_compaction';
@@ -109,6 +110,9 @@ export type ParsedCall = {
 const OLD_FIELDS = ['standing_orders', 'lifted', 'keep_skills', 'drop_files', 'drop_skills'];
 const FIELDS: string[] = [...TEXTS, ...LISTS, 'storage', 'load_files'];
 const JSON_FIELDS = [...LISTS, 'storage', 'load_files', ...OLD_FIELDS] as string[];
+const FIELDS_ARE = `The fields are ${FIELDS.slice(0, -1).join(', ')} and ${FIELDS.at(-1)}.`;
+/** A value that holds nothing to keep: null, a blank text, an empty array or object. */
+const hollow = (v: unknown): boolean => v === null || (typeof v === 'string' && v.trim() === '') || (Array.isArray(v) && v.length === 0) || (isObject(v) && Object.keys(v).length === 0);
 const kind = (v: unknown): string => (v === null ? 'null' : Array.isArray(v) ? 'array' : typeof v);
 /** Whether `p` is absolute, POSIX or Windows. */
 export const isAbsolutePath = (p: string): boolean => /^(\/|[A-Za-z]:[\\/]|\\\\)/.test(p);
@@ -161,43 +165,64 @@ function unfold(input: Record<string, unknown>): { fields: Record<string, unknow
 
 const OPS = ['add', 'remove', 'edit'];
 
+/** What an argument's text holds when it is JSON: as it stands, or repaired (repair.ts) with the arguments found written after it in `beside`; undefined for a plain text. */
+function jsonOf(key: string, text: string, list: boolean): { own: unknown; beside: Record<string, unknown>; repaired: boolean } | undefined {
+  const json = /^\s*[[{]/.test(text);
+  if (!json && !list) return undefined; // a list's text may be its operations written bare (`add: [...]`), which the repair reads
+  if (json) {
+    try {
+      return { own: JSON.parse(text), beside: {}, repaired: false };
+    } catch {
+      // broken JSON: repaired below
+    }
+  }
+  const fixed = repairJson(key, text);
+  return fixed === undefined ? undefined : { ...fixed, repaired: true };
+}
+
 /**
- * A list, storage or load_files value that arrived as the text of its own JSON is read as that JSON, with one note. A
- * list's text may also hold the fields the model wrote after it inside the same text (`{"add": [...], "remaining":
- * {...}}`): each is taken out as its own field. A text that is no JSON, or one holding a key that is neither an
- * operation nor a field the call left out, stays as it arrived, and lists.ts reads it as one added item.
+ * A list, storage or load_files value that arrived as the text of its own JSON is read as that JSON, with one note; one
+ * whose JSON is broken is repaired first (repair.ts). The text may also hold the fields the model wrote with it: inside a
+ * list's object beside its operations (`{"add": [...], "remaining": {...}}`), or after a value closed early
+ * (`{"add": [...]},"done": {...}}`); each is taken out as its own field. A text that is no JSON, or one holding a key that
+ * is neither an operation nor a field the call left out, stays as it arrived, and lists.ts reads it as one added item.
  */
 function unstring(fields: Record<string, unknown>, notes: string[]): void {
   const pending: string[] = [...LISTS, 'storage', 'load_files'];
   for (let key = pending.shift(); key !== undefined; key = pending.shift()) {
     const value = fields[key];
-    if (typeof value !== 'string' || !/^\s*[[{]/.test(value)) continue;
-    let read: unknown;
-    try {
-      read = JSON.parse(value);
-    } catch {
-      continue; // no JSON: a plain text, read as one
-    }
-    const whole = `${key} arrived as the text of its JSON: read as JSON`;
-    if (!(LISTS as readonly string[]).includes(key)) {
-      if (key === 'storage' ? isObject(read) : Array.isArray(read)) (fields[key] = read), notes.push(`${whole}.`);
+    if (typeof value !== 'string') continue;
+    const list = (LISTS as readonly string[]).includes(key);
+    const found = jsonOf(key, value, list);
+    if (found === undefined) continue; // no JSON: a plain text, read as one
+    const read = found.own;
+    const inside = list && isObject(read) ? Object.keys(read).filter((k) => !OPS.includes(k)) : [];
+    const others: Record<string, unknown> = { ...found.beside, ...Object.fromEntries(inside.map((k) => [k, (read as Record<string, unknown>)[k]])) };
+    const names = Object.keys(others);
+    if (names.some((k) => k === key || !FIELDS.includes(k) || fields[k] !== undefined)) continue;
+    let mine: unknown; // stays undefined when the text held only other fields
+    if (!list) {
+      if (key === 'storage' ? !isObject(read) : !Array.isArray(read)) continue;
+      mine = read;
     } else if (Array.isArray(read)) {
-      if (read.length > 0 && read.every((entry) => typeof entry === 'string' || isObject(entry))) (fields[key] = read), notes.push(`${whole}.`);
+      if (read.length === 0 || !read.every((entry) => typeof entry === 'string' || isObject(entry))) continue;
+      mine = read;
     } else if (isObject(read)) {
-      const keys = Object.keys(read);
-      const inside = keys.filter((k) => !OPS.includes(k));
-      if (keys.length === 0 || inside.some((k) => k === key || !FIELDS.includes(k) || fields[k] !== undefined)) continue;
-      if (inside.length === keys.length) delete fields[key];
-      else fields[key] = Object.fromEntries(keys.filter((k) => OPS.includes(k)).map((k) => [k, read[k]]));
-      for (const k of inside) (fields[k] = read[k]), pending.push(k);
-      notes.push(`${whole}${inside.length === 0 ? '' : `, and ${andList(inside)} inside it taken out as ${inside.length === 1 ? 'its own field' : 'their own fields'}`}.`);
-    }
+      const ops = Object.keys(read).filter((k) => OPS.includes(k));
+      if (ops.length === 0 && names.length === 0) continue;
+      if (ops.length > 0) mine = Object.fromEntries(ops.map((k) => [k, read[k]]));
+    } else continue;
+    if (mine === undefined) delete fields[key];
+    else fields[key] = mine;
+    for (const k of names) (fields[k] = others[k]), pending.push(k);
+    const whole = found.repaired ? `${key} arrived as text whose JSON was broken: repaired and read, this result's lines show what it changed` : `${key} arrived as the text of its JSON: read as JSON`;
+    notes.push(`${whole}${names.length === 0 ? '' : `, and ${andList(names)} inside it taken out as ${names.length === 1 ? 'its own field' : 'their own fields'}`}.`);
   }
 }
 
 /**
  * Reads the model's tool input; nothing is refused. Each text and list change is passed on as sent, for lists.ts to read
- * leniently, after a value sent as the text of its JSON is read as JSON (`unstring`). An unknown field's text joins findings under its name; `standing_orders` entries join orders as adds;
+ * leniently, after a value sent as the text of its JSON is read as JSON (`unstring`). An unknown field's text joins findings under its name, one that holds nothing is ignored; `standing_orders` entries join orders as adds;
  * `lifted` is answered with orders.remove; keep_skills, drop_files, drop_skills and a load file's `later` are ignored;
  * each with one note. A load file's relative path is resolved against `cwd`, the session's directory, when known.
  * `$.fs.stat` checks (V12-V15) are the adapter's, through `loadFileNote`.
@@ -220,9 +245,10 @@ export function parseCall(input: unknown, cwd?: string): ParsedCall {
       notes.push(`standing_orders is now orders: its ${orders.length} ${orders.length === 1 ? 'entry is' : 'entries are'} taken as orders.add.`);
     } else if (key === 'lifted') notes.push('lifted is no field: to lift an order, send its number in orders.remove. Nothing lifted.');
     else if (OLD_FIELDS.includes(key)) notes.push(`${key} is no field: ignored.`);
+    else if (hollow(value)) notes.push(`unknown field "${key}" held nothing: ignored. ${FIELDS_ARE}`);
     else {
       join('findings', `[${key}, an argument forward_compaction does not take]\n${typeof value === 'string' ? value : JSON.stringify(value)}`);
-      notes.push(`unknown field "${key}" added to findings. The fields are ${FIELDS.slice(0, -1).join(', ')} and ${FIELDS.at(-1)}.`);
+      notes.push(`unknown field "${key}" added to findings. ${FIELDS_ARE}`);
     }
   }
   /** A path as sent, or resolved against `cwd`; a relative one is named in `notes` under `at`. */

@@ -1,31 +1,18 @@
-// The wake: what a compaction installs. [facts] [frontier] [tail…] — the facts and the frontier are built here from typed values,
-// the tail is the engine's own messages returned untouched. Pure: files, agents and the clock arrive as inputs.
+// The wake: what a compaction installs. [start…] [facts] [frontier] [tail…] — the facts and the frontier are built here from
+// typed values; a sub-agent's start and the tail are the engine's own messages, chosen in kept.ts and returned untouched.
+// Pure: files, agents and the clock arrive as inputs.
 import { andList, DEFAULT_TOOL, k as kilo } from './nudge';
 import { keptSaid, PROMPTS_KEPT } from './ledger';
 import { experimental, EXPERIMENTAL_OPENING } from './frontier';
 import { fitSkills, pinned, SKILLS_LISTED_NOTE, SKILLS_MAX_CHARS } from './carry';
+import { fitTail, keptStart, keptTexts, splitAtCall, tokensOf, type BuiltMessage, type Sibling, type WakeMessage } from './kept';
 import { ordersSection } from './orders';
 import { unchangedNote, type Item, type StorageEntry } from './lists';
 import { storageSection } from './storage';
 import type { WakePlan } from './plan';
 import { WAKE_OPENING } from './wake-row';
 
-/** A message in `session.compact`'s shape; a SessionMessage fits. */
-export type WakeMessage = {
-  role: 'user' | 'assistant';
-  text: string;
-  toolUses: readonly { tool_use_id: string; tool?: string; input?: unknown; text?: string }[];
-  toolResults?: readonly { tool_use_id: string; text?: string }[];
-  handle?: string;
-};
-
-/** A message this module builds; no handle, so the engine reads it as built. */
-export type BuiltMessage = { role: 'user'; text: string; toolUses: [] };
-
-export type Sibling = { tool: string; input: unknown; text: string };
-
-// Characters and tokens convert only at the party's measured ratio (`charsPerToken` in window.ts), never at a fixed one.
-const tokensOf = (chars: number, ratio: number): number => Math.ceil(chars / ratio);
+// Tokens to characters, only ever at the party's measured ratio (`charsPerToken` in window.ts; `tokensOf` in kept.ts the other way): unmeasured, no limit.
 const charsIn = (tokens: number, ratio: number | undefined): number => (ratio === undefined ? Number.POSITIVE_INFINITY : Math.floor(tokens * ratio));
 const num = (value: number): string => value.toLocaleString('en-US');
 const iso = (at: number): string => new Date(at).toISOString();
@@ -58,65 +45,6 @@ export const AGENTS_MAX_ROWS = 50;
  */
 export function wakeBudget(askPoint: number): number {
   return Math.floor(0.5 * askPoint);
-}
-
-/**
- * The anchor is the last assistant message whose tool uses hold `toolUseId`; the response is the run of assistant
- * messages around it; the user messages right after it whose results all answer that response's calls are its results.
- * `tail` is everything after them, the same objects (handles kept); `siblings` are the response's other calls with
- * their result text; `own` is the call's own result (its receipt and experimental line), which the tail no longer holds.
- * Undefined when the anchor is not in `messages`.
- */
-export function splitAtCall<M extends WakeMessage>(messages: readonly M[], toolUseId: string): { tail: M[]; siblings: Sibling[]; own?: string } | undefined {
-  let at = -1;
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const m = messages[i]!;
-    if (m.role === 'assistant' && m.toolUses.some((u) => u.tool_use_id === toolUseId)) {
-      at = i;
-      break;
-    }
-  }
-  if (at < 0) return undefined;
-  let first = at;
-  while (first > 0 && messages[first - 1]!.role === 'assistant') first--;
-  let last = at;
-  while (last + 1 < messages.length && messages[last + 1]!.role === 'assistant') last++;
-  const uses = messages.slice(first, last + 1).flatMap((m) => m.toolUses);
-  const ids = new Set(uses.map((u) => u.tool_use_id));
-  const results = new Map<string, string>();
-  let next = last + 1;
-  while (next < messages.length) {
-    const m = messages[next]!;
-    const answers = m.toolResults ?? [];
-    if (m.role !== 'user' || answers.length === 0 || !answers.every((r) => ids.has(r.tool_use_id))) break;
-    for (const r of answers) results.set(r.tool_use_id, r.text ?? '');
-    next++;
-  }
-  const siblings = uses
-    .filter((u) => u.tool_use_id !== toolUseId)
-    .map((u) => ({ tool: u.tool ?? 'tool', input: u.input, text: results.get(u.tool_use_id) ?? u.text ?? '(no result recorded)' }));
-  const own = results.get(toolUseId);
-  return { tail: messages.slice(next), siblings, ...(own !== undefined ? { own } : {}) };
-}
-
-/** A message's size at `ratio` characters a token: its text, its tool inputs and its tool results (a call's own result text is the answer's, counted there). */
-function messageTokens(m: WakeMessage, ratio: number): number {
-  let chars = m.text.length;
-  for (const u of m.toolUses) chars += JSON.stringify(u.input ?? {}).length;
-  for (const r of m.toolResults ?? []) chars += (r.text ?? '').length;
-  return tokensOf(chars, ratio);
-}
-
-/**
- * The newest whole messages that fit `budgetTokens`: the oldest are dropped until the rest fits, then any leading user
- * message carrying tool results too, so no result stands without its call. The kept messages are the input objects.
- */
-export function fitTail<M extends WakeMessage>(messages: readonly M[], budgetTokens: number, ratio: number): { messages: M[]; dropped: number } {
-  let total = messages.reduce((sum, m) => sum + messageTokens(m, ratio), 0);
-  let from = 0;
-  while (from < messages.length && total > budgetTokens) total -= messageTokens(messages[from++]!, ratio);
-  while (from < messages.length && messages[from]!.role === 'user' && (messages[from]!.toolResults?.length ?? 0) > 0) from++;
-  return { messages: messages.slice(from), dropped: from };
 }
 
 /** What the ledger gives for a party (ledger.ts `Facts` fits); only what the wake renders. */
@@ -199,8 +127,10 @@ export type MechanicalWakeInput<M> = Shared<M> & {
 };
 
 export type Wake<M> = {
-  /** [F, H, ...tail]: H is the last message built here; the tail is the input objects. */
+  /** [...start, F, H, ...tail]: the start is a sub-agent's kept one with its end line (`keptStart`), H the last message built here; the tail is the input objects. */
   messages: (BuiltMessage | M)[];
+  /** The messages before F: a kept start and its end line; 0 without one. */
+  start: number;
   /** F sections that hold content. */
   facts: number;
   kept: number;
@@ -238,12 +168,12 @@ function age(ms: number): string {
   return `${Math.round(s / 3600)}h`;
 }
 
-type Extras = { siblings: readonly Sibling[]; files: readonly WakeFile[]; recent?: readonly RecentFile[]; mechanical?: boolean };
+type Extras = { siblings: readonly Sibling[]; files: readonly WakeFile[]; recent?: readonly RecentFile[]; mechanical?: boolean; /** The party's kept start (`keptStart`), the messages above the facts. */ start?: readonly WakeMessage[] };
 
 type Rendered = { text: string; sections: number; sizes: Wake<never>['sizes']; carried: string[]; notCarried: string[]; skills: Wake<never>['skills']; storage: number };
 
 /** F: every section with its cap; whole or not, never cut. With no measured ratio no section is capped. */
-function renderFacts<M>(input: Shared<M>, facts: WakeFacts, { siblings, files, recent = [], mechanical = false }: Extras): Rendered {
+function renderFacts<M>(input: Shared<M>, facts: WakeFacts, { siblings, files, recent = [], mechanical = false, start }: Extras): Rendered {
   const B = wakeBudget(input.askPoint);
   const room = (share: number): number => charsIn(B * share, input.charsPerToken);
   const filesCarried: string[] = [];
@@ -268,9 +198,12 @@ function renderFacts<M>(input: Shared<M>, facts: WakeFacts, { siblings, files, r
   if (plan?.path !== undefined && plan.content !== undefined) sections.push(section(`## Plan file\n${plan.path}\n${plan.content}`));
   else if (plan?.path !== undefined && plan.problem !== undefined) sections.push({ text: `## Plan file\n${plan.path}\n(could not be read: ${plan.problem})`, content: false });
 
+  // A kept start already shows the brief as the run's first message: the head says so and no section repeats it.
+  const brief = facts.brief?.text.trim();
+  const briefAbove = sub && brief !== undefined && brief !== '' && (start ?? []).some((m) => m.text.includes(brief));
   if (sub) {
-    if (facts.brief === undefined) sections.push({ text: '## Your brief\n(not recorded: this agent was spawned before forward-compaction started in this process)', content: false });
-    else sections.push(section(`## Your brief\n${facts.brief.text}`));
+    const unrecorded = start !== undefined ? "not recorded by forward-compaction: this run's first message, above, is kept verbatim" : 'not recorded: this agent was spawned before forward-compaction started in this process';
+    if (!briefAbove) sections.push(facts.brief !== undefined ? section(`## Your brief\n${facts.brief.text}`) : { text: `## Your brief\n(${unrecorded})`, content: false });
   } else if (facts.user.length === 0 && (facts.userInTail ?? 0) > 0) {
     sections.push({ text: `## The user's messages\n(all ${facts.userInTail} are in the messages below)`, content: false });
   } else if (facts.user.length === 0) {
@@ -386,7 +319,7 @@ function renderFacts<M>(input: Shared<M>, facts: WakeFacts, { siblings, files, r
   }
 
   const resume = facts.startReason === 'resume' && facts.startedAt !== undefined ? [`The ledger started at ${iso(facts.startedAt)} when this process resumed; anything earlier is not recorded.`] : [];
-  const head = `${WAKE_OPENING.facts} Your context was compacted by forward-compaction ${PLUGIN_VERSION}. These facts were recorded as they happened, never reconstructed. ${mechanical ? 'You wrote no frontier: the note after these facts says what happened.' : 'Your own frontier follows in the next message.'}`;
+  const head = `${WAKE_OPENING.facts} Your context was compacted by forward-compaction ${PLUGIN_VERSION}.${briefAbove ? ' Your brief is the first message above, kept verbatim.' : ''} These facts were recorded as they happened, never reconstructed. ${mechanical ? 'You wrote no frontier: the note after these facts says what happened.' : 'Your own frontier follows in the next message.'}`;
   return {
     text: [[head, ...resume].join('\n'), ...sections.map((s) => s.text)].join('\n\n'),
     sections: sections.filter((s) => s.content).length,
@@ -398,14 +331,10 @@ function renderFacts<M>(input: Shared<M>, facts: WakeFacts, { siblings, files, r
   };
 }
 
-/** Every text a kept message holds, for the facts to leave out what the tail already says. */
-function keptTexts(kept: readonly WakeMessage[]): string[] {
-  return kept.flatMap((m) => [m.text, ...m.toolUses.map((u) => u.text ?? ''), ...(m.toolResults ?? []).map((r) => r.text ?? '')]).filter((t) => t !== '');
-}
-
 /**
- * [F, ...H, ...tail] around a head text: the tail is fitted to what the facts and the head leave of the budget, and the
- * facts are rendered against the tail kept, so each is sized for the other (the tail is only ever shrunk, so this ends).
+ * [...start, F, ...H, ...tail] around a head text: a sub-agent's kept start (`keptStart`) goes first and is no tail
+ * candidate; the tail is fitted to what the facts and the head leave of the budget, and the facts are rendered against
+ * the tail kept, so each is sized for the other (the tail is only ever shrunk, so this ends).
  * With no measured ratio nothing is fitted: `unmeasured` says whether every candidate is kept (the messages after a
  * frontier's call) or none is (a mechanical wake's earlier tail).
  */
@@ -418,20 +347,24 @@ function assemble<M extends WakeMessage>(
 ): Wake<M> {
   const B = wakeBudget(input.askPoint);
   const ratio = input.charsPerToken;
-  const longest = head({ kept: Math.max(1, candidates.length), dropped: Math.max(1, candidates.length) }).length;
-  let kept: readonly M[] = candidates;
+  const opening = input.party === 'subagent' ? keptStart(input.messages) : undefined;
+  const open: (M | BuiltMessage)[] = opening === undefined ? [] : [...opening.start, opening.end];
+  const pool = candidates.filter((m) => !open.includes(m));
+  const longest = head({ kept: Math.max(1, pool.length), dropped: Math.max(1, pool.length) }).length;
+  let kept: readonly M[] = pool;
   for (;;) {
-    const f = renderFacts(input, input.facts(keptTexts(kept)), extras);
-    const fit = ratio === undefined ? { messages: unmeasured === 'all' ? [...candidates] : [] } : fitTail(candidates, B - tokensOf(f.text.length, ratio) - tokensOf(longest, ratio), ratio);
+    const f = renderFacts(input, input.facts(keptTexts(kept)), { ...extras, ...(opening === undefined ? {} : { start: opening.start }) });
+    const fit = ratio === undefined ? { messages: unmeasured === 'all' ? [...pool] : [] } : fitTail(pool, B - tokensOf(f.text.length, ratio) - tokensOf(longest, ratio), ratio);
     // only a smaller fit is taken: facts can shrink with the tail, and a fit growing back would loop forever
     if (fit.messages.length < kept.length) {
       kept = fit.messages;
       continue;
     }
-    const counts = { kept: kept.length, dropped: candidates.length - kept.length };
+    const counts = { kept: kept.length, dropped: pool.length - kept.length };
     const text = head(counts);
     return {
-      messages: [{ role: 'user', text: f.text, toolUses: [] }, { role: 'user', text, toolUses: [] }, ...kept],
+      messages: [...open, { role: 'user', text: f.text, toolUses: [] }, { role: 'user', text, toolUses: [] }, ...kept],
+      start: open.length,
       facts: f.sections,
       ...counts,
       sizes: f.sizes,

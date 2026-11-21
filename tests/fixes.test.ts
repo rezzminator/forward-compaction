@@ -2,6 +2,7 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { fakeEngine, usage, type Script } from './fakes/engine.ts';
+import { fromFacts } from './fakes/session.ts';
 
 // The adapter's wiring of the audited faults (2026-10-27): each row keys and judges its party once, a lift is
 // checked against its time, a rejected turn-end install is an error, and the wake carries what the party ran.
@@ -112,7 +113,7 @@ describe('M2 + M4: the wake carries the commands the party ran', () => {
       { role: 'assistant', text: 'storing', toolUses: [{ tool_use_id: 'tu-h', tool: FORWARD, input: SECTIONS }], handle: 'h1' },
       { role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: 'tu-h', text: 'Frontier stored' }], handle: 'h2' },
     ];
-    const wake = (await f.dispatch('session.compact', { trigger: 'auto', agentId: A1, messages }, async () => ({ skip: 'native ran' }))).messages[0].text;
+    const wake = fromFacts(await f.dispatch('session.compact', { trigger: 'auto', agentId: A1, messages }, async () => ({ skip: 'native ran' })))[0]!.text;
     expect(wake).toContain("## Shell commands you ran, newest first\n### Run the S6 test\nnpx vitest run fixes.test.ts -t 'S6'\n### Build the plugin\nnpm run build");
     expect(wake).not.toContain('OUTPUT-NEVER-CARRIED');
   });

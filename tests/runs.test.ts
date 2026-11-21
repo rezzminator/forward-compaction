@@ -2,6 +2,7 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { fakeEngine, usage } from './fakes/engine.ts';
+import { fromFacts } from './fakes/session.ts';
 
 // A sub-agent's runs: one waiting on its background children ends a turn and is resumed by each child's notification,
 // so its party outlives a turn end. And what reaches a party between its forward_compaction call and the install opens the wake.
@@ -75,7 +76,7 @@ describe("a sub-agent's runs, and what arrives between a frontier and its instal
     }
     expect(levels).toEqual([80_000, 100_000, 120_000, 140_000]);
     await run(f, () => step(f, 160_000, A1));
-    expect(((await run(f, () => ask(f))) as { messages: { text: string }[] }).messages[1]?.text).toMatch(/past the 160k ceiling/);
+    expect(fromFacts((await run(f, () => ask(f))) as { messages: { text: string }[] })[1]?.text).toMatch(/past the 160k ceiling/);
   });
 
   it("installs a sub-agent's frontier stored in one run at an ask in its next run", async () => {

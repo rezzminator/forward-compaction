@@ -69,6 +69,8 @@ describe('parseCall passes each change on as sent and names every argument it re
     [{ keep_skills: ['notes'] }, {}, ['keep_skills is no field: ignored.']],
     [{ drop_skills: ['notes'] }, {}, ['drop_skills is no field: ignored.']],
     [{ drop_files: ['/a'] }, {}, ['drop_files is no field: ignored.']],
+    [{ done_remove_placeholder: [] }, {}, [`unknown field "done_remove_placeholder" held nothing: ignored. ${FIELDS_NOTE}`]],
+    [{ note: ' ' }, {}, [`unknown field "note" held nothing: ignored. ${FIELDS_NOTE}`]],
   ])('%j joins %j', (input, extra, want) => {
     const call = parseCall(input);
     expect([call.extra, call.notes]).toEqual([extra, want]);
@@ -83,6 +85,13 @@ describe('parseCall passes each change on as sent and names every argument it re
     ['a text holding a key that is no field stays one text', { done: '{"add":["parser"],"status":"ok"}' }, { done: '{"add":["parser"],"status":"ok"}' }, []],
     ['a text that only starts like JSON as one text, and the JSON text after it', { done: '[4] tokens fixed, tests pass', remaining: '{"remove": [2]}' }, { done: '[4] tokens fixed, tests pass', remaining: { remove: [2] } }, ['remaining arrived as the text of its JSON: read as JSON.']],
     ['an array of numbers stays one text', { done: '[1, 2]' }, { done: '[1, 2]' }, []],
+    // The four shapes real calls sent when the JSON the model wrote for an argument did not parse.
+    ['a text one closer short, with the fields written after its operations', { next: 'go', done: '{"add":["sink fixed"],"remaining":{"edit":[{"id":1,"text":"ledger"}]},"findings":{"add":["plan"]}' }, { done: { add: ['sink fixed'] }, remaining: { edit: [{ id: 1, text: 'ledger' }] }, findings: { add: ['plan'] } }, [`done arrived as text whose JSON was broken: repaired and read, this result's lines show what it changed, and remaining and findings inside it taken out as their own fields.`]],
+    ['a text whose array closes before its last object', { remaining: '{"edit": [{"id": 2, "text": "verify"}, {"id": 3, "text": "report [done]"]}' }, { remaining: { edit: [{ id: 2, text: 'verify' }, { id: 3, text: 'report [done]' }] } }, [`remaining arrived as text whose JSON was broken: repaired and read, this result's lines show what it changed.`]],
+    ['operations written bare', { orders: 'add: ["No git writes.", "Scratch under /tmp/x, never \\"/tmp\\"."]' }, { orders: { add: ['No git writes.', 'Scratch under /tmp/x, never "/tmp".'] } }, [`orders arrived as text whose JSON was broken: repaired and read, this result's lines show what it changed.`]],
+    ['two bare operations, one named inside an item', { done: 'add: ["a, remove: b"], remove: [2]' }, { done: { add: ['a, remove: b'], remove: [2] } }, [`done arrived as text whose JSON was broken: repaired and read, this result's lines show what it changed.`]],
+    ['a broken text no repair reads as one text', { done: '{"add": ["parser", oops' }, { done: '{"add": ["parser", oops' }, []],
+    ['a plain text that starts like an operation as one text', { remaining: 'add: retry logic to the parser' }, { remaining: 'add: retry logic to the parser' }, []],
   ])('reads %s', (_name, input, lists, notes) => {
     const call = parseCall(input);
     expect([call.lists, call.notes]).toEqual([lists, notes]);
@@ -92,6 +101,9 @@ describe('parseCall passes each change on as sent and names every argument it re
     const call = parseCall({ storage: '{"add": [{"name": "a.md"}]}', load_files: '[{"path": "/a"}]' });
     expect([call.storage, call.loadFiles, call.notes]).toEqual([{ add: [{ name: 'a.md' }] }, [{ path: '/a' }], ['storage arrived as the text of its JSON: read as JSON.', 'load_files arrived as the text of its JSON: read as JSON.']]);
     expect(parseCall({ load_files: '{"path": "/a"}' }).notes).toEqual(['load_files must be an array of {path, lines?, why}: none carried.']);
+    // A storage value closed early, the call's other arguments written after it in the same text, as a real call sent it.
+    const early = parseCall({ next: 'go', storage: '{"add":[{"name":"ledger.md","value":"P216 · FIXED\\n"}]},"done":{"add":["costsink done"]},"remaining":{"remove":[3,4]}}' });
+    expect([early.storage, early.lists, early.notes]).toEqual([{ add: [{ name: 'ledger.md', value: 'P216 · FIXED\n' }] }, { done: { add: ['costsink done'] }, remaining: { remove: [3, 4] } }, [`storage arrived as text whose JSON was broken: repaired and read, this result's lines show what it changed, and done and remaining inside it taken out as their own fields.`]]);
   });
 
   it('takes back out the parameters a broken call folded into a text after its closing tag, naming each', () => {

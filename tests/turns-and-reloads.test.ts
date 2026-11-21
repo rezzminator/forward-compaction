@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fakeEngine, usage, type Script } from './fakes/engine.ts';
+import { fromFacts } from './fakes/session.ts';
 
 // The adapter's wiring of session-lifetime facts: a new turn ends the request-too-long inference (D8), the user's
 // messages outlive a plugin reload through the host's session state, finished tool calls record the party's work, and a
@@ -68,8 +69,8 @@ describe('the prompts across a plugin reload', () => {
     const after = await begin({ state, agents: () => [{ id: 'a1b2c3d4e5', type: 'general-purpose', status: 'running', description: 'one' }] });
     await after.dispatch('turn.step', { turnId: 't1', index: 0, model: 'claude-sonnet-4-5', messageCount: 4, agentId: 'a1b2c3d4e5' }, async () => ({ turnId: 't1', index: 0, answer: '', toolUses: [], stopReason: 'tool_use', ...usage(170_000) }));
     const r = await after.dispatch('session.compact', { trigger: 'auto', agentId: 'a1b2c3d4e5', messages }, async () => ({ skip: 'native ran' }));
-    expect(r.messages[0].text).toContain('## Your brief\nBrief for agent one');
-    expect(r.messages[0].text).toContain(`(coordinator)\n${note}`);
+    expect(fromFacts(r)[0]!.text).toContain('## Your brief\nBrief for agent one');
+    expect(fromFacts(r)[0]!.text).toContain(`(coordinator)\n${note}`);
   });
 });
 

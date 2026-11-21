@@ -32,6 +32,8 @@ export const unchangedTag = (n: number): string => (n < 1 ? '' : ` [${n} round${
 const TAG = /\s*\[\d+ rounds? unchanged\]/;
 /** An item's text as sent, without a tag the model copied back from a wake. */
 const untagged = (text: string): string => text.replace(new RegExp(`${TAG.source}\\s*$`), '');
+/** An item's text without the number the model wrote before it (`[9] Parser merged`): the list numbers its items itself. An edit's text loses only its own number. */
+const unnumbered = (text: string, id?: number): string => text.replace(/^\s*\[(\d+)\]\s+(?=\S)/, (whole, n: string) => (id === undefined || Number(n) === id ? '' : whole));
 /** What a wake and a nudge say once, after lists that show a tag; '' when none of `shown` does. */
 export const unchangedNote = (...shown: (string | undefined)[]): string =>
   shown.some((text) => text !== undefined && TAG.test(text)) ? ' An item tagged [N rounds unchanged] has passed N compactions with no change: keep it only while it is still true and still needed, and a standing order until the user lifts it.' : '';
@@ -90,7 +92,7 @@ function readChange(name: ListName, change: unknown): { adds: Add[]; removes: { 
     if (before !== undefined && name !== 'remaining') out.notes.push(`${at}.before is for remaining only: added last.`);
     const step = name === 'remaining' && before !== undefined ? idOf(before) : undefined;
     if (name === 'remaining' && before !== undefined && step === undefined) out.notes.push(`${at}.before must be a step number; got ${kind(before)}: added last.`);
-    out.adds.push({ text: untagged(text as string), at, ...(step !== undefined ? { before: step } : {}) });
+    out.adds.push({ text: unnumbered(untagged(text as string)), at, ...(step !== undefined ? { before: step } : {}) });
   }
   for (const [i, entry] of entries('remove', (v) => idOf(v) !== undefined).entries()) {
     const id = idOf(entry);
@@ -107,7 +109,7 @@ function readChange(name: ListName, change: unknown): { adds: Add[]; removes: { 
     const id = idOf(sent);
     if (id === undefined) out.notes.push(`${at}.id must be an item number; got ${kind(sent)}: skipped.`);
     else if (blank(text)) out.notes.push(`${at}.text ${typeof text === 'string' ? 'is blank' : `must be a text; got ${kind(text)}`}: skipped.`);
-    else out.edits.push({ id, text: untagged(text as string), at });
+    else out.edits.push({ id, text: unnumbered(untagged(text as string), id), at });
   }
   return out;
 }

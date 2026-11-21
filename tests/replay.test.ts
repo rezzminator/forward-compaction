@@ -145,7 +145,12 @@ export const INVARIANTS: Record<Name, (view: View, recorded: boolean) => Verdict
     for (const spawn of view.filter((i) => i.hook === 'agent.spawn' && typeof i.nextResult?.result?.agentId === 'string')) {
       for (const c of view.filter((i) => party(i.input) === `agent:${spawn.nextResult!.result.agentId}` && wakeOf(i) !== undefined)) {
         subjects++;
-        if (!texts(wakeOf(c)!).includes(`## Your brief\n${spawn.input.prompt}`)) failures.push(`I6 ${at(c)}: "## Your brief" is not agent.spawn #${spawn.id}'s prompt`);
+        // The brief reaches a woken sub-agent whole: in its kept start, its own first messages handed back by handle before the facts, or under
+        // `## Your brief` when no kept message holds it (every wake of the 2.1.325 recording's build).
+        const wake = wakeOf(c)!;
+        const start = wake.slice(0, Math.max(0, wake.findIndex((m) => typeof m.text === 'string' && m.text.startsWith(WAKE_OPENING.facts))));
+        const kept = start.some((m) => m.role === 'user' && typeof m.handle === 'string' && String(m.text).includes(spawn.input.prompt));
+        if (!kept && !texts(wake).includes(`## Your brief\n${spawn.input.prompt}`)) failures.push(`I6 ${at(c)}: the wake neither keeps agent.spawn #${spawn.id}'s prompt in its start nor carries it under "## Your brief"`);
       }
     }
     return { subjects, failures };

@@ -4,7 +4,8 @@ import { basename, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { fakeEngine, usage, type FileEntry, type Script } from './fakes/engine.ts';
 import { keptOrders, ORDERS_HEADING, ordersSection } from '../plugins/forward-compaction/src/orders.ts';
-import { buildWake, mechanicalWake, type BuiltMessage, type WakeFacts, type WakeMessage } from '../plugins/forward-compaction/src/wake.ts';
+import type { BuiltMessage, WakeMessage } from '../plugins/forward-compaction/src/kept.ts';
+import { buildWake, mechanicalWake, type WakeFacts } from '../plugins/forward-compaction/src/wake.ts';
 
 // Standing orders: a numbered list the model adds to and removes from by number, shown above everything else in every
 // wake. An order stays until a call removes it: a call that leaves orders out changes nothing.
