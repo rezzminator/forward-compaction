@@ -198,5 +198,5 @@ export function fakeEngine(script: Script = {}) {
 /** A turn.step whose response was answered over `input` tokens and wrote `output` (left out when absent). */
 export const usage = (input: number, output?: number) => ({ usage: { input_tokens: input, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, ...(output !== undefined ? { output_tokens: output } : {}) } });
 
-/** A nudge's call words for a fake's main party: its storage folder under the fake's `home`, the session `session-1` in the session root `home`. */
-export const nudgeArgs = (f: { home: string }): string => `with only what changed in your frontier, by item number: remove what is finished or lifted; what only a later step reads goes in storage (write it as a .md file in ${join(f.home, '.local/state/forward-compaction', basename(f.home), 'session-1', 'storage')}/, then storage.add its name and description); load_files only the files the next step reads`;
+/** A nudge's call words for a fake's main party while it holds no frontier: its storage folder under the fake's `home`, the session `session-1` in the session root `home`. */
+export const nudgeArgs = (f: { home: string }): string => `with objective, next and what the rest of the work needs added to orders, decisions, done, remaining and findings; what only a later step reads goes in storage (write it as a .md file in ${join(f.home, '.local/state/forward-compaction', basename(f.home), 'session-1', 'storage')}/, then storage.add its name and description); load_files only what the next step reads, a long file by its line range`;

@@ -1,6 +1,6 @@
 // The files that keep one party's frontier across restarts, under
 // `$HOME/.local/state/forward-compaction/{project}/{session id}/` (a sub-agent's under `agents/{agent id}/`):
-// the live lists and texts, the storage listing and files, the count of compactions installed (`rounds.json`), and the
+// the live lists and texts, the storage listing and files, the count of compactions installed (`rounds.json`), the party's floor (`floor.json`), and the
 // history every value that left is appended to.
 // The plugin alone writes them, and deletes nothing. A file that cannot be written loses no change: it stays dirty
 // in memory and the next call writes it again. Pure but for the file calls, which arrive as `Fs`.
@@ -11,13 +11,14 @@ export type Fs = { read: (path: string) => Promise<string>; write: (path: string
 
 /** Where every session's folder lives, under the home directory. */
 export const STATE_DIR = '.local/state/forward-compaction';
-export type FileKey = ListName | TextName | 'storage' | 'rounds';
+export type FileKey = ListName | TextName | 'storage' | 'rounds' | 'floor';
 /** Each live file, relative to the party's folder. */
 export const LIVE_FILE: Record<FileKey, string> = {
   orders: 'orders.json',
-  ...(Object.fromEntries([...LISTS.filter((l) => l !== 'orders'), ...TEXTS].map((k) => [k, `data/${k}.json`])) as Record<Exclude<FileKey, 'orders' | 'storage' | 'rounds'>, string>),
+  ...(Object.fromEntries([...LISTS.filter((l) => l !== 'orders'), ...TEXTS].map((k) => [k, `data/${k}.json`])) as Record<Exclude<FileKey, 'orders' | 'storage' | 'rounds' | 'floor'>, string>),
   storage: 'storage.json',
   rounds: 'rounds.json',
+  floor: 'floor.json',
 };
 export const STORAGE_DIR = 'storage';
 /** One history file per list and text, one JSON line appended per value that left. */
@@ -140,6 +141,9 @@ export class PartyFiles {
     if (counted.value !== undefined && !isInt(sent) && sent !== 0) bad('rounds', 'a {rounds}');
     const rounds = Math.max(isInt(sent) ? sent : 0, ...LISTS.flatMap((name) => held.lists[name].items.map((item) => item.round ?? 0))); // never behind an item's own round
     if (rounds > 0) held.rounds = rounds;
+    const floored = await readJson('floor'), floor = typeof floored.value === 'object' && floored.value !== null ? (floored.value as Record<string, unknown>).floor : undefined;
+    if (isInt(floor)) held.floor = floor;
+    else if (floored.value !== undefined) bad('floor', 'a {floor}');
     return { held, problems };
   }
 
@@ -159,7 +163,7 @@ export class PartyFiles {
   /** A list or text a call changed: its live file is due, and each value that left is due in its history. */
   changed(key: FileKey, left: readonly Left[] | readonly string[] = []): void {
     this.dirty.add(key);
-    if (key === 'storage' || key === 'rounds' || left.length === 0) return;
+    if (key === 'storage' || key === 'rounds' || key === 'floor' || left.length === 0) return;
     const lines = left.map((l) => JSON.stringify(typeof l === 'string' ? { text: l } : l));
     const file = historyFile(key);
     this.history.set(file, [...(this.history.get(file) ?? []), ...lines]);
@@ -217,13 +221,13 @@ export class PartyFiles {
     }
     for (const key of [...this.dirty]) {
       const file = LIVE_FILE[key];
-      if (key !== 'storage' && key !== 'rounds' && unsaved.has(historyFile(key))) continue; // its live file waits for its history: what left is never only in memory and gone from disk
+      if (key !== 'storage' && key !== 'rounds' && key !== 'floor' && unsaved.has(historyFile(key))) continue; // its live file waits for its history: what left is never only in memory and gone from disk
       try {
         if (this.unreadable.has(key)) {
           const old = await fs.read(`${this.root}/${file}`).catch(() => undefined);
           if (old !== undefined) (await fs.write(await freeName(fs, `${this.root}/history/unreadable`, file.split('/').at(-1)!), old), this.unreadable.delete(key)); // copied once, whatever the write below does
         }
-        const value = key === 'storage' ? held.storage : key === 'rounds' ? { rounds: held.rounds ?? 0 } : (TEXTS as readonly string[]).includes(key) ? { text: held[key as TextName] ?? '' } : held.lists[key as ListName];
+        const value = key === 'storage' ? held.storage : key === 'rounds' ? { rounds: held.rounds ?? 0 } : key === 'floor' ? { floor: held.floor ?? null } : (TEXTS as readonly string[]).includes(key) ? { text: held[key as TextName] ?? '' } : held.lists[key as ListName];
         await fs.write(`${this.root}/${file}`, `${JSON.stringify(value, null, 2)}\n`);
         this.dirty.delete(key), this.unreadable.delete(key);
       } catch (error) {

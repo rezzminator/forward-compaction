@@ -55,6 +55,16 @@ describe('PartyFiles: write, history and load', () => {
     const unread = await new PartyFiles(R).load(memFs({ ...fs.files, [`${R}/rounds.json`]: '{"rounds": "x"}' }));
     expect([unread.held.rounds, unread.problems]).toEqual([2, [{ file: 'rounds.json', error: 'not a {rounds}' }]]);
   });
+  it('keeps the party\'s floor in floor.json, loads it back, and names a file that holds none', async () => {
+    const fs = memFs(), files = new PartyFiles(R);
+    files.changed('floor');
+    expect(await files.flush(fs, { ...emptyHeld(), floor: 42_000 })).toEqual([]);
+    expect([fs.files[`${R}/floor.json`], files.dirty.size]).toEqual(['{\n  "floor": 42000\n}\n', 0]);
+    const loaded = await new PartyFiles(R).load(fs);
+    expect([loaded.held.floor, loaded.problems]).toEqual([42_000, []]);
+    const unread = await new PartyFiles(R).load(memFs({ [`${R}/floor.json`]: '{"floor": "x"}' }));
+    expect([unread.held.floor, unread.problems]).toEqual([undefined, [{ file: 'floor.json', error: 'not a {floor}' }]]);
+  });
 
   it('keeps a change it could not write due, and writes it at the next flush', async () => {
     const fs = memFs({}, { write: { [`${R}/orders.json`]: 'EACCES: permission denied' } });

@@ -52,10 +52,10 @@ function sameSet(a: ReadonlySet<string>, b: ReadonlySet<string>): string[] {
   return [...[...a].filter((x) => !b.has(x)).map((x) => `+${x}`), ...[...b].filter((x) => !a.has(x)).map((x) => `-${x}`)];
 }
 // Gate 4, README half: each `| `FORWARD_COMPACTION_X` | type | default | meaning |` row against OPTION_ENV and the code's default.
-// Main's max context defaults to the window Claude Code reports: its cell says `window`.
+// Main's max context defaults to the window Claude Code reports: its cell says `window`. An absolute nudge start has no default: its cell says `unset`.
 const CODE_DEFAULT: Record<OptionName, unknown> = {
-  mainMaxContext: 'window', mainCeiling: DEFAULT_MAIN.ceiling, mainNudgeStart: DEFAULT_MAIN.nudgeStart, mainNudgeEvery: DEFAULT_MAIN.nudgeEvery, mainFinishStart: DEFAULT_MAIN_FINISH_START,
-  subagentMaxContext: 'model', subagentCeiling: DEFAULT_SUBAGENT.ceiling, subagentNudgeStart: DEFAULT_SUBAGENT.nudgeStart, subagentNudgeEvery: DEFAULT_SUBAGENT.nudgeEvery,
+  mainMaxContext: 'window', mainCeiling: DEFAULT_MAIN.ceiling, mainNudgeRoom: DEFAULT_MAIN.nudgeRoom, mainNudgeStart: 'unset', mainNudgeEvery: DEFAULT_MAIN.nudgeEvery, mainFinishStart: DEFAULT_MAIN_FINISH_START,
+  subagentMaxContext: 'model', subagentCeiling: DEFAULT_SUBAGENT.ceiling, subagentNudgeRoom: DEFAULT_SUBAGENT.nudgeRoom, subagentNudgeStart: 'unset', subagentNudgeEvery: DEFAULT_SUBAGENT.nudgeEvery,
   ceilingNative: DEFAULT_CEILING_NATIVE, ignoreModels: DEFAULT_IGNORE_MODELS.join(','), keepSkills: DEFAULT_KEEP_SKILLS.join(',') || 'none', frontierWarnChars: { tokens: DEFAULT_FRONTIER_WARN_CHARS }, debug: DEFAULT_DEBUG,
 };
 function optionTableFaults(readme: string): string[] {
@@ -129,12 +129,12 @@ describe('layout gates (D22)', () => {
   it('(4) names a README option row missing, extra or with a default the code does not have', () => {
     const row = (name: string, def: string): string => `| \`${name}\` | size | \`${def}\` | x |`;
     const cells: [string, string][] = [
-      ['MAIN_MAX_CONTEXT', 'window'], ['MAIN_CEILING', '70%'], ['MAIN_NUDGE_START', '15%'], ['MAIN_FINISH_START', '100k'],
-      ['SUBAGENT_MAX_CONTEXT', 'model'], ['SUBAGENT_CEILING', '80%'], ['SUBAGENT_NUDGE_START', '165k'], ['SUBAGENT_NUDGE_EVERY', '20%'],
+      ['MAIN_MAX_CONTEXT', 'window'], ['MAIN_CEILING', '70%'], ['MAIN_NUDGE_ROOM', '75k'], ['MAIN_NUDGE_START', 'unset'], ['MAIN_FINISH_START', '100k'],
+      ['SUBAGENT_MAX_CONTEXT', 'model'], ['SUBAGENT_CEILING', '80%'], ['SUBAGENT_NUDGE_ROOM', '60k'], ['SUBAGENT_NUDGE_START', '165k'], ['SUBAGENT_NUDGE_EVERY', '20%'],
       ['CEILING_NATIVE', '0'], ['IGNORE_MODELS', 'haiku'], ['KEEP_SKILLS', 'none'], ['FRONTIER_WARN_CHARS', '12000'], ['DEBUG', '1'], ['EXTRA', '1'],
     ];
     const table = cells.map(([name, def]) => row(`FORWARD_COMPACTION_${name}`, def)).join('\n');
-    expect(optionTableFaults(table)).toEqual(['+FORWARD_COMPACTION_EXTRA', '-FORWARD_COMPACTION_MAIN_NUDGE_EVERY', 'FORWARD_COMPACTION_MAIN_CEILING default 70%', 'FORWARD_COMPACTION_SUBAGENT_NUDGE_EVERY default 20%']);
+    expect(optionTableFaults(table)).toEqual(['+FORWARD_COMPACTION_EXTRA', '-FORWARD_COMPACTION_MAIN_NUDGE_EVERY', 'FORWARD_COMPACTION_MAIN_CEILING default 70%', 'FORWARD_COMPACTION_SUBAGENT_NUDGE_START default 165k', 'FORWARD_COMPACTION_SUBAGENT_NUDGE_EVERY default 20%']);
   });
   it('(4) the README option table names exactly the variables of OPTION_ENV, each with the code\'s default', () => {
     expect(optionTableFaults(readFileSync(join(ROOT, 'README.md'), 'utf8'))).toEqual([]);

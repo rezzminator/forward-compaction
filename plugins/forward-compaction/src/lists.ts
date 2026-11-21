@@ -18,8 +18,8 @@ export type Left = { id: number; text: string; left: 'removed' | 'edited' };
 /** One storage entry as the wake lists it (storage.ts). */
 export type StorageEntry = { name: string; description: string };
 
-/** Everything the plugin holds of one party's frontier. `rounds`: the compactions installed for the party while it held an item, absent is 0; each item's rounds unchanged are counted against it. */
-export type Held = { objective?: string; next?: string; lists: Record<ListName, List>; storage: StorageEntry[]; rounds?: number };
+/** Everything the plugin holds of one party's frontier. `rounds`: the compactions installed for the party while it held an item, absent is 0; each item's rounds unchanged are counted against it. `floor`: the party's context, in tokens as Claude Code reported it, at its first reading ever or its first after its last compaction; its nudges start a working room above it (nudge.ts `nudgeStart`). */
+export type Held = { objective?: string; next?: string; lists: Record<ListName, List>; storage: StorageEntry[]; rounds?: number; floor?: number };
 
 export const emptyList = (): List => ({ next_id: 1, items: [] });
 export const emptyHeld = (): Held => ({ lists: Object.fromEntries(LISTS.map((name) => [name, emptyList()])) as Record<ListName, List>, storage: [] });

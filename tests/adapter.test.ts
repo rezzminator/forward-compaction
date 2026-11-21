@@ -1,7 +1,8 @@
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { fakeEngine, nudgeArgs, usage, type Script } from './fakes/engine.ts';
+import { level, logged, rows } from './fakes/session.ts';
 
 const FORWARD = 'mcp__forward-compaction__forward_compaction';
 const SECTIONS = { objective: 'Ship U5.', next: 'Wire session.compact.', done: { add: ['The fake.'] }, remaining: { add: ['The adapter.'] } };
@@ -50,23 +51,6 @@ function transcript(id = 'tu-h') {
     { role: 'user', text: 'a later note', toolUses: [], handle: 'h4' },
   ];
 }
-
-/** The decision rows written this session, read once session.end has flushed them. */
-async function rows(f: Fake): Promise<Record<string, unknown>[]> {
-  await f.dispatch('session.end', { reason: 'other' }, async () => ({}));
-  const dir = join(f.home, '.local/state/forward-compaction/logs/decisions');
-  return readdirSync(dir).filter((n) => n.endsWith('.jsonl')).flatMap((n) => readFileSync(join(dir, n), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)));
-}
-
-/** The level file `name` (errors, warnings, info) of this session, once session.end has flushed it. */
-async function level(f: Fake, name: string): Promise<Record<string, unknown>[]> {
-  await rows(f);
-  const path = join(f.home, `.local/state/forward-compaction/logs/${name}.jsonl`);
-  for (let i = 0; i < 50 && !existsSync(path); i++) await new Promise((resolve) => setTimeout(resolve, 10));
-  return existsSync(path) ? readFileSync(path, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)) : [];
-}
-/** The msg of each `event` row in the level file `name`. */
-const logged = async (f: Fake, name: string, event: string): Promise<unknown[]> => (await level(f, name)).filter((r) => r.event === event).map((r) => r.msg);
 
 describe('forward_compaction tool answers (R31)', () => {
   it('stores a sub-agent frontier below its ask point with the sub-agent receipt and a stored row', async () => {
@@ -283,17 +267,19 @@ describe('nudges (R37)', () => {
     expect(second.context ?? []).toEqual([]);
   });
 
-  it('starts at 15% of the window and steps every 5%: 60k, then 80k on a 400k window, the second notice in its own words', async () => {
-    const f = await begin({ window: 400_000, env: { FORWARD_COMPACTION_MAIN_NUDGE_START: '', FORWARD_COMPACTION_MAIN_NUDGE_EVERY: '' } });
+  it('starts a working room of 75k above the first reading and steps every 15k: 95k, then 110k after a first reading of 20k on a 400k window, the second notice in its own words', async () => {
+    const f = await begin({ window: 400_000, env: { FORWARD_COMPACTION_MAIN_CEILING: '', FORWARD_COMPACTION_MAIN_NUDGE_START: '', FORWARD_COMPACTION_MAIN_NUDGE_EVERY: '' } });
     const read = (id: string) => f.dispatch('tool.call', { tool: 'Read', tool_use_id: id, file_path: '/x' }, async () => ({ result: 'file' }));
-    await step(f, 59_000);
+    await step(f, 20_000);
+    expect((await read('tu-0')).context ?? []).toEqual([]);
+    await step(f, 94_999);
     expect((await read('tu-1')).context ?? []).toEqual([]);
-    await step(f, 60_000);
-    expect((await read('tu-2')).context?.at(-1)).toContain('context 60k and increasing.');
-    await step(f, 79_000);
+    await step(f, 95_000);
+    expect((await read('tu-2')).context?.at(-1)).toContain('context 95k and increasing.');
+    await step(f, 109_999);
     expect((await read('tu-3')).context ?? []).toEqual([]);
-    await step(f, 80_000);
-    expect((await read('tu-4')).context?.at(-1)).toBe('forward-compaction: context 80k, and every request re-sends all of it. At the end of the step in hand, call mcp__forward-compaction__forward_compaction ' + nudgeArgs(f) + ': that is your milestone. If the whole work finishes first, call it before the final report, with the finished steps removed from remaining, next "write the final report", and all the report needs added to done and findings: the compaction can land before your next request, and the report is then written from the frontier. No such tool? Carry on.');
+    await step(f, 110_000);
+    expect((await read('tu-4')).context?.at(-1)).toBe('forward-compaction: context 110k, and every request re-sends all of it. At the end of the step in hand, call mcp__forward-compaction__forward_compaction ' + nudgeArgs(f) + ': that is your milestone. If the whole work finishes first, call it before the final report, with the finished steps removed from remaining, next "write the final report", and all the report needs added to done and findings: the compaction can land before your next request, and the report is then written from the frontier. No such tool? Carry on.');
   });
 
   it('a held ask adds no nudge of its own: the level already delivered is not repeated', async () => {
@@ -386,25 +372,6 @@ describe('the log rows the hook writes reach their folds and levels', () => {
   });
 });
 
-describe('an unseen compaction (R39)', () => {
-  it('files a warning naming the party, off the screen, when its reading falls from 120,000 to 30,000 with no install', async () => {
-    const f = await begin();
-    await spawn(f);
-    await step(f, 120_000, A1);
-    await step(f, 30_000, A1);
-    expect(f.texts().filter((t) => t.includes('context fell from'))).toEqual([]);
-    expect(await logged(f, 'warnings', 'unseen-compaction')).toEqual([expect.stringMatching(/^general-purpose a1b2c3's context fell from 120k to 30k/)]);
-  });
-
-  it('does not call a compaction it passed to Claude Code unseen: the fall after a /compact draws no warning', async () => {
-    const f = await begin();
-    await step(f, 120_000);
-    await f.dispatch('session.compact', { trigger: 'manual', messages: transcript() }, async () => ({ skip: 'native ran' }));
-    await step(f, 30_000);
-    expect(f.texts().filter((t) => t.includes('context fell from'))).toEqual([]);
-  });
-});
-
 describe('ignored models: FORWARD_COMPACTION_IGNORE_MODELS, Haiku by default', () => {
   const read = (f: Fake, id: string, agentId?: string) => f.dispatch('tool.call', { tool: 'Read', tool_use_id: id, file_path: '/x', ...(agentId ? { agentId } : {}) }, async () => ({ result: 'file' }));
   const haikuStep = (f: Fake, tokens: number, agentId = A1) =>
@@ -426,19 +393,36 @@ describe('ignored models: FORWARD_COMPACTION_IGNORE_MODELS, Haiku by default', (
     expect(compacts).toEqual([['skip', 'ignored-model', 64_000, 160_000, 'haiku'], ['mechanical', 'ceiling', 160_000, 160_000, 'haiku']]);
   });
 
-  it("runs every call of a managed sub-agent on a 200k max context with no nudge below its 160k ceiling (the first is due at 165k), and gives it the mechanical wake at 160k", async () => {
+  it("nudges a managed sub-agent on a 200k max context once it grew by its working room, held two steps below its 160k ceiling (130k after a first reading of 79k), a step later as the last notice, and gives it the mechanical wake at 160k, its nudges then starting a working room above the wake's first reading (100k after 40k)", async () => {
     const f = await begin({ env: defaults });
     await spawn(f);
-    const levels: number[] = [];
-    for (const tokens of [79_000, 80_000, 99_000, 100_000, 120_000, 140_000, 150_000]) {
+    const nudged: number[] = [];
+    for (const tokens of [79_000, 100_000, 129_999, 130_000, 144_999, 145_000]) {
       await step(f, tokens, A1);
       const r = await read(f, `tu-${tokens}`, A1);
       expect(r.deny).toBeUndefined();
-      if ((r.context ?? []).length > 0) levels.push(tokens);
+      if ((r.context ?? []).length > 0) nudged.push(tokens);
     }
-    expect(levels).toEqual([]);
+    expect(nudged).toEqual([130_000, 145_000]);
     await step(f, 160_000, A1);
     expect((await f.dispatch('session.compact', { trigger: 'auto', agentId: A1, messages: transcript() }, async () => ({ skip: 'native ran' }))).messages[1].text).toMatch(/past the 160k ceiling/);
+    for (const tokens of [40_000, 99_999, 100_000]) (await step(f, tokens, A1), await read(f, `tw-${tokens}`, A1));
+    expect((await rows(f)).filter((r) => r.event === 'nudge').map((r) => [r.tokens, r.level, r.notice, r.last, r.start, r.every])).toEqual([[130_000, 1, 1, false, 130_000, 15_000], [145_000, 2, 2, true, 130_000, 15_000], [100_000, 1, 1, false, 100_000, 15_000]]);
+  });
+
+  it("writes a managed sub-agent's floor at its first reading, and a restarted plugin reads it back: its nudges still start a working room above it", async () => {
+    const files: NonNullable<Script['files']> = {};
+    const before = await begin({ env: defaults, files });
+    await spawn(before);
+    await step(before, 40_000, A1);
+    expect(files[join(before.home, '.local/state/forward-compaction', basename(before.home), 'session-1', 'agents', A1, 'floor.json')]?.content).toBe('{\n  "floor": 40000\n}\n');
+    const after = await begin({ env: defaults, files, home: before.home });
+    await spawn(after);
+    await step(after, 99_999, A1);
+    expect((await read(after, 'tu-1', A1)).context ?? []).toEqual([]);
+    await step(after, 100_000, A1);
+    await read(after, 'tu-2', A1);
+    expect((await rows(after)).filter((r) => r.event === 'nudge').map((r) => [r.party, r.tokens, r.start])).toEqual([[`agent:${A1}`, 100_000, 100_000]]);
   });
 
   it("stores an ignored party's forward_compaction call like any other's and installs it at the party's next ask", async () => {
@@ -651,10 +635,10 @@ describe('audit r4: readings only, measured landed lines, the milestone nudge, l
     ]);
   });
 
-  it('M3 nudges with the milestone wording and every list as none while nothing is held, verbatim', async () => {
+  it('M3 nudges with the milestone wording, asking a party that holds nothing for a first frontier, verbatim', async () => {
     const f = await begin();
     await step(f, 51_000);
-    expect((await read(f, 'tu-1')).context?.at(-1)).toBe('forward-compaction: context 51k and increasing. At your first milestone, call mcp__forward-compaction__forward_compaction ' + nudgeArgs(f) + '. A step that needs all of this context may reach its own milestone first. If the whole work finishes first, call it before the final report, with the finished steps removed from remaining, next "write the final report", and all the report needs added to done and findings: the compaction can land before your next request, and the report is then written from the frontier. Your lists as held:\nobjective: none\norders: none\ndecisions: none\ndone: none\nremaining: none\nblocked: none\nfindings: none\nnext: none\nMANDATORY: keep these lists clean. Bring each up to date with what happened since, by item number, so it holds only what is still true and still needed: remove what is finished, lifted or wrong (an instruction for one part of the work is finished with that part); edit what changed, and a lifted rule inside an item that holds other rules is edited out of it whole, never left as a note; add each new rule of the user\'s to orders, each ruling on how a piece of work is done to decisions, and what waits on the user to blocked. No such tool? Carry on.');
+    expect((await read(f, 'tu-1')).context?.at(-1)).toBe('forward-compaction: context 51k and increasing. At your first milestone, call mcp__forward-compaction__forward_compaction ' + nudgeArgs(f) + '. A step that needs all of this context may reach its own milestone first. If the whole work finishes first, call it before the final report, with the finished steps removed from remaining, next "write the final report", and all the report needs added to done and findings: the compaction can land before your next request, and the report is then written from the frontier. No such tool? Carry on.');
   });
 
   it("L6 stores and carries every load file, with no room and no count cap, each up to 250 lines with where to Read the rest", async () => {

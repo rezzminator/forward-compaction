@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { formatSize, OPTION_ENV, parseEnvFlag, parseSize, resolveOptions, sizeTokens, subagentWindow } from '../plugins/forward-compaction/src/options.ts';
+import { formatSize, OPTION_ENV, parseEnvFlag, parseSize, readOptionVarInto, resolveOptions, sizeTokens, subagentWindow } from '../plugins/forward-compaction/src/options.ts';
 import { optionVars } from './option-env.ts';
 
 describe('parseSize and sizeTokens', () => {
@@ -53,8 +53,8 @@ describe('parseEnvFlag', () => {
 describe('resolveOptions', () => {
   it('holds the defaults with nothing set', () => {
     expect(resolveOptions()).toEqual({
-      main: { ceiling: { percent: 60 }, nudgeStart: { percent: 15 }, nudgeEvery: { percent: 5 }, finishStart: { tokens: 100_000 } },
-      subagent: { ceiling: { percent: 80 }, nudgeStart: { tokens: 165_000 }, nudgeEvery: { tokens: 65_000 } },
+      main: { ceiling: { percent: 60 }, nudgeRoom: { tokens: 75_000 }, nudgeEvery: { tokens: 15_000 }, finishStart: { tokens: 100_000 } },
+      subagent: { ceiling: { percent: 80 }, nudgeRoom: { tokens: 60_000 }, nudgeEvery: { tokens: 15_000 } },
       ceilingNative: false, ignoreModels: ['haiku'], keepSkills: [], frontierWarnChars: 12_000, debug: true, errors: [],
     });
   });
@@ -63,11 +63,13 @@ describe('resolveOptions', () => {
     expect(OPTION_ENV).toEqual({
       mainMaxContext: 'FORWARD_COMPACTION_MAIN_MAX_CONTEXT',
       mainCeiling: 'FORWARD_COMPACTION_MAIN_CEILING',
+      mainNudgeRoom: 'FORWARD_COMPACTION_MAIN_NUDGE_ROOM',
       mainNudgeStart: 'FORWARD_COMPACTION_MAIN_NUDGE_START',
       mainNudgeEvery: 'FORWARD_COMPACTION_MAIN_NUDGE_EVERY',
       mainFinishStart: 'FORWARD_COMPACTION_MAIN_FINISH_START',
       subagentMaxContext: 'FORWARD_COMPACTION_SUBAGENT_MAX_CONTEXT',
       subagentCeiling: 'FORWARD_COMPACTION_SUBAGENT_CEILING',
+      subagentNudgeRoom: 'FORWARD_COMPACTION_SUBAGENT_NUDGE_ROOM',
       subagentNudgeStart: 'FORWARD_COMPACTION_SUBAGENT_NUDGE_START',
       subagentNudgeEvery: 'FORWARD_COMPACTION_SUBAGENT_NUDGE_EVERY',
       ceilingNative: 'FORWARD_COMPACTION_CEILING_NATIVE',
@@ -137,10 +139,10 @@ describe('resolveOptions', () => {
   });
 
   it('reads every size option through the test helper', () => {
-    const resolved = resolveOptions({ vars: optionVars({ mainCeiling: '80k', mainNudgeStart: '30k', mainNudgeEvery: '5k', mainFinishStart: '10%', subagentCeiling: '50%', subagentNudgeStart: '20k', subagentNudgeEvery: '2%', ceilingNative: true }) });
+    const resolved = resolveOptions({ vars: optionVars({ mainCeiling: '80k', mainNudgeRoom: '40k', mainNudgeStart: '30k', mainNudgeEvery: '5k', mainFinishStart: '10%', subagentCeiling: '50%', subagentNudgeRoom: '25%', subagentNudgeStart: '20k', subagentNudgeEvery: '2%', ceilingNative: true }) });
     expect(resolved).toMatchObject({
-      main: { ceiling: { tokens: 80_000 }, nudgeStart: { tokens: 30_000 }, nudgeEvery: { tokens: 5_000 }, finishStart: { percent: 10 } },
-      subagent: { ceiling: { percent: 50 }, nudgeStart: { tokens: 20_000 }, nudgeEvery: { percent: 2 } },
+      main: { ceiling: { tokens: 80_000 }, nudgeRoom: { tokens: 40_000 }, nudgeStart: { tokens: 30_000 }, nudgeEvery: { tokens: 5_000 }, finishStart: { percent: 10 } },
+      subagent: { ceiling: { percent: 50 }, nudgeRoom: { percent: 25 }, nudgeStart: { tokens: 20_000 }, nudgeEvery: { percent: 2 } },
       ceilingNative: true, errors: [],
     });
   });
@@ -154,11 +156,26 @@ describe('resolveOptions', () => {
     expect([moved.logFile, moved.errors]).toEqual(['/state/forward-compaction/decisions/.jsonl', []]);
   });
 
-  it('names a nudge start that is not below the ceiling in the same unit, and passes across units', () => {
+  it('names a set nudge start that is not below the ceiling in the same unit, and passes across units and with none set', () => {
     expect(resolveOptions({ vars: { FORWARD_COMPACTION_MAIN_CEILING: '40k', FORWARD_COMPACTION_MAIN_NUDGE_START: '50k' } }).errors).toEqual(['forward-compaction: env FORWARD_COMPACTION_MAIN_NUDGE_START 50000 is not below FORWARD_COMPACTION_MAIN_CEILING 40000; no nudge goes out before the ceiling']);
-    expect(resolveOptions({ vars: { FORWARD_COMPACTION_SUBAGENT_CEILING: '80k' } }).errors).toEqual(['forward-compaction: env FORWARD_COMPACTION_SUBAGENT_NUDGE_START 165000 is not below FORWARD_COMPACTION_SUBAGENT_CEILING 80000; no nudge goes out before the ceiling']);
+    expect(resolveOptions({ vars: { FORWARD_COMPACTION_SUBAGENT_CEILING: '80k', FORWARD_COMPACTION_SUBAGENT_NUDGE_START: '80k' } }).errors).toEqual(['forward-compaction: env FORWARD_COMPACTION_SUBAGENT_NUDGE_START 80000 is not below FORWARD_COMPACTION_SUBAGENT_CEILING 80000; no nudge goes out before the ceiling']);
+    expect(resolveOptions({ vars: { FORWARD_COMPACTION_SUBAGENT_CEILING: '80k' } }).errors).toEqual([]);
     expect(resolveOptions({ vars: { FORWARD_COMPACTION_MAIN_CEILING: '40k', FORWARD_COMPACTION_MAIN_NUDGE_START: '20k' } }).errors).toEqual([]);
     expect(resolveOptions({ vars: { FORWARD_COMPACTION_MAIN_CEILING: '30%' } }).errors).toEqual([]);
+  });
+
+  it('names an invalid nudge start and leaves the party none, its working room deciding', () => {
+    const bad = resolveOptions({ vars: { FORWARD_COMPACTION_SUBAGENT_NUDGE_START: 'soon' } });
+    expect([bad.subagent, bad.errors]).toEqual([{ ceiling: { percent: 80 }, nudgeRoom: { tokens: 60_000 }, nudgeEvery: { tokens: 15_000 } }, ['forward-compaction: env FORWARD_COMPACTION_SUBAGENT_NUDGE_START is invalid (not an integer, a k/m value or a percentage: "soon"); using the default nudge room']]);
+  });
+
+  it('reads one variable through its getter: a set one is kept, an unset one left out, and one whose read failed is named', async () => {
+    const env = { vars: {} as Record<string, string>, readErrors: [] as string[] };
+    await readOptionVarInto(env, 'A', async () => '60%');
+    await readOptionVarInto(env, 'B', async () => undefined);
+    await readOptionVarInto(env, 'C', async () => { throw new Error('boom'); });
+    await readOptionVarInto(env, 'D', () => { throw new Error('not a literal name'); });
+    expect(env).toEqual({ vars: { A: '60%' }, readErrors: ['forward-compaction: reading C failed: boom; using the default', 'forward-compaction: reading D failed: not a literal name; using the default'] });
   });
 
   it('carries the lines for variables the adapter could not read', () => {

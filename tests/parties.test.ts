@@ -163,8 +163,8 @@ describe('the first reading after an install (no re-nudge)', () => {
       [110_000, 160_000, 130_000], // already past that hold: one every
     ];
     for (const [woke, ceiling, first] of cases) {
-      const marks = { start: 80_000, every: 20_000, ceiling };
-      const at = (tokens: number) => nudgeLevel(tokens, marks.start, marks.every);
+      const marks = { room: 80_000, every: 20_000, ceiling };
+      const at = (tokens: number) => nudgeLevel(tokens, 80_000, marks.every);
       const parties = new Parties();
       parties.nudgeDue('agent:a1', at(85_000), 85_000, marks);
       parties.installed('agent:a1');
@@ -175,8 +175,8 @@ describe('the first reading after an install (no re-nudge)', () => {
   });
 
   it('sends no nudge within every of the last one: a nudge held back to just under a level boundary is not followed by the next level\'s', () => {
-    const marks = { start: 80_000, every: 20_000, ceiling: 800_000 };
-    const at = (tokens: number) => nudgeLevel(tokens, marks.start, marks.every);
+    const marks = { room: 80_000, every: 20_000, ceiling: 800_000 };
+    const at = (tokens: number) => nudgeLevel(tokens, 80_000, marks.every);
     const parties = new Parties();
     const due = (tokens: number) => (parties.read('agent:a1', tokens, at(tokens)), parties.nudgeDue('agent:a1', at(tokens), tokens, marks));
     expect([158_000, 161_000, 177_999, 178_000].map(due)).toEqual([true, false, false, true]); // 161k is the next level, 3k later
@@ -441,5 +441,19 @@ describe('the ratio base (window.ts charsPerToken)', () => {
     parties.rebase('agent:gone', { chars: 1, tokens: 1 });
     expect(parties.takeLandings()).toEqual([]);
     expect(parties.get('agent:gone').base).toBeUndefined();
+  });
+});
+
+describe('the floor a party\'s nudges are timed from', () => {
+  it('is its first reading ever, kept as it grows, replaced by any reading below it and by its first reading after an install, each change due in its file', () => {
+    const parties = new Parties(), files = new PartyFiles('/h/.local/state/forward-compaction/proj/s1');
+    parties.get('main').files = files;
+    const floorAt = (tokens: number) => (files.dirty.clear(), parties.read('main', tokens), [parties.get('main').held?.floor, [...files.dirty]]);
+    expect(floorAt(42_000)).toEqual([42_000, ['floor']]);
+    expect(floorAt(90_000)).toEqual([42_000, []]);
+    expect(floorAt(41_999)).toEqual([41_999, ['floor']]);
+    parties.installed('main');
+    expect(floorAt(58_000)).toEqual([58_000, ['floor']]);
+    expect(floorAt(58_000)).toEqual([58_000, []]);
   });
 });

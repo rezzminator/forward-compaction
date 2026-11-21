@@ -12,14 +12,14 @@ import { splitAtCall, buildWake, mechanicalWake, landedLine, recentFiles, type A
 import { wakeRow } from '../src/wake-row';
 import { planFrom, planRead, PLAN_ROWS, type WakePlan } from '../src/plan';
 import { decide, installWarnings, turnEndDoor, readingTokens, knownTrigger } from '../src/decide';
-import { k, noticeFor, nudgeLevel } from '../src/nudge';
+import { k, noticeFor, nudgeLevel, nudgeStart } from '../src/nudge';
 import { heldShown, Parties, type Judging } from '../src/parties';
 import { askPointOf, charsPerToken, partyMarks, startWarnings, apiChars, type AskPoint, type Marks, type UsageBreakdown } from '../src/window';
 import { unseenCompaction } from '../src/unseen';
 import { parseLookBack, boundaryArgv, boundaryLine, searchArgv, entryArgv, namesArgv, processOutput, parseEntries, toolNames, resultIds, searchResults, entryResult, manualTranscriptCall, lookBackNotice, findTranscriptArgv, firstFound, type LookBackResult } from '../src/look-back';
 import { DecisionWriteError, hookRow, sessionLogPath, runCwd, decisionAppendArgv, retentionArgv, DECISION_HOLD_ROWS, decisionFailure, endReport, SkipFold, pluginLogEvent, pluginLogDiagnostic } from '../src/log';
 import { levelRow, onScreen, pluginLogDir, PluginLogQueue, requeueRows, type PluginLogLevel, type PluginLogFields } from '../src/plugin-log';
-import { resolveOptions, subagentWindow, type OptionEnvironment, type ResolvedOptions, type SubagentWindow } from '../src/options';
+import { resolveOptions, subagentWindow, type OptionEnvironment, type ResolvedOptions, type SubagentWindow, readOptionVarInto } from '../src/options';
 import { ModelWindows } from '../src/model-window';
 import { TOOLS, toolsToRegister, ENSURE_TOOLS_TIMEOUT_MS, END_CORE_RESERVE_MS, PENDING_BEFORE_CONFIG, nextTry, holdPending, type ToolKind } from '../src/register';
 
@@ -247,23 +247,18 @@ function warnOnce(st: State, $: EngineInterface, where: string, key: string, lin
 
 /** The environment variable of each option, by name. Claude Code reads only a name spelled as a string literal, so each is written out twice here (the key and the call); a test holds them to `OPTION_ENV`. */
 async function readOptionEnv($: EngineInterface): Promise<Pick<OptionEnvironment, 'vars' | 'readErrors'>> {
-  const vars: Record<string, string> = {}, readErrors: string[] = [];
-  const readOptionVar = async (name: string, get: () => Promise<string | undefined>): Promise<void> => {
-    try {
-      const value = await get();
-      if (value !== undefined) vars[name] = value;
-    } catch (error) {
-      readErrors.push(`forward-compaction: reading ${name} failed: ${message(error)}; using the default`);
-    }
-  };
+  const env = { vars: {} as Record<string, string>, readErrors: [] as string[] };
+  const readOptionVar = (name: string, get: () => Promise<string | undefined>): Promise<void> => readOptionVarInto(env, name, get);
   await Promise.all([
     readOptionVar('FORWARD_COMPACTION_MAIN_MAX_CONTEXT', () => $.env.get('FORWARD_COMPACTION_MAIN_MAX_CONTEXT')),
     readOptionVar('FORWARD_COMPACTION_MAIN_CEILING', () => $.env.get('FORWARD_COMPACTION_MAIN_CEILING')),
+    readOptionVar('FORWARD_COMPACTION_MAIN_NUDGE_ROOM', () => $.env.get('FORWARD_COMPACTION_MAIN_NUDGE_ROOM')),
     readOptionVar('FORWARD_COMPACTION_MAIN_NUDGE_START', () => $.env.get('FORWARD_COMPACTION_MAIN_NUDGE_START')),
     readOptionVar('FORWARD_COMPACTION_MAIN_NUDGE_EVERY', () => $.env.get('FORWARD_COMPACTION_MAIN_NUDGE_EVERY')),
     readOptionVar('FORWARD_COMPACTION_MAIN_FINISH_START', () => $.env.get('FORWARD_COMPACTION_MAIN_FINISH_START')),
     readOptionVar('FORWARD_COMPACTION_SUBAGENT_MAX_CONTEXT', () => $.env.get('FORWARD_COMPACTION_SUBAGENT_MAX_CONTEXT')),
     readOptionVar('FORWARD_COMPACTION_SUBAGENT_CEILING', () => $.env.get('FORWARD_COMPACTION_SUBAGENT_CEILING')),
+    readOptionVar('FORWARD_COMPACTION_SUBAGENT_NUDGE_ROOM', () => $.env.get('FORWARD_COMPACTION_SUBAGENT_NUDGE_ROOM')),
     readOptionVar('FORWARD_COMPACTION_SUBAGENT_NUDGE_START', () => $.env.get('FORWARD_COMPACTION_SUBAGENT_NUDGE_START')),
     readOptionVar('FORWARD_COMPACTION_SUBAGENT_NUDGE_EVERY', () => $.env.get('FORWARD_COMPACTION_SUBAGENT_NUDGE_EVERY')),
     readOptionVar('FORWARD_COMPACTION_CEILING_NATIVE', () => $.env.get('FORWARD_COMPACTION_CEILING_NATIVE')),
@@ -272,7 +267,7 @@ async function readOptionEnv($: EngineInterface): Promise<Pick<OptionEnvironment
     readOptionVar('FORWARD_COMPACTION_FRONTIER_WARN_CHARS', () => $.env.get('FORWARD_COMPACTION_FRONTIER_WARN_CHARS')),
     readOptionVar('FORWARD_COMPACTION_DEBUG', () => $.env.get('FORWARD_COMPACTION_DEBUG')),
   ]);
-  return { vars, readErrors };
+  return env;
 }
 
 // First hook call: report option errors, find the log directories, and resolve the options.
@@ -535,7 +530,7 @@ async function nudged(st: State, $: EngineInterface, key: PartyKey, result: Tool
     await judge(st, $, key);
     const tokens = st.parties.get(key).reading, m = marks(st, key); // measured only: a step late at worst, never an estimate
     const { level, withheld, sent } = noticeFor(st.parties, key, tokens, m, st.config.ignoreModels, st.toolNames.forward_compaction);
-    if (withheld !== undefined) dbg(st, $, 'nudge-withheld', { party: key, why: withheld, tokens: tokens ?? null, level, start: m?.start ?? null, every: m?.every ?? null, finish: sent !== undefined });
+    if (withheld !== undefined) dbg(st, $, 'nudge-withheld', { party: key, why: withheld, tokens: tokens ?? null, level, start: m?.start ?? null, room: m?.room ?? null, floor: st.parties.get(key).held?.floor ?? null, every: m?.every ?? null, finish: sent !== undefined });
     if (sent === undefined) return result;
     record(st, $, sent.row);
     return { ...result, context: [...(result.context ?? []), sent.text] };
@@ -693,10 +688,11 @@ async function readStep(st: State, $: EngineInterface, e: TurnStepInput, r: Turn
     say(st, $, `forward-compaction: ${party.label}'s context fell from ${k(party.reading!)} to ${k(tokens)} with no compaction this plugin handled (another plugin or Claude Code compacted it).`, 'warning', { event: 'unseen-compaction', where: 'readStep', party: key, before: party.reading, after: tokens });
     st.parties.rebase(key, undefined);
   }
-  const m = marks(st, key);
-  const level = m === undefined ? 0 : nudgeLevel(tokens, m.start, m.every);
-  dbg(st, $, 'reading', { party: key, tokens, level, from: party.reading ?? null, absorb: party.absorbNext });
-  land(st, $, key, st.parties.read(key, tokens, level), tokens);
+  const m = marks(st, key), from = party.reading ?? null, absorb = party.absorbNext, floorBefore = party.held?.floor;
+  land(st, $, key, st.parties.read(key, tokens, m?.start === undefined ? 0 : nudgeLevel(tokens, m.start, m.every)), tokens); // with no absolute start a wake's first reading is the new floor: it has no level to absorb
+  const floor = party.held?.floor;
+  dbg(st, $, 'reading', { party: key, tokens, level: m === undefined || floor === undefined ? 0 : nudgeLevel(tokens, nudgeStart(floor, m), m.every), from, absorb, floor: floor ?? null });
+  if (floor !== floorBefore && party.files?.due && st.parties.judgement(key, judging(st)) === 'managed') await writeDue(st, $, key, 'readStep'); // a new floor is written at once, so a restarted party still knows how far it has grown
   st.installedSince.delete(key);
   if (party.base !== undefined || party.requests < (party.baseRetryAt ?? 0)) return; // the first reading in its live window takes the ratio's base (window.ts `charsPerToken`); a failed read backs off (`baseMissed`)
   const chars = await partyChars(st, $, key, e.agentId);

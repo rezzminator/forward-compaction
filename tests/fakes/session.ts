@@ -1,5 +1,5 @@
 // A fake session as tests/adapter.test.ts drives one, for the adapter-level tests kept in their own files.
-import { readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { expect } from 'vitest';
 import { fakeEngine, usage, type Script } from './engine.ts';
@@ -54,3 +54,13 @@ export async function rows(f: Fake): Promise<Record<string, unknown>[]> {
   const dir = join(f.home, '.local/state/forward-compaction/logs/decisions');
   return readdirSync(dir).filter((n) => n.endsWith('.jsonl')).flatMap((n) => readFileSync(join(dir, n), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)));
 }
+
+/** The level file `name` (errors, warnings, info) of this session, once session.end has flushed it. */
+export async function level(f: Fake, name: string): Promise<Record<string, unknown>[]> {
+  await rows(f);
+  const path = join(f.home, `.local/state/forward-compaction/logs/${name}.jsonl`);
+  for (let i = 0; i < 50 && !existsSync(path); i++) await new Promise((resolve) => setTimeout(resolve, 10));
+  return existsSync(path) ? readFileSync(path, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)) : [];
+}
+/** The msg of each `event` row in the level file `name`. */
+export const logged = async (f: Fake, name: string, event: string): Promise<unknown[]> => (await level(f, name)).filter((r) => r.event === event).map((r) => r.msg);

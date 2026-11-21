@@ -1,6 +1,6 @@
 import type { Parties } from './parties';
 import { storageDir } from './storage';
-import { LISTS, itemLines, unchangedNote, type Held, type ListName } from './lists';
+import { frontierSize, type Held } from './lists';
 
 /** The tool's name as the installed copy registered it; a `-dev` copy's differs. */
 export const DEFAULT_TOOL = 'mcp__forward-compaction__forward_compaction';
@@ -22,6 +22,18 @@ export function nudgeLevel(tokens: number, start: number, every: number): number
   return 1 + Math.floor((tokens - start) / Math.max(1, every));
 }
 
+/** What a nudge is timed by above a floor, in tokens: the working room, the growth between nudges and the ceiling. */
+export type NudgeMarks = { room: number; every: number; ceiling: number };
+
+/**
+ * The growth a party gets above a floor (its first reading ever, or its first after a compaction) before its next
+ * nudge: its working room, held to two `every` below its ceiling so a nudge still comes before the mechanical wake, and
+ * never under one `every`.
+ */
+export function roomAbove(floor: number, { room, every, ceiling }: NudgeMarks): number {
+  return Math.max(every, Math.min(room, ceiling - 2 * every - floor));
+}
+
 /** Whether a nudge at `tokens` is the party's last: the next one waits one `every` of growth, and that reaches the ceiling. */
 export function lastNudge(tokens: number, every: number, ceiling: number): boolean {
   return tokens + every >= ceiling;
@@ -40,13 +52,13 @@ export type NudgeInput = {
   last?: boolean;
   /** The party's storage folder, absolute; absent when the run keeps no files. */
   storage?: string;
-  /** The party's held lists and texts by field name, items numbered, empty ones as none, shown by the first notice of a cycle so its call brings each up to date; absent when nothing is held. */
-  lists?: string;
+  /** The party holds a frontier already (`holds`): the notice asks for its changes by item number, else for a first frontier; false when absent. */
+  held?: boolean;
 };
 
-/** What a frontier call sends and where each kind of material goes, the same words in every notice: storage names its folder when the party has one, so the model writes a file there once and lists it by name. */
-const args = (storage?: string): string =>
-  `with only what changed in your frontier, by item number: remove what is finished or lifted; what only a later step reads goes in storage (${storage === undefined ? 'its value in storage.add' : `write it as a .md file in ${storage}/, then storage.add its name and description`}); load_files only the files the next step reads`;
+/** What a frontier call sends and where each kind of material goes, the same words in every notice of a cycle: a party holding a frontier sends its changes, with the upkeep its lists need, one holding none its first; storage names its folder when the party has one, so the model writes a file there once and lists it by name. */
+const args = (held: boolean, storage?: string): string =>
+  `${held ? 'with only what changed since your last frontier, by item number: remove what is finished, lifted or wrong, edit what changed, add what is new' : 'with objective, next and what the rest of the work needs added to orders, decisions, done, remaining and findings'}; what only a later step reads goes in storage (${storage === undefined ? 'its value in storage.add' : `write it as a .md file in ${storage}/, then storage.add its name and description`}); load_files only what the next step reads, a long file by its line range`;
 
 /** The first notices leave the timing to the party, so they close on its exception: main's on the end of the whole work, a sub-agent's, whose context ends with its report, on when it may skip. Later notices carry none. */
 const FINISH_RULE = 'If the whole work finishes first, call it before the final report, with the finished steps removed from remaining, next "write the final report", and all the report needs added to done and findings: the compaction can land before your next request, and the report is then written from the frontier.';
@@ -68,26 +80,19 @@ function nudgeBody(notice: number, size: string, call: string): string {
 /**
  * What the model reads after a tool result once its context passes a nudge point: its size and a call for a frontier,
  * worded by how many notices the party has had since its last compaction, so no two read alike and each is firmer
- * than the one before. The last one before the ceiling says what the plugin does next. It names no window and no ceiling.
+ * than the one before. The last one before the ceiling says what the plugin does next. It names no window and no
+ * ceiling, and shows no list: a party holding a frontier still has its wake's numbered lists in its context.
  */
-export function nudgeText({ tokens, tool = DEFAULT_TOOL, party = 'main', notice = 1, last = false, storage, lists }: NudgeInput): string {
-  const size = k(tokens), call = `${tool} ${args(storage)}`, count = Math.max(1, Math.floor(notice));
+export function nudgeText({ tokens, tool = DEFAULT_TOOL, party = 'main', notice = 1, last = false, storage, held = false }: NudgeInput): string {
+  const size = k(tokens), call = `${tool} ${args(held, storage)}`, count = Math.max(1, Math.floor(notice));
   const said = last
     ? `context ${size}. Last notice: the plugin compacts this context itself before another comes, with no frontier from you, and you wake on its recorded facts alone. To wake on your own account of the work, call ${call} now.`
     : [nudgeBody(count, size, call), ...(count > SKIP_RULES.length ? [] : [party === 'main' ? FINISH_RULE : SKIP_RULES[count - 1]])].join(' ');
-  const upkeep = lists === undefined || last ? '' : ` Your lists as held:\n${lists}\nMANDATORY: keep these lists clean. Bring each up to date with what happened since, by item number, so it holds only what is still true and still needed: remove what is finished, lifted or wrong (an instruction for one part of the work is finished with that part); edit what changed, and a lifted rule inside an item that holds other rules is edited out of it whole, never left as a note; add each new rule of the user's to orders, each ruling on how a piece of work is done to decisions, and what waits on the user to blocked.${unchangedNote(lists)}`;
-  return `forward-compaction: ${said}${upkeep} No such tool? Carry on.`;
+  return `forward-compaction: ${said} No such tool? Carry on.`;
 }
 
-/** A party's held lists and texts as the first notice of a cycle shows them: by field name, so each maps to its call field, items numbered, an empty one as none so the model sees every list it can fill, nothing held yet included. */
-export function heldLists(held: Held | undefined): string {
-  const text = (name: 'objective' | 'next'): string => `${name}: ${held?.[name] ?? 'none'}`;
-  const items = (name: ListName): string => {
-    const list = held?.lists[name];
-    return list === undefined || list.items.length === 0 ? `${name}: none` : `${name}:\n${itemLines(list, held?.rounds).join('\n')}`;
-  };
-  return [text('objective'), ...LISTS.map(items), text('next')].join('\n');
-}
+/** Whether a party holds a frontier: any live item, an objective or a next. */
+export const holds = (held: Held | undefined): boolean => held !== undefined && frontierSize(held).chars > 0;
 
 /**
  * What main reads once, with a tool result, when its context passes the finish start before any nudge: nothing to do
@@ -97,8 +102,17 @@ export function finishText({ tokens, tool = DEFAULT_TOOL }: Pick<NudgeInput, 'to
   return `forward-compaction: context ${k(tokens)}. Nothing to do yet. When the whole work is finished, call ${tool} before the final report, so the user's reply meets a small context: the finished steps removed from remaining, next "write the final report", and all the report needs added to done and findings, as the compaction can land before your next request and the report is then written from the frontier. No such tool? Carry on.`;
 }
 
-/** The marks a notice is decided by, in tokens (window.ts `Marks`); only main has a finish start. */
-export type NoticeMarks = { start: number; every: number; ceiling: number; finish?: number };
+/**
+ * The marks a notice is decided by, in tokens (window.ts `Marks`): the working room above the party's floor at which
+ * its nudges start; `start`, only when the user set one, the absolute context they start at instead, the room after
+ * each wake then as large. Only main has a finish start.
+ */
+export type NoticeMarks = { room: number; every: number; ceiling: number; start?: number; finish?: number };
+
+/** The context at which a party's nudges start: the absolute start when one is set; else its working room (`roomAbove`) above its floor. */
+export function nudgeStart(floor: number, marks: NoticeMarks): number {
+  return marks.start ?? floor + roomAbove(floor, marks);
+}
 
 export type Notice = {
   /** The party's nudge level at its reading; 0 with no reading or no marks. */
@@ -110,18 +124,19 @@ export type Notice = {
 };
 
 /**
- * What a tool result carries for the party at its reading (`tokens`), recorded on the party as sent. Past a nudge
- * point with nothing stored, the nudge, once per level, worded by its count since the party's last compaction, the
- * last one before the ceiling as the last notice. With no nudge due, a party with a finish start reads the finish
- * notice, once; an ignored model reads neither.
+ * What a tool result carries for the party at its reading (`tokens`), recorded on the party as sent. Past its nudge
+ * start (`nudgeStart`, from its floor; a party with none yet is at its floor) with nothing stored, the nudge, once per
+ * level, worded by its count since the party's last compaction, the last one before the ceiling as the last notice.
+ * With no nudge due, a party with a finish start reads the finish notice, once; an ignored model reads neither.
  */
 export function noticeFor(parties: Parties, key: string, tokens: number | undefined, marks: NoticeMarks | undefined, ignore: readonly string[], tool?: string): Notice {
   if (tokens === undefined || marks === undefined) return { level: 0, withheld: tokens === undefined ? 'no-reading' : 'window-unknown' };
-  const level = nudgeLevel(tokens, marks.start, marks.every), ignored = parties.ignored(key, ignore) !== undefined;
-  const withheld = level === 0 ? 'below-start' : ignored ? 'ignored-model' : !parties.nudgeDue(key, level, tokens, marks) ? 'not-due' : undefined;
+  const start = nudgeStart(parties.get(key).held?.floor ?? tokens, marks);
+  const level = nudgeLevel(tokens, start, marks.every), ignored = parties.ignored(key, ignore) !== undefined;
+  const withheld = level === 0 ? 'below-start' : ignored ? 'ignored-model' : !parties.nudgeDue(key, level, tokens, { room: marks.start ?? marks.room, every: marks.every, ceiling: marks.ceiling }) ? 'not-due' : undefined;
   if (withheld === undefined) {
-    const { nudges: notice, files, held } = parties.get(key), last = lastNudge(tokens, marks.every, marks.ceiling), lists = notice === 1 ? heldLists(held) : undefined;
-    return { level, sent: { row: { event: 'nudge', party: key, level, notice, last, tokens, start: marks.start, every: marks.every }, text: nudgeText({ tokens, tool, party: key === 'main' ? 'main' : 'subagent', notice, last, ...(files !== undefined ? { storage: storageDir(files) } : {}), ...(lists !== undefined ? { lists } : {}) }) } };
+    const { nudges: notice, files, held } = parties.get(key), last = lastNudge(tokens, marks.every, marks.ceiling);
+    return { level, sent: { row: { event: 'nudge', party: key, level, notice, last, tokens, start, every: marks.every }, text: nudgeText({ tokens, tool, party: key === 'main' ? 'main' : 'subagent', notice, last, held: holds(held), ...(files !== undefined ? { storage: storageDir(files) } : {}) }) } };
   }
   if (ignored || marks.finish === undefined || !parties.finishDue(key, tokens, marks.finish, marks.every)) return { level, withheld };
   return { level, withheld, sent: { row: { event: 'finish-notice', party: key, tokens, start: marks.finish }, text: finishText({ tokens, tool }) } };
