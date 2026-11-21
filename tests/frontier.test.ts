@@ -24,7 +24,7 @@ const FIELDS_NOTE = 'The fields are objective, next, orders, decisions, done, re
 describe('the forward_compaction tool as registered', () => {
   it('is named forward_compaction, says changes go by number, and holds one example call', () => {
     expect(FORWARD_TOOL).toBe('forward_compaction');
-    expect(FORWARD_TOOL_DESCRIPTION).toBe('Compacts your large context at a clean milestone. The plugin keeps your frontier as numbered lists; send only changes: add texts, remove or edit by number; what you leave out stays. MANDATORY: keep it clean: each call removes what is finished, lifted or wrong, edits what changed. At the next compaction the lists and recorded facts replace all before this call; the newest later messages that fit stay verbatim. Always stores. Example: forward_compaction({"next": "Run the gate", "done": {"add": ["Parser merged, 41 tests pass"]}, "remaining": {"remove": [3]}}). Exact old detail later → look_back.');
+    expect(FORWARD_TOOL_DESCRIPTION).toBe('Compacts your large context between steps: once the step in hand has its result saved and checked, before reading for the next; what you have read is dropped. Your frontier is kept as numbered lists; send only changes: add texts, remove or edit by number; what you leave out stays. One fact or step per item. MANDATORY: keep it clean: each call removes what is finished, lifted or wrong, edits what changed. Always stores. Example: forward_compaction({"next": "Run the gate", "done": {"add": ["Parser merged, 41 tests pass"]}, "remaining": {"remove": [3]}}). Exact old detail later → look_back.');
   });
 
   it('closes the schema: two texts, six lists each with add, remove and edit, storage and load_files, none required', () => {
@@ -72,6 +72,26 @@ describe('parseCall passes each change on as sent and names every argument it re
   ])('%j joins %j', (input, extra, want) => {
     const call = parseCall(input);
     expect([call.extra, call.notes]).toEqual([extra, want]);
+  });
+
+  it.each([
+    ['a list sent as the text of its change', { done: '{"add": ["parser"], "remove": [2]}' }, { done: { add: ['parser'], remove: [2] } }, ['done arrived as the text of its JSON: read as JSON.']],
+    ['the fields written after it inside the same text', { next: 'go', done: '{"add":["parser"],"remaining":{"edit":[{"id":1,"text":"docs"}]},"findings":{"add":["plan"]}}' }, { done: { add: ['parser'] }, remaining: { edit: [{ id: 1, text: 'docs' }] }, findings: { add: ['plan'] } }, ['done arrived as the text of its JSON: read as JSON, and remaining and findings inside it taken out as their own fields.']],
+    ['a text holding only another field', { done: '{"remaining":{"remove":[2]}}' }, { remaining: { remove: [2] } }, ['done arrived as the text of its JSON: read as JSON, and remaining inside it taken out as its own field.']],
+    ['a list sent as the text of an array', { done: '["a", "b"]' }, { done: ['a', 'b'] }, ['done arrived as the text of its JSON: read as JSON.']],
+    ['a text holding a field the call also sent stays one text', { remaining: { remove: [1] }, done: '{"add":["parser"],"remaining":{"remove":[2]}}' }, { remaining: { remove: [1] }, done: '{"add":["parser"],"remaining":{"remove":[2]}}' }, []],
+    ['a text holding a key that is no field stays one text', { done: '{"add":["parser"],"status":"ok"}' }, { done: '{"add":["parser"],"status":"ok"}' }, []],
+    ['a text that only starts like JSON as one text, and the JSON text after it', { done: '[4] tokens fixed, tests pass', remaining: '{"remove": [2]}' }, { done: '[4] tokens fixed, tests pass', remaining: { remove: [2] } }, ['remaining arrived as the text of its JSON: read as JSON.']],
+    ['an array of numbers stays one text', { done: '[1, 2]' }, { done: '[1, 2]' }, []],
+  ])('reads %s', (_name, input, lists, notes) => {
+    const call = parseCall(input);
+    expect([call.lists, call.notes]).toEqual([lists, notes]);
+  });
+
+  it('reads storage and load_files sent as the text of their JSON, and leaves one of the wrong shape to its own note', () => {
+    const call = parseCall({ storage: '{"add": [{"name": "a.md"}]}', load_files: '[{"path": "/a"}]' });
+    expect([call.storage, call.loadFiles, call.notes]).toEqual([{ add: [{ name: 'a.md' }] }, [{ path: '/a' }], ['storage arrived as the text of its JSON: read as JSON.', 'load_files arrived as the text of its JSON: read as JSON.']]);
+    expect(parseCall({ load_files: '{"path": "/a"}' }).notes).toEqual(['load_files must be an array of {path, lines?, why}: none carried.']);
   });
 
   it('takes back out the parameters a broken call folded into a text after its closing tag, naming each', () => {

@@ -46,6 +46,11 @@ function idOf(v: unknown): number | undefined {
   return Number.isInteger(n) && n > 0 ? n : undefined;
 }
 
+/** The most characters of an item that left a result line shows: enough to recognise it. Its whole text is in the list's history file (disk.ts) and in the transcript, where look_back finds it. */
+export const LEFT_SHOWN_CHARS = 80;
+/** An item that left, as a result line shows it: whole up to LEFT_SHOWN_CHARS, else its first LEFT_SHOWN_CHARS on one line and `…`, so a wake that repeats the result carries no text the call replaced. */
+const leftShown = (text: string): string => (text.length <= LEFT_SHOWN_CHARS ? text : `${text.slice(0, LEFT_SHOWN_CHARS).replace(/\s+/g, ' ')}…`);
+
 export type ListCount = { added: number; removed: number; edited: number; skipped: number };
 export type ListOutcome = { list: List; lines: string[]; notes: string[]; left: Left[]; count: ListCount };
 
@@ -133,12 +138,12 @@ export function listApply(name: ListName, list: List, change: unknown, round = 0
     if (item === undefined) notes.push(`${e.at}: [${e.id}] is not a live item: skipped.`);
     else if (removed.has(e.id)) notes.push(`${e.at}: [${e.id}] is also removed: removed.`);
     else if (item.text === e.text) notes.push(`${e.at}: [${e.id}] already reads so: unchanged.`);
-    else (left.push({ id: item.id, text: item.text, left: 'edited' }), edited.push(`Edited in ${name}: [${item.id}], was: ${item.text}`), (item.text = e.text), stamp(item));
+    else (left.push({ id: item.id, text: item.text, left: 'edited' }), edited.push(`Edited in ${name}: [${item.id}], was: ${leftShown(item.text)}`), (item.text = e.text), stamp(item));
   }
   const removedLines: string[] = [];
   const kept = items.filter((item) => {
     if (!removed.has(item.id)) return true;
-    left.push({ id: item.id, text: item.text, left: 'removed' }), removedLines.push(`Removed from ${name}: [${item.id}] ${item.text}`);
+    left.push({ id: item.id, text: item.text, left: 'removed' }), removedLines.push(`Removed from ${name}: [${item.id}] ${leftShown(item.text)}`);
     return false;
   });
   let next = list.next_id;

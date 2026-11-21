@@ -260,7 +260,7 @@ describe('nudges (R37)', () => {
     const f = await begin();
     await step(f, 51_000);
     const first = await f.dispatch('tool.call', { tool: 'Read', tool_use_id: 'tu-1', file_path: '/x' }, async () => ({ result: 'file', context: ['other'] }));
-    expect(first.context.at(-1)).toMatch(/^forward-compaction: context 51k and increasing\. At your first milestone, call /);
+    expect(first.context.at(-1)).toMatch(/^forward-compaction: context 51k and increasing\. A compaction drops what you have read, so reading done just before one is done twice: once the step in hand has its result saved and checked, and before you read for the next step, call /);
     expect(first.context[0]).toBe('other');
     await step(f, 52_000);
     const second = await f.dispatch('tool.call', { tool: 'Read', tool_use_id: 'tu-2', file_path: '/x' }, async () => ({ result: 'file' }));
@@ -279,7 +279,7 @@ describe('nudges (R37)', () => {
     await step(f, 109_999);
     expect((await read('tu-3')).context ?? []).toEqual([]);
     await step(f, 110_000);
-    expect((await read('tu-4')).context?.at(-1)).toBe('forward-compaction: context 110k, and every request re-sends all of it. At the end of the step in hand, call mcp__forward-compaction__forward_compaction ' + nudgeArgs(f) + ': that is your milestone. If the whole work finishes first, call it before the final report, with the finished steps removed from remaining, next "write the final report", and all the report needs added to done and findings: the compaction can land before your next request, and the report is then written from the frontier. No such tool? Carry on.');
+    expect((await read('tu-4')).context?.at(-1)).toBe('forward-compaction: context 110k, and every request re-sends all of it. As soon as the step in hand has its result saved and checked, and before any reading for the next step, call mcp__forward-compaction__forward_compaction ' + nudgeArgs(f) + '. If the whole work finishes first, call it before the final report, with the finished steps removed from remaining, next "write the final report", and all the report needs added to done and findings: the compaction can land before your next request, and the report is then written from the frontier. No such tool? Carry on.');
   });
 
   it('a held ask adds no nudge of its own: the level already delivered is not repeated', async () => {
@@ -638,7 +638,7 @@ describe('audit r4: readings only, measured landed lines, the milestone nudge, l
   it('M3 nudges with the milestone wording, asking a party that holds nothing for a first frontier, verbatim', async () => {
     const f = await begin();
     await step(f, 51_000);
-    expect((await read(f, 'tu-1')).context?.at(-1)).toBe('forward-compaction: context 51k and increasing. At your first milestone, call mcp__forward-compaction__forward_compaction ' + nudgeArgs(f) + '. A step that needs all of this context may reach its own milestone first. If the whole work finishes first, call it before the final report, with the finished steps removed from remaining, next "write the final report", and all the report needs added to done and findings: the compaction can land before your next request, and the report is then written from the frontier. No such tool? Carry on.');
+    expect((await read(f, 'tu-1')).context?.at(-1)).toBe('forward-compaction: context 51k and increasing. A compaction drops what you have read, so reading done just before one is done twice: once the step in hand has its result saved and checked, and before you read for the next step, call mcp__forward-compaction__forward_compaction ' + nudgeArgs(f) + '. If the whole work finishes first, call it before the final report, with the finished steps removed from remaining, next "write the final report", and all the report needs added to done and findings: the compaction can land before your next request, and the report is then written from the frontier. No such tool? Carry on.');
   });
 
   it("L6 stores and carries every load file, with no room and no count cap, each up to 250 lines with where to Read the rest", async () => {

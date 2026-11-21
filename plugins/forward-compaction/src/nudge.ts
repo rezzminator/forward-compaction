@@ -64,12 +64,12 @@ const args = (held: boolean, storage?: string): string =>
 const FINISH_RULE = 'If the whole work finishes first, call it before the final report, with the finished steps removed from remaining, next "write the final report", and all the report needs added to done and findings: the compaction can land before your next request, and the report is then written from the frontier.';
 const SKIP_RULES = ['Skip it if all your work ends within a few calls.', 'Skip it only if your work ends within a few calls.', 'Skip it only if the step in hand is your last.'];
 
-/** A notice's words by its count, each firmer than the one before; from the seventh on only the count of unanswered notices changes. */
+/** A notice's words by its count, each firmer than the one before. The first three time the call between two steps: a compaction drops what the party has read, so a step cut in two is read twice. From the seventh on only the count of unanswered notices changes. */
 function nudgeBody(notice: number, size: string, call: string): string {
   switch (notice) {
-    case 1: return `context ${size} and increasing. At your first milestone, call ${call}. A step that needs all of this context may reach its own milestone first.`;
-    case 2: return `context ${size}, and every request re-sends all of it. At the end of the step in hand, call ${call}: that is your milestone.`;
-    case 3: return `context ${size}. Start no new step: finish the one in hand, then call ${call}. What later steps need travels in the frontier and storage.`;
+    case 1: return `context ${size} and increasing. A compaction drops what you have read, so reading done just before one is done twice: once the step in hand has its result saved and checked, and before you read for the next step, call ${call}.`;
+    case 2: return `context ${size}, and every request re-sends all of it. As soon as the step in hand has its result saved and checked, and before any reading for the next step, call ${call}.`;
+    case 3: return `context ${size}. Start no new step and read nothing new: save the work in hand, then call ${call}. What later steps need travels in the frontier and storage.`;
     case 4: return `context ${size}. Compact now: your next call is ${call}. An unfinished step goes in remaining and next: a frontier needs no finished step.`;
     case 5: return `context ${size}. Nothing ahead needs this context: the frontier, storage and load_files carry what you will use, and look_back finds any exact old detail. Stop and call ${call}.`;
     case 6: return `context ${size}, ${notice - 1} notices unanswered. Leave the work where it stands, finished or not, and call ${call}.`;

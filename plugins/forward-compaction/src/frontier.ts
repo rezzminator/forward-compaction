@@ -9,7 +9,7 @@ import { LISTS, listApply, textApply, TEXTS, type Held, type Left, type ListCoun
 export const FORWARD_TOOL = 'forward_compaction';
 
 export const FORWARD_TOOL_DESCRIPTION =
-  'Compacts your large context at a clean milestone. The plugin keeps your frontier as numbered lists; send only changes: add texts, remove or edit by number; what you leave out stays. MANDATORY: keep it clean: each call removes what is finished, lifted or wrong, edits what changed. At the next compaction the lists and recorded facts replace all before this call; the newest later messages that fit stay verbatim. Always stores. Example: forward_compaction({"next": "Run the gate", "done": {"add": ["Parser merged, 41 tests pass"]}, "remaining": {"remove": [3]}}). Exact old detail later → look_back.';
+  'Compacts your large context between steps: once the step in hand has its result saved and checked, before reading for the next; what you have read is dropped. Your frontier is kept as numbered lists; send only changes: add texts, remove or edit by number; what you leave out stays. One fact or step per item. MANDATORY: keep it clean: each call removes what is finished, lifted or wrong, edits what changed. Always stores. Example: forward_compaction({"next": "Run the gate", "done": {"add": ["Parser merged, 41 tests pass"]}, "remaining": {"remove": [3]}}). Exact old detail later → look_back.';
 
 /** What each list holds, as its field's description says it. */
 const LIST_DESCRIPTION: Record<ListName, string> = {
@@ -159,15 +159,52 @@ function unfold(input: Record<string, unknown>): { fields: Record<string, unknow
   return { fields, notes };
 }
 
+const OPS = ['add', 'remove', 'edit'];
+
+/**
+ * A list, storage or load_files value that arrived as the text of its own JSON is read as that JSON, with one note. A
+ * list's text may also hold the fields the model wrote after it inside the same text (`{"add": [...], "remaining":
+ * {...}}`): each is taken out as its own field. A text that is no JSON, or one holding a key that is neither an
+ * operation nor a field the call left out, stays as it arrived, and lists.ts reads it as one added item.
+ */
+function unstring(fields: Record<string, unknown>, notes: string[]): void {
+  const pending: string[] = [...LISTS, 'storage', 'load_files'];
+  for (let key = pending.shift(); key !== undefined; key = pending.shift()) {
+    const value = fields[key];
+    if (typeof value !== 'string' || !/^\s*[[{]/.test(value)) continue;
+    let read: unknown;
+    try {
+      read = JSON.parse(value);
+    } catch {
+      continue; // no JSON: a plain text, read as one
+    }
+    const whole = `${key} arrived as the text of its JSON: read as JSON`;
+    if (!(LISTS as readonly string[]).includes(key)) {
+      if (key === 'storage' ? isObject(read) : Array.isArray(read)) (fields[key] = read), notes.push(`${whole}.`);
+    } else if (Array.isArray(read)) {
+      if (read.length > 0 && read.every((entry) => typeof entry === 'string' || isObject(entry))) (fields[key] = read), notes.push(`${whole}.`);
+    } else if (isObject(read)) {
+      const keys = Object.keys(read);
+      const inside = keys.filter((k) => !OPS.includes(k));
+      if (keys.length === 0 || inside.some((k) => k === key || !FIELDS.includes(k) || fields[k] !== undefined)) continue;
+      if (inside.length === keys.length) delete fields[key];
+      else fields[key] = Object.fromEntries(keys.filter((k) => OPS.includes(k)).map((k) => [k, read[k]]));
+      for (const k of inside) (fields[k] = read[k]), pending.push(k);
+      notes.push(`${whole}${inside.length === 0 ? '' : `, and ${andList(inside)} inside it taken out as ${inside.length === 1 ? 'its own field' : 'their own fields'}`}.`);
+    }
+  }
+}
+
 /**
  * Reads the model's tool input; nothing is refused. Each text and list change is passed on as sent, for lists.ts to read
- * leniently. An unknown field's text joins findings under its name; `standing_orders` entries join orders as adds;
+ * leniently, after a value sent as the text of its JSON is read as JSON (`unstring`). An unknown field's text joins findings under its name; `standing_orders` entries join orders as adds;
  * `lifted` is answered with orders.remove; keep_skills, drop_files, drop_skills and a load file's `later` are ignored;
  * each with one note. A load file's relative path is resolved against `cwd`, the session's directory, when known.
  * `$.fs.stat` checks (V12-V15) are the adapter's, through `loadFileNote`.
  */
 export function parseCall(input: unknown, cwd?: string): ParsedCall {
   const { fields, notes } = unfold(isObject(input) ? input : {});
+  unstring(fields, notes);
   const call: ParsedCall = { texts: {}, lists: {}, extra: {}, loadAt: [], notes };
   for (const name of TEXTS) if (fields[name] !== undefined) call.texts[name] = fields[name];
   for (const name of LISTS) if (fields[name] !== undefined) call.lists[name] = fields[name];

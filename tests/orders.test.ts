@@ -156,6 +156,7 @@ describe('the standing orders and the other lists, through the hooks and their f
     expect(files[`${root}/rounds.json`]?.content).toBe('{\n  "rounds": 2\n}\n');
     expect([files[`${root}/history/remaining.jsonl`]?.content, files[`${root}/history/objective.jsonl`]?.content]).toEqual(['{"id":2,"text":"round 3","left":"edited"}\n{"id":1,"text":"round 2","left":"removed"}\n', '{"text":"finish the round"}\n']);
     expect(JSON.parse(files[`${root}/data/remaining.json`]?.content ?? 'null')).toEqual({ next_id: 6, items: [{ id: 2, text: 'round 3, twice' }, { id: 3, text: 'round 4' }, { id: 4, text: 'round 5' }, { id: 5, text: 'round 6', round: 1 }] });
+    expect((await call(after, 'tu-d', { done: '{"add":["round 3"],"remaining":{"remove":[2]}}' })).slice(0, 4)).toEqual(['Added to done: [3]', 'Removed from remaining: [2] round 3, twice', `next kept: ${FIRST.next}`, 'done arrived as the text of its JSON: read as JSON, and remaining inside it taken out as its own field.']);
   });
 
   it('holds a change it could not write, names the list and the error without the folder, logs it, and writes it at the next call', async () => {
