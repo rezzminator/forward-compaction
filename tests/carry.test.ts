@@ -58,12 +58,10 @@ describe('a sub-agent\'s skills through the hooks', { timeout: 30_000 }, () => {
     fakes.push(f);
     await f.dispatch('session.start', { reason: 'startup' }, async () => ({}));
     await f.dispatch('agent.spawn', { tool_use_id: 'tu-spawn', prompt: 'Brief for agent one', description: 'one', subagentType: 'general-purpose', provider: { kind: 'local' } }, async () => ({ model: 'sonnet', agentId: A1 }));
-    await reading(f, 30_000); // its floor: the call at 90k is past its install point, so it compacts
     await load(f, 'notes', 'NOTES SKILL BODY', { description: 'Notes on the work.' });
     await load(f, 'god-speed', 'GOD SPEED BODY', PIN);
     return f;
   }
-  const reading = (f: Fake, tokens: number) => f.dispatch('turn.step', { turnId: 't1', index: 0, model: 'claude-sonnet-4-5', messageCount: 4, agentId: A1 }, async () => ({ turnId: 't1', index: 0, answer: '', toolUses: [], stopReason: 'tool_use', ...usage(tokens) }));
   const load = (f: Fake, skill: string, text: string, frontmatter: Record<string, unknown> = {}) =>
     f.dispatch('tool.call', { tool: 'Skill', tool_use_id: `tu-${skill}`, agentId: A1, skill }, async () => {
       await f.dispatch('skill.prompt', { skill, text, frontmatter, source: 'user', path: `/s/${skill}/SKILL.md` }, async () => ({ text }));
@@ -76,7 +74,7 @@ describe('a sub-agent\'s skills through the hooks', { timeout: 30_000 }, () => {
   ];
   /** A reading, then the call with `args` besides its sections; its receipt. */
   async function store(f: Fake, args: Record<string, unknown> = {}): Promise<string> {
-    await reading(f, 90_000);
+    await f.dispatch('turn.step', { turnId: 't1', index: 0, model: 'claude-sonnet-4-5', messageCount: 4, agentId: A1 }, async () => ({ turnId: 't1', index: 0, answer: '', toolUses: [], stopReason: 'tool_use', ...usage(90_000) }));
     return ((await f.dispatch('tool.call', { tool: FORWARD, tool_use_id: 'tu-h', agentId: A1, ...SECTIONS, ...args }, async () => ({ result: 'not ours' }))) as { result: string }).result;
   }
   /** The install at Claude Code's ask; the wake's text. */

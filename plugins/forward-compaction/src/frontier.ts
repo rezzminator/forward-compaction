@@ -324,20 +324,18 @@ export function loadFileNote(index: number, path: string, check: FileCheck): str
   return undefined;
 }
 
-/** `tokens`: the party's last reading, absent when it has none; it picks the sentence and is never printed, being a step behind the call. `missing`: the texts the frontier still lacks, which its wake names. `hold`: why a sub-agent's call does not compact (parties.ts `checkpoint`). */
+/** `tokens`: the party's last reading, absent when it has none; it picks the sentence and is never printed, being a step behind the call. `missing`: the texts the frontier still lacks, which its wake names. */
 export type ReceiptInput =
   | { party: 'main'; files: number; tokens?: number; askPoint?: number; replaced?: boolean; missing?: readonly string[] }
-  | { party: 'subagent'; files: number; tokens?: number; askPoint: number; replaced?: boolean; missing?: readonly string[]; hold?: 'early' | 'reading' };
+  | { party: 'subagent'; files: number; tokens?: number; askPoint: number; replaced?: boolean; missing?: readonly string[] };
 
-/** The result's last sentences: when the frontier installs, true to the party's door (a sub-agent's only door is Claude Code's ask), and what it lacks; of a call that does not compact, why, and what the party does next. */
+/** The result's last sentences: when the frontier installs, true to the party's door (a sub-agent's only door is Claude Code's ask), and what it lacks. */
 export function receipt(input: ReceiptInput): string {
   const missing = input.missing ?? [];
   const replaced = input.replaced ? ' This call applied on top of your earlier one since the last wake.' : '';
   const stored = `Frontier stored${input.files === 0 ? '' : ` with ${input.files} ${input.files === 1 ? 'file' : 'files'} to load`}${missing.length === 0 ? '' : `, without ${andList(missing)}: send ${missing.length === 1 ? 'it' : 'them'} before it installs, or the wake names ${missing.length === 1 ? 'it' : 'them'} missing`}.`;
   const behind = 'The newest messages after this call that fit are kept verbatim behind it, the rest named as not carried';
   if (input.party === 'main') return `${stored} It installs at the end of this turn, or at Claude Code's next compaction ask if one comes first. ${behind}, so finish the step in hand; you need not stop.${replaced}`;
-  if (input.hold === 'early') return `${stored} No compaction now: your context has grown too little for one to pay, so nothing is dropped; a notice comes when one does. Carry on with your work.`;
-  if (input.hold === 'reading') return `${stored} No compaction now: you have just read for the step ahead, and a compaction would drop that reading. Finish that step, then call again with what changed: that call compacts.`;
   if (input.tokens !== undefined && input.tokens >= input.askPoint) return `${stored} It installs at Claude Code's next compaction ask, before your next request. ${behind}.${replaced}`;
   return `${stored} Claude Code has not asked to compact you yet: it installs at Claude Code's next ask, from about ${k(input.askPoint)} context. ${behind}. Carry on with your work.${replaced}`;
 }

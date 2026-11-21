@@ -6,15 +6,7 @@ import { emptyHeld, renderFrontier, roundPassed, type Held, type Item, type Stor
 import type { PartyFiles } from './disk';
 import { storageDir } from './storage';
 import type { SubagentWindow } from './options';
-import { lastNudge, nudgeStart, roomAbove, wakeMarks, type NoticeMarks, type NudgeMarks } from './nudge';
-
-/**
- * What tells a sub-agent in the middle of a step from one between two (`Parties.checkpoint`): a tool result of
- * READ_CHARS characters or more is reading (a file, a diff, a test log), and READS_MIN of its newest READS_OF results
- * that large mean it has just read for the step ahead. Measured on one kind of work only, code edited and tested
- * through a shell: there a call between two steps followed 0 to 2 large results of 8, a call inside one 5 to 7.
- */
-export const READ_CHARS = 1_500, READS_OF = 8, READS_MIN = 4;
+import { roomAbove, type NudgeMarks } from './nudge';
 
 /** A `forward_compaction` call since the party's last wake, held until a door installs the frontier: the frontier itself is the party's held lists (`PartyState.held`), rendered at the wake. */
 export type StoredFrontier = {
@@ -92,12 +84,6 @@ export type PartyState = {
   windowed?: string;
   /** Plan mode and the plan file, as the party's last plan-mode attachment named them (plan.ts `planFrom`). */
   plan?: PlanSeen;
-  /** The characters of the party's newest tool results since its last install, oldest first, at most READS_OF (`resulted`). */
-  results?: number[];
-  /** A call since the party's last install did not compact because the party had just read (`checkpoint`): its next call compacts. */
-  heldForReading?: boolean;
-  /** The load files of the party's last call that did not compact: its next call keeps them when it names none. */
-  checkpointFiles?: LoadFile[];
 };
 
 /** Per-party state, memory only, keyed "main" or "agent:{id}". A party is created on first touch. */
@@ -275,41 +261,13 @@ export class Parties {
     const state = this.get(key);
     if (state.stored !== undefined || state.absorbNext || level <= state.nudgeLevel) return false;
     if (tokens !== undefined && marks !== undefined) {
-      if (tokens < roomEnd(state, marks)) return false;
+      if (state.wokeAt !== undefined && tokens < state.wokeAt + roomAbove(state.wokeAt, marks)) return false;
       if (state.nudgedAt !== undefined && tokens < state.nudgedAt + marks.every) return false;
     }
     state.nudgeLevel = level;
     state.nudgedAt = tokens;
     state.nudges += 1;
     return true;
-  }
-
-  /** A tool result the party read, by its characters: the newest READS_OF are kept. */
-  resulted(key: string, chars: number): void {
-    const state = this.get(key);
-    state.results = [...(state.results ?? []), chars].slice(-READS_OF);
-  }
-
-  /** How many of the party's newest READS_OF tool results are READ_CHARS characters or more; a party never seen gains no state. */
-  reads(key: string): number {
-    return (this.states.get(key)?.results ?? []).filter((chars) => chars >= READ_CHARS).length;
-  }
-
-  /**
-   * Why a sub-agent's call at its reading (`tokens`) does not compact, recorded; undefined when it does. A compaction
-   * re-writes the whole context at the cache-write price and drops what the party has read, so it pays only past a
-   * growth, and between two steps. `early`: below the party's install point, one `every` under its first nudge, as
-   * often as it calls there. `reading`: READS_MIN of its newest results are large (`reads`), so it is inside a step:
-   * once since its last install, its next call compacting wherever it stands. Every call compacts while a frontier
-   * waits for its install, and where the next nudge would be the party's last, so its own account still reaches its wake.
-   */
-  checkpoint(key: string, tokens: number, marks: NoticeMarks): 'early' | 'reading' | undefined {
-    const state = this.get(key);
-    if (state.stored !== undefined || lastNudge(tokens + marks.every, marks.every, marks.ceiling)) return undefined;
-    if (tokens < Math.max(nudgeStart(state.held?.floor ?? tokens, marks), roomEnd(state, wakeMarks(marks))) - marks.every) return 'early';
-    if (state.heldForReading || this.reads(key) < READS_MIN) return undefined;
-    state.heldForReading = true;
-    return 'reading';
   }
 
   /**
@@ -347,9 +305,6 @@ export class Parties {
       base: undefined,
       landing,
       installedThisTurn: true,
-      results: undefined,
-      heldForReading: undefined,
-      checkpointFiles: undefined,
     });
     const state = this.get(key), passed = state.held === undefined ? undefined : roundPassed(state.held);
     state.installs += 1;
@@ -366,11 +321,6 @@ export class Parties {
   forget(key: string): void {
     this.states.delete(key);
   }
-}
-
-/** The context a woken party's nudges wait for, its working room (nudge.ts `roomAbove`) past its first reading after the wake; 0 for a party never installed. */
-function roomEnd(state: PartyState, marks: NudgeMarks): number {
-  return state.wokeAt === undefined ? 0 : state.wokeAt + roomAbove(state.wokeAt, marks);
 }
 
 /** What a wake shows of a party's held frontier: its live orders, its storage listing (with no files, none) and its lists rendered. */
