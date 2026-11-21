@@ -511,11 +511,12 @@ async function applyForward(st: State, $: EngineInterface, e: Record<string, unk
     const problems = await writeDue(st, $, key, 'answerForward');
     for (const [i, file] of (call.loadFiles ?? []).entries()) { const note = loadFileNote(call.loadAt[i]!, file.path, await statFile(st, $, file.path)); if (note === undefined) carried.push(file); else checked.push(note); } // after the write, so a storage file this call adds is found
     if (files === undefined) checked.push(NO_FOLDER);
-    const loadFiles = call.loadFiles === undefined ? party.stored?.loadFiles ?? [] : carried; // a call that sends no load_files keeps the earlier call's
-    const replaced = st.parties.store(key, { loadFiles, toolUseId, storedAtTokens: tokens, since: st.ledger.nextSeq });
+    const loadFiles = call.loadFiles === undefined ? party.stored?.loadFiles ?? party.checkpointFiles ?? [] : carried; // a call that sends no load_files keeps the earlier call's
+    const hold = key === 'main' || tokens === undefined || m === undefined || st.parties.ignored(key, st.config.ignoreModels) !== undefined ? undefined : st.parties.checkpoint(key, tokens, m); // a managed sub-agent's call compacts only where a compaction pays
+    const replaced = hold === undefined ? st.parties.store(key, { loadFiles, toolUseId, storedAtTokens: tokens, since: st.ledger.nextSeq }) : ((party.checkpointFiles = loadFiles), undefined);
     const size = frontierSize(party.held), sizes = sizeLines(size, st.config.frontierWarnChars), missing = applied.missing;
-    record(st, $, { event: 'stored', party: key, argChars: JSON.stringify(input).length, lists: applied.counts, frontier: { chars: size.chars, items: size.items }, storage: storage.count, warned: sizes.length > 1, files: loadFiles.length, notes: applied.notes.length + storage.notes.length + checked.length, tokens: tokens ?? null, ...(problems.length > 0 ? { writeFailed: problems.map((p) => p.file) } : {}), ...(replaced !== undefined ? { replaced: replaced.storedAtTokens ?? null } : {}), ...(missing.length > 0 ? { incomplete: missing } : {}) });
-    const door = key === 'main' ? receipt({ party: 'main', files: loadFiles.length, tokens, askPoint: m?.askPoint, replaced: replaced !== undefined, missing }) : receipt({ party: 'subagent', files: loadFiles.length, tokens, askPoint: m!.askPoint, replaced: replaced !== undefined, missing });
+    record(st, $, { event: 'stored', party: key, argChars: JSON.stringify(input).length, lists: applied.counts, frontier: { chars: size.chars, items: size.items }, storage: storage.count, warned: sizes.length > 1, files: loadFiles.length, notes: applied.notes.length + storage.notes.length + checked.length, tokens: tokens ?? null, ...(key === 'main' ? {} : { reads: st.parties.reads(key), ...(hold !== undefined ? { checkpoint: hold } : {}) }), ...(problems.length > 0 ? { writeFailed: problems.map((p) => p.file) } : {}), ...(replaced !== undefined ? { replaced: replaced.storedAtTokens ?? null } : {}), ...(missing.length > 0 ? { incomplete: missing } : {}) });
+    const door = key === 'main' ? receipt({ party: 'main', files: loadFiles.length, tokens, askPoint: m?.askPoint, replaced: replaced !== undefined, missing }) : receipt({ party: 'subagent', files: loadFiles.length, tokens, askPoint: m!.askPoint, replaced: replaced !== undefined, missing, hold });
     return [...applied.lines, ...storage.lines, ...applied.notes, ...storage.notes, ...checked, ...problems.map((p) => notSaved(p, files!.root)), ...sizes, door].join('\n');
   } catch (error) {
     say(st, $, `forward-compaction: storing ${key}'s frontier failed: ${message(error)}`, 'error', { event: 'store-error', where: 'answerForward', party: key, error: message(error) });
@@ -733,6 +734,7 @@ async function noteSubmit(st: State, $: EngineInterface, e: PromptSubmitInput): 
 
 /** The files a finished call touched and the task list it set, as the party's work (src/work.ts); main's answered AskUserQuestion, as the user's words. */
 async function noteWork(st: State, $: EngineInterface, party: PartyKey, e: Record<string, unknown>, answer: ToolCallResult): Promise<void> {
+  st.parties.resulted(party, answer.text?.length ?? 0); // what the party read, by its size, a denied call none: parties.ts `checkpoint`
   for (const fact of workOf(String(e.tool), toolInput(e), answer as CallAnswer)) st.ledger = addEntry(st.ledger, { kind: 'work', party, at: await $.clock.now(), fact });
   const answered = party === 'main' ? answersOf(String(e.tool), toolInput(e), answer as CallAnswer) : undefined;
   if (answered === undefined) return;

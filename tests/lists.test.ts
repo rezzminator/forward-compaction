@@ -102,15 +102,13 @@ describe('the frontier rendered from the lists, and its size', () => {
     expect(sizeLines(size, 12_000)).toEqual(['Frontier: 38 characters in 4 items (orders 1, decisions 2, findings 1)']);
   });
 
-  it('warns over the threshold, largest list first, and not at it', () => {
-    expect(sizeLines(frontierSize(held), 38)).toHaveLength(1);
-    expect(sizeLines(frontierSize(held), 37)).toEqual([
-      'Frontier: 38 characters in 4 items (orders 1, decisions 2, findings 1)',
-      'Frontier is 38 characters, over 37: in your next forward_compaction call merge old items (remove several, add one that covers them), largest first: orders 10, decisions 7, findings 1.',
-    ]);
-    expect(sizeLines(frontierSize({ ...emptyHeld(), objective: 'x'.repeat(10), next: 'y'.repeat(10) }), 19)).toEqual([
+  it('asks for a shorter objective and next over the threshold, not at it, and asks nothing of a frontier whose lists hold items', () => {
+    const texts = frontierSize({ ...emptyHeld(), objective: 'x'.repeat(10), next: 'y'.repeat(10) });
+    expect(sizeLines(texts, 20)).toEqual(['Frontier: 20 characters in 0 items']);
+    expect(sizeLines(texts, 19)).toEqual([
       'Frontier: 20 characters in 0 items',
       'Frontier is 20 characters, over 19: in your next forward_compaction call send a shorter objective and next.',
     ]);
+    expect(sizeLines(frontierSize(held), 37)).toEqual(['Frontier: 38 characters in 4 items (orders 1, decisions 2, findings 1)']);
   });
 });

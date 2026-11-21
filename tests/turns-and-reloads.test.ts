@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fakeEngine, usage, type Script } from './fakes/engine.ts';
-import { fromFacts } from './fakes/session.ts';
+import { fromFacts, rows } from './fakes/session.ts';
 
 // The adapter's wiring of session-lifetime facts: a new turn ends the request-too-long inference (D8), the user's
 // messages outlive a plugin reload through the host's session state, finished tool calls record the party's work, and a
@@ -130,6 +130,67 @@ describe('a sub-agent far past its nudges', () => {
     }
     expect(nudges.length).toBeGreaterThan(1);
     for (const n of nudges) expect(n).not.toMatch(/your other calls wait|did not run/);
+  });
+});
+
+describe("a sub-agent's call that does not compact", () => {
+  const A = 'a1b2c3d4e5', FORWARD = 'mcp__forward-compaction__forward_compaction';
+  const env = { FORWARD_COMPACTION_SUBAGENT_MAX_CONTEXT: '1m' }; // the default sizes: its nudges start 60k above its floor, every 15k
+  const agentStep = (f: Fake, tokens: number) => f.dispatch('turn.step', { turnId: 't1', index: 0, model: 'claude-sonnet-4-5', messageCount: 4, agentId: A }, async () => ({ turnId: 't1', index: 0, answer: '', toolUses: [], stopReason: 'tool_use', ...usage(tokens) }));
+  const read = (f: Fake, id: string, chars: number) => f.dispatch('tool.call', { tool: 'Bash', tool_use_id: id, command: 'sed -n 1,80p a.go', agentId: A }, async () => ({ result: {}, text: 'x'.repeat(chars) }));
+  const call = async (f: Fake, id: string, input: Record<string, unknown>): Promise<string> => (await f.dispatch('tool.call', { tool: FORWARD, tool_use_id: id, agentId: A, ...input }, async () => ({ result: 'not ours' }))).result.split('\n').at(-2);
+  const askAgent = (f: Fake, id: string) =>
+    f.dispatch('session.compact', { trigger: 'auto', agentId: A, messages: [
+      { role: 'user', text: 'Brief', toolUses: [], handle: 'h0' },
+      { role: 'assistant', text: 'storing', toolUses: [{ tool_use_id: id, tool: FORWARD, input: {} }], handle: 'h1' },
+      { role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: id, text: 'Frontier stored' }], handle: 'h2' },
+    ] }, async () => ({ skip: 'native ran' }));
+  const spawned = async (): Promise<Fake> => {
+    const f = await begin({ env, files: { '/w/notes.md': { content: 'notes' } } });
+    await f.dispatch('agent.spawn', { tool_use_id: 'tu-spawn', prompt: 'Brief', description: 'one', subagentType: 'general-purpose', provider: { kind: 'local' } }, async () => ({ model: 'sonnet', agentId: A }));
+    await agentStep(f, 50_000);
+    return f;
+  };
+  const DUE = "Frontier stored. It installs at Claude Code's next compaction ask, before your next request. The newest messages after this call that fit are kept verbatim behind it, the rest named as not carried.";
+  const decided = async (f: Fake) => {
+    const all = await rows(f);
+    return { stored: all.filter((r) => r.event === 'stored').map((r) => [r.tokens, r.checkpoint, r.reads]), asks: all.filter((r) => r.event === 'compact').map((r) => r.decision), nudges: all.filter((r) => r.event === 'nudge').map((r) => r.tokens) };
+  };
+
+  it('answers a call below its install point with no compaction, keeps its changes and its notices, and compacts at its next call past it', async () => {
+    const f = await spawned();
+    await agentStep(f, 94_999);
+    expect(await call(f, 'tu-1', { objective: 'Ship it.', next: 'Read b.go.', done: { add: ['a.go fixed.'] }, load_files: [{ path: '/w/notes.md' }] })).toBe('Frontier stored with 1 file to load. No compaction now: your context has grown too little for one to pay, so nothing is dropped; a notice comes when one does. Carry on with your work.');
+    expect((await askAgent(f, 'tu-1')).skip).toMatch(/^forward-compaction: holding Claude Code's compaction for /);
+    await agentStep(f, 110_000);
+    expect((await read(f, 'r1', 10)).context).toHaveLength(1);
+    expect(await call(f, 'tu-2', { done: { add: ['b.go fixed.'] } })).toBe(DUE.replace('stored.', 'stored with 1 file to load.'));
+    const wake = await askAgent(f, 'tu-2');
+    expect(fromFacts(wake)[1]!.text).toContain('## Done\n[1] a.go fixed.\n[2] b.go fixed.');
+    expect(await decided(f)).toEqual({ stored: [[94_999, 'early', 0], [110_000, undefined, 0]], asks: ['skip', 'install'], nudges: [110_000] });
+  });
+
+  it('answers a call that follows four large results of eight with no compaction, once: the next call compacts', async () => {
+    const f = await spawned();
+    for (const [i, chars] of [1_500, 1_500, 20, 1_500, 20, 1_500, 20, 20].entries()) await read(f, `r${i}`, chars);
+    await agentStep(f, 110_000);
+    expect(await call(f, 'tu-1', { objective: 'Ship it.', next: 'Edit b.go.' })).toBe('Frontier stored. No compaction now: you have just read for the step ahead, and a compaction would drop that reading. Finish that step, then call again with what changed: that call compacts.');
+    expect((await askAgent(f, 'tu-1')).skip).toMatch(/^forward-compaction: holding Claude Code's compaction for /);
+    expect(await call(f, 'tu-2', { next: 'Read c.go.' })).toBe(DUE);
+    expect(fromFacts(await askAgent(f, 'tu-2'))[1]!.text).toContain('## Next\nRead c.go.');
+    expect(await decided(f)).toEqual({ stored: [[110_000, 'reading', 4], [110_000, undefined, 4]], asks: ['skip', 'install'], nudges: [] });
+  });
+
+  it("compacts main's call wherever main stands: one step under its nudge start is a sub-agent's line only", async () => {
+    const f = await begin();
+    await step(f, 10_000); // main's nudges start at 30k, every 10k
+    await f.dispatch('tool.call', { tool: FORWARD, tool_use_id: 'tu-m', objective: 'Ship it.', next: 'Report.' }, async () => ({ result: 'not ours' }));
+    const wake = await f.dispatch('session.compact', { trigger: 'auto', messages: [
+      { role: 'user', text: 'start', toolUses: [], handle: 'h0' },
+      { role: 'assistant', text: 'storing', toolUses: [{ tool_use_id: 'tu-m', tool: FORWARD, input: {} }], handle: 'h1' },
+      { role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: 'tu-m', text: 'Frontier stored' }], handle: 'h2' },
+    ] }, async () => ({ skip: 'native ran' }));
+    expect(fromFacts(wake)[1]!.text).toContain('## Objective\nShip it.\n\n## Next\nReport.');
   });
 });
 

@@ -193,6 +193,8 @@ describe('receipt says what was stored and when it installs, per party (R16)', (
     [{ party: 'subagent' as const, files: 2, tokens: 66_999, askPoint: 67_000 }, `Frontier stored with 2 files to load.${BELOW}`],
     [{ party: 'subagent' as const, files: 2, tokens: 67_000, askPoint: 67_000 }, `Frontier stored with 2 files to load.${DUE}`],
     [{ party: 'subagent' as const, files: 1, tokens: 90_000, askPoint: 67_000, replaced: true }, `Frontier stored with 1 file to load.${DUE} This call applied on top of your earlier one since the last wake.`],
+    [{ party: 'subagent' as const, files: 0, tokens: 90_000, askPoint: 67_000, hold: 'early' as const }, 'Frontier stored. No compaction now: your context has grown too little for one to pay, so nothing is dropped; a notice comes when one does. Carry on with your work.'],
+    [{ party: 'subagent' as const, files: 2, tokens: 90_000, askPoint: 67_000, hold: 'reading' as const, missing: ['next'] }, 'Frontier stored with 2 files to load, without next: send it before it installs, or the wake names it missing. No compaction now: you have just read for the step ahead, and a compaction would drop that reading. Finish that step, then call again with what changed: that call compacts.'],
     [{ party: 'main' as const, files: 3 }, `Frontier stored with 3 files to load.${MAIN}`],
     [{ party: 'main' as const, files: 0, missing: ['next'] }, `Frontier stored, without next: send it before it installs, or the wake names it missing.${MAIN}`],
     [{ party: 'main' as const, files: 0, missing: ['objective', 'next'], replaced: true }, `Frontier stored, without objective and next: send them before it installs, or the wake names them missing.${MAIN} This call applied on top of your earlier one since the last wake.`],

@@ -395,9 +395,9 @@ export async function recordSynthetic(dir: string): Promise<string> {
     await call('skill.prompt', { skill: 'replay-rules', text: SKILL_TEXT, source: 'plugin' }, async (x: any) => x);
     return { result: 'Launching skill: forward-compaction:replay-rules' };
   });
-  await step(45_000);
+  await step(87_000); // past its install point, 45k above its first reading: the call compacts
   await call('tool.call', { tool: FORWARD, tool_use_id: 'tu-h', agentId: A1, ...SECTIONS });
-  await step(64_000);
+  await step(88_000);
   await call('session.compact', { trigger: 'auto', agentId: A1, messages: askMessages() }, async () => ({ summary: 'the native summarizer ran' }));
   await new Promise((resolve) => setTimeout(resolve, 50));
   return rows;

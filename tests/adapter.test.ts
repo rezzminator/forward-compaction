@@ -743,13 +743,13 @@ describe('the ratio is measured on the growth since the base, so the fixed overh
     await ask(f, work(48_000), A1);
     set(window(30_000)); // the wake, the live window after the install
     await step(f, 41_000, A1); // the first reading after the install
-    set(window(30_000 + 19_000 * 3));
-    await step(f, 60_000, A1);
+    set(window(30_000 + 20_000 * 3));
+    await step(f, 61_000, A1); // one step under its first nudge after the wake (71k): its call compacts
     await store(f, A1, 'tu-2');
-    await ask(f, work(19_000 * 3, 'tu-2'), A1);
+    await ask(f, work(20_000 * 3, 'tu-2'), A1);
     const bases = await debugRows(f, 'ratio-base');
     expect(bases).toEqual([{ party: `agent:${A1}`, chars: 12_000, tokens: 44_800 }, { party: `agent:${A1}`, chars: 30_000, tokens: 41_000 }]);
-    expect((await debugRows(f, 'ratio')).at(-1)).toMatchObject({ baseChars: 30_000, baseTokens: 41_000, chars: 87_000, reading: 60_000, ratio: 3 });
+    expect((await debugRows(f, 'ratio')).at(-1)).toMatchObject({ baseChars: 30_000, baseTokens: 41_000, chars: 90_000, reading: 61_000, ratio: 3 });
   });
 
   it('leaves the ratio unmeasured, and every section uncapped, while the growth is under the minimum', async () => {

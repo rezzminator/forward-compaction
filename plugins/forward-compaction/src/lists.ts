@@ -221,14 +221,10 @@ export function frontierSize(held: Held): FrontierSize {
 
 const num = (n: number): string => n.toLocaleString('en-US');
 
-/** The result's size line, lists with items only, and over `warnAt` characters the line asking the model to merge old items, largest list first. No automatic cut. */
+/** The result's size line, lists with items only, and over `warnAt` characters with no list item, the line asking for a shorter objective and next. A frontier whose lists hold items is asked nothing: an item folded into another loses what told it apart (which row, which test), and the model then reports from the fold. No automatic cut. */
 export function sizeLines(size: FrontierSize, warnAt: number): string[] {
   const filled = size.lists.filter((l) => l.items > 0);
   const lines = [`Frontier: ${num(size.chars)} characters in ${size.items} items${filled.length === 0 ? '' : ` (${filled.map((l) => `${l.name} ${l.items}`).join(', ')})`}`];
   if (size.chars > warnAt && filled.length === 0) lines.push(`Frontier is ${num(size.chars)} characters, over ${num(warnAt)}: in your next forward_compaction call send a shorter objective and next.`);
-  else if (size.chars > warnAt) {
-    const largest = [...filled].sort((a, b) => b.chars - a.chars).map((l) => `${l.name} ${num(l.chars)}`);
-    lines.push(`Frontier is ${num(size.chars)} characters, over ${num(warnAt)}: in your next forward_compaction call merge old items (remove several, add one that covers them), largest first: ${largest.join(', ')}.`);
-  }
   return lines;
 }

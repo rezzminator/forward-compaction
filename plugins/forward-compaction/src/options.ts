@@ -43,7 +43,7 @@ export const DEFAULT_CEILING_NATIVE = false;
 export const DEFAULT_IGNORE_MODELS: readonly string[] = ['haiku'];
 /** Skills and commands pinned in every wake by name, as frontmatter's forward-compaction-keep pins one by its file: none. */
 export const DEFAULT_KEEP_SKILLS: readonly string[] = [];
-/** The frontier's size, in characters of every live item, the objective and next, past which a call's result asks the model to merge old items: 1.5 times the 8,000 a whole-rewrite frontier stayed near, a design budget to tune, never a measured size. */
+/** The frontier's size, in characters of every live item, the objective and next, past which the result of a call whose lists hold no item asks for a shorter objective and next (lists.ts `sizeLines`): 1.5 times the 8,000 a whole-rewrite frontier stayed near, a design budget to tune, never a measured size. */
 export const DEFAULT_FRONTIER_WARN_CHARS = 12_000;
 /** The debug log (`debug.jsonl`): a row at every step. */
 export const DEFAULT_DEBUG = true;
