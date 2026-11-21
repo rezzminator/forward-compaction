@@ -76,10 +76,22 @@ describe('storageApply', () => {
     expect([fs.files[`${R}/history/storage/survey.2.md`], fs.files[`${S}/survey.md`]]).toEqual(['v2', 'v2']);
   });
 
-  it('lists a file already in the folder when an add names it without value, and skips one that is not there', async () => {
-    const fs = memFs({ [`${S}/notes.md`]: 'written by hand' });
-    const out = await storageApply(fs, new PartyFiles(R), [], { add: [{ name: 'notes', description: 'n' }, { name: 'none', description: 'x' }] });
-    expect([out.entries, out.lines, out.notes]).toEqual([[{ name: 'notes.md', description: 'n' }], ['Stored notes.md (15 characters, as it is in the folder)'], ['storage.add[1] has no value and storage/none.md does not exist: skipped.']]);
+  it('lists a file already in the folder when an add names it without value, stores one written under another spelling under its storage name, and skips one that is not there or lies outside the folder', async () => {
+    const fs = memFs({ [`${S}/notes.md`]: 'written by hand', [`${S}/Gate_Recipe.md`]: 'fence run', [`${S}/../secret.md`]: 'outside' });
+    const files = new PartyFiles(R);
+    const out = await storageApply(fs, files, [], { add: [{ name: 'notes', description: 'n' }, { name: 'Gate_Recipe', description: 'g' }, { name: 'none', description: 'x' }, { name: '../secret', description: 's' }] });
+    await files.flush(fs, { lists: {} as never, storage: out.entries });
+    expect([out.entries, out.lines, out.notes]).toEqual([
+      [{ name: 'notes.md', description: 'n' }, { name: 'gate-recipe.md', description: 'g' }],
+      ['Stored notes.md (15 characters, as it is in the folder)', 'Stored gate-recipe.md (9 characters, copied from Gate_Recipe.md in the folder)'],
+      [
+        'storage.add[1].name "Gate_Recipe" is stored as gate-recipe.md: a name is lower-case letters, digits and dashes, ending .md.',
+        'storage.add[2] has no value and storage/none.md does not exist: skipped.',
+        'storage.add[3].name "../secret" is stored as secret.md: a name is lower-case letters, digits and dashes, ending .md.',
+        'storage.add[3] has no value and storage/secret.md does not exist: skipped.',
+      ],
+    ]);
+    expect([fs.files[`${S}/gate-recipe.md`], fs.files[`${S}/Gate_Recipe.md`], fs.files[`${S}/secret.md`]]).toEqual(['fence run', 'fence run', undefined]);
   });
 
   it('names each malformed entry by its place and never throws', async () => {

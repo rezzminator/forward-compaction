@@ -174,7 +174,9 @@ export class Parties {
    * A completed request's reading and its nudge level; that request also answers a held ask. The first reading after
    * an install is the party's floor plus what it kept: its level is absorbed, so the next nudge goes only past it.
    * The party's first reading ever, its first after an install and any reading below its floor (a compaction this
-   * plugin did not make) is its new floor (`Held.floor`), due in its file.
+   * plugin did not make) is its new floor (`Held.floor`), due in its file. A reading below the floor also starts the
+   * nudges over, as an install's first reading does: its level is absorbed, the next nudge is the first again, and a
+   * woken party's room is measured from it.
    * Returns the landing that reading measures, taken: its line is due now.
    */
   read(key: string, tokens: number, level = 0): Landing | undefined {
@@ -182,10 +184,12 @@ export class Parties {
     const landing = state.landing;
     state.reading = tokens;
     state.landing = undefined;
+    const fell = !state.absorbNext && state.held?.floor !== undefined && tokens < state.held.floor;
     if (state.absorbNext || state.held?.floor === undefined || tokens < state.held.floor) {
       state.held = { ...(state.held ?? emptyHeld()), floor: tokens };
       state.files?.changed('floor');
     }
+    if (fell) Object.assign(state, { nudgeLevel: level, nudges: 0, nudgedAt: undefined, ...(state.wokeAt === undefined ? {} : { wokeAt: tokens }) });
     if (state.absorbNext) {
       state.absorbNext = false;
       state.nudgeLevel = Math.max(state.nudgeLevel, level);

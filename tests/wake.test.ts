@@ -206,6 +206,18 @@ describe("a sub-agent's kept start", () => {
     expect(wake.start).toBe(0);
   });
 
+  it.each([
+    ['a short one leaves the tail its room', 'Fix the parser. No git stash.', { start: 2, kept: 4, dropped: 0 }],
+    ['one near the whole budget leaves the tail none', 'b'.repeat(6650), { start: 2, kept: 0, dropped: 4 }],
+  ])('counts the start against the budget the tail is fitted to: %s', (_name, text, counts) => {
+    // askPoint 4000 at 3.5 characters a token: B is 2,000 tokens, each tail message 200, the long start 1,900
+    const first = user(text, 'engine-brief');
+    const tail = [1, 2, 3, 4].map((n) => assistant(`${n}`.repeat(700), [], `engine-${n}`));
+    const wake = buildWake({ ...sub([first, call, res, ...tail]), askPoint: 4000 });
+    expect(wake.messages[0]).toBe(first);
+    expect(wake).toMatchObject(counts);
+  });
+
   it('keeps the start once in a mechanical wake, ahead of the facts and out of the kept tail', () => {
     const a1 = assistant('step one', [], 'engine-1');
     const wake = mechanicalWake({ ...base, messages: [brief, a1], party: 'subagent', facts: facts(), reason: { kind: 'reactive' } });

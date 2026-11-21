@@ -184,7 +184,8 @@ function jsonOf(key: string, text: string, list: boolean): { own: unknown; besid
  * A list, storage or load_files value that arrived as the text of its own JSON is read as that JSON, with one note; one
  * whose JSON is broken is repaired first (repair.ts). The text may also hold the fields the model wrote with it: inside a
  * list's object beside its operations (`{"add": [...], "remaining": {...}}`), or after a value closed early
- * (`{"add": [...]},"done": {...}}`); each is taken out as its own field. A text that is no JSON, or one holding a key that
+ * (`{"add": [...]},"done": {...}}`); each is taken out as its own field. A list's text that is an empty array or object
+ * changes nothing and is read as not sent. A text that is no JSON, or one holding a key that
  * is neither an operation nor a field the call left out, stays as it arrived, and lists.ts reads it as one added item.
  */
 function unstring(fields: Record<string, unknown>, notes: string[]): void {
@@ -205,12 +206,11 @@ function unstring(fields: Record<string, unknown>, notes: string[]): void {
       if (key === 'storage' ? !isObject(read) : !Array.isArray(read)) continue;
       mine = read;
     } else if (Array.isArray(read)) {
-      if (read.length === 0 || !read.every((entry) => typeof entry === 'string' || isObject(entry))) continue;
-      mine = read;
+      if (!read.every((entry) => typeof entry === 'string' || isObject(entry))) continue;
+      if (read.length > 0) mine = read; // an empty array changes nothing: as if not sent
     } else if (isObject(read)) {
       const ops = Object.keys(read).filter((k) => OPS.includes(k));
-      if (ops.length === 0 && names.length === 0) continue;
-      if (ops.length > 0) mine = Object.fromEntries(ops.map((k) => [k, read[k]]));
+      if (ops.length > 0) mine = Object.fromEntries(ops.map((k) => [k, read[k]])); // an empty object changes nothing: as if not sent
     } else continue;
     if (mine === undefined) delete fields[key];
     else fields[key] = mine;

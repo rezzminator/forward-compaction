@@ -5,7 +5,7 @@ import { andList, DEFAULT_TOOL, k as kilo } from './nudge';
 import { keptSaid, PROMPTS_KEPT } from './ledger';
 import { experimental, EXPERIMENTAL_OPENING } from './frontier';
 import { fitSkills, pinned, SKILLS_LISTED_NOTE, SKILLS_MAX_CHARS } from './carry';
-import { fitTail, keptStart, keptTexts, splitAtCall, tokensOf, type BuiltMessage, type Sibling, type WakeMessage } from './kept';
+import { fitTail, keptStart, keptTexts, messageTokens, splitAtCall, tokensOf, type BuiltMessage, type Sibling, type WakeMessage } from './kept';
 import { ordersSection } from './orders';
 import { unchangedNote, type Item, type StorageEntry } from './lists';
 import { storageSection } from './storage';
@@ -333,8 +333,8 @@ function renderFacts<M>(input: Shared<M>, facts: WakeFacts, { siblings, files, r
 
 /**
  * [...start, F, ...H, ...tail] around a head text: a sub-agent's kept start (`keptStart`) goes first and is no tail
- * candidate; the tail is fitted to what the facts and the head leave of the budget, and the facts are rendered against
- * the tail kept, so each is sized for the other (the tail is only ever shrunk, so this ends).
+ * candidate; the tail is fitted to what the start, the facts and the head leave of the budget, and the facts are rendered
+ * against the tail kept, so each is sized for the other (the tail is only ever shrunk, so this ends).
  * With no measured ratio nothing is fitted: `unmeasured` says whether every candidate is kept (the messages after a
  * frontier's call) or none is (a mechanical wake's earlier tail).
  */
@@ -350,11 +350,12 @@ function assemble<M extends WakeMessage>(
   const opening = input.party === 'subagent' ? keptStart(input.messages) : undefined;
   const open: (M | BuiltMessage)[] = opening === undefined ? [] : [...opening.start, opening.end];
   const pool = candidates.filter((m) => !open.includes(m));
+  const above = ratio === undefined ? 0 : open.reduce((sum, m) => sum + messageTokens(m, ratio), 0); // the start is kept whole and counts against the budget
   const longest = head({ kept: Math.max(1, pool.length), dropped: Math.max(1, pool.length) }).length;
   let kept: readonly M[] = pool;
   for (;;) {
     const f = renderFacts(input, input.facts(keptTexts(kept)), { ...extras, ...(opening === undefined ? {} : { start: opening.start }) });
-    const fit = ratio === undefined ? { messages: unmeasured === 'all' ? [...pool] : [] } : fitTail(pool, B - tokensOf(f.text.length, ratio) - tokensOf(longest, ratio), ratio);
+    const fit = ratio === undefined ? { messages: unmeasured === 'all' ? [...pool] : [] } : fitTail(pool, B - above - tokensOf(f.text.length, ratio) - tokensOf(longest, ratio), ratio);
     // only a smaller fit is taken: facts can shrink with the tail, and a fit growing back would loop forever
     if (fit.messages.length < kept.length) {
       kept = fit.messages;

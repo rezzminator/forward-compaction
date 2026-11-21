@@ -62,7 +62,8 @@ and no ceiling, and an automatic ask from it with nothing stored is held as
 
 1. **Nudges.** Each party has a floor: its first context reading, its first
    reading after an install, or any lower reading (a compaction this plugin
-   did not make); the plugin keeps it in the party's folder (`floor.json`).
+   did not make, after which the nudges start over as after an install); the
+   plugin keeps it in the party's folder (`floor.json`).
    After a tool result, once the party's context has grown a working room
    above its floor (`FORWARD_COMPACTION_MAIN_NUDGE_ROOM`,
    `FORWARD_COMPACTION_SUBAGENT_NUDGE_ROOM`), the model reads one line saying
@@ -184,7 +185,8 @@ stays.
   operations braced, and a value closed early read together with the
   arguments written after it inside the same text; each repaired field gets
   one note. An item's text loses a number the model typed before it
-  (`[9] Parser merged`); an edit's text only its own number. A text that is no
+  (`[9] Parser merged`); an edit's text only its own number. A list's text
+  that is an empty array or object changes nothing. A text that is no
   JSON stays one added item. A field taken back out of a text that holds
   its own closing tag then `<parameter name="…">` (the model's call markup
   closed it early; a list, `storage` or `load_files` field is read as JSON, a
@@ -203,8 +205,10 @@ stays.
   characters)`. An existing file is overwritten after its old content is
   copied to the history. An `add` without `value` changes a listed entry's
   description only (`Described {name}`), lists an unlisted file already in
-  the folder (`Stored {name} ({n} characters, as it is in the folder)`), and
-  is skipped with a note when there is no such file. `remove` takes names:
+  the folder (`Stored {name} ({n} characters, as it is in the folder)`),
+  copies one the model wrote there under another spelling of the name to its
+  storage name (`Stored {name} ({n} characters, copied from {file} in the
+  folder)`), and is skipped with a note when there is no such file. `remove` takes names:
   each entry is unlisted (`Storage no longer lists {name}`) and its content
   copied to the history, a name already there numbered before `.md`
   (`survey.2.md`); a value the same call wrote is the one copied when that
@@ -402,7 +406,7 @@ above, kept verbatim.` It holds, each section only when it has content:
   frontier asked for, and the wake an error falls back to, built without
   any read, carries neither these files nor the plan file.
 
-Its size is held to a budget of half Claude Code's ask point (the
+Its size, a sub-agent's start counted whole, is held to a budget of half Claude Code's ask point (the
 `autoCompactThreshold` that `$.session.usage` reports, held at or below the
 party's max context: 31,500 tokens at `CLAUDE_CODE_AUTO_COMPACT_WINDOW=100000`),
 turned into characters at the party's measured characters per token: the

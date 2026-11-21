@@ -81,7 +81,7 @@ export function splitAtCall<M extends WakeMessage>(messages: readonly M[], toolU
 }
 
 /** A message's size at `ratio` characters a token: its text, its tool inputs and its tool results (a call's own result text is the answer's, counted there). */
-function messageTokens(m: WakeMessage, ratio: number): number {
+export function messageTokens(m: WakeMessage, ratio: number): number {
   let chars = m.text.length;
   for (const u of m.toolUses) chars += JSON.stringify(u.input ?? {}).length;
   for (const r of m.toolResults ?? []) chars += (r.text ?? '').length;

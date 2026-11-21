@@ -148,7 +148,7 @@ describe('noticeFor', () => {
     });
   });
 
-  it('with no start set, starts a party\'s nudges its working room above its floor, and again above its first reading after a compaction; a party with no floor yet is at its floor, and a floor alone is no frontier', () => {
+  it('with no start set, starts a party\'s nudges its working room above its floor, again above its first reading after a compaction, and again as the first notice above a reading that fell below its floor; a party with no floor yet is at its floor, and a floor alone is no frontier', () => {
     const marks = { room: 60_000, every: 15_000, ceiling: 800_000 };
     const parties = new Parties();
     const at = (tokens: number) => (parties.read('agent:a1', tokens), noticeFor(parties, 'agent:a1', tokens, marks, ['haiku']));
@@ -163,6 +163,8 @@ describe('noticeFor', () => {
     expect(at(105_000).sent?.row).toEqual({ event: 'nudge', party: 'agent:a1', level: 1, notice: 1, last: false, tokens: 105_000, start: 105_000, every: 15_000 });
     expect(at(119_999)).toEqual({ level: 1, withheld: 'not-due' });
     expect(at(120_000).sent?.row).toEqual({ event: 'nudge', party: 'agent:a1', level: 2, notice: 2, last: false, tokens: 120_000, start: 105_000, every: 15_000 });
+    expect([at(30_000), at(89_999)]).toEqual([{ level: 0, withheld: 'below-start' }, { level: 0, withheld: 'below-start' }]); // a compaction this plugin did not make
+    expect(at(90_000).sent?.row).toEqual({ event: 'nudge', party: 'agent:a1', level: 1, notice: 1, last: false, tokens: 90_000, start: 90_000, every: 15_000 });
   });
 
   it('asks a party holding a frontier for its changes by item number and shows it no list, in every notice of a cycle', () => {

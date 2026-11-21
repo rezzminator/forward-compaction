@@ -31,7 +31,8 @@ export type StorageOutcome = { entries: StorageEntry[]; lines: string[]; notes: 
 /**
  * One call's `storage` change `{ add, remove }`: an add with a value writes the file and lists the entry (a file
  * already in the folder, listed or not, is overwritten after its old value is copied to the history), an add without one changes a listed
- * entry's description or lists a file already in the folder, a remove unlists the entry and copies its value to the
+ * entry's description or lists a file already in the folder (one the model wrote there under another spelling of the
+ * name is copied to its storage name), a remove unlists the entry and copies its value to the
  * history. Each entry that cannot be read is one note naming its place. Never throws: a file it cannot read is a note.
  */
 export async function storageApply(fs: Fs, files: PartyFiles, entries: readonly StorageEntry[], change: unknown): Promise<StorageOutcome> {
@@ -63,6 +64,11 @@ export async function storageApply(fs: Fs, files: PartyFiles, entries: readonly 
     if (name !== sent && name !== `${sent}.md`) out.notes.push(`${at} "${sent}" is stored as ${name}: a name is lower-case letters, digits and dashes, ending .md.`);
     return name;
   };
+  /** The file name as the model sent it, `.md` added when missing, when it is one path segment of the folder other than `name`: the model wrote the file itself, before its name was rewritten. */
+  const asWritten = (sent: string, name: string): string | undefined => {
+    const file = /\.md$/i.test(sent.trim()) ? sent.trim() : `${sent.trim()}.md`;
+    return file !== name && !file.startsWith('.') && !/[\\/]/.test(file) ? file : undefined;
+  };
   for (const [i, entry] of listOf('add').entries()) {
     const at = `storage.add[${i}]`;
     if (!isObject(entry)) {
@@ -88,7 +94,15 @@ export async function storageApply(fs: Fs, files: PartyFiles, entries: readonly 
       const there = await current(name, at);
       if (there === false) continue;
       if (there === undefined) {
-        out.notes.push(`${at} has no value and ${STORAGE_DIR}/${name} does not exist: skipped.`);
+        const file = asWritten(entry.name as string, name);
+        const written = file === undefined ? undefined : await current(file, at);
+        if (written === false) continue;
+        if (file === undefined || written === undefined) {
+          out.notes.push(`${at} has no value and ${STORAGE_DIR}/${name} does not exist: skipped.`);
+          continue;
+        }
+        files.queueStorage(name, written, undefined);
+        out.entries.push({ name, description: said ?? '' }), (out.count.added += 1), out.lines.push(`Stored ${name} (${num(written.length)} characters, copied from ${file} in the folder)`);
         continue;
       }
       out.entries.push({ name, description: said ?? '' }), (out.count.added += 1), out.lines.push(`Stored ${name} (${num(there.length)} characters, as it is in the folder)`);

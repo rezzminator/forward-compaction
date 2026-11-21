@@ -577,7 +577,7 @@ function installed(st: State, $: EngineInterface, key: string, landing: Landing 
   st.installedSince.add(key);
 }
 
-/** M2: an installed wake's landed line and `landed` row, at the party's first reading after it (`after`), or at its end with `after` unknown; `usage`, that first request's, puts in the row what it read from the prompt cache and what it wrote (a kept start is read, wake.ts `keptStart`). A chosen frontier's line is a routine info row in the logs; a mechanical wake lost the model's frontier, so the user sees it. */
+/** M2: an installed wake's landed line and `landed` row, at the party's first reading after it (`after`), or at its end with `after` unknown; `usage`, that first request's, puts in the row what it read from the prompt cache and what it wrote (a kept start is read, kept.ts `keptStart`). A chosen frontier's line is a routine info row in the logs; a mechanical wake lost the model's frontier, so the user sees it. */
 function land(st: State, $: EngineInterface, key: string, landing: Landing | undefined, after?: number, usage?: { cache_read_input_tokens?: number | null; cache_creation_input_tokens?: number | null } | null): void {
   if (landing !== undefined) { const line = landedLine(landing, after), row = { event: 'landed', party: key, kind: landing.kind, before: landing.before ?? null, after: after ?? null, ...(usage == null ? {} : { read: usage.cache_read_input_tokens ?? null, written: usage.cache_creation_input_tokens ?? null }), line: screenLine(line) }; say(st, $, line, 'info', row); }
 }
