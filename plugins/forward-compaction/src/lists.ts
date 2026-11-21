@@ -27,14 +27,14 @@ export const emptyHeld = (): Held => ({ lists: Object.fromEntries(LISTS.map((nam
 /** Text as a match reads it: one space for every run of whitespace, lower case. A model sending an item again rejoins lines and re-cases words; the words stay its own. */
 export const plain = (text: string): string => text.replace(/\s+/g, ' ').trim().toLowerCase();
 
-/** What a wake and a nudge end an item with once it has passed `n` compactions with no change; nothing before its first. */
+/** What a wake ends an item with once it has passed `n` compactions with no change; nothing before its first. */
 export const unchangedTag = (n: number): string => (n < 1 ? '' : ` [${n} round${n === 1 ? '' : 's'} unchanged]`);
 const TAG = /\s*\[\d+ rounds? unchanged\]/;
 /** An item's text as sent, without a tag the model copied back from a wake. */
 const untagged = (text: string): string => text.replace(new RegExp(`${TAG.source}\\s*$`), '');
 /** An item's text without the number the model wrote before it (`[9] Parser merged`): the list numbers its items itself. An edit's text loses only its own number. */
 const unnumbered = (text: string, id?: number): string => text.replace(/^\s*\[(\d+)\]\s+(?=\S)/, (whole, n: string) => (id === undefined || Number(n) === id ? '' : whole));
-/** What a wake and a nudge say once, after lists that show a tag; '' when none of `shown` does. */
+/** What a wake says once, after lists that show a tag; '' when none of `shown` does. */
 export const unchangedNote = (...shown: (string | undefined)[]): string =>
   shown.some((text) => text !== undefined && TAG.test(text)) ? ' An item tagged [N rounds unchanged] has passed N compactions with no change: keep it only while it is still true and still needed, and a standing order until the user lifts it.' : '';
 
@@ -193,7 +193,7 @@ export const SECTIONS: readonly { key: TextName | Exclude<ListName, 'orders'>; h
   { key: 'findings', heading: 'Findings' },
 ];
 
-/** A list's live items as the wake and a nudge show them, each ending with the rounds it has passed unchanged of the party's `rounds` (`unchangedTag`). */
+/** A list's live items as the wake shows them, each ending with the rounds it has passed unchanged of the party's `rounds` (`unchangedTag`). */
 export const itemLines = (list: List, rounds = 0): string[] => list.items.map((item) => `[${item.id}] ${item.text}${unchangedTag(rounds - (item.round ?? 0))}`);
 
 /** The frontier rendered from what is held: each section with content under its heading, an empty one left out; '' when nothing is held. */

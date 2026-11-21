@@ -114,7 +114,7 @@ Coming from this repository's earlier plugin? The [CHANGELOG](./CHANGELOG.md) en
 flowchart LR
     A[Model works] --> B{Context past<br/>a nudge point?}
     B -- no --> A
-    B -- yes --> C[Nudge: write your handoff<br/>at your first milestone]
+    B -- yes --> C[Nudge: write your handoff<br/>between two steps]
     C --> D[Model calls forward_compaction:<br/>handoff stored]
     D --> E[Next compaction:<br/>facts + handoff + later messages]
     E --> A
@@ -122,7 +122,7 @@ flowchart LR
     F --> A
 ```
 
-1. **Nudge.** After a tool result, once the context passes 15% of the main chat's window (165k for a sub-agent), the model reads one line saying how large its context is and asking it to write its handoff at its first milestone. Another line follows every 5% (65k for a sub-agent), and no two read alike: each is worded more firmly than the one before, from "at your first milestone" through "compact now" to a last notice, before the ceiling, that the plugin is about to compact by itself. After a compaction the wording starts over and the next line waits until the context has grown by as much as the first one waited for: 80k for a sub-agent, 15% of its window for the main chat.
+1. **Nudge.** Every party, the main chat and each sub-agent, has a floor: its first context reading, its first reading after a compaction installs, or any lower reading. After a tool result, once the context has grown a working room above the floor (75k for the main chat, 60k for a sub-agent), the model reads one line saying how large its context is and asking it to call `forward_compaction` once the step in hand has its result saved and checked, and before it reads for the next step, since a compaction drops what it has read. Another line follows every 15k, and no two read alike: each is worded more firmly than the one before, from timing the call between two steps through "compact now" to a last notice, before the ceiling, that the plugin is about to compact by itself. A line prints no list: a model that holds a handoff is asked for only what changed since, by item number, and one that holds none for its first. After a compaction the floor is the first reading and the room starts over. Setting `FORWARD_COMPACTION_MAIN_NUDGE_START` or `FORWARD_COMPACTION_SUBAGENT_NUDGE_START` replaces the room with an absolute context mark.
 2. **Handoff.** The model calls `forward_compaction` with what changed since its last call, by item number. The plugin writes the change to its files on disk and installs nothing yet; a second call before the install applies on top of the first.
 3. **Install.** The main chat's handoff installs at the end of its turn, and a sub-agent's at Claude Code's next compaction ask. Everything before the call is replaced by the facts the plugin recorded and the handoff, and the messages after the call are kept, as many as fit.
 4. **Ceiling.** A chat that reaches 60% of its window with no handoff (80% for a sub-agent) is compacted automatically, keeping the recorded facts, its newest messages and a note that no handoff was written.
@@ -133,11 +133,12 @@ The main chat also writes its handoff when its whole work is finished, before it
 
 After a compaction the model's context holds, oldest first:
 
-1. **The facts the plugin recorded as they happened:** your standing orders; anything that arrived after the handoff call; the plan file when in plan mode; your ten newest messages and every answer you gave (or the sub-agent's brief); the skills in use, each listed by name and description, its text carried only when it is pinned; the agents and background shells; the shell commands it ran; the files it touched; the task list; any files the handoff asked to carry; and the model's storage, each file by name and description under the folder it reads them from.
-2. **The handoff as the plugin holds it**, each list item under its number, with an instruction to continue from its next action and to send only changes in the next call.
-3. **The messages after the call, word for word**, as many as fit. Any dropped are named as not carried.
+1. **A sub-agent's start, kept in place:** the messages its transcript opens with, its brief and what Claude Code attached to it, handed back untouched, then one fixed line saying its context was compacted. A compaction that follows another within the prompt cache's lifetime reads this start from the cache instead of writing it again. The main chat has none.
+2. **The facts the plugin recorded as they happened:** your standing orders; anything that arrived after the handoff call; the plan file when in plan mode; your ten newest messages and every answer you gave (a sub-agent's brief is the first message above, not repeated here); the skills in use, each listed by name and description, its text carried only when it is pinned; the agents and background shells; the shell commands it ran; the files it touched; the task list; any files the handoff asked to carry; and the model's storage, each file by name and description under the folder it reads them from.
+3. **The handoff as the plugin holds it**, each list item under its number, with an instruction to continue from its next action and to send only changes in the next call.
+4. **The messages after the call, word for word**, as many as fit. Any dropped are named as not carried.
 
-On your screen the first two fold to one dim line, `forward-compaction installed the frontier: …`, where Claude Code's fullscreen view would otherwise draw them whole; the transcript view (ctrl+o) shows both in full. Only the drawing folds: the model reads every word.
+On your screen the facts and the handoff fold to one dim line, `forward-compaction installed the frontier: …`, where Claude Code's fullscreen view would otherwise draw them whole; the transcript view (ctrl+o) shows both in full. Only the drawing folds: the model reads every word.
 
 Every figure, limit and edge case is in the [behaviour reference](./docs/spec.md).
 
@@ -165,7 +166,7 @@ forward_compaction({
 | `storage` | Markdown files the model keeps for a later step, each with a description; every compaction lists them, and the model reads or edits them with Read and Edit. |
 | `load_files` | Files to read back in after the compaction, up to 250 lines each; a binary file is named, never carried. |
 
-Each list takes `{add, remove, edit}`: texts to add, item numbers to remove, `{id, text}` to replace an item's text. An item's number never changes and is never reused. At a compaction each list item shows how many compactions it has passed unchanged (`[3 rounds unchanged]`), counted by the plugin, so the model sees what has gone stale and removes it. The call is never refused: the reply gives the new numbers and one line per change, names anything it skipped, gives the handoff's size, warns past `FORWARD_COMPACTION_FRONTIER_WARN_CHARS`, and says when the handoff will install. Everything is written to disk as it arrives, and what leaves a list, a text or the storage goes to a history folder beside it, so a restarted chat keeps every number; [State on disk](./docs/spec.md#state-on-disk) has the layout.
+Each list takes `{add, remove, edit}`: texts to add, item numbers to remove, `{id, text}` to replace an item's text. An item's number never changes and is never reused. At a compaction each list item shows how many compactions it has passed unchanged (`[3 rounds unchanged]`), counted by the plugin, so the model sees what has gone stale and removes it. The call is never refused: the reply gives the new numbers and one line per change, names anything it skipped, gives the handoff's size, and says when the handoff will install; past `FORWARD_COMPACTION_FRONTIER_WARN_CHARS` a handoff with no list item is also asked for a shorter objective and next. An item that left (removed, or the text an edit replaced) is shown by its first 80 characters, its whole text staying in the list's history file. A list, `storage` or `load_files` value sent as the text of its own JSON is read as that JSON, and one whose JSON does not parse is repaired, each with a note in the reply. Old call shapes are never refused: `standing_orders` entries are taken as `orders.add`, and `lifted`, `keep_skills`, `drop_files`, `drop_skills` and a `load_files` entry's `later` are answered by a note. Everything is written to disk as it arrives, and what leaves a list, a text or the storage goes to a history folder beside it, so a restarted chat keeps every number; [State on disk](./docs/spec.md#state-on-disk) has the layout.
 
 ### `look_back`
 
@@ -195,7 +196,7 @@ A **size** is a token count (`100000`), a number with a k or m suffix (`100k`, `
 | `FORWARD_COMPACTION_CEILING_NATIVE` | flag | `0` | `1`: at the ceiling with no handoff, Claude Code's own summary runs instead of the automatic compaction. |
 | `FORWARD_COMPACTION_IGNORE_MODELS` | model list | `haiku` | Models that get no nudge and are compacted automatically at their ceiling; a handoff they write still installs ([Ignored models](./docs/spec.md#ignored-models)). |
 | `FORWARD_COMPACTION_KEEP_SKILLS` | name list | `none` | Skills and commands whose text every compaction carries whole, comma-separated, `*` for all of them; a skill file's `forward-compaction-keep: true` frontmatter does the same. Every other one is listed by name and description. |
-| `FORWARD_COMPACTION_FRONTIER_WARN_CHARS` | character count | `12000` | The size of the frontier the plugin holds (every live item, the objective and next) past which each forward_compaction result adds a line asking the model to merge old items, largest list first. Nothing is cut and no call is refused. |
+| `FORWARD_COMPACTION_FRONTIER_WARN_CHARS` | character count | `12000` | The size of the frontier the plugin holds (every live item, the objective and next) past which a forward_compaction result asks for a shorter objective and next, when the frontier holds no list item; a frontier whose lists hold items is asked nothing. Nothing is cut and no call is refused. |
 | `FORWARD_COMPACTION_DEBUG` | flag | `1` | `0`: no `debug.jsonl`, the row the plugin writes at every step. |
 
 An example `settings.json`:
@@ -252,7 +253,7 @@ The classic `PreCompact` hook fires for a sub-agent's compaction without the age
 <details>
 <summary><b>Does a handoff survive a restart or <code>claude --resume</code>?</b></summary>
 
-No. Stored handoffs and recorded facts live in the plugin's memory: the main chat installs its handoff at the same turn's end, and a sub-agent's ends with its process. The handoff text stays in the transcript as the tool call's input, where `look_back` finds it. After a resume the facts message says when recording started.
+The lists do: they live on disk and a resumed chat keeps every number. The pending install does not, and the recorded facts live in the plugin's memory: the main chat installs its handoff at the same turn's end, and a sub-agent's ends with its process. The handoff text stays in the transcript as the tool call's input, where `look_back` finds it. After a resume the facts message says when recording started.
 </details>
 
 <details>
