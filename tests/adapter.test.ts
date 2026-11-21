@@ -271,19 +271,17 @@ describe('nudges (R37)', () => {
     expect(second.context ?? []).toEqual([]);
   });
 
-  it('starts a working room of 75k above the first reading and steps every 15k: 95k, then 110k after a first reading of 20k on a 400k window, the second notice in its own words', async () => {
+  it('starts at 15% of the window and steps every 5%: 60k, then 80k on a 400k window, the second notice in its own words', async () => {
     const f = await begin({ window: 400_000, env: { FORWARD_COMPACTION_MAIN_CEILING: '', FORWARD_COMPACTION_MAIN_NUDGE_START: '', FORWARD_COMPACTION_MAIN_NUDGE_EVERY: '' } });
     const read = (id: string) => f.dispatch('tool.call', { tool: 'Read', tool_use_id: id, file_path: '/x' }, async () => ({ result: 'file' }));
-    await step(f, 20_000);
-    expect((await read('tu-0')).context ?? []).toEqual([]);
-    await step(f, 94_999);
+    await step(f, 59_999);
     expect((await read('tu-1')).context ?? []).toEqual([]);
-    await step(f, 95_000);
-    expect((await read('tu-2')).context?.at(-1)).toContain('context 95k and increasing.');
-    await step(f, 109_999);
+    await step(f, 60_000);
+    expect((await read('tu-2')).context?.at(-1)).toContain('context 60k and increasing.');
+    await step(f, 79_999);
     expect((await read('tu-3')).context ?? []).toEqual([]);
-    await step(f, 110_000);
-    expect((await read('tu-4')).context?.at(-1)).toBe('forward-compaction: context 110k, and every request re-sends all of it. As soon as the step in hand has its result saved and checked, and before any reading for the next step, call mcp__forward-compaction__forward_compaction ' + nudgeArgs(f) + '. If the whole work finishes first, call it before the final report, with the finished steps removed from remaining, next "write the final report", and all the report needs added to done and findings: the compaction can land before your next request, and the report is then written from the frontier. No such tool? Carry on.');
+    await step(f, 80_000);
+    expect((await read('tu-4')).context?.at(-1)).toBe('forward-compaction: context 80k, and every request re-sends all of it. As soon as the step in hand has its result saved and checked, and before any reading for the next step, call mcp__forward-compaction__forward_compaction ' + nudgeArgs(f) + '. If the whole work finishes first, call it before the final report, with the finished steps removed from remaining, next "write the final report", and all the report needs added to done and findings: the compaction can land before your next request, and the report is then written from the frontier. No such tool? Carry on.');
   });
 
   it('a held ask adds no nudge of its own: the level already delivered is not repeated', async () => {
@@ -380,11 +378,11 @@ describe('ignored models: FORWARD_COMPACTION_IGNORE_MODELS, Haiku by default', (
   const read = (f: Fake, id: string, agentId?: string) => f.dispatch('tool.call', { tool: 'Read', tool_use_id: id, file_path: '/x', ...(agentId ? { agentId } : {}) }, async () => ({ result: 'file' }));
   const haikuStep = (f: Fake, tokens: number, agentId = A1) =>
     f.dispatch('turn.step', { turnId: 't1', index: 0, model: 'claude-haiku-4-5-20251001', messageCount: 4, ...(agentId ? { agentId } : {}) }, async () => ({ turnId: 't1', index: 0, answer: '', toolUses: [], stopReason: 'tool_use', ...usage(tokens) }));
-  /** The shipped sub-agent sizes: a 200k max context, the ceiling at 80%, nudges from 80k every 20k. */
+  /** The shipped sub-agent sizes: a 200k max context, the ceiling at 80%, nudges from 165k every 65k, so past the 160k ceiling. */
   const defaults = { FORWARD_COMPACTION_SUBAGENT_MAX_CONTEXT: '', FORWARD_COMPACTION_SUBAGENT_CEILING: '', FORWARD_COMPACTION_SUBAGENT_NUDGE_START: '', FORWARD_COMPACTION_SUBAGENT_NUDGE_EVERY: '' };
 
   it('holds a Haiku sub-agent Claude Code asks at 64k, never compacting it there, and gives it the mechanical wake at the 160k sub-agent ceiling', async () => {
-    const f = await begin({ env: defaults });
+    const f = await begin({ env: { ...defaults, FORWARD_COMPACTION_SUBAGENT_NUDGE_START: '80k', FORWARD_COMPACTION_SUBAGENT_NUDGE_EVERY: '20k' } });
     await spawn(f);
     await haikuStep(f, 64_000);
     expect(await f.dispatch('session.compact', { trigger: 'auto', agentId: A1, messages: transcript() }, async () => ({ skip: 'native ran' }))).toEqual({ skip: "forward-compaction: holding Claude Code's compaction for general-purpose a1b2c3: its model is on the ignore list, so it is compacted mechanically at its ceiling" });
@@ -397,8 +395,8 @@ describe('ignored models: FORWARD_COMPACTION_IGNORE_MODELS, Haiku by default', (
     expect(compacts).toEqual([['skip', 'ignored-model', 64_000, 160_000, 'haiku'], ['mechanical', 'ceiling', 160_000, 160_000, 'haiku']]);
   });
 
-  it("nudges a managed sub-agent on a 200k max context once it grew by its working room, held two steps below its 160k ceiling (130k after a first reading of 79k), a step later as the last notice, and gives it the mechanical wake at 160k, its nudges then starting a working room above the wake's first reading (100k after 40k)", async () => {
-    const f = await begin({ env: defaults });
+  it("with a working room of 60k and a step of 15k set, nudges a managed sub-agent on a 200k max context once it grew by that room, held two steps below its 160k ceiling (130k after a first reading of 79k), a step later as the last notice, and gives it the mechanical wake at 160k, its nudges then starting the room above the wake's first reading (100k after 40k)", async () => {
+    const f = await begin({ env: { ...defaults, FORWARD_COMPACTION_SUBAGENT_NUDGE_ROOM: '60k', FORWARD_COMPACTION_SUBAGENT_NUDGE_EVERY: '15k' } });
     await spawn(f);
     const nudged: number[] = [];
     for (const tokens of [79_000, 100_000, 129_999, 130_000, 144_999, 145_000]) {
@@ -414,13 +412,14 @@ describe('ignored models: FORWARD_COMPACTION_IGNORE_MODELS, Haiku by default', (
     expect((await rows(f)).filter((r) => r.event === 'nudge').map((r) => [r.tokens, r.level, r.notice, r.last, r.start, r.every])).toEqual([[130_000, 1, 1, false, 130_000, 15_000], [145_000, 2, 2, true, 130_000, 15_000], [100_000, 1, 1, false, 100_000, 15_000]]);
   });
 
-  it("writes a managed sub-agent's floor at its first reading, and a restarted plugin reads it back: its nudges still start a working room above it", async () => {
+  it("writes a managed sub-agent's floor at its first reading, and a restarted plugin reads it back: with a working room of 60k set, its nudges still start that room above it", async () => {
     const files: NonNullable<Script['files']> = {};
-    const before = await begin({ env: defaults, files });
+    const roomy = { ...defaults, FORWARD_COMPACTION_SUBAGENT_NUDGE_ROOM: '60k', FORWARD_COMPACTION_SUBAGENT_NUDGE_EVERY: '15k' };
+    const before = await begin({ env: roomy, files });
     await spawn(before);
     await step(before, 40_000, A1);
     expect(files[join(before.home, '.local/state/forward-compaction', basename(before.home), 'session-1', 'agents', A1, 'floor.json')]?.content).toBe('{\n  "floor": 40000\n}\n');
-    const after = await begin({ env: defaults, files, home: before.home });
+    const after = await begin({ env: roomy, files, home: before.home });
     await spawn(after);
     await step(after, 99_999, A1);
     expect((await read(after, 'tu-1', A1)).context ?? []).toEqual([]);

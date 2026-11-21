@@ -25,16 +25,17 @@ describe('lastNudge', () => {
 });
 
 describe('nudgeStart', () => {
-  it.each<[floor: number, ceiling: number, start: number | undefined, want: number]>([
-    [42_000, 800_000, undefined, 102_000], // far from the ceiling: the whole 60k room
-    [69_999, 160_000, undefined, 129_999], // the whole room still fits two steps below the ceiling
-    [70_001, 160_000, undefined, 130_000], // held to two steps below the ceiling
-    [110_000, 160_000, undefined, 130_000],
-    [115_001, 160_000, undefined, 130_001], // never under one step
-    [150_000, 160_000, undefined, 165_000],
-    [42_000, 800_000, 200_000, 200_000], // a set start, whatever the floor
-  ])('a floor of %i under a ceiling of %i with the start %s starts the nudges at %i', (floor, ceiling, start, want) => {
-    expect(nudgeStart(floor, { room: 60_000, every: 15_000, ceiling, ...(start === undefined ? {} : { start }) })).toBe(want);
+  it.each<[floor: number, ceiling: number, room: number | undefined, want: number]>([
+    [42_000, 800_000, undefined, 200_000], // no working room: the nudge start, whatever the floor
+    [250_000, 800_000, undefined, 200_000],
+    [42_000, 800_000, 60_000, 102_000], // far from the ceiling: the whole 60k room
+    [69_999, 160_000, 60_000, 129_999], // the whole room still fits two steps below the ceiling
+    [70_001, 160_000, 60_000, 130_000], // held to two steps below the ceiling
+    [110_000, 160_000, 60_000, 130_000],
+    [115_001, 160_000, 60_000, 130_001], // never under one step
+    [150_000, 160_000, 60_000, 165_000],
+  ])('a floor of %i under a ceiling of %i with the working room %s starts the nudges at %i', (floor, ceiling, room, want) => {
+    expect(nudgeStart(floor, { start: 200_000, every: 15_000, ceiling, ...(room === undefined ? {} : { room }) })).toBe(want);
   });
 });
 
@@ -116,7 +117,7 @@ describe('finishText', () => {
 });
 
 describe('noticeFor', () => {
-  const MARKS = { room: 60_000, start: 150_000, every: 50_000, ceiling: 600_000, finish: 100_000 };
+  const MARKS = { start: 150_000, every: 50_000, ceiling: 600_000, finish: 100_000 };
   const haiku = (): Parties => { const parties = new Parties(); parties.describe('main', { label: 'main', model: 'claude-haiku-4-5' }); return parties; };
 
   it('names why no nudge goes, and sends nothing, with no reading, no marks, below both starts, or to an ignored model', () => {
@@ -132,7 +133,7 @@ describe('noticeFor', () => {
     const text = 'forward-compaction: context 120k. Nothing to do yet. When the whole work is finished, call mcp__forward-compaction__forward_compaction before the final report, so the user\'s reply meets a small context: the finished steps removed from remaining, next "write the final report", and all the report needs added to done and findings, as the compaction can land before your next request and the report is then written from the frontier. No such tool? Carry on.';
     expect(noticeFor(parties, 'main', 120_000, MARKS, ['haiku'])).toEqual({ level: 0, withheld: 'below-start', sent: { row: { event: 'finish-notice', party: 'main', tokens: 120_000, start: 100_000 }, text } });
     expect(noticeFor(parties, 'main', 130_000, MARKS, ['haiku'])).toEqual({ level: 0, withheld: 'below-start' });
-    expect(noticeFor(new Parties(), 'agent:a1', 120_000, { room: 60_000, start: 150_000, every: 50_000, ceiling: 600_000 }, ['haiku'])).toEqual({ level: 0, withheld: 'below-start' });
+    expect(noticeFor(new Parties(), 'agent:a1', 120_000, { start: 150_000, every: 50_000, ceiling: 600_000 }, ['haiku'])).toEqual({ level: 0, withheld: 'below-start' });
   });
 
   it('sends each nudge from a set start with its count since the last compaction, a sub-agent\'s in its own words, asking a party that holds nothing for a first frontier, the one before the ceiling as the last', () => {
@@ -148,8 +149,8 @@ describe('noticeFor', () => {
     });
   });
 
-  it('with no start set, starts a party\'s nudges its working room above its floor, again above its first reading after a compaction, and again as the first notice above a reading that fell below its floor; a party with no floor yet is at its floor, and a floor alone is no frontier', () => {
-    const marks = { room: 60_000, every: 15_000, ceiling: 800_000 };
+  it('with a working room set, starts a party\'s nudges that room above its floor, whatever its nudge start, again above its first reading after a compaction, and again as the first notice above a reading that fell below its floor; a party with no floor yet is at its floor, and a floor alone is no frontier', () => {
+    const marks = { start: 165_000, room: 60_000, every: 15_000, ceiling: 800_000 };
     const parties = new Parties();
     const at = (tokens: number) => (parties.read('agent:a1', tokens), noticeFor(parties, 'agent:a1', tokens, marks, ['haiku']));
     expect(noticeFor(parties, 'agent:a2', 70_000, marks, ['haiku'])).toEqual({ level: 0, withheld: 'below-start' });

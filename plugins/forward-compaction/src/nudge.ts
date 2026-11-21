@@ -22,12 +22,12 @@ export function nudgeLevel(tokens: number, start: number, every: number): number
   return 1 + Math.floor((tokens - start) / Math.max(1, every));
 }
 
-/** What a nudge is timed by above a floor, in tokens: the working room, the growth between nudges and the ceiling. */
+/** What a nudge is timed by above a floor, in tokens: the room (the party's working room, else as much as its nudge start), the growth between nudges and the ceiling. */
 export type NudgeMarks = { room: number; every: number; ceiling: number };
 
 /**
  * The growth a party gets above a floor (its first reading ever, or its first after a compaction) before its next
- * nudge: its working room, held to two `every` below its ceiling so a nudge still comes before the mechanical wake, and
+ * nudge: its room, held to two `every` below its ceiling so a nudge still comes before the mechanical wake, and
  * never under one `every`.
  */
 export function roomAbove(floor: number, { room, every, ceiling }: NudgeMarks): number {
@@ -103,15 +103,15 @@ export function finishText({ tokens, tool = DEFAULT_TOOL }: Pick<NudgeInput, 'to
 }
 
 /**
- * The marks a notice is decided by, in tokens (window.ts `Marks`): the working room above the party's floor at which
- * its nudges start; `start`, only when the user set one, the absolute context they start at instead, the room after
- * each wake then as large. Only main has a finish start.
+ * The marks a notice is decided by, in tokens (window.ts `Marks`): the context at which the party's nudges start,
+ * the room after each wake as large; `room`, only when the user set one, the working room above the party's floor
+ * at which they start instead, after a wake too. Only main has a finish start.
  */
-export type NoticeMarks = { room: number; every: number; ceiling: number; start?: number; finish?: number };
+export type NoticeMarks = { start: number; every: number; ceiling: number; room?: number; finish?: number };
 
-/** The context at which a party's nudges start: the absolute start when one is set; else its working room (`roomAbove`) above its floor. */
+/** The context at which a party's nudges start: its nudge start; with a working room set, that room (`roomAbove`) above its floor instead. */
 export function nudgeStart(floor: number, marks: NoticeMarks): number {
-  return marks.start ?? floor + roomAbove(floor, marks);
+  return marks.room === undefined ? marks.start : floor + roomAbove(floor, { room: marks.room, every: marks.every, ceiling: marks.ceiling });
 }
 
 export type Notice = {
@@ -125,7 +125,7 @@ export type Notice = {
 
 /**
  * What a tool result carries for the party at its reading (`tokens`), recorded on the party as sent. Past its nudge
- * start (`nudgeStart`, from its floor; a party with none yet is at its floor) with nothing stored, the nudge, once per
+ * start (`nudgeStart`; with a working room, from its floor, a party with none yet at its floor) with nothing stored, the nudge, once per
  * level, worded by its count since the party's last compaction, the last one before the ceiling as the last notice.
  * With no nudge due, a party with a finish start reads the finish notice, once; an ignored model reads neither.
  */
@@ -133,7 +133,7 @@ export function noticeFor(parties: Parties, key: string, tokens: number | undefi
   if (tokens === undefined || marks === undefined) return { level: 0, withheld: tokens === undefined ? 'no-reading' : 'window-unknown' };
   const start = nudgeStart(parties.get(key).held?.floor ?? tokens, marks);
   const level = nudgeLevel(tokens, start, marks.every), ignored = parties.ignored(key, ignore) !== undefined;
-  const withheld = level === 0 ? 'below-start' : ignored ? 'ignored-model' : !parties.nudgeDue(key, level, tokens, { room: marks.start ?? marks.room, every: marks.every, ceiling: marks.ceiling }) ? 'not-due' : undefined;
+  const withheld = level === 0 ? 'below-start' : ignored ? 'ignored-model' : !parties.nudgeDue(key, level, tokens, { room: marks.room ?? marks.start, every: marks.every, ceiling: marks.ceiling }) ? 'not-due' : undefined;
   if (withheld === undefined) {
     const { nudges: notice, files, held } = parties.get(key), last = lastNudge(tokens, marks.every, marks.ceiling);
     return { level, sent: { row: { event: 'nudge', party: key, level, notice, last, tokens, start, every: marks.every }, text: nudgeText({ tokens, tool, party: key === 'main' ? 'main' : 'subagent', notice, last, held: holds(held), ...(files !== undefined ? { storage: storageDir(files) } : {}) }) } };

@@ -64,18 +64,25 @@ and no ceiling, and an automatic ask from it with nothing stored is held as
    reading after an install, or any lower reading (a compaction this plugin
    did not make, after which the nudges start over as after an install); the
    plugin keeps it in the party's folder (`floor.json`).
-   After a tool result, once the party's context has grown a working room
-   above its floor (`FORWARD_COMPACTION_MAIN_NUDGE_ROOM`,
-   `FORWARD_COMPACTION_SUBAGENT_NUDGE_ROOM`), the model reads one line saying
-   how large its context is, in tokens. One more follows every
-   `FORWARD_COMPACTION_{MAIN|SUBAGENT}_NUDGE_EVERY` of growth. The room is held
-   to two `NUDGE_EVERY` below the ceiling so a nudge still comes before the
-   mechanical wake, and is never under one `NUDGE_EVERY`.
-   `FORWARD_COMPACTION_MAIN_NUDGE_START` and
-   `FORWARD_COMPACTION_SUBAGENT_NUDGE_START` have no default: set, one is an
-   absolute context at which the first nudge goes out whatever the floor (a
-   share of the max context or a token count), and after an install the next
-   waits for that much growth; unset, the room decides. Each line is worded by
+   After a tool result, once the party's context has reached its nudge start
+   (`FORWARD_COMPACTION_MAIN_NUDGE_START`, default `15%` of the max context;
+   `FORWARD_COMPACTION_SUBAGENT_NUDGE_START`, default `165k` tokens, the same
+   on every max context), the model reads one line saying how large its
+   context is, in tokens. One more follows every
+   `FORWARD_COMPACTION_{MAIN|SUBAGENT}_NUDGE_EVERY` of growth (default `5%`
+   and `65k`). After an install the next nudge waits until the context has
+   grown as much as the nudge start past the party's first reading (held to
+   two `NUDGE_EVERY` below the ceiling, never under one `NUDGE_EVERY`).
+   `FORWARD_COMPACTION_MAIN_NUDGE_ROOM` and
+   `FORWARD_COMPACTION_SUBAGENT_NUDGE_ROOM` have no default: set, the party's
+   first nudge goes out once its context has grown that room above its floor
+   instead of at its nudge start, and after each install again that room
+   above the new floor; the room is held to two `NUDGE_EVERY` below the
+   ceiling so a nudge still comes before the mechanical wake, and is never
+   under one `NUDGE_EVERY`. A set room wins over the nudge start, which then
+   decides nothing and raises no start-below-the-ceiling warning. An invalid
+   room is named in the options errors and the party has no room. The floor
+   decides where nudges start only when a room is set. Each line is worded by
    its count since the party's last install, so no two read alike and each is
    firmer than the one before. The first three time the call between two
    steps, because a compaction drops what the model has read: the first asks
@@ -99,9 +106,10 @@ and no ceiling, and an automatic ask from it with nothing stored is held as
    compaction ask adds no nudge of its own. After an install the party's
    first reading is its new floor and its level is absorbed silently (a
    sub-agent's floor of system prompt, tools and skills is already 55-60k), so
-   the next nudge goes only when the context has grown by the working room
-   above it. A wake lands near or above the old nudge level, and a nudge a few
-   thousand tokens later makes the party compact in a loop. No nudge goes
+   the next nudge goes only when the context has grown by the nudge start (or
+   the room, when set) above it. A wake lands near or above the old nudge
+   level, and a nudge a few thousand tokens later makes the party compact in
+   a loop. No nudge goes
    within one `NUDGE_EVERY` of the last one. A model on the ignore list gets
    no nudge. No call is ever refused or held back: a party that does not
    compact is compacted mechanically at its ceiling.
@@ -525,8 +533,8 @@ this rule. It is requested upstream in
 ### Max contexts
 
 Sizes are percentages of each party's max context or token counts; a
-nudge room and nudge interval default to token counts, the same on every
-max context, as does the main chat's finish start. The main chat's max context is the
+sub-agent's nudge sizes default to token counts (165k, then every 65k), the
+same on every max context, as does the main chat's finish start. The main chat's max context is the
 window Claude Code reports through `$.session.usage()`, read at session
 start, at the main chat's first request when not read yet, and again when its
 model changes (`/model`); `FORWARD_COMPACTION_MAIN_MAX_CONTEXT` sets it
@@ -588,12 +596,12 @@ judgement is kept in `$.state`, so a plugin reload writes no row for one that
 holds. A held ask's row carries `why: ignored-model`.
 
 With the defaults, on a 200k sub-agent max context (on 1M the ceiling is
-800k, and a managed sub-agent is nudged a working room above its floor, then
-every `NUDGE_EVERY`):
+800k, and a managed sub-agent is nudged at 165k, then every 65k; on 200k its
+165k start lies past the 160k ceiling):
 
 | Sub-agent | Nudges | Held | Mechanical wake |
 | --- | --- | --- | --- |
-| Managed | a working room above its floor, held to two `NUDGE_EVERY` below its ceiling, then every `NUDGE_EVERY` | every ask below 160k with nothing stored | at 160k |
+| Managed | none on 200k (the 165k start is past the ceiling); on 1M at 165k, then every 65k | every ask below 160k with nothing stored | at 160k |
 | Ignored (Haiku) | none | every ask below 160k, Claude Code's 63k ask included | at 160k |
 
 ### State on disk

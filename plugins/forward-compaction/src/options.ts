@@ -3,12 +3,11 @@ import { pluginLogDir } from './plugin-log';
 /** A context size: a token count, or a percentage of the party's max context. */
 export type Size = { tokens: number } | { percent: number };
 
-/** Each party's sizes: the ceiling (with no frontier stored, the context at which a mechanical wake is installed), the working room (the growth above the party's floor, its first reading ever or its first after a compaction, at which its first nudge goes out) and the growth between nudges, each a token count or a percentage of the party's max context; `nudgeStart`, only when its variable is set, the absolute context at which the party's first nudge goes out instead, the room after each wake then as large. */
-export type PartySizes = { ceiling: Size; nudgeRoom: Size; nudgeEvery: Size; nudgeStart?: Size };
-/** The room and the step are token counts, the same on every max context, design budgets and never measured sizes: a compaction re-writes the harness's own blocks and the wake at the cache-write price, a larger context is re-read on every request, and the cheapest cycle lies near this room, main's wider as its cache writes cost more; the bill is flat within about half of it either way. */
-export const DEFAULT_MAIN: PartySizes = { ceiling: { percent: 60 }, nudgeRoom: { tokens: 75_000 }, nudgeEvery: { tokens: 15_000 } };
-/** The ceiling is a share of the sub-agent's max context (160k on 200k, 800k on 1m). */
-export const DEFAULT_SUBAGENT: PartySizes = { ceiling: { percent: 80 }, nudgeRoom: { tokens: 60_000 }, nudgeEvery: { tokens: 15_000 } };
+/** Each party's sizes: the ceiling (with no frontier stored, the context at which a mechanical wake is installed), where the first nudge goes out, the room after each wake as large, and the growth between nudges, each a token count or a percentage of the party's max context; `nudgeRoom`, only when its variable is set, the working room: the growth above the party's floor (its first reading ever, or its first after a compaction) at which its first nudge goes out instead of at the nudge start. */
+export type PartySizes = { ceiling: Size; nudgeStart: Size; nudgeEvery: Size; nudgeRoom?: Size };
+export const DEFAULT_MAIN: PartySizes = { ceiling: { percent: 60 }, nudgeStart: { percent: 15 }, nudgeEvery: { percent: 5 } };
+/** The ceiling is a share of the sub-agent's max context (160k on 200k, 800k on 1m); the nudges are token counts, the same on every max context, and late: every compaction re-writes Claude Code's own blocks at the cache-write price (28k to 33k tokens on a measured sub-agent) and the party reads its way back in, which on measured sub-agent runs cost what a smaller context saved. */
+export const DEFAULT_SUBAGENT: PartySizes = { ceiling: { percent: 80 }, nudgeStart: { tokens: 165_000 }, nudgeEvery: { tokens: 65_000 } };
 /** The fallback: a sub-agent's max context while its model's window is not known. The smallest window the Models API lists, and the one Claude Code itself takes for a model it does not know: a ceiling reached early costs a mechanical wake, one set too high a request too long. Main's max context defaults to the window `$.session.usage()` reports. */
 /** Main's finish start: the context from which main is told to compact at the end of its whole work, before the final report. A token count: what a compaction leaves behind does not grow with the max context. */
 export const DEFAULT_MAIN_FINISH_START: Size = { tokens: 100_000 };
@@ -157,9 +156,9 @@ export async function readOptionVarInto(env: { vars: Record<string, string>; rea
   }
 }
 
-/** A set nudge start at or past the ceiling in the same unit: both are kept, the user is told. Across units only the max context decides. */
-function nudgeAfterCeiling(party: 'main' | 'subagent', { nudgeStart: start, ceiling }: PartySizes): string | undefined {
-  if (start === undefined) return undefined;
+/** A nudge start at or past the ceiling in the same unit: both are kept, the user is told. Across units only the max context decides, and with a working room set the nudge start decides nothing. */
+function nudgeAfterCeiling(party: 'main' | 'subagent', { nudgeStart: start, ceiling, nudgeRoom }: PartySizes): string | undefined {
+  if (nudgeRoom !== undefined) return undefined;
   const past = 'tokens' in start && 'tokens' in ceiling ? start.tokens >= ceiling.tokens : 'percent' in start && 'percent' in ceiling ? start.percent >= ceiling.percent : false;
   if (!past) return undefined;
   return `forward-compaction: env ${OPTION_ENV[`${party}NudgeStart`]} ${formatSize(start)} is not below ${OPTION_ENV[`${party}Ceiling`]} ${formatSize(ceiling)}; no nudge goes out before the ceiling`;
@@ -205,18 +204,18 @@ export function resolveOptions(env: OptionEnvironment = {}): ResolvedOptions {
     badEnv(option, parsed.ok ? `a max context is a token count, not a percentage: ${JSON.stringify(raw)}` : parsed.error, fallback);
     return undefined;
   };
-  // An absolute nudge start has no default: unset, or invalid, the party's nudges start its room above its floor.
-  const start = (option: OptionName): Size | undefined => {
+  // A working room has no default: unset, or invalid, the party's nudges start at its nudge start.
+  const room = (option: OptionName): Size | undefined => {
     const raw = fromEnv(option);
     if (raw === undefined) return undefined;
     const parsed = parseSize(raw);
     if (parsed.ok) return parsed.value;
-    badEnv(option, parsed.error, 'nudge room');
+    badEnv(option, parsed.error, 'none: the nudge start decides');
     return undefined;
   };
   const sizes = (party: 'main' | 'subagent', fallback: PartySizes): PartySizes => {
-    const nudgeStart = start(`${party}NudgeStart`);
-    return { ceiling: size(`${party}Ceiling`, fallback.ceiling), nudgeRoom: size(`${party}NudgeRoom`, fallback.nudgeRoom), nudgeEvery: size(`${party}NudgeEvery`, fallback.nudgeEvery), ...(nudgeStart !== undefined ? { nudgeStart } : {}) };
+    const nudgeRoom = room(`${party}NudgeRoom`);
+    return { ceiling: size(`${party}Ceiling`, fallback.ceiling), nudgeStart: size(`${party}NudgeStart`, fallback.nudgeStart), nudgeEvery: size(`${party}NudgeEvery`, fallback.nudgeEvery), ...(nudgeRoom !== undefined ? { nudgeRoom } : {}) };
   };
   const mainMax = maxContext('mainMaxContext', "main's window");
   const main = { ...sizes('main', DEFAULT_MAIN), finishStart: size('mainFinishStart', DEFAULT_MAIN_FINISH_START), ...(mainMax !== undefined ? { maxContext: mainMax } : {}) };

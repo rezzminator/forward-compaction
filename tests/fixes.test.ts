@@ -74,15 +74,16 @@ describe("L5 + S1 + S5: each sub-agent is measured against its own model's max c
   const unset = { FORWARD_COMPACTION_SUBAGENT_MAX_CONTEXT: '', FORWARD_COMPACTION_SUBAGENT_CEILING: '', FORWARD_COMPACTION_SUBAGENT_NUDGE_START: '', FORWARD_COMPACTION_SUBAGENT_NUDGE_EVERY: '' };
   const read = (f: Fake, id: string, agentId: string) => f.dispatch('tool.call', { tool: 'Read', tool_use_id: id, file_path: '/x', agentId }, async () => ({ result: 'file' }));
   const ask = (f: Fake, agentId: string) => f.dispatch('session.compact', { trigger: 'auto', agentId, messages: [{ role: 'user', text: 'Brief for agent one', toolUses: [], handle: 'h0' }] }, async () => ({ skip: 'native ran' }));
-  it('nudges a [1m] sub-agent its 60k working room above its first reading (at 100k after 40k) and holds it at 170k, where a 200k one at 170k is past its 160k ceiling and is woken mechanically', async () => {
+  it('nudges a [1m] sub-agent at 165k and again at 230k (the start and the step are the same on every max context) and holds it there, where a 200k one at 170k is past its 160k ceiling and is woken mechanically', async () => {
     const f = await begin({ env: unset });
     await spawn(f, 'b1b1b1b1b1');
     await spawn(f, 'c2c2c2c2c2');
     await step(f, 170_000, 'b1b1b1b1b1', 'claude-haiku-4-5');
     const grown = async (tokens: number) => (await step(f, tokens, 'c2c2c2c2c2', 'claude-opus-5-5[1m]'), ((await read(f, `tu-${tokens}`, 'c2c2c2c2c2')).context ?? []).join('\n'));
-    expect([await grown(40_000), await grown(99_999)]).toEqual(['', '']);
-    expect(await grown(100_000)).toMatch(/^forward-compaction: context 100k and increasing\. /);
-    await step(f, 170_000, 'c2c2c2c2c2', 'claude-opus-5-5[1m]');
+    expect([await grown(40_000), await grown(164_999)]).toEqual(['', '']);
+    expect(await grown(165_000)).toMatch(/^forward-compaction: context 165k and increasing\. /);
+    expect(await grown(229_999)).toBe('');
+    expect(await grown(230_000)).toMatch(/^forward-compaction: context 230k, and every request re-sends all of it\. /);
     expect(await ask(f, 'b1b1b1b1b1')).toHaveProperty('messages');
     expect(await ask(f, 'c2c2c2c2c2')).toHaveProperty('skip');
   });

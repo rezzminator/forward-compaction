@@ -65,7 +65,7 @@ export type PartyState = {
   nudgeLevel: number;
   /** True from an install until the party's next reading, whose nudge level is then absorbed silently. */
   absorbNext: boolean;
-  /** The party's first reading after its last install: its next nudge waits until the context has grown by its working room past it (nudge.ts `roomAbove`). */
+  /** The party's first reading after its last install: its next nudge waits until the context has grown by its room past it (nudge.ts `roomAbove`). */
   wokeAt?: number;
   /** The reading the party's last nudge went out at, since its last install: the next one waits until the context has grown by `every` past it. */
   nudgedAt?: number;
@@ -257,7 +257,7 @@ export class Parties {
   /**
    * Whether a nudge goes out now, recorded as sent: once per level while nothing is stored. None goes between an
    * install and the party's next reading: until then no size is measured. After a wake none goes until the reading
-   * (`tokens`) has grown by the party's working room (nudge.ts `roomAbove`) past the first one after it: a wake lands
+   * (`tokens`) has grown by the party's room (nudge.ts `roomAbove`) past the first one after it: a wake lands
    * near or above the nudge start, and a nudge a few thousand tokens later makes the party compact in a loop. None
    * goes within `every` of the last one either: a nudge held back past a level boundary is not followed by the next level's.
    */

@@ -83,17 +83,17 @@ describe('apiChars and charsPerToken: the ratio measured on the growth', () => {
 });
 
 describe('partyMarks: a party sized against its max context', () => {
-  const sub = { ceiling: { percent: 80 }, nudgeRoom: { percent: 30 }, nudgeEvery: { percent: 10 } };
+  const sub = { ceiling: { percent: 80 }, nudgeStart: { percent: 40 }, nudgeEvery: { percent: 10 } };
 
-  it('sizes the ceiling, the working room and the step against the max context, an absolute start only when one is set, the ask point held at or below it (Ignored models example)', () => {
-    expect(partyMarks(sub, 200_000, 63_000)).toEqual({ maxContext: 200_000, askPoint: 63_000, ceiling: 160_000, room: 60_000, every: 20_000 });
-    expect(partyMarks({ ...sub, nudgeStart: { percent: 40 } }, 200_000, 63_000)).toEqual({ maxContext: 200_000, askPoint: 63_000, ceiling: 160_000, room: 60_000, every: 20_000, start: 80_000 });
+  it('sizes the ceiling, the nudge start and the step against the max context, a working room only when one is set, the ask point held at or below it (Ignored models example)', () => {
+    expect(partyMarks(sub, 200_000, 63_000)).toEqual({ maxContext: 200_000, askPoint: 63_000, ceiling: 160_000, start: 80_000, every: 20_000 });
+    expect(partyMarks({ ...sub, nudgeRoom: { percent: 30 } }, 200_000, 63_000)).toEqual({ maxContext: 200_000, askPoint: 63_000, ceiling: 160_000, start: 80_000, every: 20_000, room: 60_000 });
     expect(partyMarks(sub, 200_000, 963_000)).toMatchObject({ askPoint: 200_000 });
     expect(partyMarks(sub, 200_000, undefined)).toMatchObject({ askPoint: 200_000 });
   });
 
   it("sizes main's finish start too, a token count as it is and a percentage against the max context", () => {
-    expect(partyMarks({ ...sub, finishStart: { tokens: 100_000 } }, 1_000_000, 63_000)).toEqual({ maxContext: 1_000_000, askPoint: 63_000, ceiling: 800_000, room: 300_000, every: 100_000, finish: 100_000 });
+    expect(partyMarks({ ...sub, finishStart: { tokens: 100_000 } }, 1_000_000, 63_000)).toEqual({ maxContext: 1_000_000, askPoint: 63_000, ceiling: 800_000, start: 400_000, every: 100_000, finish: 100_000 });
     expect(partyMarks({ ...sub, finishStart: { percent: 10 } }, 200_000, 63_000)).toMatchObject({ finish: 20_000 });
   });
 
@@ -103,8 +103,8 @@ describe('partyMarks: a party sized against its max context', () => {
 });
 
 describe('startWarnings: what session.start names once, from the API numbers', () => {
-  const sub = { maxContext: 200_000, askPoint: 63_000, ceiling: 160_000, room: 60_000, every: 20_000 };
-  const main = { maxContext: 1_000_000, askPoint: 63_000, ceiling: 600_000, room: 75_000, every: 50_000 };
+  const sub = { maxContext: 200_000, askPoint: 63_000, ceiling: 160_000, start: 80_000, every: 20_000 };
+  const main = { maxContext: 1_000_000, askPoint: 63_000, ceiling: 600_000, start: 150_000, every: 50_000 };
 
   it("names a compaction window past 100k by Claude Code's own rawMaxTokens, source and ask point", () => {
     const warnings = startWarnings({ rawMaxTokens: 1_000_000, autocompactSource: 'model-default', autoCompactThreshold: 967_000 }, { tokens: 967_000, source: 'autoCompactThreshold' }, main, { ...sub, askPoint: 200_000 });

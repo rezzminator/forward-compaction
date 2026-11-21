@@ -53,8 +53,8 @@ describe('parseEnvFlag', () => {
 describe('resolveOptions', () => {
   it('holds the defaults with nothing set', () => {
     expect(resolveOptions()).toEqual({
-      main: { ceiling: { percent: 60 }, nudgeRoom: { tokens: 75_000 }, nudgeEvery: { tokens: 15_000 }, finishStart: { tokens: 100_000 } },
-      subagent: { ceiling: { percent: 80 }, nudgeRoom: { tokens: 60_000 }, nudgeEvery: { tokens: 15_000 } },
+      main: { ceiling: { percent: 60 }, nudgeStart: { percent: 15 }, nudgeEvery: { percent: 5 }, finishStart: { tokens: 100_000 } },
+      subagent: { ceiling: { percent: 80 }, nudgeStart: { tokens: 165_000 }, nudgeEvery: { tokens: 65_000 } },
       ceilingNative: false, ignoreModels: ['haiku'], keepSkills: [], frontierWarnChars: 12_000, debug: true, errors: [],
     });
   });
@@ -156,17 +156,22 @@ describe('resolveOptions', () => {
     expect([moved.logFile, moved.errors]).toEqual(['/state/forward-compaction/decisions/.jsonl', []]);
   });
 
-  it('names a set nudge start that is not below the ceiling in the same unit, and passes across units and with none set', () => {
+  it('names a nudge start, set or the default, that is not below the ceiling in the same unit, and passes across units and with a working room set', () => {
     expect(resolveOptions({ vars: { FORWARD_COMPACTION_MAIN_CEILING: '40k', FORWARD_COMPACTION_MAIN_NUDGE_START: '50k' } }).errors).toEqual(['forward-compaction: env FORWARD_COMPACTION_MAIN_NUDGE_START 50000 is not below FORWARD_COMPACTION_MAIN_CEILING 40000; no nudge goes out before the ceiling']);
     expect(resolveOptions({ vars: { FORWARD_COMPACTION_SUBAGENT_CEILING: '80k', FORWARD_COMPACTION_SUBAGENT_NUDGE_START: '80k' } }).errors).toEqual(['forward-compaction: env FORWARD_COMPACTION_SUBAGENT_NUDGE_START 80000 is not below FORWARD_COMPACTION_SUBAGENT_CEILING 80000; no nudge goes out before the ceiling']);
-    expect(resolveOptions({ vars: { FORWARD_COMPACTION_SUBAGENT_CEILING: '80k' } }).errors).toEqual([]);
+    expect(resolveOptions({ vars: { FORWARD_COMPACTION_SUBAGENT_CEILING: '80k' } }).errors).toEqual(['forward-compaction: env FORWARD_COMPACTION_SUBAGENT_NUDGE_START 165000 is not below FORWARD_COMPACTION_SUBAGENT_CEILING 80000; no nudge goes out before the ceiling']);
+    expect(resolveOptions({ vars: { FORWARD_COMPACTION_SUBAGENT_CEILING: '80k', FORWARD_COMPACTION_SUBAGENT_NUDGE_ROOM: '20k' } }).errors).toEqual([]);
     expect(resolveOptions({ vars: { FORWARD_COMPACTION_MAIN_CEILING: '40k', FORWARD_COMPACTION_MAIN_NUDGE_START: '20k' } }).errors).toEqual([]);
     expect(resolveOptions({ vars: { FORWARD_COMPACTION_MAIN_CEILING: '30%' } }).errors).toEqual([]);
   });
 
-  it('names an invalid nudge start and leaves the party none, its working room deciding', () => {
+  it('names an invalid nudge start and holds the default one, and names an invalid working room and leaves the party none', () => {
+    const shipped = { ceiling: { percent: 80 }, nudgeStart: { tokens: 165_000 }, nudgeEvery: { tokens: 65_000 } };
     const bad = resolveOptions({ vars: { FORWARD_COMPACTION_SUBAGENT_NUDGE_START: 'soon' } });
-    expect([bad.subagent, bad.errors]).toEqual([{ ceiling: { percent: 80 }, nudgeRoom: { tokens: 60_000 }, nudgeEvery: { tokens: 15_000 } }, ['forward-compaction: env FORWARD_COMPACTION_SUBAGENT_NUDGE_START is invalid (not an integer, a k/m value or a percentage: "soon"); using the default nudge room']]);
+    expect([bad.subagent, bad.errors]).toEqual([shipped, ['forward-compaction: env FORWARD_COMPACTION_SUBAGENT_NUDGE_START is invalid (not an integer, a k/m value or a percentage: "soon"); using the default 165000']]);
+    const wide = resolveOptions({ vars: { FORWARD_COMPACTION_SUBAGENT_NUDGE_ROOM: 'wide' } });
+    expect([wide.subagent, wide.errors]).toEqual([shipped, ['forward-compaction: env FORWARD_COMPACTION_SUBAGENT_NUDGE_ROOM is invalid (not an integer, a k/m value or a percentage: "wide"); using the default none: the nudge start decides']]);
+    expect(resolveOptions({ vars: { FORWARD_COMPACTION_SUBAGENT_NUDGE_ROOM: '60k' } }).subagent).toEqual({ ...shipped, nudgeRoom: { tokens: 60_000 } });
   });
 
   it('reads one variable through its getter: a set one is kept, an unset one left out, and one whose read failed is named', async () => {
