@@ -177,6 +177,22 @@ describe("a sub-agent's kept start", () => {
     expect(wake).toMatchObject({ start: 2, kept: 1, dropped: 0 });
   });
 
+  it('renders the documents the brief names under the kept brief, each as read at install, names one not carried, and a mechanical wake renders them too', () => {
+    const briefFiles = [
+      { path: '/lab/brief.md', content: 'Watch each test fail first.' },
+      { path: '/lab/spec.md', lines: '1-2', content: 'a\nb\n[3 more lines not carried: Read /lab/spec.md from line 3]' },
+      { path: '/lab/gone.md', problem: 'ENOENT' },
+    ];
+    const block = '## The documents your brief names, read at install\nThey are part of your brief: where your frontier words one of their rules differently, their words hold.\n### /lab/brief.md\nWatch each test fail first.\n### /lab/spec.md lines 1-2\na\nb\n[3 more lines not carried: Read /lab/spec.md from line 3]';
+    const wake = buildWake({ ...sub([brief, call, res], { brief: { text: 'Fix the parser. No git stash.' } }), briefFiles });
+    const sections = (wake.messages[2] as BuiltMessage).text.split('\n\n');
+    expect(sections[1]).toBe(block); // right under the head, where a brief not kept above would stand
+    expect(sections).toContain('## Files not carried\n- /lab/gone.md: ENOENT');
+    expect([wake.carried, wake.notCarried]).toEqual([['/lab/brief.md', '/lab/spec.md'], ['/lab/gone.md']]);
+    const mechanical = mechanicalWake({ ...base, messages: [brief, assistant('reading')], party: 'subagent', facts: facts({ brief: { text: 'Fix the parser. No git stash.' } }), reason: { kind: 'reactive' }, briefFiles });
+    expect((mechanical.messages[2] as BuiltMessage).text.split('\n\n')[1]).toBe(block);
+  });
+
   it("keeps the engine's own end line at the next compaction, building no second one", () => {
     const ownEnd = assistant(START_END, [], 'engine-end');
     const wake = buildWake(sub([brief, ownEnd, user('[forward-compaction: facts] earlier', 'engine-f'), user('[forward-compaction: frontier] earlier', 'engine-h'), assistant('more work'), call, res]));

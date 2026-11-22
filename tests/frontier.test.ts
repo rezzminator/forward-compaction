@@ -258,6 +258,9 @@ describe('parseLineRanges and sliceFile (copied from the old carry module)', () 
     expect(sliceFile('/f', 'x'.repeat(40_000), undefined, 40_000)).toEqual({ body: 'x'.repeat(40_000), shown: '' });
     expect(sliceFile('/f', 'x'.repeat(40_001), undefined)).toEqual({ body: 'x'.repeat(40_001), shown: '' });
     expect(sliceFile('/f', 'x'.repeat(40_001), undefined, 40_000)).toEqual({ body: `${'x'.repeat(40_000)}\n[cut at 40000 characters: Read /f for the rest]`, shown: '' });
+    expect(sliceFile('/f', 'a\nb\nc\nd\ne', undefined, undefined, 2)).toEqual({ body: 'a\nb\n[3 more lines not carried: Read /f from line 3]', shown: '1-2' }); // a cap of its own in place of LOAD_FILE_MAX_LINES
+    expect(sliceFile('/f', 'a\nb\nc\nd\ne', [{ from: 2, to: 5 }], undefined, 2)).toEqual({ body: 'b\nc\n[2 more lines not carried: Read /f from line 4]', shown: '2-3' });
+    expect(sliceFile('/f', 'a\nb', undefined, undefined, 2)).toEqual({ body: 'a\nb', shown: '' });
     expect(sliceFile('/f', `a\n${'x'.repeat(40_001)}`, [{ from: 2, to: 2 }], 40_000)).toEqual({ body: `${'x'.repeat(40_000)}\n[cut at 40000 characters: Read /f for the rest]`, shown: '2' });
     expect(sliceFile('/f', 'x\n', undefined)).toEqual({ body: 'x\n', shown: '' });
   });

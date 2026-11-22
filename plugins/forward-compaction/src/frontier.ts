@@ -381,8 +381,9 @@ const span = (r: { from: number; to: number }): string => (r.from === r.to ? `${
  * the ranges that loaded, clipped to the file and the cap ('' for a whole file). A range past the file's end, or clipped
  * by it, is a `problem`, and an empty load is one too: a slice of nothing never reaches the wake as a Load block that says nothing.
  * A file holding a NUL character is binary and is a `problem`, never a body; with `maxChars`, a body past it is cut there and says so.
+ * `maxLines` is the cap in place of LOAD_FILE_MAX_LINES, for a caller with a budget of its own (brief-files.ts).
  */
-export function sliceFile(path: string, text: string, ranges: readonly { from: number; to: number }[] | undefined, maxChars?: number): { body: string; shown: string; problem?: string } | { problem: string } {
+export function sliceFile(path: string, text: string, ranges: readonly { from: number; to: number }[] | undefined, maxChars?: number, maxLines: number = LOAD_FILE_MAX_LINES): { body: string; shown: string; problem?: string } | { problem: string } {
   if (text.includes('\u0000')) return { problem: 'not a text file' };
   const capped = (body: string): string => (maxChars === undefined || body.length <= maxChars ? body : `${body.slice(0, maxChars)}\n[cut at ${maxChars} characters: Read ${path} for the rest]`);
   const lines = text.split('\n');
@@ -391,8 +392,8 @@ export function sliceFile(path: string, text: string, ranges: readonly { from: n
   const more = (left: number, from: number): string => `[${left} more lines not carried: Read ${path} from line ${from}]`;
   if (ranges === undefined) {
     if (text.trim() === '') return { problem: 'the file is empty' };
-    if (count <= LOAD_FILE_MAX_LINES) return { body: capped(text), shown: '' };
-    return { body: capped([...lines.slice(0, LOAD_FILE_MAX_LINES), more(count - LOAD_FILE_MAX_LINES, LOAD_FILE_MAX_LINES + 1)].join('\n')), shown: `1-${LOAD_FILE_MAX_LINES}` };
+    if (count <= maxLines) return { body: capped(text), shown: '' };
+    return { body: capped([...lines.slice(0, maxLines), more(count - maxLines, maxLines + 1)].join('\n')), shown: `1-${maxLines}` };
   }
   const parts: string[] = [];
   const shown: { from: number; to: number }[] = [];
@@ -405,7 +406,7 @@ export function sliceFile(path: string, text: string, ranges: readonly { from: n
     else ordered.push({ ...r });
   }
   let held = false;
-  let room = LOAD_FILE_MAX_LINES;
+  let room = maxLines;
   // The lines asked for past the cap, and the first of them.
   let left = 0;
   let next: number | undefined;

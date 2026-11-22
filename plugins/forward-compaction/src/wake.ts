@@ -21,8 +21,8 @@ const iso = (at: number): string => new Date(at).toISOString();
  * Per-section shares of the budget B (D18), design budgets and never measured sizes: what arrived after the frontier a quarter,
  * sibling results a tenth, coordinator notices and the shell commands run a twentieth each; the rest of B goes to the messages
  * kept after the call. The user's newest messages or the brief, the task list, the skills in force (within their own
- * character limits below) and the load files (each within LOAD_FILE_MAX_LINES) are what a woken model most needs, so they
- * are carried outside any share.
+ * character limits below), the load files (each within LOAD_FILE_MAX_LINES) and the documents a brief names (together
+ * within brief-files.ts `BRIEF_FILES_MAX_CHARS`) are what a woken model most needs, so they are carried outside any share.
  */
 const SHARE = { arrived: 0.25, notices: 0.05, siblings: 0.1, commands: 0.05 } as const;
 /** The plugin version that builds a wake, named in its facts header so a chat on an old build is visible; tests/layout.test.ts pins it to plugin.json. */
@@ -75,6 +75,10 @@ export type WakeFacts = {
   startReason?: string;
 };
 
+/** The heading over the documents a sub-agent's brief names, as the adapter read them at install. */
+export const BRIEF_FILES_HEADING = '## The documents your brief names, read at install';
+/** The sentence under it: a frontier that reworded a document's rule loses to the document. */
+export const BRIEF_FILES_NOTE = 'They are part of your brief: where your frontier words one of their rules differently, their words hold.';
 /** A load file, already read by the adapter: its content, or why it could not be read. */
 export type WakeFile = { path: string; lines?: string; why?: string } & ({ content: string; problem?: undefined } | { problem: string; content?: undefined });
 /** One of the party's newest files, read by the adapter at a mechanical install (frontier.ts `sliceFile`): its content, or why it could not be read. */
@@ -117,6 +121,8 @@ type Shared<M> = {
   pins?: readonly string[];
   /** The frontier as the plugin holds it, rendered (lists.ts `renderFrontier`): a frontier wake installs it, a mechanical wake shows it as it stands; '' or absent when nothing is held. */
   frontier?: string;
+  /** The documents a sub-agent's brief names, already read by the adapter (brief-files.ts `readBriefFiles`); absent or empty, no section. */
+  briefFiles?: readonly WakeFile[];
 };
 /** `missing`: the texts the held frontier lacks (frontier.ts `Applied.missing`), each named in the head. */
 export type BuildWakeInput<M> = Shared<M> & { toolUseId: string; frontier: string; files?: readonly WakeFile[]; missing?: readonly string[] };
@@ -198,12 +204,26 @@ function renderFacts<M>(input: Shared<M>, facts: WakeFacts, { siblings, files, r
   if (plan?.path !== undefined && plan.content !== undefined) sections.push(section(`## Plan file\n${plan.path}\n${plan.content}`));
   else if (plan?.path !== undefined && plan.problem !== undefined) sections.push({ text: `## Plan file\n${plan.path}\n(could not be read: ${plan.problem})`, content: false });
 
+  // the load files and the brief's documents not carried, each named once with why
+  const dropped: string[] = [];
   // A kept start already shows the brief as the run's first message: the head says so and no section repeats it.
   const brief = facts.brief?.text.trim();
   const briefAbove = sub && brief !== undefined && brief !== '' && (start ?? []).some((m) => m.text.includes(brief));
   if (sub) {
     const unrecorded = start !== undefined ? "not recorded by forward-compaction: this run's first message, above, is kept verbatim" : 'not recorded: this agent was spawned before forward-compaction started in this process';
     if (!briefAbove) sections.push(facts.brief !== undefined ? section(`## Your brief\n${facts.brief.text}`) : { text: `## Your brief\n(${unrecorded})`, content: false });
+    // The documents the brief names are part of it: a brief kept verbatim still only points at them, so each wake reads them in (brief-files.ts).
+    const named: string[] = [];
+    for (const f of input.briefFiles ?? []) {
+      if (f.problem !== undefined) {
+        dropped.push(`- ${f.path}: ${f.problem}`);
+        filesNotCarried.push(f.path);
+        continue;
+      }
+      filesCarried.push(f.path);
+      named.push(`### ${f.path}${f.lines === undefined ? '' : ` lines ${f.lines}`}\n${f.content}`);
+    }
+    if (named.length > 0) sections.push(section([BRIEF_FILES_HEADING, BRIEF_FILES_NOTE, ...named].join('\n')));
   } else if (facts.user.length === 0 && (facts.userInTail ?? 0) > 0) {
     sections.push({ text: `## The user's messages\n(all ${facts.userInTail} are in the messages below)`, content: false });
   } else if (facts.user.length === 0) {
@@ -289,8 +309,6 @@ function renderFacts<M>(input: Shared<M>, facts: WakeFacts, { siblings, files, r
     sections.push({ text: [header, ...(rows.length > 0 ? rows : ['(none running)'])].join('\n'), content: rows.length > 0 });
   }
 
-  // the load files not carried, each named once with why
-  const dropped: string[] = [];
   if (files.length > 0) {
     // each already cut to LOAD_FILE_MAX_LINES (frontier.ts `sliceFile`); no room and no count cap
     const carried: string[] = [];
