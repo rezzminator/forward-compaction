@@ -24,7 +24,7 @@ const FIELDS_NOTE = 'The fields are objective, next, orders, decisions, done, re
 describe('the forward_compaction tool as registered', () => {
   it('is named forward_compaction, says changes go by number, and holds one example call', () => {
     expect(FORWARD_TOOL).toBe('forward_compaction');
-    expect(FORWARD_TOOL_DESCRIPTION).toBe('Compacts your large context between steps: once the step in hand has its result saved and checked, before reading for the next; what you have read is dropped. Your frontier is kept as numbered lists; send only changes: add texts, remove or edit by number; what you leave out stays. One fact or step per item. MANDATORY: keep it clean: each call removes what is finished, lifted or wrong, edits what changed. Always stores. Example: forward_compaction({"next": "Run the gate", "done": {"add": ["Parser merged, 41 tests pass"]}, "remaining": {"remove": [3]}}). Exact old detail later → look_back.');
+    expect(FORWARD_TOOL_DESCRIPTION).toBe('Compacts your context — call it when a forward-compaction notice asks; a call on a small context only updates your frontier. A compaction drops what you have read; the frontier stays: numbered lists, so send only changes: add texts, remove or edit by number; what you leave out stays. One fact or step per item. MANDATORY: keep it clean: each call removes what is finished, lifted or wrong, edits what changed. Always stores. Example: forward_compaction({"next": "Run the gate", "done": {"add": ["Parser merged, 41 tests pass"]}, "remaining": {"remove": [3]}}). Exact old detail later → look_back.');
   });
 
   it('closes the schema: two texts, six lists each with add, remove and edit, storage and load_files, none required', () => {
@@ -187,6 +187,8 @@ describe('applyCall changes the held frontier by item number', () => {
 describe('receipt says what was stored and when it installs, per party (R16)', () => {
   const MAIN = " It installs at the end of this turn, or at Claude Code's next compaction ask if one comes first. The newest messages after this call that fit are kept verbatim behind it, the rest named as not carried, so finish the step in hand; you need not stop.";
   const DUE = " It installs at Claude Code's next compaction ask, before your next request. The newest messages after this call that fit are kept verbatim behind it, the rest named as not carried.";
+  const INSIDE = ' It installs before your next request, inside this turn: what you have read is gone then, and the rest of the turn, your reply to the user included, is written from the frontier. The newest messages after this call that fit are kept verbatim behind it, the rest named as not carried.';
+  const NOTHING = ' Nothing compacts: your context is still too small for a compaction to pay, and stays as it is. Carry on; a forward-compaction notice asks for the call once it has grown enough.';
   const BELOW = " Claude Code has not asked to compact you yet: it installs at Claude Code's next ask, from about 67k context. The newest messages after this call that fit are kept verbatim behind it, the rest named as not carried. Carry on with your work.";
   it.each([
     [{ party: 'subagent' as const, files: 0, tokens: 41_200, askPoint: 67_000 }, `Frontier stored.${BELOW}`],
@@ -197,6 +199,12 @@ describe('receipt says what was stored and when it installs, per party (R16)', (
     [{ party: 'main' as const, files: 3 }, `Frontier stored with 3 files to load.${MAIN}`],
     [{ party: 'main' as const, files: 0, missing: ['next'] }, `Frontier stored, without next: send it before it installs, or the wake names it missing.${MAIN}`],
     [{ party: 'main' as const, files: 0, missing: ['objective', 'next'], replaced: true }, `Frontier stored, without objective and next: send them before it installs, or the wake names them missing.${MAIN} This call applied on top of your earlier one since the last wake.`],
+    [{ party: 'main' as const, files: 0, tokens: 66_999, askPoint: 67_000 }, `Frontier stored.${MAIN}`],
+    [{ party: 'main' as const, files: 0, tokens: 67_000, askPoint: 67_000 }, `Frontier stored.${INSIDE}`],
+    [{ party: 'main' as const, files: 2, tokens: 150_000, askPoint: 67_000, replaced: true }, `Frontier stored with 2 files to load.${INSIDE} This call applied on top of your earlier one since the last wake.`],
+    [{ party: 'main' as const, files: 0, tokens: 86_000, askPoint: 67_000, compacts: false }, `Frontier updated.${NOTHING}`],
+    [{ party: 'main' as const, files: 0, missing: ['next'], compacts: false }, `Frontier updated, without next: send it before it installs, or the wake names it missing.${NOTHING}`],
+    [{ party: 'subagent' as const, files: 2, tokens: 120_000, askPoint: 67_000, compacts: false, replaced: true }, `Frontier updated with 2 files to load.${NOTHING} This call applied on top of your earlier one since the last wake.`],
   ])('%j', (input, want) => {
     expect(receipt(input)).toBe(want);
   });

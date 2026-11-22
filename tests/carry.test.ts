@@ -54,7 +54,7 @@ afterEach(() => {
 // CPU-bound seconds that a loaded host stretches past vitest's 5 s default.
 describe('a sub-agent\'s skills through the hooks', { timeout: 30_000 }, () => {
   async function begin(env: Record<string, string> = {}, script: Script = {}): Promise<Fake> {
-    const f = fakeEngine({ window: 1_000_000, ...script, env: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '100000', ...env } });
+    const f = fakeEngine({ window: 1_000_000, ...script, env: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '100000', FORWARD_COMPACTION_SUBAGENT_NUDGE_START: '30000', FORWARD_COMPACTION_SUBAGENT_NUDGE_EVERY: '10000', ...env } });
     fakes.push(f);
     await f.dispatch('session.start', { reason: 'startup' }, async () => ({}));
     await f.dispatch('agent.spawn', { tool_use_id: 'tu-spawn', prompt: 'Brief for agent one', description: 'one', subagentType: 'general-purpose', provider: { kind: 'local' } }, async () => ({ model: 'sonnet', agentId: A1 }));
@@ -72,7 +72,7 @@ describe('a sub-agent\'s skills through the hooks', { timeout: 30_000 }, () => {
     { role: 'assistant', text: `storing ${'p'.repeat(200_000)}`, toolUses: [{ tool_use_id: 'tu-h', tool: FORWARD, input: SECTIONS }], handle: 'h1' },
     { role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: 'tu-h', text: 'Frontier stored' }], handle: 'h2' },
   ];
-  /** A reading, then the call with `args` besides its sections; its receipt. */
+  /** A reading past the sub-agent's 30k nudge start, so its call compacts, then the call with `args` besides its sections; its receipt. */
   async function store(f: Fake, args: Record<string, unknown> = {}): Promise<string> {
     await f.dispatch('turn.step', { turnId: 't1', index: 0, model: 'claude-sonnet-4-5', messageCount: 4, agentId: A1 }, async () => ({ turnId: 't1', index: 0, answer: '', toolUses: [], stopReason: 'tool_use', ...usage(90_000) }));
     return ((await f.dispatch('tool.call', { tool: FORWARD, tool_use_id: 'tu-h', agentId: A1, ...SECTIONS, ...args }, async () => ({ result: 'not ours' }))) as { result: string }).result;

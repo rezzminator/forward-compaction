@@ -294,7 +294,7 @@ describe('nudges (R37)', () => {
     expect((await read('tu-2')).context ?? []).toEqual([]);
   });
 
-  it('absorbs the first reading after an install: an agent installed, read at 61k, is nudged next once it grew by its working room (the 30k start) past it, at 91k', async () => {
+  it('settles the floor over the first two readings after an install: an agent installed, read at 61k then 66k, is nudged next once it grew by its working room (the 30k start) past the larger, at 96k', async () => {
     const f = await begin();
     const read = (id: string) => f.dispatch('tool.call', { tool: 'Read', tool_use_id: id, agentId: A1, file_path: '/x' }, async () => ({ result: 'file' }));
     await spawn(f);
@@ -306,10 +306,10 @@ describe('nudges (R37)', () => {
     expect((await read('tu-1')).context ?? []).toEqual([]);
     await step(f, 66_000, A1);
     expect((await read('tu-2')).context ?? []).toEqual([]);
-    await step(f, 90_000, A1);
+    await step(f, 95_999, A1);
     expect((await read('tu-3')).context ?? []).toEqual([]);
-    await step(f, 91_000, A1);
-    expect((await read('tu-4')).context?.at(-1)).toContain('context 91k and increasing.');
+    await step(f, 96_000, A1);
+    expect((await read('tu-4')).context?.at(-1)).toContain('context 96k and increasing.');
   });
 });
 
@@ -395,7 +395,7 @@ describe('ignored models: FORWARD_COMPACTION_IGNORE_MODELS, Haiku by default', (
     expect(compacts).toEqual([['skip', 'ignored-model', 64_000, 160_000, 'haiku'], ['mechanical', 'ceiling', 160_000, 160_000, 'haiku']]);
   });
 
-  it("with a working room of 60k and a step of 15k set, nudges a managed sub-agent on a 200k max context once it grew by that room, held two steps below its 160k ceiling (130k after a first reading of 79k), a step later as the last notice, and gives it the mechanical wake at 160k, its nudges then starting the room above the wake's first reading (100k after 40k)", async () => {
+  it("with a working room of 60k and a step of 15k set, nudges a managed sub-agent on a 200k max context once it grew by that room, held two steps below its 160k ceiling (130k after a first reading of 79k), a step later as the last notice, and gives it the mechanical wake at 160k, its nudges then starting the room above the floor the wake's first two readings settle (101k after 40k and 41k)", async () => {
     const f = await begin({ env: { ...defaults, FORWARD_COMPACTION_SUBAGENT_NUDGE_ROOM: '60k', FORWARD_COMPACTION_SUBAGENT_NUDGE_EVERY: '15k' } });
     await spawn(f);
     const nudged: number[] = [];
@@ -408,8 +408,8 @@ describe('ignored models: FORWARD_COMPACTION_IGNORE_MODELS, Haiku by default', (
     expect(nudged).toEqual([130_000, 145_000]);
     await step(f, 160_000, A1);
     expect(fromFacts(await f.dispatch('session.compact', { trigger: 'auto', agentId: A1, messages: transcript() }, async () => ({ skip: 'native ran' })))[1]!.text).toMatch(/past the 160k ceiling/);
-    for (const tokens of [40_000, 99_999, 100_000]) (await step(f, tokens, A1), await read(f, `tw-${tokens}`, A1));
-    expect((await rows(f)).filter((r) => r.event === 'nudge').map((r) => [r.tokens, r.level, r.notice, r.last, r.start, r.every])).toEqual([[130_000, 1, 1, false, 130_000, 15_000], [145_000, 2, 2, true, 130_000, 15_000], [100_000, 1, 1, false, 100_000, 15_000]]);
+    for (const tokens of [40_000, 41_000, 100_999, 101_000]) (await step(f, tokens, A1), await read(f, `tw-${tokens}`, A1));
+    expect((await rows(f)).filter((r) => r.event === 'nudge').map((r) => [r.tokens, r.level, r.notice, r.last, r.start, r.every])).toEqual([[130_000, 1, 1, false, 130_000, 15_000], [145_000, 2, 2, true, 130_000, 15_000], [101_000, 1, 1, false, 101_000, 15_000]]);
   });
 
   it("writes a managed sub-agent's floor at its first reading, and a restarted plugin reads it back: with a working room of 60k set, its nudges still start that room above it", async () => {
@@ -418,7 +418,7 @@ describe('ignored models: FORWARD_COMPACTION_IGNORE_MODELS, Haiku by default', (
     const before = await begin({ env: roomy, files });
     await spawn(before);
     await step(before, 40_000, A1);
-    expect(files[join(before.home, '.local/state/forward-compaction', basename(before.home), 'session-1', 'agents', A1, 'floor.json')]?.content).toBe('{\n  "floor": 40000\n}\n');
+    expect(files[join(before.home, '.local/state/forward-compaction', basename(before.home), 'session-1', 'agents', A1, 'floor.json')]?.content).toBe('{\n  "floor": 40000,\n  "settled": true\n}\n');
     const after = await begin({ env: roomy, files, home: before.home });
     await spawn(after);
     await step(after, 99_999, A1);
@@ -570,8 +570,12 @@ describe('audit r4: readings only, measured landed lines, the milestone nudge, l
     return ask(f, transcript(), A1);
   };
 
-  it('M1 nudges on the last reading alone: results delivered since it add nothing until the next reading, and main past its finish start reads the finish notice once', async () => {
+  it('M1 nudges on the last reading alone: results delivered since it add nothing until the next reading, and main past its finish start, one nudge step above its floor, reads the finish notice once', async () => {
     const f = await begin({ env: { FORWARD_COMPACTION_MAIN_NUDGE_START: '150000', FORWARD_COMPACTION_MAIN_NUDGE_EVERY: '50000', FORWARD_COMPACTION_MAIN_CEILING: '600000' } });
+    await step(f, 76_800); // main's floor: its finish notice waits one nudge step, 50k, above it
+    expect((await read(f, 'tu-floor')).context ?? []).toEqual([]);
+    await step(f, 126_799);
+    expect((await read(f, 'tu-below')).context ?? []).toEqual([]);
     await step(f, 126_800);
     expect((await read(f, 'tu-1', 70_000)).context).toEqual(['forward-compaction: context 127k. Nothing to do yet. When the whole work is finished, call mcp__forward-compaction__forward_compaction before the final report, so the user\'s reply meets a small context: the finished steps removed from remaining, next "write the final report", and all the report needs added to done and findings, as the compaction can land before your next request and the report is then written from the frontier. No such tool? Carry on.']);
     expect((await read(f, 'tu-2', 77_000)).context ?? []).toEqual([]);
@@ -742,13 +746,14 @@ describe('the ratio is measured on the growth since the base, so the fixed overh
     await ask(f, work(48_000), A1);
     set(window(30_000)); // the wake, the live window after the install
     await step(f, 41_000, A1); // the first reading after the install
-    set(window(30_000 + 19_000 * 3));
-    await step(f, 60_000, A1);
+    await step(f, 41_000, A1); // the second settles the floor
+    set(window(30_000 + 30_000 * 3));
+    await step(f, 71_000, A1); // the 30k nudge start above the floor: a call compacts again
     await store(f, A1, 'tu-2');
-    await ask(f, work(19_000 * 3, 'tu-2'), A1);
+    await ask(f, work(30_000 * 3, 'tu-2'), A1);
     const bases = await debugRows(f, 'ratio-base');
     expect(bases).toEqual([{ party: `agent:${A1}`, chars: 12_000, tokens: 44_800 }, { party: `agent:${A1}`, chars: 30_000, tokens: 41_000 }]);
-    expect((await debugRows(f, 'ratio')).at(-1)).toMatchObject({ baseChars: 30_000, baseTokens: 41_000, chars: 87_000, reading: 60_000, ratio: 3 });
+    expect((await debugRows(f, 'ratio')).at(-1)).toMatchObject({ baseChars: 30_000, baseTokens: 41_000, chars: 120_000, reading: 71_000, ratio: 3 });
   });
 
   it('leaves the ratio unmeasured, and every section uncapped, while the growth is under the minimum', async () => {

@@ -10,7 +10,7 @@ import { repairJson } from './repair';
 export const FORWARD_TOOL = 'forward_compaction';
 
 export const FORWARD_TOOL_DESCRIPTION =
-  'Compacts your large context between steps: once the step in hand has its result saved and checked, before reading for the next; what you have read is dropped. Your frontier is kept as numbered lists; send only changes: add texts, remove or edit by number; what you leave out stays. One fact or step per item. MANDATORY: keep it clean: each call removes what is finished, lifted or wrong, edits what changed. Always stores. Example: forward_compaction({"next": "Run the gate", "done": {"add": ["Parser merged, 41 tests pass"]}, "remaining": {"remove": [3]}}). Exact old detail later → look_back.';
+  'Compacts your context — call it when a forward-compaction notice asks; a call on a small context only updates your frontier. A compaction drops what you have read; the frontier stays: numbered lists, so send only changes: add texts, remove or edit by number; what you leave out stays. One fact or step per item. MANDATORY: keep it clean: each call removes what is finished, lifted or wrong, edits what changed. Always stores. Example: forward_compaction({"next": "Run the gate", "done": {"add": ["Parser merged, 41 tests pass"]}, "remaining": {"remove": [3]}}). Exact old detail later → look_back.';
 
 /** What each list holds, as its field's description says it. */
 const LIST_DESCRIPTION: Record<ListName, string> = {
@@ -324,17 +324,20 @@ export function loadFileNote(index: number, path: string, check: FileCheck): str
   return undefined;
 }
 
-/** `tokens`: the party's last reading, absent when it has none; it picks the sentence and is never printed, being a step behind the call. `missing`: the texts the frontier still lacks, which its wake names. */
+/** `tokens`: the party's last reading, absent when it has none; it picks the sentence and is never printed, being a step behind the call. `missing`: the texts the frontier still lacks, which its wake names. `compacts`: parties.ts `Parties.compacts` for the call; true when absent. */
 export type ReceiptInput =
-  | { party: 'main'; files: number; tokens?: number; askPoint?: number; replaced?: boolean; missing?: readonly string[] }
-  | { party: 'subagent'; files: number; tokens?: number; askPoint: number; replaced?: boolean; missing?: readonly string[] };
+  | { party: 'main'; files: number; tokens?: number; askPoint?: number; replaced?: boolean; missing?: readonly string[]; compacts?: boolean }
+  | { party: 'subagent'; files: number; tokens?: number; askPoint: number; replaced?: boolean; missing?: readonly string[]; compacts?: boolean };
 
-/** The result's last sentences: when the frontier installs, true to the party's door (a sub-agent's only door is Claude Code's ask), and what it lacks. */
+/** The result's last sentences: whether the call compacts, when the frontier then installs, true to the party's door (a sub-agent's only door is Claude Code's ask), and what it lacks. */
 export function receipt(input: ReceiptInput): string {
   const missing = input.missing ?? [];
   const replaced = input.replaced ? ' This call applied on top of your earlier one since the last wake.' : '';
-  const stored = `Frontier stored${input.files === 0 ? '' : ` with ${input.files} ${input.files === 1 ? 'file' : 'files'} to load`}${missing.length === 0 ? '' : `, without ${andList(missing)}: send ${missing.length === 1 ? 'it' : 'them'} before it installs, or the wake names ${missing.length === 1 ? 'it' : 'them'} missing`}.`;
+  const held = `${input.files === 0 ? '' : ` with ${input.files} ${input.files === 1 ? 'file' : 'files'} to load`}${missing.length === 0 ? '' : `, without ${andList(missing)}: send ${missing.length === 1 ? 'it' : 'them'} before it installs, or the wake names ${missing.length === 1 ? 'it' : 'them'} missing`}.`;
+  if (input.compacts === false) return `Frontier updated${held} Nothing compacts: your context is still too small for a compaction to pay, and stays as it is. Carry on; a forward-compaction notice asks for the call once it has grown enough.${replaced}`;
+  const stored = `Frontier stored${held}`;
   const behind = 'The newest messages after this call that fit are kept verbatim behind it, the rest named as not carried';
+  if (input.party === 'main' && input.tokens !== undefined && input.askPoint !== undefined && input.tokens >= input.askPoint) return `${stored} It installs before your next request, inside this turn: what you have read is gone then, and the rest of the turn, your reply to the user included, is written from the frontier. ${behind}.${replaced}`;
   if (input.party === 'main') return `${stored} It installs at the end of this turn, or at Claude Code's next compaction ask if one comes first. ${behind}, so finish the step in hand; you need not stop.${replaced}`;
   if (input.tokens !== undefined && input.tokens >= input.askPoint) return `${stored} It installs at Claude Code's next compaction ask, before your next request. ${behind}.${replaced}`;
   return `${stored} Claude Code has not asked to compact you yet: it installs at Claude Code's next ask, from about ${k(input.askPoint)} context. ${behind}. Carry on with your work.${replaced}`;

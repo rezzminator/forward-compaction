@@ -41,11 +41,11 @@ describe('the wake renders the standing orders above everything', () => {
     const sections = f.split('\n\n').filter((s) => s.startsWith('## '));
     expect(sections[0]).toBe(`${ORDERS_HEADING}\n[1] ${ORDER}\n[3] never force-push`);
     expect(f.indexOf(ORDERS_HEADING)).toBeLessThan(f.indexOf("## The user's messages"));
-    expect((wake.messages[1] as BuiltMessage).text.split('\n')[0]).toBe('[forward-compaction: frontier] Below is your frontier as forward-compaction holds it: continue from its ## Next, within the standing orders above. In your next forward_compaction call send only changes, by item number; whatever you leave out stays.');
+    expect((wake.messages[1] as BuiltMessage).text.split('\n')[0]).toBe('[forward-compaction: frontier] Below is your frontier as forward-compaction holds it: continue from its ## Next, within the standing orders above. When a notice next asks for a forward_compaction call, send only changes, by item number; whatever you leave out stays.');
     expect(wake.sizes[0]).toEqual({ section: ORDERS_HEADING, chars: sections[0]!.length });
     const aged = buildWake({ ...shared, toolUseId: 't9', frontier: '## Next\nround 2', rounds: 2, orders: [orders[0]!, { ...orders[1]!, round: 2 }] });
     expect(sectionOf((aged.messages[0] as BuiltMessage).text, ORDERS_HEADING)).toBe(`${ORDERS_HEADING}\n[1] ${ORDER} [2 rounds unchanged]\n[3] never force-push`);
-    expect((aged.messages[1] as BuiltMessage).text.split('\n')[0]).toBe('[forward-compaction: frontier] Below is your frontier as forward-compaction holds it: continue from its ## Next, within the standing orders above. In your next forward_compaction call send only changes, by item number; whatever you leave out stays. An item tagged [N rounds unchanged] has passed N compactions with no change: keep it only while it is still true and still needed, and a standing order until the user lifts it.');
+    expect((aged.messages[1] as BuiltMessage).text.split('\n')[0]).toBe('[forward-compaction: frontier] Below is your frontier as forward-compaction holds it: continue from its ## Next, within the standing orders above. When a notice next asks for a forward_compaction call, send only changes, by item number; whatever you leave out stays. An item tagged [N rounds unchanged] has passed N compactions with no change: keep it only while it is still true and still needed, and a standing order until the user lifts it.');
   });
 
   it('carries them whole whatever the budget, and the mechanical wake carries them the same way', () => {
@@ -62,7 +62,7 @@ describe('the wake renders the standing orders above everything', () => {
     const wake = buildWake({ ...shared, toolUseId: 't9', frontier: 'h', orders: [] });
     expect((wake.messages[0] as BuiltMessage).text.split('\n\n')[0]).toMatch(/^\[forward-compaction: facts\]/);
     expect(sectionOf((wake.messages[0] as BuiltMessage).text, '## Standing orders')).toBeUndefined();
-    expect((wake.messages[1] as BuiltMessage).text.split('\n')[0]).toBe('[forward-compaction: frontier] Below is your frontier as forward-compaction holds it: continue from its ## Next. In your next forward_compaction call send only changes, by item number; whatever you leave out stays.');
+    expect((wake.messages[1] as BuiltMessage).text.split('\n')[0]).toBe('[forward-compaction: frontier] Below is your frontier as forward-compaction holds it: continue from its ## Next. When a notice next asks for a forward_compaction call, send only changes, by item number; whatever you leave out stays.');
   });
 });
 
@@ -91,6 +91,8 @@ const call = (f: Fake, id: string, args: Record<string, unknown>) =>
   f.dispatch('tool.call', { tool: FORWARD, tool_use_id: id, ...args }, async () => ({ result: 'not ours' })).then((r: { result: string }) => r.result.split('\n'));
 const step = (f: Fake, tokens: number) =>
   f.dispatch('turn.step', { turnId: 't1', index: 0, model: 'claude-sonnet-4-5', messageCount: 4 }, async () => ({ turnId: 't1', index: 0, answer: '', toolUses: [], stopReason: 'tool_use', ...usage(tokens) }));
+/** A woken main past its notice point again: two readings settle its floor at 20k, the third stands its 30k nudge start above it, so its next call compacts. */
+const grown = async (f: Fake) => { for (const tokens of [20_000, 20_000, 50_000]) await step(f, tokens); };
 const transcript = (id: string) => [
   { role: 'user', text: 'start', toolUses: [], handle: 'h0' },
   { role: 'assistant', text: 'compacting', toolUses: [{ tool_use_id: id, tool: FORWARD, input: FIRST }], handle: 'h1' },
@@ -113,9 +115,11 @@ describe('the standing orders and the other lists, through the hooks and their f
     expect((await call(f, 'tu-b', { next: 'merge round 2' })).slice(0, 1)).toEqual(['next replaced']);
     expect(await ordersIn(f, 'tu-b')).toBe(`${ORDERS_HEADING}\n[1] ${ORDER}`);
 
+    await grown(f);
     expect((await call(f, 'tu-c', { next: 'spawn', lifted: [{ order: ORDER, by: 'spawn as many chats as you need' }] })).slice(0, 2)).toEqual(['next replaced', 'lifted is no field: to lift an order, send its number in orders.remove. Nothing lifted.']);
     expect(await ordersIn(f, 'tu-c')).toBe(`${ORDERS_HEADING}\n[1] ${ORDER} [1 round unchanged]`);
 
+    await grown(f);
     expect((await call(f, 'tu-d', { next: 'spawn', orders: { remove: [1] } })).slice(0, 2)).toEqual([`Removed from orders: [1] ${ORDER}`, 'next unchanged']);
     expect(await ordersIn(f, 'tu-d')).toBeUndefined();
     const r = await rows(f);

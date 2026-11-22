@@ -18,8 +18,8 @@ export type Left = { id: number; text: string; left: 'removed' | 'edited' };
 /** One storage entry as the wake lists it (storage.ts). */
 export type StorageEntry = { name: string; description: string };
 
-/** Everything the plugin holds of one party's frontier. `rounds`: the compactions installed for the party while it held an item, absent is 0; each item's rounds unchanged are counted against it. `floor`: the party's context, in tokens as Claude Code reported it, at its first reading ever or its first after its last compaction; with a working room set, its nudges start that room above it (nudge.ts `nudgeStart`). */
-export type Held = { objective?: string; next?: string; lists: Record<ListName, List>; storage: StorageEntry[]; rounds?: number; floor?: number };
+/** Everything the plugin holds of one party's frontier. `rounds`: the compactions installed for the party while it held an item, absent is 0; each item's rounds unchanged are counted against it. `floor`: the party's context, in tokens as Claude Code reported it, at its first reading ever, or after its last compaction the larger of its first two readings, `settling` while only the first is in; a compaction that frees next to nothing is told by it (parties.ts `finishReached`), and with a working room set the party's nudges start that room above it (nudge.ts `nudgeStart`). */
+export type Held = { objective?: string; next?: string; lists: Record<ListName, List>; storage: StorageEntry[]; rounds?: number; floor?: number; settling?: true };
 
 export const emptyList = (): List => ({ next_id: 1, items: [] });
 export const emptyHeld = (): Held => ({ lists: Object.fromEntries(LISTS.map((name) => [name, emptyList()])) as Record<ListName, List>, storage: [] });

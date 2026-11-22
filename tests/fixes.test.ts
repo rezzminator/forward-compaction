@@ -2,7 +2,7 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { fakeEngine, usage, type Script } from './fakes/engine.ts';
-import { fromFacts } from './fakes/session.ts';
+import { fromFacts, store, transcript } from './fakes/session.ts';
 
 // The adapter's wiring of the audited faults (2026-10-27): each row keys and judges its party once, a lift is
 // checked against its time, a rejected turn-end install is an error, and the wake carries what the party ran.
@@ -209,6 +209,7 @@ describe('a turn-end install marks only the turn it ends', () => {
     await f.dispatch('tool.call', { tool: FORWARD, tool_use_id: 'tu-1', ...SECTIONS }, async () => ({ result: 'not ours' }));
     await turnEnd(f);
     await f.dispatch('turn.start', { text: 'Part 3', turnId: 't2' }, async () => ({}));
+    await step(f, 20_000); await step(f, 20_000); await step(f, 50_000); // the woken main, back at its notice point: the 30k start above its 20k floor
     messages = call('tu-2');
     await f.dispatch('tool.call', { tool: FORWARD, tool_use_id: 'tu-2', ...SECTIONS }, async () => ({ result: 'not ours' }));
     await turnEnd(f);
@@ -241,5 +242,38 @@ describe('L8 + L9: one row per registration failure, and every error and warning
     f.advance(30_000);
     await turn();
     expect((await call()).result.split('\n')[5]).toMatch(/^Frontier stored\. /);
+  });
+});
+
+describe('a call before the notice point only updates the frontier', () => {
+  it('after a wake a call made before the context has grown again only updates the frontier: the receipt says so, the next ask and the turn end compact nothing, and a call from the notice point on (the 30k start above the settled floor: 71k after 20k and 41k) compacts', async () => {
+    const f = await begin();
+    const ask = (id: string) => f.dispatch('session.compact', { trigger: 'auto', messages: transcript(id) }, async () => ({ skip: 'native ran' }));
+    const answer = (turnId: string) => f.dispatch('turn.complete', { reason: 'answer', answer: 'done', durationMs: 1, isAborted: false, turnId }, async () => ({ text: 'done' }));
+    const read = (id: string) => f.dispatch('tool.call', { tool: 'Read', tool_use_id: id, file_path: '/x' }, async () => ({ result: 'file' }));
+    const receiptOf = async (id: string) => (await store(f, undefined, id)).result.split('\n').find((line: string) => line.startsWith('Frontier stored') || line.startsWith('Frontier updated'));
+    const UPDATED = 'Frontier updated. Nothing compacts: your context is still too small for a compaction to pay, and stays as it is. Carry on; a forward-compaction notice asks for the call once it has grown enough.';
+    const AGAIN = ' This call applied on top of your earlier one since the last wake.';
+    await step(f, 64_000);
+    await store(f);
+    expect(await ask('tu-h')).toHaveProperty('messages');
+    await answer('t1');
+    await step(f, 20_000); // the first request after the wake
+    await step(f, 41_000); // the second, Claude Code's listings sent again: the floor
+    expect(await receiptOf('tu-2')).toBe(UPDATED);
+    expect(await ask('tu-2')).toEqual({ skip: "forward-compaction: holding Claude Code's compaction for main until its frontier is stored or the ceiling is reached" });
+    await answer('t2');
+    expect(f.compactCalls).toEqual([]);
+    await step(f, 70_999);
+    expect((await read('tu-r1')).context ?? []).toEqual([]);
+    expect(await receiptOf('tu-3')).toBe(`${UPDATED}${AGAIN}`);
+    await step(f, 71_000);
+    expect((await read('tu-r2')).context?.at(-1)).toContain('forward-compaction: context 71k and increasing.');
+    expect(await receiptOf('tu-4')).toBe(`Frontier stored. It installs before your next request, inside this turn: what you have read is gone then, and the rest of the turn, your reply to the user included, is written from the frontier. The newest messages after this call that fit are kept verbatim behind it, the rest named as not carried.${AGAIN}`);
+    await answer('t3');
+    expect(f.compactCalls).toEqual([[]]);
+    const r = await rows(f);
+    expect(r.filter((row) => row.event === 'stored').map((row) => [row.tokens, row.compacts])).toEqual([[64_000, true], [41_000, false], [70_999, false], [71_000, true]]);
+    expect(r.filter((row) => row.event === 'compact').map((row) => [row.decision, row.why])).toEqual([['install', 'stored'], ['skip', 'waiting']]);
   });
 });

@@ -349,7 +349,8 @@ export async function recordSynthetic(dir: string): Promise<string> {
   mkdirSync(rows, { recursive: true });
   const { register: recorded } = await import('../../scripts/replay/recorder.ts');
   let now = Date.UTC(2026, 9, 23, 12, 0, 0);
-  const env: Record<string, string> = { HOME: '/HOME', CLAUDE_CODE_AUTO_COMPACT_WINDOW: '100000' };
+  // The sub-agent's notice point is held at 30k, so its call at 45k compacts and its ask installs the frontier.
+  const env: Record<string, string> = { HOME: '/HOME', CLAUDE_CODE_AUTO_COMPACT_WINDOW: '100000', FORWARD_COMPACTION_SUBAGENT_NUDGE_START: '30000', FORWARD_COMPACTION_SUBAGENT_NUDGE_EVERY: '10000' };
   const $ = {
     agent: { list: async () => [{ id: A1, type: 'general-purpose', status: 'running', description: 'one' }] },
     clock: { now: async () => (now += 1000), after: () => ({ cancel: () => undefined }) },

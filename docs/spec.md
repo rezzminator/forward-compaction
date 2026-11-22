@@ -60,10 +60,17 @@ party with no reading at all, none yet or none since an install, gets no nudge
 and no ceiling, and an automatic ask from it with nothing stored is held as
 `no-reading` until its next reading decides.
 
-1. **Nudges.** Each party has a floor: its first context reading, its first
-   reading after an install, or any lower reading (a compaction this plugin
-   did not make, after which the nudges start over as after an install); the
-   plugin keeps it in the party's folder (`floor.json`).
+1. **Nudges.** Each party has a floor: its first context reading ever, or
+   after an install the larger of its first two readings (the first sets it
+   and marks it settling, the second makes it the larger, because only the
+   second request after a compaction carries what Claude Code sends back: its
+   skill, tool and agent listings), or any lower reading than a settled floor
+   (a compaction this plugin did not make, after which the nudges and the
+   finish notice start over as after an install); the plugin keeps it in the
+   party's folder (`floor.json`, `{"floor": N, "settled": true|false}`). On
+   load a floor without `settled: true` (an install's first reading alone, and
+   every floor file an earlier version wrote) is not taken: the party's next
+   reading is its floor.
    After a tool result, once the party's context has reached its nudge start
    (`FORWARD_COMPACTION_MAIN_NUDGE_START`, default `15%` of the max context;
    `FORWARD_COMPACTION_SUBAGENT_NUDGE_START`, default `165k` tokens, the same
@@ -104,7 +111,7 @@ and no ceiling, and an automatic ask from it with nothing stored is held as
    may skip, as its work ends within a few calls, the main chat's on the
    finish rule below. No line names a max context or the ceiling. A held
    compaction ask adds no nudge of its own. After an install the party's
-   first reading is its new floor and its level is absorbed silently (a
+   first two readings settle its new floor and its level is absorbed silently (a
    sub-agent's floor of system prompt, tools and skills is already 55-60k), so
    the next nudge goes only when the context has grown by the nudge start (or
    the room, when set) above it. A wake lands near or above the old nudge
@@ -120,19 +127,37 @@ and no ceiling, and an automatic ask from it with nothing stored is held as
    until the user replies, and a reply after the prompt cache expired
    re-sends all of it. The main chat reads the rule in its first three
    nudges, and before any nudge in one line of its own, the finish notice:
-   once since its last install, when its context reaches
-   `FORWARD_COMPACTION_MAIN_FINISH_START` with nothing stored, and after an
-   install only once it has grown one `NUDGE_EVERY` past its first reading.
+   once since its last install, when its context is at or past
+   `FORWARD_COMPACTION_MAIN_FINISH_START` and one `NUDGE_EVERY` above its
+   floor (`finishReached`), with no nudge sent yet and no stored call that
+   compacts. A fresh or reloaded chat is held to the same rule from its first
+   reading.
    A sub-agent is never asked: its context ends with its report. The plugin
    detects no finish and holds no turn end: the model decides.
 2. **Compacting.** The model calls `forward_compaction` (the model sees
    `mcp__forward-compaction__forward_compaction`). The plugin applies the
    call's changes to that party's frontier, writes them to its files, and
    never refuses the call: an argument it cannot use is skipped, and the
-   result names it. A second call before the install applies on top of the
-   first. A frontier with no objective or next installs like a complete one,
+   result names it. Whether the call also compacts is decided at the call
+   (`callCompacts`, `Parties.compacts`) by the party's last reading and the
+   marks its notices go by: it compacts once the party's context has reached
+   where a notice goes since its last install (main: its finish notice point,
+   `finishReached`, or a nudge point; a sub-agent: a nudge point; a nudge
+   point is the nudge start, with a nudge room set that room above the floor,
+   and after a wake its room above the floor the wake left). Below that point
+   the call only changes the held frontier: its lists, texts, storage and
+   load_files are applied and written to disk, and nothing compacts: Claude
+   Code's asks stay skipped (`compact` row, decision `skip`, why `waiting`),
+   main's turn end does not compact, and nudges and the finish notice still go
+   out when due. A party with no marks (window unknown), a party on the ignore
+   list and a party with no reading yet are not judged and the call compacts;
+   a woken party with no reading since its wake does not compact. The stored
+   call carries `compacts` (`StoredFrontier.compacts`), and the `stored`
+   decision row logs `compacts: true|false`; a later call from the notice
+   point on applies on top of the earlier one and compacts. A second call
+   before the install applies on top of the first. A frontier with no objective or next installs like a complete one,
    its wake naming what it lacks.
-3. **Installing.** The stored frontier installs at the next door Claude Code
+3. **Installing.** A stored call that compacts installs at the next door Claude Code
    opens: for the main chat at the end of the turn (the plugin asks Claude
    Code to compact) or at an automatic ask if one comes first; for a
    sub-agent at Claude Code's next automatic ask. No summarizer request runs.
@@ -272,10 +297,19 @@ installs:
   item also gets `Frontier is {n} characters, over {threshold}: in your next
   forward_compaction call send a shorter objective and next.`; one whose
   lists hold items is asked nothing. Nothing is cut and no call is refused;
+- a call that does not compact: `Frontier updated{…}. Nothing compacts: your
+  context is still too small for a compaction to pay, and stays as it is. Carry
+  on; a forward-compaction notice asks for the call once it has grown enough.`
 - `Frontier stored`, with `with {n} files to load` when it carries any, and
   `, without {objective|next}: send it before it installs, or the wake names
   it missing` when the frontier holds no objective or next; then when it
-  installs — for the main chat at the end of this turn, for a sub-agent at
+  installs — for the main chat at or past Claude Code's ask point, inside
+  this turn, before its next request (`It installs before your next request,
+  inside this turn: what you have read is gone then, and the rest of the turn,
+  your reply to the user included, is written from the frontier. The newest
+  messages after this call that fit are kept verbatim behind it, the rest
+  named as not carried.`), for the main chat below the ask point at the end of
+  this turn or at Claude Code's next ask if one comes first, for a sub-agent at
   Claude Code's next ask (with where that ask comes) — and, when an earlier
   call since the last wake was stored, `This call applied on top of your
   earlier one since the last wake.` It prints no context size: the plugin
@@ -464,9 +498,9 @@ how many were dropped.
 
 The frontier message opens `[forward-compaction: frontier] Below is your
 frontier as forward-compaction holds it: continue from its ## Next`, with
-`, within the standing orders above` while an order is live, then `In your
-next forward_compaction call send only changes, by item number; whatever you
-leave out stays.` The frontier follows, rendered from the lists, never from
+`, within the standing orders above` while an order is live, then `When a
+notice next asks for a forward_compaction call, send only changes, by item
+number; whatever you leave out stays.` The frontier follows, rendered from the lists, never from
 text the model wrote whole: `## Objective`, `## Decisions`, `## Done`,
 `## Remaining`, `## Next`, `## Blocked`, `## Findings`, each list's live
 items one per line as `[n] text`, a list with no item left out. An item of
@@ -500,7 +534,8 @@ end, with after said as unknown, never guessed.
 ### What else happens at a compaction
 
 - A user's `/compact` runs Claude Code's own summary untouched; a stored
-  frontier is dropped, and the screen says so.
+  frontier that compacts is dropped, and the screen says so; one that does not
+  compact says nothing, as there was no install to lose.
 - A message the user sends after the call does not cancel a stored frontier:
   it is among the messages kept after the call.
 - A stored frontier whose call is no longer in the party's transcript
@@ -547,9 +582,9 @@ window. A sub-agent's frontier installs only at such an ask, so **set
 `CLAUDE_CODE_AUTO_COMPACT_WINDOW=100000`**: when the compaction window Claude
 Code reports is above 100000 the plugin says so once at start, with that
 window, its source and the ask point. Past that point Claude Code asks
-before every request, so a stored frontier installs at the party's next
-request. The low window is there so the plugin can install a frontier
-whenever the model writes one, never to force one: a held ask changes no
+before every request, so a stored call that compacts installs at the party's
+next request. The low window is there so the plugin can install a frontier
+as soon as a call compacts, never to force one: a held ask changes no
 nudge, and the model keeps picking its milestone until the ceiling. The main chat does not wait for an ask: its frontier installs at the
 end of its turn.
 
@@ -639,7 +674,7 @@ With the defaults, on a 200k sub-agent max context (on 1M the ceiling is
 | `~/.local/state/forward-compaction/logs/{errors,warnings,info}.jsonl` (`$PLUGIN_LOG_DIR/forward-compaction/` when set) | the plugin's errors, warnings and info: every decision event lands at its level — errors and warnings in their files, every other operational event (nudge, stored, each compaction decision, party, skill, tool-registered, look-back, the lines said) in `info.jsonl`, a held-ask streak folded into its first row and one `skips` row. Each row's `event` names what happened (never a bare `error` or `warning`), and an error or warning row's `where` names the function that raised it. One failure is one row: a tool that fails to register writes one error row and one screen line, and is tried again at each `turn.start`: at once for its first three tries, then after a wait of 30 seconds that doubles with each failure, up to 15 minutes, for the rest of the session. Rows a write could not append (the lock held past its 10-second wait, the writer killed at its 15-second bound, any failure) stay queued, order kept, and are retried with the next write: a row may be written twice, never lost or torn. Only past 2,000 held rows are the oldest dropped, and their count goes to `errors.jsonl` (`plugin-log-rows-dropped`) once a write succeeds. A lock stage or broken lock whose writer died is cleared | a level file over 20 MiB moves to `.1`, the older ones to `.2` … `.5`, the oldest of five deleted |
 | `debug.jsonl` in the same directory (with `FORWARD_COMPACTION_DEBUG` on) | a row at every step: each hook entry (hook, party, trigger, model), each `$` answer the plugin decides on (`session.usage` figures, the `agent.list` count, each `turn.step` reading with its four counts and model, `fs.stat` results), the options and variables resolved, each ratio base and each ratio, measured or not and why, with the base's characters and tokens and the characters and reading now, each wake's section sizes and files (`briefFiles` the picked brief documents, which also stand in `carried` or `notCarried`), its `start` (how many messages stand before the facts: a sub-agent's kept start and its end line, 0 without one), `kept`, `dropped`, `skills` and `storage` counts, each nudge sent or withheld and why, and every decision row whole; numbers as the API gave them | as the level files: `.1` … `.5` |
 | `issues.md` in the same directory | notes a model appends when the plugin gave it trouble, as each tool answer asks | not managed by the plugin |
-| `~/.local/state/forward-compaction/{project}/{session}/`, each sub-agent's under `agents/{agent id}/` in it; `{project}` the name of the session's project directory without a leading dot | the party's frontier, written by the plugin alone when a call changes it: `orders.json` and `data/{decisions,done,remaining,blocked,findings}.json`, each `{next_id, items: [{id, text, round}]}` in shown order, `round` the party's count of installed compactions when the item was added or last edited, left out at 0; `data/{objective,next}.json`, `{text}`; `storage.json`, the listed `[{name, description}]`; `storage/{name}.md`, each value; `rounds.json`, `{rounds}`, that count, written right after each install of a party that holds a list item; `floor.json`, `{floor}`, the party's floor (its first reading ever, its first after an install, or any lower reading), which its nudges are timed from. What leaves goes to `history/`: `history/{list}.jsonl`, one line `{id, text, left}` (`removed` or `edited`) per value that left; `history/{objective,next}.jsonl`, one `{text}` per text replaced; `history/storage/{name}`, a storage value replaced or removed, numbered before `.md` when the name is taken; `history/unreadable/{file}`, the content of a live file that could not be parsed at start, copied there before the first write over it. No file holds a date or a time. At the start of a chat process or a sub-agent the party's frontier is loaded from them; every list's next number is past every number its history holds; an unreadable live file is logged and read as an empty list, its next number also past every number its own text names, and left as it is until a call changes that list. What left is appended to the history before the live file that no longer holds it is written. A party with no `orders.json` takes the standing orders the previous build kept in Claude Code's session state as its first numbered orders | nothing is ever deleted |
+| `~/.local/state/forward-compaction/{project}/{session}/`, each sub-agent's under `agents/{agent id}/` in it; `{project}` the name of the session's project directory without a leading dot | the party's frontier, written by the plugin alone when a call changes it: `orders.json` and `data/{decisions,done,remaining,blocked,findings}.json`, each `{next_id, items: [{id, text, round}]}` in shown order, `round` the party's count of installed compactions when the item was added or last edited, left out at 0; `data/{objective,next}.json`, `{text}`; `storage.json`, the listed `[{name, description}]`; `storage/{name}.md`, each value; `rounds.json`, `{rounds}`, that count, written right after each install of a party that holds a list item; `floor.json`, `{"floor": N, "settled": true|false}`, the party's floor (its first reading ever, after an install the larger of its first two readings, or any lower reading than a settled one), which its nudges and the main chat's finish notice are timed from. What leaves goes to `history/`: `history/{list}.jsonl`, one line `{id, text, left}` (`removed` or `edited`) per value that left; `history/{objective,next}.jsonl`, one `{text}` per text replaced; `history/storage/{name}`, a storage value replaced or removed, numbered before `.md` when the name is taken; `history/unreadable/{file}`, the content of a live file that could not be parsed at start, copied there before the first write over it. No file holds a date or a time. At the start of a chat process or a sub-agent the party's frontier is loaded from them; every list's next number is past every number its history holds; an unreadable live file is logged and read as an empty list, its next number also past every number its own text names, and left as it is until a call changes that list. What left is appended to the history before the live file that no longer holds it is written. A party with no `orders.json` takes the standing orders the previous build kept in Claude Code's session state as its first numbered orders | nothing is ever deleted |
 | anything else | none: the recorded facts live in memory only | — |
 
 Only errors reach the screen, and the log too. Warning, info and debug rows

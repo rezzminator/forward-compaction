@@ -34,15 +34,11 @@ const texts = (messages: readonly any[]): string => messages.map((m) => [m.text 
 /** Whether a wake lists a skill under `## Skills not carried` by its name: the wake carries a skill's text only when it is pinned or kept, and lists every other one. */
 const listsSkill = (wake: string, skill: string): boolean => wake.includes('## Skills not carried\n') && wake.slice(wake.indexOf('## Skills not carried\n')).includes(`\n- ${skill} (`);
 const nextWake = (view: View, key: string, after: number): Invocation | undefined => view.find((c) => c.seq > after && party(c.input) === key && wakeOf(c) !== undefined);
-/** The frontier the plugin assembled from the call's section arguments, or undefined when the call carried none. */
-const SECTION_KEYS = ['objective', 'decisions', 'done', 'remaining', 'next', 'blocked', 'findings'];
 /**
  * The frontier the wake after `call` installs. The plugin holds it as lists that every call of the party changes, so it
- * is each such call up to this one applied in order, a round passing at each wake between them; the 2.1.325 recording's build installed the one call's sections
- * whole, so its own outputs are held to that.
+ * is each such call up to this one applied in order, a round passing at each wake between them.
  */
-const frontierOf = (view: View, call: Invocation, recorded: boolean): string => {
-  if (recorded) return SECTION_KEYS.flatMap((key) => (typeof toolInput(call.input)[key] === 'string' && (toolInput(call.input)[key] as string).trim() !== '' ? [`## ${key[0]!.toUpperCase()}${key.slice(1)}\n${toolInput(call.input)[key]}`] : [])).join('\n\n');
+const frontierOf = (view: View, call: Invocation): string => {
   return renderFrontier(view
     .filter((t) => t.seq <= call.seq && party(t.input) === party(call.input) && ((t.hook === 'tool.call' && isForward(t.input?.tool)) || wakeOf(t) !== undefined))
     .reduce((held, t) => (t.hook === 'tool.call' ? applyCall(held, parseCall(toolInput(t.input))).held : roundPassed(held)), emptyHeld()));
@@ -100,7 +96,7 @@ export const INVARIANTS: Record<Name, (view: View, recorded: boolean) => Verdict
     const subjects = view.filter((i) => i.hook === 'session.compact' && i.input?.trigger === 'precompute');
     return { subjects: subjects.length, failures: subjects.filter((i) => typeof i.end?.result?.skip !== 'string').map((i) => `I2 ${at(i)}: a precompute was not skipped`) };
   },
-  I3(view, recorded) {
+  I3(view) {
     const failures: string[] = [];
     let subjects = 0;
     for (const c of view) {
@@ -111,7 +107,7 @@ export const INVARIANTS: Record<Name, (view: View, recorded: boolean) => Verdict
       const call = [...view].reverse().find((t) => t.seq < c.seq && t.hook === 'tool.call' && isForward(t.input?.tool) && party(t.input) === party(c.input) && tailAfterAnchor(ask, t.input.tool_use_id) !== undefined);
       if (!call) { failures.push(`I3 ${at(c)}: no forward_compaction call of this party is in the ask's messages`); continue; }
       const h = wake.findLastIndex((m) => m.handle === undefined);
-      if (h < 0 || !String(wake[h].text).includes(`=== frontier ===\n${frontierOf(view, call, recorded)}\n=== end of frontier ===`)) failures.push(`I3 ${at(c)}: the last hook-built message lacks the frontier of tool.call #${call.id} verbatim`);
+      if (h < 0 || !String(wake[h].text).includes(`=== frontier ===\n${frontierOf(view, call)}\n=== end of frontier ===`)) failures.push(`I3 ${at(c)}: the last hook-built message lacks the frontier of tool.call #${call.id} verbatim`);
       const tail = wake.slice(h + 1).map((m) => m.handle);
       const after = tailAfterAnchor(ask, call.input.tool_use_id)!;
       if (tail.some((x) => typeof x !== 'string')) failures.push(`I3 ${at(c)}: a tail message carries no handle`);
@@ -143,6 +139,14 @@ export const INVARIANTS: Record<Name, (view: View, recorded: boolean) => Verdict
     const failures: string[] = [];
     let subjects = 0;
     for (const spawn of view.filter((i) => i.hook === 'agent.spawn' && typeof i.nextResult?.result?.agentId === 'string')) {
+      // A resume (a message sent to an agent that had ended) is no brief: its text reaches the party's next wake as a message it received.
+      if (spawn.input?.resume !== undefined) {
+        const resumed = nextWake(view, `agent:${spawn.nextResult!.result.agentId}`, spawn.seq);
+        if (!resumed) continue;
+        subjects++;
+        if (!texts(wakeOf(resumed)!).includes(spawn.input.prompt)) failures.push(`I6 ${at(resumed)}: the wake lacks the text agent.spawn #${spawn.id} resumed the party with`);
+        continue;
+      }
       for (const c of view.filter((i) => party(i.input) === `agent:${spawn.nextResult!.result.agentId}` && wakeOf(i) !== undefined)) {
         subjects++;
         // The brief reaches a woken sub-agent whole: in its kept start, its own first messages handed back by handle before the facts, or under
@@ -323,7 +327,9 @@ describe('replay gate (D19)', { timeout: 60_000 }, () => {
     const rows = LIVE();
     const { skill, call, wake } = skillSubject(invocations(rows));
     const key = party(call.input);
-    const edited = rows.map((r) => (r.id === wake.id && r.phase === 'end' ? JSON.parse(JSON.stringify(r).split(JSON.stringify(skill.input.text).slice(1, -1)).join('(gone)')) : r));
+    // The wake holds the skill as its whole text when pinned, else as a line under `## Skills not carried`: both leave.
+    const strip = (json: string, part: string): string => json.split(JSON.stringify(part).slice(1, -1)).join('(gone)');
+    const edited = rows.map((r) => (r.id === wake.id && r.phase === 'end' ? JSON.parse(strip(strip(JSON.stringify(r), skill.input.text), `\n- ${skill.input.skill} (`)) : r));
     expect(await gate(edited, LIVE_EXERCISES)).toContain(`recorded: I5 session.compact #${wake.id} ${key}: the wake neither carries nor lists skill.prompt #${skill.id} (${skill.input.skill}), loaded inside ${key}'s Skill call tool.call #${call.id}`);
   });
 

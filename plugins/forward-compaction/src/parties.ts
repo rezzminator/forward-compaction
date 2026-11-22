@@ -19,6 +19,8 @@ export type StoredFrontier = {
   since: number;
   /** Store order across all parties. */
   seq: number;
+  /** Whether a door installs it (`Parties.compacts`): a call made before the party's context reached where a notice goes only changes its held frontier, and nothing compacts. */
+  compacts: boolean;
 };
 
 /** What the party's last `session.compact` ask ended in (the decision row's `decision`). */
@@ -65,7 +67,7 @@ export type PartyState = {
   nudgeLevel: number;
   /** True from an install until the party's next reading, whose nudge level is then absorbed silently. */
   absorbNext: boolean;
-  /** The party's first reading after its last install: its next nudge waits until the context has grown by its room past it (nudge.ts `roomAbove`). */
+  /** The party's floor after its last install (`Held.floor`): its next nudge waits until the context has grown by its room past it (nudge.ts `roomAbove`). */
   wokeAt?: number;
   /** The reading the party's last nudge went out at, since its last install: the next one waits until the context has grown by `every` past it. */
   nudgedAt?: number;
@@ -85,6 +87,13 @@ export type PartyState = {
   /** Plan mode and the plan file, as the party's last plan-mode attachment named them (plan.ts `planFrom`). */
   plan?: PlanSeen;
 };
+
+/**
+ * Where main's finish notice goes: a reading (`tokens`) of `start` or more that has grown by `every` past the party's
+ * floor (`Held.floor`, which a restart keeps). A compaction sooner frees next to nothing: the context it leaves is the
+ * floor again.
+ */
+const finishReached = (state: PartyState, tokens: number, start: number, every: number): boolean => tokens >= start && (state.held?.floor === undefined || tokens >= state.held.floor + every);
 
 /** Per-party state, memory only, keyed "main" or "agent:{id}". A party is created on first touch. */
 export class Parties {
@@ -174,9 +183,11 @@ export class Parties {
    * A completed request's reading and its nudge level; that request also answers a held ask. The first reading after
    * an install is the party's floor plus what it kept: its level is absorbed, so the next nudge goes only past it.
    * The party's first reading ever, its first after an install and any reading below its floor (a compaction this
-   * plugin did not make) is its new floor (`Held.floor`), due in its file. A reading below the floor also starts the
-   * nudges over, as an install's first reading does: its level is absorbed, the next nudge is the first again, and a
-   * woken party's room is measured from it.
+   * plugin did not make) is its new floor (`Held.floor`), due in its file. After an install the floor settles at the
+   * second reading, as the larger of the two: only the second request carries what Claude Code sends back after a
+   * compaction (its skill, tool and agent listings). A reading below a settled floor also starts the notices over, as
+   * an install does: its level is absorbed, the next nudge is the first again, the finish notice is owed again, and
+   * a woken party's room is measured from it.
    * Returns the landing that reading measures, taken: its line is due now.
    */
   read(key: string, tokens: number, level = 0): Landing | undefined {
@@ -184,13 +195,19 @@ export class Parties {
     const landing = state.landing;
     state.reading = tokens;
     state.landing = undefined;
-    const fell = !state.absorbNext && state.held?.floor !== undefined && tokens < state.held.floor;
-    if (state.absorbNext || state.held?.floor === undefined || tokens < state.held.floor) {
-      state.held = { ...(state.held ?? emptyHeld()), floor: tokens };
+    const first = state.absorbNext, floor = state.held?.floor;
+    const second = !first && state.held?.settling === true;
+    const fell = !first && !second && floor !== undefined && tokens < floor;
+    if (first || second || floor === undefined || fell) {
+      const held: Held = { ...(state.held ?? emptyHeld()), floor: second ? Math.max(floor ?? 0, tokens) : tokens };
+      if (first) held.settling = true;
+      else delete held.settling;
+      state.held = held;
       state.files?.changed('floor');
     }
-    if (fell) Object.assign(state, { nudgeLevel: level, nudges: 0, nudgedAt: undefined, ...(state.wokeAt === undefined ? {} : { wokeAt: tokens }) });
-    if (state.absorbNext) {
+    if (fell) Object.assign(state, { nudgeLevel: level, nudges: 0, nudgedAt: undefined, finishTold: false, ...(state.wokeAt === undefined ? {} : { wokeAt: tokens }) });
+    if (second && state.wokeAt !== undefined) state.wokeAt = state.held!.floor;
+    if (first) {
       state.absorbNext = false;
       state.nudgeLevel = Math.max(state.nudgeLevel, level);
       state.wokeAt = tokens;
@@ -255,7 +272,7 @@ export class Parties {
   }
 
   /**
-   * Whether a nudge goes out now, recorded as sent: once per level while nothing is stored. None goes between an
+   * Whether a nudge goes out now, recorded as sent: once per level while no call waits to install. None goes between an
    * install and the party's next reading: until then no size is measured. After a wake none goes until the reading
    * (`tokens`) has grown by the party's room (nudge.ts `roomAbove`) past the first one after it: a wake lands
    * near or above the nudge start, and a nudge a few thousand tokens later makes the party compact in a loop. None
@@ -263,7 +280,7 @@ export class Parties {
    */
   nudgeDue(key: string, level: number, tokens?: number, marks?: NudgeMarks): boolean {
     const state = this.get(key);
-    if (state.stored !== undefined || state.absorbNext || level <= state.nudgeLevel) return false;
+    if (state.stored?.compacts === true || state.absorbNext || level <= state.nudgeLevel) return false;
     if (tokens !== undefined && marks !== undefined) {
       if (state.wokeAt !== undefined && tokens < state.wokeAt + roomAbove(state.wokeAt, marks)) return false;
       if (state.nudgedAt !== undefined && tokens < state.nudgedAt + marks.every) return false;
@@ -276,16 +293,32 @@ export class Parties {
 
   /**
    * Whether the finish notice goes out now, recorded as sent: once since the party's last install, at a reading
-   * (`tokens`) of `start` or more, while nothing is stored and no nudge has gone, as a nudge's first wordings carry
-   * the finish rule themselves. After a wake none goes until the reading has grown by `every` past the first one
-   * after it: a compaction that soon frees next to nothing.
+   * (`tokens`) of `start` or more, while no call waits to install and no nudge has gone, as a nudge's first wordings carry
+   * the finish rule themselves, and only where `finishReached` holds.
    */
   finishDue(key: string, tokens: number, start: number, every: number): boolean {
     const state = this.get(key);
-    if (state.finishTold || state.nudges > 0 || state.stored !== undefined || state.absorbNext || tokens < start) return false;
-    if (state.wokeAt !== undefined && tokens < state.wokeAt + every) return false;
+    if (state.finishTold || state.nudges > 0 || state.stored?.compacts === true || state.absorbNext || !finishReached(state, tokens, start, every)) return false;
     state.finishTold = true;
     return true;
+  }
+
+  /**
+   * Whether a call from the party compacts: only once its context (`tokens`, its last reading) has reached where a
+   * notice goes since its last install: main's finish notice (`finishReached`), or a nudge (`level` 1 or more and,
+   * after a wake, grown by the party's room past the floor the wake left). Before that a call only changes the
+   * party's held frontier: a compaction writes the whole context again, which costs more than a small context
+   * saves, and a party that keeps its frontier current would compact at every step. A woken party with no reading
+   * since has grown nothing. Not judged, so its call compacts: a party no notice can reach (no `marks`: its window
+   * unknown, or its model on the ignore list) and one with no reading yet (a process just started).
+   */
+  compacts(key: string, tokens: number | undefined, level = 0, marks?: NudgeMarks & { finish?: number }): boolean {
+    const state = this.get(key);
+    if (marks === undefined) return true;
+    if (state.absorbNext) return false;
+    if (tokens === undefined) return true;
+    if (marks.finish !== undefined && finishReached(state, tokens, marks.finish, marks.every)) return true;
+    return level > 0 && (state.wokeAt === undefined || tokens >= state.wokeAt + roomAbove(state.wokeAt, marks));
   }
 
   /**

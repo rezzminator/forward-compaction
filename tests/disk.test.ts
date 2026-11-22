@@ -55,13 +55,19 @@ describe('PartyFiles: write, history and load', () => {
     const unread = await new PartyFiles(R).load(memFs({ ...fs.files, [`${R}/rounds.json`]: '{"rounds": "x"}' }));
     expect([unread.held.rounds, unread.problems]).toEqual([2, [{ file: 'rounds.json', error: 'not a {rounds}' }]]);
   });
-  it('keeps the party\'s floor in floor.json, loads it back, and names a file that holds none', async () => {
+  it('keeps the party\'s floor in floor.json with whether it has settled, loads a settled one back, and names a file that holds none', async () => {
     const fs = memFs(), files = new PartyFiles(R);
     files.changed('floor');
     expect(await files.flush(fs, { ...emptyHeld(), floor: 42_000 })).toEqual([]);
-    expect([fs.files[`${R}/floor.json`], files.dirty.size]).toEqual(['{\n  "floor": 42000\n}\n', 0]);
+    expect([fs.files[`${R}/floor.json`], files.dirty.size]).toEqual(['{\n  "floor": 42000,\n  "settled": true\n}\n', 0]);
     const loaded = await new PartyFiles(R).load(fs);
     expect([loaded.held.floor, loaded.problems]).toEqual([42_000, []]);
+    files.changed('floor');
+    expect(await files.flush(fs, { ...emptyHeld(), floor: 58_000, settling: true })).toEqual([]);
+    expect(fs.files[`${R}/floor.json`]).toBe('{\n  "floor": 58000,\n  "settled": false\n}\n');
+    // a floor not settled, an install's first reading alone and every floor an earlier version kept, is not loaded: the party's next reading is its floor
+    const unsettled = await Promise.all([fs.files[`${R}/floor.json`]!, '{"floor": 58000}'].map((text) => new PartyFiles(R).load(memFs({ [`${R}/floor.json`]: text }))));
+    expect(unsettled.map((u) => [u.held.floor, u.problems])).toEqual([[undefined, []], [undefined, []]]);
     const unread = await new PartyFiles(R).load(memFs({ [`${R}/floor.json`]: '{"floor": "x"}' }));
     expect([unread.held.floor, unread.problems]).toEqual([undefined, [{ file: 'floor.json', error: 'not a {floor}' }]]);
   });

@@ -114,6 +114,20 @@ export function nudgeStart(floor: number, marks: NoticeMarks): number {
   return marks.room === undefined ? marks.start : floor + roomAbove(floor, { room: marks.room, every: marks.every, ceiling: marks.ceiling });
 }
 
+/** What a party's nudges are timed by above a floor (`NudgeMarks`): its working room, else as much as its nudge start. */
+const nudgeMarks = (marks: NoticeMarks): NudgeMarks => ({ room: marks.room ?? marks.start, every: marks.every, ceiling: marks.ceiling });
+
+/**
+ * Whether a forward_compaction call from the party compacts at its reading (`tokens`), by the marks its notices go
+ * by (`Parties.compacts`). A party with no marks and one whose model is on the ignore list are sent no notice and
+ * are not judged.
+ */
+export function callCompacts(parties: Parties, key: string, tokens: number | undefined, marks: NoticeMarks | undefined, ignore: readonly string[]): boolean {
+  if (marks === undefined || parties.ignored(key, ignore) !== undefined) return parties.compacts(key, tokens);
+  const level = tokens === undefined ? 0 : nudgeLevel(tokens, nudgeStart(parties.get(key).held?.floor ?? tokens, marks), marks.every);
+  return parties.compacts(key, tokens, level, { ...nudgeMarks(marks), ...(marks.finish === undefined ? {} : { finish: marks.finish }) });
+}
+
 export type Notice = {
   /** The party's nudge level at its reading; 0 with no reading or no marks. */
   level: number;
@@ -133,7 +147,7 @@ export function noticeFor(parties: Parties, key: string, tokens: number | undefi
   if (tokens === undefined || marks === undefined) return { level: 0, withheld: tokens === undefined ? 'no-reading' : 'window-unknown' };
   const start = nudgeStart(parties.get(key).held?.floor ?? tokens, marks);
   const level = nudgeLevel(tokens, start, marks.every), ignored = parties.ignored(key, ignore) !== undefined;
-  const withheld = level === 0 ? 'below-start' : ignored ? 'ignored-model' : !parties.nudgeDue(key, level, tokens, { room: marks.room ?? marks.start, every: marks.every, ceiling: marks.ceiling }) ? 'not-due' : undefined;
+  const withheld = level === 0 ? 'below-start' : ignored ? 'ignored-model' : !parties.nudgeDue(key, level, tokens, nudgeMarks(marks)) ? 'not-due' : undefined;
   if (withheld === undefined) {
     const { nudges: notice, files, held } = parties.get(key), last = lastNudge(tokens, marks.every, marks.ceiling);
     return { level, sent: { row: { event: 'nudge', party: key, level, notice, last, tokens, start, every: marks.every }, text: nudgeText({ tokens, tool, party: key === 'main' ? 'main' : 'subagent', notice, last, held: holds(held), ...(files !== undefined ? { storage: storageDir(files) } : {}) }) } };

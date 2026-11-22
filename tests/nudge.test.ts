@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { finishText, k, lastNudge, noticeFor, nudgeLevel, nudgeStart, nudgeText } from '../plugins/forward-compaction/src/nudge.ts';
+import { callCompacts, finishText, k, lastNudge, noticeFor, nudgeLevel, nudgeStart, nudgeText } from '../plugins/forward-compaction/src/nudge.ts';
 import { Parties } from '../plugins/forward-compaction/src/parties.ts';
 import { emptyHeld } from '../plugins/forward-compaction/src/lists.ts';
 
@@ -149,7 +149,7 @@ describe('noticeFor', () => {
     });
   });
 
-  it('with a working room set, starts a party\'s nudges that room above its floor, whatever its nudge start, again above its first reading after a compaction, and again as the first notice above a reading that fell below its floor; a party with no floor yet is at its floor, and a floor alone is no frontier', () => {
+  it('with a working room set, starts a party\'s nudges that room above its floor, whatever its nudge start, again above the larger of its first two readings after a compaction, and again as the first notice above a reading that fell below its floor; a party with no floor yet is at its floor, and a floor alone is no frontier', () => {
     const marks = { start: 165_000, room: 60_000, every: 15_000, ceiling: 800_000 };
     const parties = new Parties();
     const at = (tokens: number) => (parties.read('agent:a1', tokens), noticeFor(parties, 'agent:a1', tokens, marks, ['haiku']));
@@ -160,10 +160,10 @@ describe('noticeFor', () => {
       sent: { row: { event: 'nudge', party: 'agent:a1', level: 1, notice: 1, last: false, tokens: 102_000, start: 102_000, every: 15_000 }, text: `forward-compaction: context 102k and increasing. A compaction drops what you have read, so reading done just before one is done twice: once the step in hand has its result saved and checked, and before you read for the next step, call ${TOOL} ${ARGS}. Skip it if all your work ends within a few calls. ${END}` },
     });
     parties.installed('agent:a1');
-    expect([at(45_000), at(104_999)]).toEqual([{ level: 0, withheld: 'below-start' }, { level: 0, withheld: 'below-start' }]);
-    expect(at(105_000).sent?.row).toEqual({ event: 'nudge', party: 'agent:a1', level: 1, notice: 1, last: false, tokens: 105_000, start: 105_000, every: 15_000 });
-    expect(at(119_999)).toEqual({ level: 1, withheld: 'not-due' });
-    expect(at(120_000).sent?.row).toEqual({ event: 'nudge', party: 'agent:a1', level: 2, notice: 2, last: false, tokens: 120_000, start: 105_000, every: 15_000 });
+    expect([at(45_000), at(52_000), at(111_999)]).toEqual([{ level: 0, withheld: 'below-start' }, { level: 0, withheld: 'below-start' }, { level: 0, withheld: 'below-start' }]);
+    expect(at(112_000).sent?.row).toEqual({ event: 'nudge', party: 'agent:a1', level: 1, notice: 1, last: false, tokens: 112_000, start: 112_000, every: 15_000 });
+    expect(at(126_999)).toEqual({ level: 1, withheld: 'not-due' });
+    expect(at(127_000).sent?.row).toEqual({ event: 'nudge', party: 'agent:a1', level: 2, notice: 2, last: false, tokens: 127_000, start: 112_000, every: 15_000 });
     expect([at(30_000), at(89_999)]).toEqual([{ level: 0, withheld: 'below-start' }, { level: 0, withheld: 'below-start' }]); // a compaction this plugin did not make
     expect(at(90_000).sent?.row).toEqual({ event: 'nudge', party: 'agent:a1', level: 1, notice: 1, last: false, tokens: 90_000, start: 90_000, every: 15_000 });
   });
@@ -179,6 +179,21 @@ describe('noticeFor', () => {
 });
 
 describe('k', () => {
+  it('callCompacts judges a call by the marks the party\'s notices go by: its nudge start, its working room above its floor when one is set, main\'s finish start; no marks and an ignored model are not judged', () => {
+    const START = { start: 165_000, every: 65_000, ceiling: 800_000 }, ROOM = { ...START, every: 15_000, room: 60_000 }, MAIN = { start: 200_000, every: 50_000, ceiling: 600_000, finish: 100_000 };
+    const at = (key: string, floor: number, tokens: number, marks: typeof START & { room?: number; finish?: number } | undefined, model?: string) => {
+      const parties = new Parties();
+      if (model !== undefined) parties.describe(key, { model });
+      parties.read(key, floor);
+      parties.read(key, tokens);
+      return callCompacts(parties, key, tokens, marks, ['haiku']);
+    };
+    expect([164_999, 165_000].map((tokens) => at('agent:a1', 42_000, tokens, START))).toEqual([false, true]);
+    expect([101_999, 102_000].map((tokens) => at('agent:a1', 42_000, tokens, ROOM))).toEqual([false, true]);
+    expect([107_999, 108_000].map((tokens) => at('main', 58_000, tokens, MAIN))).toEqual([false, true]);
+    expect([at('agent:a1', 42_000, 43_000, undefined), at('agent:a1', 42_000, 43_000, START, 'claude-haiku-4-5'), at('agent:a1', 42_000, 43_000, START, 'claude-sonnet-4-5')]).toEqual([true, true, false]);
+  });
+
   it('prints thousands as k and a million or more as M with at most one decimal', () => {
     expect([0, 999, 51_400, 999_499].map(k)).toEqual(['0k', '1k', '51k', '999k']);
     expect([999_500, 1_000_000, 1_049_999, 1_500_000, 2_000_000].map(k)).toEqual(['1M', '1M', '1M', '1.5M', '2M']);

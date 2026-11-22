@@ -142,7 +142,7 @@ describe('buildWake (R20)', () => {
 
   it('prints no size for the call: the plugin measures none at that moment', () => {
     const wake = buildWake({ ...mainInput([call, res]), toolUseId: 't9', frontier, tokens: 64_000 });
-    expect((wake.messages[1] as BuiltMessage).text.split('\n')[0]).toBe('[forward-compaction: frontier] Below is your frontier as forward-compaction holds it: continue from its ## Next. In your next forward_compaction call send only changes, by item number; whatever you leave out stays.');
+    expect((wake.messages[1] as BuiltMessage).text.split('\n')[0]).toBe('[forward-compaction: frontier] Below is your frontier as forward-compaction holds it: continue from its ## Next. When a notice next asks for a forward_compaction call, send only changes, by item number; whatever you leave out stays.');
   });
 
   it('counts the F sections that hold content', () => {

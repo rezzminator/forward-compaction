@@ -15,7 +15,7 @@ describe('a frontier without its next is stored and installs without it', () => 
     expect(r.result.split('\n').slice(0, 3)).toEqual([
       'objective set',
       'Frontier: 23 characters in 0 items',
-      "Frontier stored, without next: send it before it installs, or the wake names it missing. It installs at the end of this turn, or at Claude Code's next compaction ask if one comes first. The newest messages after this call that fit are kept verbatim behind it, the rest named as not carried, so finish the step in hand; you need not stop.",
+      "Frontier stored, without next: send it before it installs, or the wake names it missing. It installs before your next request, inside this turn: what you have read is gone then, and the rest of the turn, your reply to the user included, is written from the frontier. The newest messages after this call that fit are kept verbatim behind it, the rest named as not carried.",
     ]);
     const wake = await f.dispatch('session.compact', { trigger: 'auto', messages: transcript() }, async () => ({ skip: 'native ran' }));
     expect(wake.messages[1].text.split('\n\n').slice(1, 3)).toEqual(['=== frontier ===\n## Objective\nShip U5, cut off mid-wo\n=== end of frontier ===', "Your frontier has no next: re-establish it from the user's messages and the messages below, and send it in your next forward_compaction call."]);

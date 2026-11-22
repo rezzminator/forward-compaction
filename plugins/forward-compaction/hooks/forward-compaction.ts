@@ -14,7 +14,7 @@ import { briefFiles, readBriefFiles } from '../src/brief-files';
 import { wakeRow } from '../src/wake-row';
 import { planFrom, planRead, PLAN_ROWS, type WakePlan } from '../src/plan';
 import { decide, installWarnings, turnEndDoor, readingTokens, knownTrigger } from '../src/decide';
-import { k, noticeFor, nudgeLevel, nudgeStart } from '../src/nudge';
+import { callCompacts, k, noticeFor, nudgeLevel, nudgeStart } from '../src/nudge';
 import { heldShown, Parties, type Judging } from '../src/parties';
 import { askPointOf, charsPerToken, partyMarks, startWarnings, apiChars, type AskPoint, type Marks, type UsageBreakdown } from '../src/window';
 import { unseenCompaction } from '../src/unseen';
@@ -469,7 +469,7 @@ async function conversationStartsOver(st: State, $: EngineInterface, reason: str
 
 /** session.start: the ledger starts, main's window and Claude Code's ask point are read, and a compaction window that holds a frontier back is named once (R33). */
 async function sessionBegins(st: State, $: EngineInterface): Promise<void> {
-  st.ledger = markStart(st.ledger, await $.clock.now(), 'startup');
+  const startedAt = await $.clock.now(); st.ledger = markStart(st.ledger, startedAt, 'startup'); // the value awaited before the ledger is read: a write that read it first drops what another hook added meanwhile
   await readMainWindow(st, $);
   await judge(st, $, 'main');
   for (const w of startWarnings(st.breakdown, st.apiAsk, marks(st, 'main'), marks(st, 'agent:')!)) if (!st.warned.has(w.key)) (st.warned.add(w.key), say(st, $, w.line, 'warning', { ...w.row, where: 'sessionBegins' }));
@@ -513,10 +513,11 @@ async function applyForward(st: State, $: EngineInterface, e: Record<string, unk
     for (const [i, file] of (call.loadFiles ?? []).entries()) { const note = loadFileNote(call.loadAt[i]!, file.path, await statFile(st, $, file.path)); if (note === undefined) carried.push(file); else checked.push(note); } // after the write, so a storage file this call adds is found
     if (files === undefined) checked.push(NO_FOLDER);
     const loadFiles = call.loadFiles === undefined ? party.stored?.loadFiles ?? [] : carried; // a call that sends no load_files keeps the earlier call's
-    const replaced = st.parties.store(key, { loadFiles, toolUseId, storedAtTokens: tokens, since: st.ledger.nextSeq });
+    const compacts = callCompacts(st.parties, key, tokens, m, st.config.ignoreModels); // below where its notice goes a call changes the held frontier and compacts nothing
+    const replaced = st.parties.store(key, { loadFiles, toolUseId, storedAtTokens: tokens, since: st.ledger.nextSeq, compacts });
     const size = frontierSize(party.held), sizes = sizeLines(size, st.config.frontierWarnChars), missing = applied.missing;
-    record(st, $, { event: 'stored', party: key, argChars: JSON.stringify(input).length, lists: applied.counts, frontier: { chars: size.chars, items: size.items }, storage: storage.count, warned: sizes.length > 1, files: loadFiles.length, notes: applied.notes.length + storage.notes.length + checked.length, tokens: tokens ?? null, ...(problems.length > 0 ? { writeFailed: problems.map((p) => p.file) } : {}), ...(replaced !== undefined ? { replaced: replaced.storedAtTokens ?? null } : {}), ...(missing.length > 0 ? { incomplete: missing } : {}) });
-    const door = key === 'main' ? receipt({ party: 'main', files: loadFiles.length, tokens, askPoint: m?.askPoint, replaced: replaced !== undefined, missing }) : receipt({ party: 'subagent', files: loadFiles.length, tokens, askPoint: m!.askPoint, replaced: replaced !== undefined, missing });
+    record(st, $, { event: 'stored', party: key, compacts, argChars: JSON.stringify(input).length, lists: applied.counts, frontier: { chars: size.chars, items: size.items }, storage: storage.count, warned: sizes.length > 1, files: loadFiles.length, notes: applied.notes.length + storage.notes.length + checked.length, tokens: tokens ?? null, ...(problems.length > 0 ? { writeFailed: problems.map((p) => p.file) } : {}), ...(replaced !== undefined ? { replaced: replaced.storedAtTokens ?? null } : {}), ...(missing.length > 0 ? { incomplete: missing } : {}) });
+    const door = key === 'main' ? receipt({ party: 'main', files: loadFiles.length, tokens, askPoint: m?.askPoint, replaced: replaced !== undefined, missing, compacts }) : receipt({ party: 'subagent', files: loadFiles.length, tokens, askPoint: m!.askPoint, replaced: replaced !== undefined, missing, compacts });
     return [...applied.lines, ...storage.lines, ...applied.notes, ...storage.notes, ...checked, ...problems.map((p) => notSaved(p, files!.root)), ...sizes, door].join('\n');
   } catch (error) {
     say(st, $, `forward-compaction: storing ${key}'s frontier failed: ${message(error)}`, 'error', { event: 'store-error', where: 'answerForward', party: key, error: message(error) });
@@ -598,9 +599,9 @@ async function compactAsk(st: State, $: EngineInterface, e: SessionCompactInput,
   const tokens = party.reading; // measured only; none since an install, or yet, is unknown
   const m = marks(st, key);
   const matched = st.parties.ignored(key, st.config.ignoreModels);
-  const action = decide({ trigger, party: kind, stored: held !== undefined, tokens, ceiling: m?.ceiling, reactive: st.parties.reactive(key), ceilingNative: st.config.ceilingNative, label, ignored: matched !== undefined, windowUnknown: st.parties.windowUnknown(key, judging(st).mainKnown) });
+  const action = decide({ trigger, party: kind, stored: held?.compacts === true, tokens, ceiling: m?.ceiling, reactive: st.parties.reactive(key), ceilingNative: st.config.ceilingNative, label, ignored: matched !== undefined, windowUnknown: st.parties.windowUnknown(key, judging(st).mainKnown) });
   const row: Row = { event: 'compact', party: key, trigger, decision: action.decision, why: action.why, tokens: tokens ?? null, ceiling: m?.ceiling ?? null, askPoint: m?.askPoint ?? null, ...(matched !== undefined ? { matched } : {}) };
-  if ('dropStored' in action && action.dropStored && held !== undefined) (st.parties.takeStored(key), say(st, $, `forward-compaction: /compact ran Claude Code's own summary; ${label}'s stored frontier was dropped.`, 'error', { event: 'dropped', where: 'compactAsk', party: key, why: action.why }));
+  if ('dropStored' in action && action.dropStored && held !== undefined) (st.parties.takeStored(key), held.compacts && say(st, $, `forward-compaction: /compact ran Claude Code's own summary; ${label}'s stored frontier was dropped.`, 'error', { event: 'dropped', where: 'compactAsk', party: key, why: action.why })); // a call that compacts nothing had no install to lose
   if (action.action === 'next') {
     if (kind === 'foreign') st.parties.forget(key);
     else (st.parties.asked(key, action.decision), st.installedSince.add(key)); // Claude Code's own summary: its fall is seen
@@ -691,11 +692,11 @@ async function readStep(st: State, $: EngineInterface, e: TurnStepInput, r: Turn
     say(st, $, `forward-compaction: ${party.label}'s context fell from ${k(party.reading!)} to ${k(tokens)} with no compaction this plugin handled (another plugin or Claude Code compacted it).`, 'warning', { event: 'unseen-compaction', where: 'readStep', party: key, before: party.reading, after: tokens });
     st.parties.rebase(key, undefined);
   }
-  const m = marks(st, key), from = party.reading ?? null, absorb = party.absorbNext, floorBefore = party.held?.floor;
+  const m = marks(st, key), from = party.reading ?? null, absorb = party.absorbNext, floorBefore = party.held?.floor, settlingBefore = party.held?.settling;
   land(st, $, key, st.parties.read(key, tokens, m?.start === undefined ? 0 : nudgeLevel(tokens, m.start, m.every)), tokens, u); // with no absolute start a wake's first reading is the new floor: it has no level to absorb
   const floor = party.held?.floor;
   dbg(st, $, 'reading', { party: key, tokens, level: m === undefined || floor === undefined ? 0 : nudgeLevel(tokens, nudgeStart(floor, m), m.every), from, absorb, floor: floor ?? null });
-  if (floor !== floorBefore && party.files?.due && st.parties.judgement(key, judging(st)) === 'managed') await writeDue(st, $, key, 'readStep'); // a new floor is written at once, so a restarted party still knows how far it has grown
+  if ((floor !== floorBefore || party.held?.settling !== settlingBefore) && party.files?.due && st.parties.judgement(key, judging(st)) === 'managed') await writeDue(st, $, key, 'readStep'); // a new or settled floor is written at once, so a restarted party still knows how far it has grown
   st.installedSince.delete(key);
   if (party.base !== undefined || party.requests < (party.baseRetryAt ?? 0)) return; // the first reading in its live window takes the ratio's base (window.ts `charsPerToken`); a failed read backs off (`baseMissed`)
   const chars = await partyChars(st, $, key, e.agentId);
@@ -708,7 +709,7 @@ async function turnEnds(st: State, $: EngineInterface, e: TurnCompleteInput): Pr
   const key = keyOf(e.agentId);
   if (key !== 'main') return land(st, $, key, st.parties.takeLanding(key));
   const party = st.parties.get('main');
-  const door = turnEndDoor({ main: true, reason: e.reason, stored: party.stored !== undefined, installedThisTurn: party.installedThisTurn });
+  const door = turnEndDoor({ main: true, reason: e.reason, stored: party.stored?.compacts === true, installedThisTurn: party.installedThisTurn });
   dbg(st, $, 'turn-end', { party: 'main', reason: e.reason, ...door });
   if (door.compact) {
     try {
@@ -735,10 +736,10 @@ async function noteSubmit(st: State, $: EngineInterface, e: PromptSubmitInput): 
 
 /** The files a finished call touched and the task list it set, as the party's work (src/work.ts); main's answered AskUserQuestion, as the user's words. */
 async function noteWork(st: State, $: EngineInterface, party: PartyKey, e: Record<string, unknown>, answer: ToolCallResult): Promise<void> {
-  for (const fact of workOf(String(e.tool), toolInput(e), answer as CallAnswer)) st.ledger = addEntry(st.ledger, { kind: 'work', party, at: await $.clock.now(), fact });
+  for (const fact of workOf(String(e.tool), toolInput(e), answer as CallAnswer)) { const at = await $.clock.now(); st.ledger = addEntry(st.ledger, { kind: 'work', party, at, fact }); }
   const answered = party === 'main' ? answersOf(String(e.tool), toolInput(e), answer as CallAnswer) : undefined;
   if (answered === undefined) return;
-  st.ledger = addEntry(st.ledger, { kind: 'user', party: 'main', at: await $.clock.now(), text: answered.text, answer: answered.said });
+  const at = await $.clock.now(); st.ledger = addEntry(st.ledger, { kind: 'user', party: 'main', at, text: answered.text, answer: answered.said });
   await keepKept(st, $, 'main');
 }
 
@@ -758,8 +759,8 @@ function restoreKept(st: State, $: EngineInterface, party: PartyKey): Promise<vo
 async function restoreParty(st: State, $: EngineInterface, party: PartyKey): Promise<void> {
   const id = `${await (st.sessionId ??= $.session.id())}/${party}`;
   try { // what `$.state` kept and what the files keep are restored apart: a failed `$.state` read is thrown once both were tried, and never leaves the frontier on disk unread
-    st.ledger = restorePrompts(st.ledger, party, (await $.state.get({ plugin: 'forward-compaction', key: 'prompts', id })).value);
-    st.ledger = restoreSkills(st.ledger, party, (await $.state.get({ plugin: 'forward-compaction', key: 'skills', id })).value);
+    const prompts = (await $.state.get({ plugin: 'forward-compaction', key: 'prompts', id })).value; st.ledger = restorePrompts(st.ledger, party, prompts);
+    const skills = (await $.state.get({ plugin: 'forward-compaction', key: 'skills', id })).value; st.ledger = restoreSkills(st.ledger, party, skills);
     st.parties.restoreJudged(party, (await $.state.get({ plugin: 'forward-compaction', key: 'judged', id })).value);
   } finally { await restoreHeld(st, $, party, id); }
 }
@@ -797,7 +798,7 @@ async function noteDelivery(st: State, $: EngineInterface, e: SessionAppendInput
 async function noteSkill(st: State, $: EngineInterface, e: SkillPromptInput): Promise<void> {
   const inFlightSkills = [...st.inFlight].filter(([, call]) => call.tool === 'Skill').map(([tool_use_id, call]) => ({ party: call.party, tool_use_id }));
   const { party, how } = attributeSkill({ inFlightSkills, pendingCommand: st.pendingCommand, pendingSpawns: st.pendingSpawns, skill: e.skill });
-  st.ledger = addEntry(st.ledger, { kind: 'skill', party, at: await $.clock.now(), skill: e.skill, text: e.text, how, ...(pinnedBy(e.frontmatter) ? { keep: true as const } : {}), ...(descriptionOf(e.frontmatter) !== undefined ? { description: descriptionOf(e.frontmatter)! } : {}), ...(e.source !== undefined ? { source: e.source } : {}), ...(e.path !== undefined ? { path: e.path } : {}) });
+  const at = await $.clock.now(); st.ledger = addEntry(st.ledger, { kind: 'skill', party, at, skill: e.skill, text: e.text, how, ...(pinnedBy(e.frontmatter) ? { keep: true as const } : {}), ...(descriptionOf(e.frontmatter) !== undefined ? { description: descriptionOf(e.frontmatter)! } : {}), ...(e.source !== undefined ? { source: e.source } : {}), ...(e.path !== undefined ? { path: e.path } : {}) });
   record(st, $, { event: 'skill', party, skill: e.skill, how });
   await keepKept(st, $, party);
 }
@@ -816,7 +817,7 @@ async function noteSpawn(st: State, $: EngineInterface, e: AgentSpawnInput, r: A
 
 /** The shells and crons running at a stop, the stopping sub-agent left out: the latest snapshot is a fact of every wake. */
 async function noteShells(st: State, $: EngineInterface, e: Record<string, unknown>, stopping?: string): Promise<void> {
-  st.ledger = addEntry(st.ledger, { kind: 'shells', at: await $.clock.now(), ...shellsOf(e, stopping) });
+  const at = await $.clock.now(); st.ledger = addEntry(st.ledger, { kind: 'shells', at, ...shellsOf(e, stopping) });
 }
 
 export const register: Register = (on: On, options: PluginOptions) => {

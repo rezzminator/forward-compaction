@@ -141,9 +141,9 @@ export class PartyFiles {
     if (counted.value !== undefined && !isInt(sent) && sent !== 0) bad('rounds', 'a {rounds}');
     const rounds = Math.max(isInt(sent) ? sent : 0, ...LISTS.flatMap((name) => held.lists[name].items.map((item) => item.round ?? 0))); // never behind an item's own round
     if (rounds > 0) held.rounds = rounds;
-    const floored = await readJson('floor'), floor = typeof floored.value === 'object' && floored.value !== null ? (floored.value as Record<string, unknown>).floor : undefined;
-    if (isInt(floor)) held.floor = floor;
-    else if (floored.value !== undefined) bad('floor', 'a {floor}');
+    const floored = await readJson('floor'), kept = typeof floored.value === 'object' && floored.value !== null ? (floored.value as Record<string, unknown>) : undefined;
+    if (!isInt(kept?.floor)) { if (floored.value !== undefined) bad('floor', 'a {floor}'); }
+    else if (kept?.settled === true) held.floor = kept.floor; // one not settled (an install's first reading alone, as an earlier version kept every floor) is below the party's context: its next reading is its floor
     return { held, problems };
   }
 
@@ -227,7 +227,7 @@ export class PartyFiles {
           const old = await fs.read(`${this.root}/${file}`).catch(() => undefined);
           if (old !== undefined) (await fs.write(await freeName(fs, `${this.root}/history/unreadable`, file.split('/').at(-1)!), old), this.unreadable.delete(key)); // copied once, whatever the write below does
         }
-        const value = key === 'storage' ? held.storage : key === 'rounds' ? { rounds: held.rounds ?? 0 } : key === 'floor' ? { floor: held.floor ?? null } : (TEXTS as readonly string[]).includes(key) ? { text: held[key as TextName] ?? '' } : held.lists[key as ListName];
+        const value = key === 'storage' ? held.storage : key === 'rounds' ? { rounds: held.rounds ?? 0 } : key === 'floor' ? { floor: held.floor ?? null, settled: held.settling !== true } : (TEXTS as readonly string[]).includes(key) ? { text: held[key as TextName] ?? '' } : held.lists[key as ListName];
         await fs.write(`${this.root}/${file}`, `${JSON.stringify(value, null, 2)}\n`);
         this.dirty.delete(key), this.unreadable.delete(key);
       } catch (error) {

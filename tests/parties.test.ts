@@ -5,11 +5,12 @@ import { PartyFiles } from '../plugins/forward-compaction/src/disk.ts';
 import { emptyHeld } from '../plugins/forward-compaction/src/lists.ts';
 
 const LANDING = { kind: 'frontier' as const, label: 'main', before: 70_000, chars: 10, facts: 1, kept: 0, dropped: 0 };
-const frontier = (toolUseId: string, storedAtTokens = 41_200): Omit<StoredFrontier, 'seq'> => ({
+const frontier = (toolUseId: string, storedAtTokens = 41_200, compacts = true): Omit<StoredFrontier, 'seq'> => ({
   loadFiles: [],
   toolUseId,
   storedAtTokens,
   since: 0,
+  compacts,
 });
 
 describe('Parties state', () => {
@@ -106,6 +107,8 @@ describe('nudgeDue (R30)', () => {
     expect(parties.nudgeDue('main', 0)).toBe(false);
     parties.store('main', frontier('t1'));
     expect(parties.nudgeDue('main', 5)).toBe(false);
+    parties.store('main', frontier('t2', 41_200, false)); // a call that compacts nothing waits for no install
+    expect(parties.nudgeDue('main', 5)).toBe(true);
   });
 
   it('keeps each party\'s levels apart', () => {
@@ -156,7 +159,7 @@ describe('the first reading after an install (no re-nudge)', () => {
   });
 
   it('sends no nudge loop after a wake (S2, decisions 0f3e8b92 rows 20-25): the next one only once the context grew by its working room past the first reading', () => {
-    // start 80k, every 20k: the first reading after each wake, the ceiling, and the first reading that is nudged again.
+    // start 80k, every 20k: the floor each wake settles at (its second reading, the first being 20k lower), the ceiling, and the first reading that is nudged again.
     const cases: [woke: number, ceiling: number, due: number][] = [
       [78_000, 800_000, 158_000], // far from the ceiling: the start's 80k of room
       [66_560, 160_000, 120_000], // held to two every below the ceiling
@@ -168,9 +171,9 @@ describe('the first reading after an install (no re-nudge)', () => {
       const parties = new Parties();
       parties.nudgeDue('agent:a1', at(85_000), 85_000, marks);
       parties.installed('agent:a1');
-      parties.read('agent:a1', woke, at(woke));
+      parties.read('agent:a1', woke - 20_000, at(woke - 20_000));
       const due = (tokens: number) => (parties.read('agent:a1', tokens, at(tokens)), parties.nudgeDue('agent:a1', at(tokens), tokens, marks));
-      expect([woke + 1_000, first - 1, first].map(due), `woke at ${woke}, ceiling ${ceiling}`).toEqual([false, false, true]);
+      expect([woke, woke + 1_000, first - 1, first].map(due), `woke at ${woke}, ceiling ${ceiling}`).toEqual([false, false, false, true]);
     }
   });
 
@@ -244,24 +247,62 @@ describe('finishDue', () => {
     expect(parties.get('main').finishTold).toBe(true);
   });
 
-  it('is false while a frontier is stored, and after a nudge, whose first wordings carry the finish rule', () => {
+  it('is false while a call waits to install, and after a nudge, whose first wordings carry the finish rule', () => {
     const stored = new Parties();
     stored.store('main', frontier('t1'));
     expect(due(stored, 120_000)).toBe(false);
-    stored.takeStored('main');
+    stored.store('main', frontier('t2', 41_200, false)); // a call that compacts nothing waits for no install
     expect(due(stored, 120_000)).toBe(true);
     const nudged = new Parties();
     expect(nudged.nudgeDue('main', 1)).toBe(true);
     expect(due(nudged, 120_000)).toBe(false);
   });
 
-  it('starts over at an install, from one nudge step past the first reading after it', () => {
+  it('waits for one nudge step of growth past the floor: a new party\'s first reading, one a restart kept, and after an install the larger of the first two readings', () => {
+    const from = (floor: number) => { const parties = new Parties(); parties.read('main', floor); return parties; };
+    expect([107_999, 108_000].map((tokens) => due(from(58_000), tokens))).toEqual([false, true]);
+    expect([99_999, 100_000].map((tokens) => due(from(30_000), tokens))).toEqual([false, true]); // never under the finish start
+    const kept = () => { const parties = new Parties(); parties.get('main').held = { ...emptyHeld(), floor: 85_000 }; return parties; };
+    expect([134_999, 135_000].map((tokens) => due(kept(), tokens))).toEqual([false, true]);
     const parties = new Parties();
     expect(due(parties, 120_000)).toBe(true);
     parties.installed('main');
     expect(due(parties, 120_000)).toBe(false); // no reading since the install
-    parties.read('main', 110_000);
-    expect([due(parties, 159_999), due(parties, 160_000), due(parties, 160_001)]).toEqual([false, true, false]);
+    parties.read('main', 58_000);
+    parties.read('main', 85_000); // the second request carries what Claude Code sends back after a compaction
+    expect([due(parties, 134_999), due(parties, 135_000), due(parties, 135_001)]).toEqual([false, true, false]);
+  });
+
+  it('is owed again after a reading below the floor, a compaction this plugin did not make', () => {
+    const parties = new Parties();
+    parties.read('main', 58_000);
+    expect([due(parties, 150_000), due(parties, 151_000)]).toEqual([true, false]);
+    parties.read('main', 40_000);
+    expect([due(parties, 99_999), due(parties, 100_000)]).toEqual([false, true]);
+  });
+});
+
+describe('compacts: a call compacts only from where the party\'s notice goes', () => {
+  const SUB = { room: 200_000, every: 50_000, ceiling: 600_000 }, MAIN = { ...SUB, finish: 100_000 };
+  const woken = (key: string, first: number, second: number) => { const parties = new Parties(); parties.installed(key); parties.read(key, first); parties.read(key, second); return parties; };
+  const read = (key: string, floor: number) => { const parties = new Parties(); parties.read(key, floor); return parties; };
+  const justWoken = () => { const parties = new Parties(); parties.installed('main'); return parties; };
+  it.each([
+    ['a party with no marks, its window unknown or its model ignored, is not judged', justWoken(), 'main', undefined, 0, undefined, true],
+    ['a party with no reading yet, a process just started, is not judged', new Parties(), 'main', undefined, 0, MAIN, true],
+    ['a woken party with no reading since has grown nothing', justWoken(), 'main', undefined, 0, MAIN, false],
+    ['main one token under a nudge step past its floor', read('main', 58_000), 'main', 107_999, 0, MAIN, false],
+    ['main a nudge step past its floor', read('main', 58_000), 'main', 108_000, 0, MAIN, true],
+    ['main under its finish start, however far past its floor', read('main', 30_000), 'main', 99_999, 0, MAIN, false],
+    ['main at its finish start', read('main', 30_000), 'main', 100_000, 0, MAIN, true],
+    ['main after a wake, under a nudge step past the floor the wake settled at', woken('main', 58_000, 85_000), 'main', 134_999, 0, MAIN, false],
+    ['main after a wake, a nudge step past that floor', woken('main', 58_000, 85_000), 'main', 135_000, 0, MAIN, true],
+    ['a sub-agent under its nudge start', read('agent:a1', 45_000), 'agent:a1', 199_999, 0, SUB, false],
+    ['a sub-agent at its nudge start', read('agent:a1', 45_000), 'agent:a1', 200_000, 1, SUB, true],
+    ['a sub-agent after a wake, past its nudge start but under its room past the settled floor', woken('agent:a1', 45_000, 50_000), 'agent:a1', 249_999, 1, SUB, false],
+    ['a sub-agent after a wake, its room past the settled floor', woken('agent:a1', 45_000, 50_000), 'agent:a1', 250_000, 2, SUB, true],
+  ] as const)('%s', (_name, parties, key, tokens, level, marks, want) => {
+    expect(parties.compacts(key, tokens, level, marks)).toBe(want);
   });
 });
 
@@ -445,15 +486,20 @@ describe('the ratio base (window.ts charsPerToken)', () => {
 });
 
 describe('the floor a party\'s nudges are timed from', () => {
-  it('is its first reading ever, kept as it grows, replaced by any reading below it and by its first reading after an install, each change due in its file', () => {
+  it('is its first reading ever, kept as it grows, replaced by any reading below it, and after an install the larger of its first two readings, each change due in its file', () => {
     const parties = new Parties(), files = new PartyFiles('/h/.local/state/forward-compaction/proj/s1');
     parties.get('main').files = files;
     const floorAt = (tokens: number) => (files.dirty.clear(), parties.read('main', tokens), [parties.get('main').held?.floor, [...files.dirty]]);
     expect(floorAt(42_000)).toEqual([42_000, ['floor']]);
     expect(floorAt(90_000)).toEqual([42_000, []]);
     expect(floorAt(41_999)).toEqual([41_999, ['floor']]);
+    const main = parties.get('main');
     parties.installed('main');
-    expect(floorAt(58_000)).toEqual([58_000, ['floor']]);
-    expect(floorAt(58_000)).toEqual([58_000, []]);
+    expect([floorAt(58_000), main.held?.settling, main.wokeAt]).toEqual([[58_000, ['floor']], true, 58_000]);
+    expect([floorAt(85_000), main.held?.settling, main.wokeAt]).toEqual([[85_000, ['floor']], undefined, 85_000]); // the second request carries what Claude Code sends back after a compaction
+    expect([floorAt(86_000), main.wokeAt]).toEqual([[85_000, []], 85_000]); // the third reading settles nothing
+    parties.installed('main');
+    floorAt(58_000);
+    expect([floorAt(57_000), main.held?.settling, main.wokeAt]).toEqual([[58_000, ['floor']], undefined, 58_000]); // a lower second reading keeps the first, and the settled floor is due in its file
   });
 });

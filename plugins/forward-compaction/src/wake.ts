@@ -396,8 +396,8 @@ function assemble<M extends WakeMessage>(
   }
 }
 
-/** The head's line on how the next call changes the frontier: by item number, the rest staying. */
-export const CHANGES_ONLY = 'In your next forward_compaction call send only changes, by item number; whatever you leave out stays.';
+/** The head's line on how the next call changes the frontier, and when it is made: by item number, the rest staying, once a notice asks. */
+export const CHANGES_ONLY = 'When a notice next asks for a forward_compaction call, send only changes, by item number; whatever you leave out stays.';
 /** The head's clause when standing orders bind: the next step is taken within them. */
 const within = (orders: Shared<never>['orders']): string => ((orders?.length ?? 0) > 0 ? ', within the standing orders above' : '');
 /** Where a woken party finds what its frontier did not say: the user's messages (main) or its brief. */

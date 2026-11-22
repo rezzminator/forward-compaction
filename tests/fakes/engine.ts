@@ -13,6 +13,8 @@ export type FileEntry = { content: string; kind?: 'file' | 'dir' | 'other' };
 
 export type Script = {
   env?: Record<string, string>;
+  /** Awaited inside each `$.clock.now()` before it answers: a test holds one call's clock while another call runs. */
+  beforeNow?: () => Promise<void> | undefined;
   /** Main's window `$.session.usage()` reports; a function is read at each call (a /model switch). */
   window?: number | (() => number);
   /** The `context.breakdown` `$.session.usage({ breakdown: 'summary' })` reports: by default a 100k compaction window asking at 63k; null reports none. */
@@ -134,7 +136,7 @@ export function fakeEngine(script: Script = {}) {
         return { exitCode: out.status ?? -1, stdout: out.stdout, stderr: out.stderr };
       },
     },
-    clock: { now: async () => now, after: (ms: number, fn: () => void) => { const t = setTimeout(fn, ms); return { cancel: () => clearTimeout(t) }; } },
+    clock: { now: async () => (await script.beforeNow?.(), now), after: (ms: number, fn: () => void) => { const t = setTimeout(fn, ms); return { cancel: () => clearTimeout(t) }; } },
     ui: { log: (text: string, opts?: unknown) => void screen.push(opts === undefined ? { text } : { text, opts }) },
     agent: { list: async () => (script.agents ? script.agents() : []) },
     state: {
