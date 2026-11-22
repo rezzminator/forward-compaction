@@ -58,13 +58,15 @@ export type ListOutcome = { list: List; lines: string[]; notes: string[]; left: 
 
 type Add = { text: string; before?: number; at: string };
 
-/** A list's change as the call sent it, read leniently: `{ add, remove, edit }`, a plain text as one added item, an array as its adds; each entry that cannot be read is one note naming its place. */
+/** A list's change as the call sent it, read leniently: `{ add, remove, edit }`, a plain text as one added item (an operation's name alone as nothing), an array as its adds; each entry that cannot be read is one note naming its place. */
 function readChange(name: ListName, change: unknown): { adds: Add[]; removes: { id: number; at: string }[]; edits: { id: number; text: string; at: string }[]; notes: string[] } {
   const out = { adds: [] as Add[], removes: [] as { id: number; at: string }[], edits: [] as { id: number; text: string; at: string }[], notes: [] as string[] };
   if (change === undefined) return out;
   let ops: Record<string, unknown>;
   if (typeof change === 'string') {
     if (change.trim() === '') return (out.notes.push(`${name} was blank: nothing changed.`), out);
+    const word = change.trim().toLowerCase();
+    if (['add', 'remove', 'edit'].includes(word)) return (out.notes.push(`${name} was only the word "${word}", an operation with no item: nothing changed.`), out);
     out.notes.push(`${name} was a text, not {add, remove, edit}: taken as one added item.`);
     ops = { add: [change] };
   } else if (Array.isArray(change)) {

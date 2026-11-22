@@ -23,6 +23,11 @@ Every release of forward-compaction, named sub-agent-compact before 1.0.0. Versi
 - **`standing_orders` and `lifted`.** Orders are the `orders` list. A call that still passes `standing_orders` has its entries added to it; one that passes `lifted` is told to remove the order by its number.
 - **`keep_skills`, `drop_files` and `later` on a `load_files` entry.** A file for a later step is a `storage` entry, and a skill is carried whole only when its frontmatter pins it or `FORWARD_COMPACTION_KEEP_SKILLS` names it. A call that still passes one, or `drop_skills`, is stored and the reply says the field is ignored.
 
+### Fixed
+
+- **A list value that is only an operation's name changes nothing.** A list value (`orders`, `decisions`, `done`, `remaining`, `blocked`, `findings`) sent as the text `add`, `remove` or `edit`, in any case with spaces around it, was added as an item. It now changes nothing and is answered by the note `{list} was only the word "{op}", an operation with no item: nothing changed.` Every other plain text that is no JSON is still one added item.
+- **Operations named by leaked tool-call tags are read.** A list value's text whose operations are named by tags such as `<parameter name="add">[…]</parameter>` (the closing tag optional, a namespace prefix before `parameter` allowed) is read as those operations by the same repair that reads bare `add: […]`, with the note that the value arrived as broken JSON and was repaired. A tag inside an item's string stays text.
+
 ## [2.4.0] — 2026-11-21
 
 ### Changed

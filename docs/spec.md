@@ -174,8 +174,8 @@ stays.
   spacing collapsed and in lower case, is skipped as `already [n]`.
 - An order is removed by its number in `orders.remove`, with no proof asked.
   The live orders open every wake ([The wake](#the-wake)).
-- The call is never refused. A plain text sent to a list is one added item,
-  and an array sent straight to a list its adds; a single number or `{id,
+- The call is never refused. A plain text sent to a list is one added item (a text that is only an
+  operation's name excepted, below), and an array sent straight to a list its adds; a single number or `{id,
   text}` where an array was due is read as one; a number that is not live, a
   blank text or a malformed entry is skipped. Each is answered by one note
   naming its place (`done.remove[1]: [9] is not a live item: skipped.`).
@@ -190,12 +190,18 @@ stays.
   JSON is read as that JSON, with one note. A value whose JSON does not parse
   is repaired (`repairJson`): its brackets balanced (a closer missing, a
   closer misplaced, a string left open), bare `add:`/`remove:`/`edit:`
-  operations braced, and a value closed early read together with the
+  operations braced (operations named by leaked tool-call tags,
+  `<parameter name="add">[…]</parameter>`, the closing tag optional and a
+  namespace prefix before `parameter` allowed, are read the same way, with the
+  same note; a tag inside an item's string stays text), and a value closed early read together with the
   arguments written after it inside the same text; each repaired field gets
   one note. An item's text loses a number the model typed before it
   (`[9] Parser merged`); an edit's text only its own number. A list's text
   that is an empty array or object changes nothing. A text that is no
-  JSON stays one added item. A field taken back out of a text that holds
+  JSON stays one added item, except a text that is only an operation's name
+  (`add`, `remove` or `edit`, any case, spaces around it ignored): it changes
+  nothing and is answered by the note `{list} was only the word "{op}", an
+  operation with no item: nothing changed.` A field taken back out of a text that holds
   its own closing tag then `<parameter name="…">` (the model's call markup
   closed it early; a list, `storage` or `load_files` field is read as JSON, a
   list one that is no JSON as text) is one note; one that cannot be (no
