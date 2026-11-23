@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { START_END, type BuiltMessage } from '../plugins/forward-compaction/src/kept.ts';
-import { buildWake, COMMANDS_KEPT, landedLine, mechanicalWake, recentFiles, RECENT_FILES_KEPT, wakeBudget, type WakeFacts } from '../plugins/forward-compaction/src/wake.ts';
+import { buildWake, COMMANDS_KEPT, landedLine, landedShort, mechanicalWake, recentFiles, RECENT_FILES_KEPT, wakeBudget, type WakeFacts } from '../plugins/forward-compaction/src/wake.ts';
 import { assistant, results, user, type Msg } from './fakes/messages.ts';
 import { wakeRow, type RowNode } from '../plugins/forward-compaction/src/wake-row.ts';
 import { PLUGIN_VERSION } from '../plugins/forward-compaction/src/wake.ts';
@@ -595,6 +595,12 @@ describe('mechanicalWake (R23)', () => {
     expect(h.text).toContain('0 older messages are gone');
   });
 
+  it('tells a party that holds a frontier that it is as its last call left it, and to continue from its next less what the facts show done', () => {
+    const wake = mechanicalWake({ ...mainInput([user('a', 'e1'), user('b', 'e2')]), tokens: 116_000, frontier: '## Next\nRead c.txt', tool: 'fc', reason: { kind: 'ceiling', ceiling: 100_000 } });
+    const head = wake.messages.find((m) => (m as BuiltMessage).text?.startsWith('[forward-compaction: no frontier')) as BuiltMessage;
+    expect(head.text.split('\n\n')[0]).toBe('[forward-compaction: no frontier written by the model] Your context reached 116k tokens, past the 100k ceiling, before a forward_compaction call compacted it, so the plugin compacted it mechanically: the facts above, your frontier below as forward-compaction holds it, and your newest 2 messages after this one, kept verbatim; 0 older messages are gone (look_back finds an exact detail). The frontier is as your last call left it: what you did after that call is missing from its ## Done, ## Remaining and ## Next, and the facts above show it (files touched, shell commands run, messages). Continue from where the messages leave off, or from its ## Next less every step the facts show done; at your next milestone bring the frontier up to date with one fc call: send only changes, by item number; whatever you leave out stays.');
+  });
+
   it('has the same facts as the frontier wake, and no load files or siblings', () => {
     const wake = mechanicalWake({ ...mainInput(msgs, { user: [{ at: T0, text: 'fix it' }] }), reason: { kind: 'reactive' } });
     const f = (wake.messages[0] as BuiltMessage).text;
@@ -652,6 +658,17 @@ describe('screen lines', () => {
   it('says what a mechanical wake did, measured the same way', () => {
     expect(landedLine(mechanical, 38_000)).toBe('forward-compaction: main had no frontier at 125k (ceiling 120k) — mechanical wake installed, 125k → 38k context, measured.');
     expect(landedLine({ ...mechanical, before: undefined, tokens: undefined }, 38_000)).toBe('forward-compaction: main had no frontier at an unmeasured size (no reading yet) (ceiling 120k) — mechanical wake installed, unknown → 38k context (no reading before the install), measured after.');
+  });
+
+  it.each<[string, number | undefined, number | undefined, Parameters<typeof landedShort>[2], string | undefined]>([
+    ['both readings and what the first request read and wrote', 135_000, 58_000, { cache_read_input_tokens: 11_000, cache_creation_input_tokens: 47_000 }, '135k → 58k context, its first request read 11k from the prompt cache and wrote 47k'],
+    ['a first request that read nothing from the cache', 135_000, 58_000, { cache_read_input_tokens: 0, cache_creation_input_tokens: 58_000 }, '135k → 58k context, its first request read 0k from the prompt cache and wrote 58k'],
+    ['no reading before the install as unknown', undefined, 58_000, undefined, 'unknown → 58k context'],
+    ['a usage without both counts, the cache clause left out', 135_000, 58_000, { cache_read_input_tokens: 11_000, cache_creation_input_tokens: null }, '135k → 58k context'],
+    ['no usage, the cache clause left out', 135_000, 58_000, null, '135k → 58k context'],
+    ['nothing until a request after the install measured it', 135_000, undefined, { cache_read_input_tokens: 11_000, cache_creation_input_tokens: 47_000 }, undefined],
+  ])("draws an install's measured sizes for its folded row: %s", (_name, before, after, usage, drawn) => {
+    expect(landedShort(before, after, usage)).toBe(drawn);
   });
 
   it('sets the budget at half the ask point', () => {

@@ -611,7 +611,7 @@ describe('audit r4: readings only, measured landed lines, the milestone nudge, l
 
   it('M2 writes the landed line at the first reading after the install, measured, beside a landed row', async () => {
     const f = await begin();
-    expect(await installAgent(f)).toHaveProperty('messages');
+    const head: string = (await installAgent(f)).messages.find((m: { text: string }) => m.text.startsWith('[forward-compaction: frontier]')).text;
     // The first request after the install: 41k of context, 30k of it read from the prompt cache and 10,998 written.
     await f.dispatch('turn.step', { turnId: 't1', index: 0, model: 'claude-sonnet-4-5', messageCount: 4, agentId: A1 }, async () => ({ turnId: 't1', index: 0, answer: '', toolUses: [], stopReason: 'tool_use', usage: { input_tokens: 2, cache_read_input_tokens: 30_000, cache_creation_input_tokens: 10_998 } }));
     await step(f, 42_000, A1);
@@ -620,6 +620,10 @@ describe('audit r4: readings only, measured landed lines, the milestone nudge, l
     const all = await rows(f);
     expect(all.filter((r) => r.event === 'compact' && r.decision === 'install')).toHaveLength(1);
     expect(all.filter((r) => r.event === 'landed')).toEqual([expect.objectContaining({ party: `agent:${A1}`, kind: 'frontier', before: 64_000, after: 41_000, read: 30_000, written: 10_998 })]);
+    // The wake's folded row draws those sizes, and Claude Code was asked once, at the measuring, to draw the rows again.
+    expect(await f.dispatch('ui.render', { surface: 'terminal', component: 'UserMessage', requestId: 'm1', props: { text: head, origin: { kind: 'coordinator' }, isExpanded: false } }, async () => 'the engine'))
+      .toEqual({ type: 'Box', props: { marginTop: 1 }, children: [{ type: 'Text', props: { dimColor: true }, children: ['forward-compaction installed the frontier, 64k → 41k context, its first request read 30k from the prompt cache and wrote 11k: the transcript view (ctrl+o) shows it and the recorded facts in full'] }] });
+    expect(f.invalidated).toEqual(['ui.render']);
   });
 
   it('M2 says at an agent end with no reading after its install that the size after was never measured', async () => {

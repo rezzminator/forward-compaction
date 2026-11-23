@@ -7,14 +7,13 @@ import { experimental, EXPERIMENTAL_OPENING } from './frontier';
 import { fitSkills, pinned, SKILLS_LISTED_NOTE, SKILLS_MAX_CHARS } from './carry';
 import { fitTail, keptStart, keptTexts, messageTokens, splitAtCall, tokensOf, type BuiltMessage, type Sibling, type WakeMessage } from './kept';
 import { ordersSection } from './orders';
-import { unchangedNote, type Item, type StorageEntry } from './lists';
+import { num, unchangedNote, type Item, type StorageEntry } from './lists';
 import { storageSection } from './storage';
 import type { WakePlan } from './plan';
 import { WAKE_OPENING } from './wake-row';
 
 // Tokens to characters, only ever at the party's measured ratio (`charsPerToken` in window.ts; `tokensOf` in kept.ts the other way): unmeasured, no limit.
 const charsIn = (tokens: number, ratio: number | undefined): number => (ratio === undefined ? Number.POSITIVE_INFINITY : Math.floor(tokens * ratio));
-const num = (value: number): string => value.toLocaleString('en-US');
 const iso = (at: number): string => new Date(at).toISOString();
 
 /**
@@ -396,8 +395,10 @@ function assemble<M extends WakeMessage>(
   }
 }
 
-/** The head's line on how the next call changes the frontier, and when it is made: by item number, the rest staying, once a notice asks. */
-export const CHANGES_ONLY = 'When a notice next asks for a forward_compaction call, send only changes, by item number; whatever you leave out stays.';
+/** How a call changes a held frontier: by item number, the rest staying. */
+const BY_NUMBER = 'send only changes, by item number; whatever you leave out stays.';
+/** The head's line on how the next call changes the frontier, and when it is made: once a notice asks. */
+export const CHANGES_ONLY = `When a notice next asks for a forward_compaction call, ${BY_NUMBER}`;
 /** The head's clause when standing orders bind: the next step is taken within them. */
 const within = (orders: Shared<never>['orders']): string => ((orders?.length ?? 0) > 0 ? ', within the standing orders above' : '');
 /** Where a woken party finds what its frontier did not say: the user's messages (main) or its brief. */
@@ -425,22 +426,29 @@ export function buildWake<M extends WakeMessage>(input: BuildWakeInput<M>): Wake
 /** The wake for a party with no frontier: the same facts, then the newest messages of `messages` that fit. */
 export function mechanicalWake<M extends WakeMessage>(input: MechanicalWakeInput<M>): Wake<M> {
   const why = input.reason.kind === 'ceiling' ? `, past the ${kilo(input.reason.ceiling)} ceiling` : ', and Claude Code reported your request too long', source = sourceOf(input.party);
-  const frontier = input.frontier ?? '', reached = `${WAKE_OPENING.mechanical} Your context reached ${input.tokens === undefined ? 'a size not measured yet' : `${kilo(input.tokens)} tokens`}${why}, and you had not called forward_compaction${frontier === '' ? '' : ' since your last wake'}, so the plugin compacted it mechanically`;
+  const frontier = input.frontier ?? '', reached = `${WAKE_OPENING.mechanical} Your context reached ${input.tokens === undefined ? 'a size not measured yet' : `${kilo(input.tokens)} tokens`}${why}, ${frontier === '' ? 'and you had not called forward_compaction' : 'before a forward_compaction call compacted it'}, so the plugin compacted it mechanically`; // a call made below its notice point changes the frontier and compacts nothing, so a held frontier does not say no call was made
   return assemble(input, input.messages, { siblings: [], files: [], recent: input.recent ?? [], mechanical: true }, ({ kept, dropped }) => experimental(
     frontier === ''
       ? `${reached}: the facts above and your newest ${kept} messages below, kept verbatim; ${dropped} older messages are gone (look_back finds an exact detail). No objective or next step was written. Re-establish them from ${source} and the messages below, then continue${within(input.orders)}; call ${input.tool ?? DEFAULT_TOOL} at your next milestone.`
-      : `${reached}: the facts above, your frontier below as forward-compaction holds it, unchanged since your last call, and your newest ${kept} messages after this one, kept verbatim; ${dropped} older messages are gone (look_back finds an exact detail). Continue from where the messages leave off, or from its ## Next${within(input.orders)}; call ${input.tool ?? DEFAULT_TOOL} at your next milestone. ${CHANGES_ONLY}${unchangedNote(frontier, ordersSection(input.orders ?? [], input.rounds))}\n\n=== frontier ===\n${frontier}\n=== end of frontier ===`,
+      : `${reached}: the facts above, your frontier below as forward-compaction holds it, and your newest ${kept} messages after this one, kept verbatim; ${dropped} older messages are gone (look_back finds an exact detail). The frontier is as your last call left it: what you did after that call is missing from its ## Done, ## Remaining and ## Next, and the facts above show it (files touched, shell commands run, messages). Continue from where the messages leave off, or from its ## Next less every step the facts show done${within(input.orders)}; at your next milestone bring the frontier up to date with one ${input.tool ?? DEFAULT_TOOL} call: ${BY_NUMBER}${unchangedNote(frontier, ordersSection(input.orders ?? [], input.rounds))}\n\n=== frontier ===\n${frontier}\n=== end of frontier ===`,
     input.logDir),
   'none');
 }
 
 /** An installed wake whose landed line waits for the party's first reading after it: what the line says, `before` the last reading before the install. */
-export type Landing = { label: string; before?: number } & ({ kind: 'frontier'; chars: number; facts: number; kept: number; dropped: number } | { kind: 'mechanical'; tokens?: number; ceiling: number });
+export type Landing = { label: string; before?: number; row?: string | undefined } & ({ kind: 'frontier'; chars: number; facts: number; kept: number; dropped: number } | { kind: 'mechanical'; tokens?: number; ceiling: number });
 
 /** The measured sizes: the last reading before the install and the first after it; one never read is said as unknown, never estimated. */
 function measured(before: number | undefined, after: number | undefined): string {
   const unknown = after === undefined ? ' (it ended before a request after the install measured it)' : ', measured';
   return `${before === undefined ? 'unknown' : kilo(before)} → ${after === undefined ? 'unknown' : kilo(after)} context${before === undefined && after !== undefined ? ' (no reading before the install), measured after' : unknown}`;
+}
+
+/** An install's measured sizes as its folded row draws them (wake-row.ts `wakeRow`): the readings before and after it, and what the first request after it read from the prompt cache and wrote to it; undefined until a request after the install measured it. */
+export function landedShort(before: number | undefined, after: number | undefined, usage?: { cache_read_input_tokens?: number | null; cache_creation_input_tokens?: number | null } | null): string | undefined {
+  if (after === undefined) return undefined;
+  const read = usage?.cache_read_input_tokens, written = usage?.cache_creation_input_tokens;
+  return `${before === undefined ? 'unknown' : kilo(before)} → ${kilo(after)} context${typeof read === 'number' && typeof written === 'number' ? `, its first request read ${kilo(read)} from the prompt cache and wrote ${kilo(written)}` : ''}`;
 }
 
 /** The landed line for an installed wake (an info row, never on screen), at the party's first reading after it (`after`), or at its end with `after` unknown. */

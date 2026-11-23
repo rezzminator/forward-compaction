@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { fakeEngine } from './fakes/engine.ts';
-import { wakeRow, type RowNode, type RowProps } from '../plugins/forward-compaction/src/wake-row.ts';
+import { wakeHead, wakeRow, type RowNode, type RowProps } from '../plugins/forward-compaction/src/wake-row.ts';
 
 const FACTS = '[forward-compaction: facts] Your context was compacted by forward-compaction 2.2.5.\n\n## Files you touched\n/work/a.ts';
 const FRONTIER = '[forward-compaction: frontier] Below is the frontier you wrote with forward_compaction: continue from its ## Next.\n\n=== frontier ===\n## Next\nship\n=== end of frontier ===';
@@ -14,7 +14,7 @@ const NOTHING: RowNode = { type: 'Box', props: { display: 'none' } };
 const row = (text: string, over: Partial<RowProps> = {}): RowProps => ({ text, origin: { kind: 'unclassified' }, isExpanded: false, ...over });
 
 describe('wakeRow: what a user-role transcript row draws', () => {
-  it.each<[string, RowProps, RowNode | undefined]>([
+  it.each<[string, RowProps, RowNode | undefined, string?]>([
     ['the facts draw nothing', row(FACTS), NOTHING],
     ['the frontier draws one dim line', row(FRONTIER), FRONTIER_LINE],
     ['the note of a mechanical wake draws one dim line', row(MECHANICAL), MECHANICAL_LINE],
@@ -29,8 +29,21 @@ describe('wakeRow: what a user-role transcript row draws', () => {
     ['an opening that is not at the start is no wake message', row(`see ${FRONTIER}`), undefined],
     ['any other message the engine left unclassified stays whole', row('[forward-compaction: nudge] context 173k and increasing.'), undefined],
     ['an empty row stays whole', row(''), undefined],
-  ])('%s', (_name, props, drawn) => {
-    expect(wakeRow(props)).toEqual(drawn);
+    ['the frontier draws its measured sizes between what happened and where to read it', row(FRONTIER), line('forward-compaction installed the frontier, 135k → 58k context, its first request read 11k from the prompt cache and wrote 47k: the transcript view (ctrl+o) shows it and the recorded facts in full'), '135k → 58k context, its first request read 11k from the prompt cache and wrote 47k'],
+    ['the note of a mechanical wake draws its measured sizes the same way', row(MECHANICAL), line('forward-compaction compacted mechanically, no frontier was written, 125k → 38k context: the transcript view (ctrl+o) shows its note and the recorded facts in full'), '125k → 38k context'],
+  ])('%s', (_name, props, drawn, landed) => {
+    expect(wakeRow(props, landed)).toEqual(drawn);
+  });
+});
+
+describe("wakeHead: the message a wake's folded line stands for", () => {
+  it.each<[string, unknown[], string | undefined]>([
+    ['the frontier message of a chosen frontier', [{ text: 'the kept start' }, { text: FACTS }, { text: FRONTIER }, { text: 'the kept tail' }], FRONTIER],
+    ['the note of a mechanical wake', [{ text: FACTS }, { text: MECHANICAL }], MECHANICAL],
+    ['nothing when the wake holds neither', [{ text: FACTS }, { text: 'the kept tail' }], undefined],
+    ['nothing from messages that carry no text', ['a string', null, { text: 7 }, {}], undefined],
+  ])('%s', (_name, messages, head) => {
+    expect(wakeHead(messages)).toBe(head);
   });
 });
 

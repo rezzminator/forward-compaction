@@ -68,6 +68,7 @@ export const ANSWERS: Record<(typeof PATHS)[number], { from: 'recorded'; subject
   'clock.after': { from: 'harness', sync: true },
   'process.run': { from: 'harness' },
   'ui.log': { from: 'harness', sync: true },
+  'ui.invalidate': { from: 'harness', sync: true },
   'tool.register': { from: 'harness' },
   // the host's session state, held by the harness for the replay: what the plugin set is what it gets
   'state.get': { from: 'harness' },
@@ -373,7 +374,7 @@ export async function recordSynthetic(dir: string): Promise<string> {
     },
     state: { get: async () => ({ value: undefined, version: 0 }), set: async () => ({ isSet: true, version: 1 }) },
     tool: { register: async (spec: { name: string }) => ({ tool: `mcp__forward-compaction__${spec.name}` }) },
-    ui: { log: () => undefined },
+    ui: { log: () => undefined, invalidate: () => undefined },
   };
   const hooks = new Map<string, Fn>();
   recorded(onInto(hooks), {} as any);

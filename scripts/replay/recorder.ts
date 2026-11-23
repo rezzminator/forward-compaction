@@ -118,7 +118,7 @@ const given = (...args: unknown[]): unknown[] => {
  * this list to the adapter's. Each call is answered by the engine and written with its path, arguments and outcome;
  * a path missing here is written as an error row and throws, so the recording shows it.
  */
-export const PATHS = ['agent.list', 'clock.after', 'clock.now', 'env.get', 'fs.exists', 'fs.read', 'fs.stat', 'fs.write', 'http.fetch', 'process.run', 'session.authorize', 'session.compact', 'session.cwd', 'session.id', 'session.messages', 'session.root', 'session.usage', 'state.get', 'state.set', 'tool.register', 'ui.log'] as const;
+export const PATHS = ['agent.list', 'clock.after', 'clock.now', 'env.get', 'fs.exists', 'fs.read', 'fs.stat', 'fs.write', 'http.fetch', 'process.run', 'session.authorize', 'session.compact', 'session.cwd', 'session.id', 'session.messages', 'session.root', 'session.usage', 'state.get', 'state.set', 'tool.register', 'ui.invalidate', 'ui.log'] as const;
 /** Written to a row in place of the handle `$.session.authorize()` answers, in that answer and in the request that spends it: the handle stands for the session's credential, so no row carries it, and a replayed lookup passes this word back as recorded. */
 export const CREDENTIAL_HANDLE = 'credential-handle';
 
@@ -173,7 +173,7 @@ function engineFor($: EngineInterface, id: number): any {
       set: (ref: any, value: unknown) => call('state.set', [ref, value], () => stateSet($, ref, value)),
     },
     tool: { register: (spec: any) => call('tool.register', [spec], () => $.tool.register(spec)) },
-    ui: { log: (text: string, options?: any) => call('ui.log', given(text, options), () => (options === undefined ? $.ui.log(text) : $.ui.log(text, options))) },
+    ui: { log: (text: string, options?: any) => call('ui.log', given(text, options), () => (options === undefined ? $.ui.log(text) : $.ui.log(text, options))), invalidate: (event: any) => call('ui.invalidate', [event], () => $.ui.invalidate(event)) },
   };
   const missing = (path: string) => (...args: unknown[]) => call(path, args, () => {
     throw new Error(`recorder: $.${path} is not in PATHS (scripts/replay/recorder.ts)`);
@@ -254,15 +254,16 @@ export const RECORDED = ['session.start', 'tool.call', 'session.compact', 'turn.
 let unrecorded: string[] = [];
 /** The recorded events the plugin registers under a matcher, each recorded under that same matcher: what the engine narrows to is what the recording holds. */
 export const MATCHED: Partial<Record<(typeof RECORDED)[number], Record<string, string>>> = { 'session.append': { door: 'delivery' } };
-/** The plugin's draw hook reaches the engine as registered and is never recorded: a draw decides nothing a replay holds, and tests/wake-row.test.ts holds what it draws. */
-export const DRAWN = { event: 'ui.render', matcher: { component: 'UserMessage' } } as const;
-let draw: (...args: any[]) => any = passOn;
+/** The plugin's draw hooks reach the engine as registered and are never recorded: a draw decides nothing a replay holds, and tests/wake-row.test.ts and tests/call-row.test.ts hold what they draw. */
+export const DRAWN = { event: 'ui.render', matchers: [{ component: 'UserMessage' }, { component: 'ToolUse' }, { component: 'ToolResult' }] } as const;
+const draws = new Map<string, (...args: any[]) => any>();
 
 export const register: Register = (on: On, options) => {
   const result = plugin(((pattern: string, ...rest: any[]) => {
     if (pattern === DRAWN.event) {
-      if (rest.length !== 2 || JSON.stringify(rest[0]) !== JSON.stringify(DRAWN.matcher)) unrecorded.push(`${pattern} (not the ${JSON.stringify(DRAWN.matcher)} draw)`);
-      draw = rest.at(-1);
+      const drawn = rest.length === 2 ? DRAWN.matchers.find((m) => JSON.stringify(m) === JSON.stringify(rest[0])) : undefined;
+      if (drawn === undefined) unrecorded.push(`${pattern} (not one of the ${JSON.stringify(DRAWN.matchers)} draws)`);
+      else draws.set(drawn.component, rest.at(-1));
       return { dispose: () => undefined };
     }
     const matcher = MATCHED[pattern as (typeof RECORDED)[number]];
@@ -286,6 +287,8 @@ export const register: Register = (on: On, options) => {
   on('classic.Stop', async ($, e, next) => invoke('classic.Stop', $, e, next) as any);
   on('classic.SubagentStop', async ($, e, next) => invoke('classic.SubagentStop', $, e, next) as any);
   on('session.end', async ($, e, next) => invoke('session.end', $, e, next) as any);
-  on('ui.render', { component: 'UserMessage' }, (_$, e, next) => draw(undefined, e, next)); // the draw reads no `$`
+  on('ui.render', { component: 'UserMessage' }, (_$, e, next) => (draws.get('UserMessage') ?? passOn)(undefined, e, next)); // a draw reads no `$`
+  on('ui.render', { component: 'ToolUse' }, (_$, e, next) => (draws.get('ToolUse') ?? passOn)(undefined, e, next));
+  on('ui.render', { component: 'ToolResult' }, (_$, e, next) => (draws.get('ToolResult') ?? passOn)(undefined, e, next));
   return result;
 };

@@ -9,9 +9,10 @@ import { keptOrders } from '../src/orders';
 import { answersOf, workOf, type CallAnswer } from '../src/work';
 import { newLedger, markStart, addEntry, deliveryOf, runStartOf, resolveSpawn, attributeSkill, shellsOf, factsFor, promptsKept, restorePrompts, skillsKept, restoreSkills, isUserOrigin, keyOf, originKind, type Ledger, type PartyKey } from '../src/ledger';
 import { splitAtCall } from '../src/kept';
-import { buildWake, mechanicalWake, landedLine, recentFiles, type AgentRow, type Landing } from '../src/wake';
+import { buildWake, mechanicalWake, landedLine, landedShort, recentFiles, type AgentRow, type Landing } from '../src/wake';
 import { briefFiles, readBriefFiles } from '../src/brief-files';
-import { wakeRow } from '../src/wake-row';
+import { wakeHead, wakeRow } from '../src/wake-row';
+import { callKey, callResultRow, callRow, type CallMeasure } from '../src/call-row';
 import { planFrom, planRead, PLAN_ROWS, type WakePlan } from '../src/plan';
 import { decide, installWarnings, turnEndDoor, readingTokens, knownTrigger } from '../src/decide';
 import { callCompacts, k, noticeFor, nudgeLevel, nudgeStart } from '../src/nudge';
@@ -67,6 +68,7 @@ type State = {
   mainModel?: string; mainWindow?: number; // Main's model as its last step named it (a sub-agent on that model id is measured against main's window), and its window as `$.session.usage()` last reported it: main's max context unless FORWARD_COMPACTION_MAIN_MAX_CONTEXT is set.
   windows: ModelWindows; // Every other sub-agent model's window, as the Models API stated it this session.
   apiAsk?: AskPoint; breakdown?: UsageBreakdown; // Claude Code's ask point and the breakdown it was read from, at session start and each main-window read.
+  calls: Map<string, CallMeasure>; landed: Map<string, string>; // What Claude Code measured of each forward_compaction call's request, by `callKey`, and each installed wake's measured sizes, by its row's text: what their rows draw.
   installedSince: Set<string>; // Parties this plugin compacted since their last reading: a fall in that reading is no unseen compaction.
 };
 
@@ -579,9 +581,9 @@ function installed(st: State, $: EngineInterface, key: string, landing: Landing 
   st.installedSince.add(key);
 }
 
-/** M2: an installed wake's landed line and `landed` row, at the party's first reading after it (`after`), or at its end with `after` unknown; `usage`, that first request's, puts in the row what it read from the prompt cache and what it wrote (a kept start is read, kept.ts `keptStart`). A chosen frontier's line is a routine info row in the logs; a mechanical wake lost the model's frontier, so the user sees it. */
+/** M2: an installed wake's landed line and `landed` row, at the party's first reading after it (`after`), or at its end with `after` unknown; `usage`, that first request's, puts in the row what it read from the prompt cache and what it wrote (a kept start is read, kept.ts `keptStart`). The wake's folded row draws the sizes once measured (wake-row.ts `wakeRow`). A chosen frontier's line is a routine info row in the logs; a mechanical wake lost the model's frontier, so the user sees it. */
 function land(st: State, $: EngineInterface, key: string, landing: Landing | undefined, after?: number, usage?: { cache_read_input_tokens?: number | null; cache_creation_input_tokens?: number | null } | null): void {
-  if (landing !== undefined) { const line = landedLine(landing, after), row = { event: 'landed', party: key, kind: landing.kind, before: landing.before ?? null, after: after ?? null, ...(usage == null ? {} : { read: usage.cache_read_input_tokens ?? null, written: usage.cache_creation_input_tokens ?? null }), line: screenLine(line) }; say(st, $, line, 'info', row); }
+  if (landing !== undefined) { const shown = landedShort(landing.before, after, usage); if (landing.row !== undefined && shown !== undefined) (st.landed.set(landing.row, shown), $.ui.invalidate('ui.render')); const line = landedLine(landing, after), row = { event: 'landed', party: key, kind: landing.kind, before: landing.before ?? null, after: after ?? null, ...(usage == null ? {} : { read: usage.cache_read_input_tokens ?? null, written: usage.cache_creation_input_tokens ?? null }), line: screenLine(line) }; say(st, $, line, 'info', row); }
 }
 
 /** One session.compact ask, rows C1-C10: decide, then pass, hold, or install the frontier or a mechanical wake. */
@@ -623,7 +625,7 @@ async function compactAsk(st: State, $: EngineInterface, e: SessionCompactInput,
     ? buildWake({ ...shared, briefFiles: briefDocs, toolUseId: held!.toolUseId, frontier: shared.frontier, tool: st.toolNames.forward_compaction, files: await readLoadFiles(fsOf($).read, held!.loadFiles), missing })
     : mechanicalWake({ ...shared, briefFiles: briefDocs, tool: st.toolNames.forward_compaction, recent: await readLoadFiles(fsOf($).read, recentFiles(own.work.files).filter((path) => !named.includes(path)).map((path) => ({ path })), LOAD_FILE_MAX_CHARS), reason: action.why === 'ceiling' ? { kind: 'ceiling', ceiling: m!.ceiling } : { kind: 'reactive' } });
   dbg(st, $, 'wake', { party: key, kind: action.action, ratio: shared.charsPerToken ?? null, askPoint: shared.askPoint, sizes: wake.sizes, headChars: wake.headChars, briefFiles: named, carried: wake.carried, notCarried: wake.notCarried, start: wake.start, kept: wake.kept, dropped: wake.dropped, skills: wake.skills, storage: wake.storage });
-  installed(st, $, key, action.action === 'install' ? { kind: 'frontier', label, before: tokens, chars: shared.frontier.length, facts: wake.facts, kept: wake.kept, dropped: wake.dropped } : { kind: 'mechanical', label, before: tokens, tokens, ceiling: m?.ceiling ?? 0 }, signal); await writeDue(st, $, key, 'compactAsk'); // the round count the install moved
+  installed(st, $, key, action.action === 'install' ? { kind: 'frontier', label, before: tokens, row: wakeHead(wake.messages), chars: shared.frontier.length, facts: wake.facts, kept: wake.kept, dropped: wake.dropped } : { kind: 'mechanical', label, before: tokens, row: wakeHead(wake.messages), tokens, ceiling: m?.ceiling ?? 0 }, signal); await writeDue(st, $, key, 'compactAsk'); // the round count the install moved
   if (action.action === 'install') for (const w of installWarnings(label, held!.toolUseId, missing, splitAtCall(e.messages, held!.toolUseId) !== undefined)) say(st, $, w.line, 'warning', { ...w.row, where: 'compactAsk', party: key });
   record(st, $, { ...row, facts: wake.facts, kept: wake.kept, dropped: wake.dropped, skills: wake.skills, frontier: { chars: size.chars, items: size.items }, storage: wake.storage, ...(action.action === 'install' && missing.length > 0 ? { incomplete: missing } : {}) });
   return { messages: wake.messages, ...(tokens !== undefined ? { tokensBefore: tokens } : {}) }; // tokensAfter: the next reading measures it (M2)
@@ -680,6 +682,7 @@ async function readStep(st: State, $: EngineInterface, e: TurnStepInput, r: Turn
   const key = keyOf(e.agentId);
   const u = r?.usage;
   dbg(st, $, 'turn.step', { party: key, model: e.model ?? null, input_tokens: u?.input_tokens ?? null, cache_read_input_tokens: u?.cache_read_input_tokens ?? null, cache_creation_input_tokens: u?.cache_creation_input_tokens ?? null, output_tokens: u?.output_tokens ?? null, usageModel: u?.model ?? null });
+  for (const use of r?.toolUses ?? []) if (use.name === st.toolNames.forward_compaction) (st.calls.set(callKey(use.input), { output: u?.output_tokens ?? undefined, context: readingTokens(u) }), $.ui.invalidate('ui.render')); // the row of a call this request made draws what Claude Code measured of it (call-row.ts `callRow`)
   if (key === 'main' && e.model !== undefined && (st.mainWindow === undefined || (st.mainModel ?? e.model) !== e.model)) await readMainWindow(st, $, e.model); // not read yet, or after /model
   if (key === 'main') st.mainModel = e.model ?? st.mainModel; else await unlessAborted<unknown>(st.windows.settled(e.model) ?? Promise.resolve(), signal); // the lookup begun beside this step, never past the dispatch's abort
   st.parties.describe(key, { model: e.model }); await judge(st, $, key);
@@ -829,7 +832,7 @@ export const register: Register = (on: On, options: PluginOptions) => {
     warned: new Set(), logFailures: new Set(),
     pending: [], rowsWriting: 0, levelRowsWriting: 0, levelLinks: 0, levelBatched: 0, skips: new SkipFold(), levelSkips: new SkipFold(), writing: Promise.resolve(),
     parties: new Parties(), ledger: newLedger(), restored: new Map(),
-    inFlight: new Map(), pendingSpawns: new Set(), knownAgents: new Map(), installedSince: new Set(), windows: new ModelWindows(),
+    inFlight: new Map(), pendingSpawns: new Set(), knownAgents: new Map(), installedSince: new Set(), calls: new Map(), landed: new Map(), windows: new ModelWindows(),
   };
 
   on('session.start', async ($, e, next) => {
@@ -875,8 +878,10 @@ export const register: Register = (on: On, options: PluginOptions) => {
     return r;
   });
 
-  // A message the wake built folds to one dim line outside the expanded view (wake-row.ts `wakeRow`); every other row is the engine's.
-  on('ui.render', { component: 'UserMessage' }, ($, e, next) => wakeRow(e.props) ?? next(e));
+  // Outside the expanded view a message the wake built folds to one dim line (wake-row.ts `wakeRow`) and a forward_compaction call draws what it did (call-row.ts `callRow`); every other row is the engine's.
+  on('ui.render', { component: 'UserMessage' }, ($, e, next) => wakeRow(e.props, st.landed.get(e.props.text)) ?? next(e));
+  on('ui.render', { component: 'ToolUse' }, ($, e, next) => callRow(e.props, st.calls.get(callKey(e.props.input))) ?? next(e));
+  on('ui.render', { component: 'ToolResult' }, ($, e, next) => callResultRow(e.props) ?? next(e));
 
   on('turn.start', async ($, e, next) => {
     await ensureTools(st, $, next.signal), await guard(st, $, 'turn.start', () => noteRun(st, $, e), e); // a tool that failed to register is tried again once due
@@ -889,15 +894,9 @@ export const register: Register = (on: On, options: PluginOptions) => {
     return r;
   });
 
-  on('prompt.submit', async ($, e, next) => {
-    await guard(st, $, 'prompt.submit', () => noteSubmit(st, $, e), e);
-    return next(e);
-  });
+  on('prompt.submit', async ($, e, next) => (await guard(st, $, 'prompt.submit', () => noteSubmit(st, $, e), e), next(e)));
 
-  on('session.append', { door: 'delivery' }, async ($, e, next) => {
-    await guard(st, $, 'session.append', () => noteDelivery(st, $, e), e);
-    return next(e);
-  });
+  on('session.append', { door: 'delivery' }, async ($, e, next) => (await guard(st, $, 'session.append', () => noteDelivery(st, $, e), e), next(e)));
 
   // A plan-mode row names plan mode and the plan file for its party (plan.ts `planFrom`); every attachment passes on untouched.
   on('prompt.attachment', async ($, e, next) => {
@@ -905,10 +904,7 @@ export const register: Register = (on: On, options: PluginOptions) => {
     return next(e);
   });
 
-  on('skill.prompt', async ($, e, next) => {
-    await guard(st, $, 'skill.prompt', () => noteSkill(st, $, e), e);
-    return next(e);
-  });
+  on('skill.prompt', async ($, e, next) => (await guard(st, $, 'skill.prompt', () => noteSkill(st, $, e), e), next(e)));
 
   on('agent.spawn', async ($, e, next) => {
     st.pendingSpawns.add(e.tool_use_id);

@@ -221,7 +221,8 @@ export function frontierSize(held: Held): FrontierSize {
   return { chars, items: lists.reduce((sum, l) => sum + l.items, 0), lists };
 }
 
-const num = (n: number): string => n.toLocaleString('en-US');
+/** A count as text, thousands grouped: `9,321`. */
+export const num = (n: number): string => n.toLocaleString('en-US');
 
 /** The result's size line, lists with items only, and over `warnAt` characters with no list item, the line asking for a shorter objective and next. A frontier whose lists hold items is asked nothing: an item folded into another loses what told it apart (which row, which test), and the model then reports from the fold. No automatic cut. */
 export function sizeLines(size: FrontierSize, warnAt: number): string[] {

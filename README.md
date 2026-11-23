@@ -7,7 +7,7 @@
 [![Claude Code plugin](https://img.shields.io/badge/Claude%20Code-plugin-D97757)](https://docs.claude.com/en/docs/claude-code/plugins)
 [![Version](https://img.shields.io/badge/version-2.4.0-blue)](./CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
-[![Tests](https://img.shields.io/badge/tests-873%20passing-brightgreen)](#development)
+[![Tests](https://img.shields.io/badge/tests-901%20passing-brightgreen)](#development)
 [![Built with Professor](https://img.shields.io/badge/built%20with-Professor-8A2BE2)](https://github.com/rezzminator/professor)
 
 </div>
@@ -140,7 +140,7 @@ After a compaction the model's context holds, oldest first:
 
 A sub-agent's brief is kept word for word, but a brief that hands its rules to a file ("build per /flight/spec.md") would lose that file's text with the context a compaction drops. So every wake of a sub-agent, handoff or mechanical, reads in the documents its brief names: each path in it, absolute or under `~`, ending in `md`, `markdown`, `txt`, `rst` or `adoc`, that the sub-agent itself opened and did not write or edit, and that its handoff does not already carry. They are read from disk at install within 40,000 characters together, the one that crosses the limit cut at its last line that fits with a line saying where to Read on, and one with no room left or that cannot be read is named as not carried. Source, data and log files a brief names are never carried this way. On a mechanical wake such a document is left out of the newest files, so it appears once.
 
-On your screen the facts and the handoff fold to one dim line, `forward-compaction installed the frontier: …`, where Claude Code's fullscreen view would otherwise draw them whole; the transcript view (ctrl+o) shows both in full. Only the drawing folds: the model reads every word.
+On your screen the facts and the handoff fold to one dim line, where Claude Code's fullscreen view would otherwise draw them whole; the transcript view (ctrl+o) shows both in full. Once the first request after the install has reported its usage, the line carries the measured sizes: `forward-compaction installed the frontier, 135k → 58k context, its first request read 11k from the prompt cache and wrote 47k: …` (a missing reading before is said as `unknown`; the cache clause appears only when both counts are reported; until then the line stands without the sizes). Only the drawing folds: the model reads every word.
 
 Every figure, limit and edge case is in the [behaviour reference](./docs/spec.md).
 
@@ -167,6 +167,20 @@ forward_compaction({
 | `decisions`, `done`, `remaining`, `blocked`, `findings` | Your rulings on how something gets done; the finished pieces, each with how it was verified; every step left, in order; what waits on whom; the model's own notes, errors and commands it will need again. |
 | `storage` | Markdown files the model keeps for a later step, each with a description; every compaction lists them, and the model reads or edits them with Read and Edit. |
 | `load_files` | Files to read back in after the compaction, up to 250 lines each; a binary file is named, never carried. |
+
+Outside the expanded view (ctrl+o, `--verbose`, an export) the call's row in the transcript draws what the call did in place of its raw arguments, and the result block under it draws nothing: each changed list with `+` added, `~` edited and `-` removed item numbers, whether `objective` and `next` were set or replaced, the characters written and the output tokens of the request that made the call, the handoff's size and the context at the call. Both token figures are Claude Code's own readings, absent until the request reports them. A failed or interrupted call keeps Claude Code's drawing, and the stored result the model reads is unchanged.
+
+```text
+● forward_compaction  frontier stored · compacts before the next request
+  ⎿  done       +2 [1] [2]
+     remaining  +2 [1] [2]
+     findings   +1 [1]
+     objective  set
+     next       set
+     wrote      229 chars of arguments · its request wrote 218 tokens
+     frontier   128 chars · 5 items (done 2, remaining 2, findings 1)
+     context    206k at the call
+```
 
 Each list takes `{add, remove, edit}`: texts to add, item numbers to remove, `{id, text}` to replace an item's text. An item's number never changes and is never reused. At a compaction each list item shows how many compactions it has passed unchanged (`[3 rounds unchanged]`), counted by the plugin, so the model sees what has gone stale and removes it. The call is never refused: the reply gives the new numbers and one line per change, names anything it skipped, gives the handoff's size, and says when the handoff will install; past `FORWARD_COMPACTION_FRONTIER_WARN_CHARS` a handoff with no list item is also asked for a shorter objective and next. An item that left (removed, or the text an edit replaced) is shown by its first 80 characters, its whole text staying in the list's history file. A list, `storage` or `load_files` value sent as the text of its own JSON is read as that JSON, and one whose JSON does not parse is repaired, each with a note in the reply. Old call shapes are never refused: `standing_orders` entries are taken as `orders.add`, and `lifted`, `keep_skills`, `drop_files`, `drop_skills` and a `load_files` entry's `later` are answered by a note. Everything is written to disk as it arrives, and what leaves a list, a text or the storage goes to a history folder beside it, so a restarted chat keeps every number; [State on disk](./docs/spec.md#state-on-disk) has the layout.
 

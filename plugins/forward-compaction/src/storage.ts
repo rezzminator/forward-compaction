@@ -3,10 +3,9 @@
 // lists and unlists entries, and copies every value that leaves (overwritten or removed) to `history/storage/`. The
 // file API has no move or delete, so a removed entry's file stays in `storage/`, unlisted.
 import { absent, STORAGE_DIR, type Fs, type PartyFiles } from './disk';
-import { kind, type StorageEntry } from './lists';
+import { kind, num, type StorageEntry } from './lists';
 
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
-const num = (n: number): string => n.toLocaleString('en-US');
 
 /** The longest name before `.md`: a longer one is cut, so the file's name stays under every file system's 255-byte limit. */
 const NAME_MAX = 100;

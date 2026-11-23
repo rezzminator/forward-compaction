@@ -396,7 +396,7 @@ describe('replay gate (D19)', { timeout: 60_000 }, () => {
 
   it('classifies every $ path the adapter calls, and the utility paths are the harness\'s', () => {
     expect(new Set(Object.keys(ANSWERS))).toEqual(new Set(PATHS));
-    expect(Object.entries(ANSWERS).filter(([, how]) => how.from === 'harness').map(([path]) => path).sort()).toEqual(['clock.after', 'clock.now', 'fs.exists', 'fs.write', 'process.run', 'session.id', 'session.root', 'state.get', 'state.set', 'tool.register', 'ui.log']);
+    expect(Object.entries(ANSWERS).filter(([, how]) => how.from === 'harness').map(([path]) => path).sort()).toEqual(['clock.after', 'clock.now', 'fs.exists', 'fs.write', 'process.run', 'session.id', 'session.root', 'state.get', 'state.set', 'tool.register', 'ui.invalidate', 'ui.log']);
   });
 
   it('replays concurrent parties on the recorded timeline: a step that starts inside another party\'s open step runs after the steps recorded before it', async () => {
@@ -477,10 +477,10 @@ describe('the recorder', () => {
   it('records a matched hook under the plugin\'s own matcher, and hands the draw hook to the engine unrecorded', async () => {
     const registered: { pattern: string; matcher?: unknown; hook: (...args: any[]) => any }[] = [];
     recorder(((pattern: string, ...rest: any[]) => void registered.push({ pattern, ...(rest.length === 2 ? { matcher: rest[0] } : {}), hook: rest.at(-1) })) as any, {} as any);
-    expect(registered.map((r) => r.pattern)).toEqual([...RECORDED, 'ui.render']);
-    expect(registered.filter((r) => r.matcher !== undefined).map((r) => [r.pattern, r.matcher])).toEqual([['session.append', { door: 'delivery' }], ['ui.render', { component: 'UserMessage' }]]);
-    const draw = registered.at(-1)!;
-    expect(draw.matcher).toEqual({ component: 'UserMessage' });
+    expect(registered.map((r) => r.pattern)).toEqual([...RECORDED, 'ui.render', 'ui.render', 'ui.render']);
+    expect(registered.filter((r) => r.matcher !== undefined).map((r) => [r.pattern, r.matcher])).toEqual([['session.append', { door: 'delivery' }], ['ui.render', { component: 'UserMessage' }], ['ui.render', { component: 'ToolUse' }], ['ui.render', { component: 'ToolResult' }]]);
+    const draw = registered.at(-3)!, result = registered.at(-1)!;
+    expect(await result.hook({}, { surface: 'terminal', component: 'ToolResult', requestId: 't1', props: { tool: 'mcp__forward-compaction__forward_compaction', output: 'Frontier updated. Nothing compacts', isErrored: false } }, async () => 'engine')).toEqual({ type: 'Box', props: { display: 'none' } });
     const row = (isExpanded: boolean) => ({ surface: 'terminal', component: 'UserMessage', requestId: 'm1', props: { text: '[forward-compaction: facts] Your context was compacted', origin: { kind: 'unclassified' }, isExpanded } });
     expect(await draw.hook({}, row(false), async () => 'engine')).toEqual({ type: 'Box', props: { display: 'none' } });
     expect(await draw.hook({}, row(true), async () => 'engine')).toBe('engine');

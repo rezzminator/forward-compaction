@@ -346,15 +346,69 @@ On screen the two built messages are user-role rows, which Claude Code's
 fullscreen view draws whole. Outside the expanded view (the ctrl+o
 transcript, `--verbose`, an export) the plugin draws nothing for the facts
 message and one dim line for the message after it:
-`forward-compaction installed the frontier: the transcript view (ctrl+o) shows it and the recorded facts in full`,
+`forward-compaction installed the frontier, 135k → 58k context, its first request read 11k from the prompt cache and wrote 47k: the transcript view (ctrl+o) shows it and the recorded facts in full`,
 or for a mechanical wake
-`forward-compaction compacted mechanically, no frontier was written: the transcript view (ctrl+o) shows its note and the recorded facts in full`.
+`forward-compaction compacted mechanically, no frontier was written, 135k → 58k context, its first request read 11k from the prompt cache and wrote 47k: the transcript view (ctrl+o) shows its note and the recorded facts in full`.
+The sizes (`landedShort`) are the party's last reading before the install and
+its first after it, as Claude Code reported them; a missing reading before is
+said as `unknown`, and the cache clause appears only when that request's usage
+reports both counts. Until that request arrives the line stands without the
+sizes (`forward-compaction installed the frontier: …`), and the plugin asks
+Claude Code to draw the rows again when they are known
+(`$.ui.invalidate('ui.render')`).
 The fold is a drawing only: the stored messages, the ones the model reads,
 keep every character, and the expanded view draws them as Claude Code does.
 A row folds only when Claude Code marks its message as built by a hook
 (origin `unclassified` in the main view, `coordinator` in a sub-agent's view,
 where it sits under "From main") and it opens as a wake message does, so the
 same text typed or pasted by the user is drawn whole.
+
+A `forward_compaction` call's own row is drawn the same way (`callRow`,
+`callResultRow`, `call-row.ts`). Outside the expanded view the call's row draws
+what the call did in place of its raw arguments, and the result block under it
+draws nothing:
+
+```text
+● forward_compaction  frontier stored · compacts before the next request
+  ⎿  done       +2 [1] [2]
+     remaining  +2 [1] [2]
+     findings   +1 [1]
+     objective  set
+     next       set
+     wrote      229 chars of arguments · its request wrote 218 tokens
+     frontier   128 chars · 5 items (done 2, remaining 2, findings 1)
+     context    206k at the call
+```
+
+and a call below the notice point:
+
+```text
+● forward_compaction  frontier updated · nothing compacts, the context is still small
+  ⎿  done       ~1 [1]
+     remaining  -1 [1]
+     findings   +1 [2]
+     next       replaced
+     wrote      171 chars of arguments · its request wrote 184 tokens
+     frontier   157 chars · 5 items (done 2, remaining 1, findings 2)
+     context    74k at the call
+```
+
+- The head line: `writing the frontier` while the call runs; `frontier stored ·
+  compacts {when}` with the receipt's own words for when; `frontier updated ·
+  nothing compacts, the context is still small`; and `· without {objective|next}`
+  when the receipt names one missing.
+- One line per changed list: `+` added (green), `~` edited (yellow), `-` removed
+  (red), each with its count and item numbers. `objective` and `next` read `set`
+  or `replaced`. A `storage` line and a `load_files` line appear when the call
+  has them; a call that changed nothing reads `changes none`.
+- `wrote` is the characters of the call's arguments as JSON, plus the output
+  tokens of the request that made the call when Claude Code reported them;
+  `frontier` is the result's own size line; `context` is that request's context
+  reading. The two token figures are Claude Code's readings for the request
+  (`turn.step` usage), never estimates, and are absent until the step reports.
+- A call that failed, errored or was interrupted, the expanded view, and every
+  other tool keep Claude Code's own drawing. The stored result the model reads
+  is unchanged.
 
 The facts message opens with the plugin version that built the wake
 (`compacted by forward-compaction 2.2.5`), so a chat on an old build shows
@@ -515,11 +569,17 @@ lifts it.` The objective, the next and the storage entries carry no tag. A
 frontier with no objective or next names what it lacks; then the message says how
 many later messages follow. No model-facing text names the path of a list's
 file or of the history. A mechanical wake replaces it with a message saying
-the party had not called `forward_compaction` (since its last wake, when it
-holds a frontier), how many of the newest messages were kept and how many
-are gone; with no frontier held it says to re-establish the objective and
-next step from the user's messages or the brief, and with one held it shows
-it as it stands, to continue from.
+how many of the newest messages were kept and how many are gone. With no
+frontier held it says the party had not called `forward_compaction`, and to
+re-establish the objective and next step from the user's messages or the brief.
+With a frontier held it says the context reached the ceiling before a
+`forward_compaction` call compacted it, and shows the frontier as the party's
+last call left it: what the party did after that call is missing from its Done,
+Remaining and Next and shows in the recorded facts (files touched, shell
+commands run, messages). It says to continue from where the messages leave off,
+or from its Next less every step the facts show done, and to bring the frontier
+up to date at its next milestone with one call sending only changes by item
+number.
 
 Each install writes one line, measured: it waits for the party's first
 reading after the install, and is an info row in the logs, never on screen.

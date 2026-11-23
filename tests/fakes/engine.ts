@@ -53,8 +53,8 @@ const apiError = (type: string, message: string): string => JSON.stringify({ typ
 export function onInto(hooks: Map<string, Fn>): any {
   return (name: string, a: Fn | Record<string, unknown>, b?: Fn): void => {
     if (b === undefined) return void hooks.set(name, a as Fn);
-    const matcher = Object.entries(a);
-    hooks.set(name, ($: unknown, e: unknown, next: Fn) => (matcher.every(([key, value]) => (e as Record<string, unknown>)[key] === value) ? b($, e, next) : next(e)));
+    const matcher = Object.entries(a), beneath = hooks.get(name); // a second matched hook on one event leaves the first in place beneath it
+    hooks.set(name, ($: unknown, e: unknown, next: Fn) => (matcher.every(([key, value]) => (e as Record<string, unknown>)[key] === value) ? b($, e, next) : beneath !== undefined ? beneath($, e, next) : next(e)));
   };
 }
 
@@ -63,6 +63,7 @@ export function fakeEngine(script: Script = {}) {
   const vars: Record<string, string> = { HOME: home, CLAUDE_CONFIG_DIR: join(home, '.claude'), ...script.env };
   const screen: ScreenCall[] = [];
   const unscripted: string[] = [];
+  const invalidated: string[] = [];
   const compactCalls: unknown[][] = [];
   const fetches: { url: string; init?: unknown }[] = [];
   const credential = script.credential === undefined ? { handle: 'handle-1', kind: 'bearer' as const } : script.credential;
@@ -137,7 +138,7 @@ export function fakeEngine(script: Script = {}) {
       },
     },
     clock: { now: async () => (await script.beforeNow?.(), now), after: (ms: number, fn: () => void) => { const t = setTimeout(fn, ms); return { cancel: () => clearTimeout(t) }; } },
-    ui: { log: (text: string, opts?: unknown) => void screen.push(opts === undefined ? { text } : { text, opts }) },
+    ui: { log: (text: string, opts?: unknown) => void screen.push(opts === undefined ? { text } : { text, opts }), invalidate: (event: string) => void invalidated.push(event) },
     agent: { list: async () => (script.agents ? script.agents() : []) },
     state: {
       get: async (ref: unknown) => state.get(JSON.stringify(ref)) ?? { value: undefined, version: 0 },
@@ -190,7 +191,7 @@ export function fakeEngine(script: Script = {}) {
   }
 
   return {
-    $, home, vars, screen, unscripted, compactCalls, fetches, hooks, dispatch,
+    $, home, vars, screen, unscripted, invalidated, compactCalls, fetches, hooks, dispatch,
     advance: (ms: number) => void (now += ms),
     texts: () => screen.map((c) => c.text),
     cleanup: () => rmSync(home, { recursive: true, force: true }),
