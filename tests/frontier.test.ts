@@ -91,11 +91,13 @@ describe('parseCall passes each change on as sent and names every argument it re
     ['a text whose array closes before its last object', { remaining: '{"edit": [{"id": 2, "text": "verify"}, {"id": 3, "text": "report [done]"]}' }, { remaining: { edit: [{ id: 2, text: 'verify' }, { id: 3, text: 'report [done]' }] } }, [`remaining arrived as text whose JSON was broken: repaired and read, this result's lines show what it changed.`]],
     ['operations written bare', { orders: 'add: ["No git writes.", "Scratch under /tmp/x, never \\"/tmp\\"."]' }, { orders: { add: ['No git writes.', 'Scratch under /tmp/x, never "/tmp".'] } }, [`orders arrived as text whose JSON was broken: repaired and read, this result's lines show what it changed.`]],
     ['two bare operations, one named inside an item', { done: 'add: ["a, remove: b"], remove: [2]' }, { done: { add: ['a, remove: b'], remove: [2] } }, [`done arrived as text whose JSON was broken: repaired and read, this result's lines show what it changed.`]],
+    ['operations named by a leaked tool-call tag, the form that ended a real call early', { objective: 'ship it', orders: '\n<parameter name="add">["No git writes.", "Worktree only."]' }, { orders: { add: ['No git writes.', 'Worktree only.'] } }, [`orders arrived as text whose JSON was broken: repaired and read, this result's lines show what it changed.`]],
     ['a broken text no repair reads as one text', { done: '{"add": ["parser", oops' }, { done: '{"add": ["parser", oops' }, []],
     ['a plain text that starts like an operation as one text', { remaining: 'add: retry logic to the parser' }, { remaining: 'add: retry logic to the parser' }, []],
   ])('reads %s', (_name, input, lists, notes) => {
     const call = parseCall(input);
     expect([call.lists, call.notes]).toEqual([lists, notes]);
+    expect(call.broken ?? []).toEqual(notes.filter((note) => note.includes('JSON was broken')).map((note) => note.split(' ')[0]));
   });
 
   it('reads storage and load_files sent as the text of their JSON, and leaves one of the wrong shape to its own note', () => {
@@ -190,6 +192,9 @@ describe('receipt says what was stored and when it installs, per party (R16)', (
   const INSIDE = ' It installs before your next request, inside this turn: what you have read is gone then, and the rest of the turn, your reply to the user included, is written from the frontier. The newest messages after this call that fit are kept verbatim behind it, the rest named as not carried.';
   const NOTHING = ' Nothing compacts: your context is still too small for a compaction to pay, and stays as it is. Carry on; a forward-compaction notice asks for the call once it has grown enough.';
   const BELOW = " Claude Code has not asked to compact you yet: it installs at Claude Code's next ask, from about 67k context. The newest messages after this call that fit are kept verbatim behind it, the rest named as not carried. Carry on with your work.";
+  const MAIN_WAITS = " It installs at the end of this turn, or at Claude Code's second compaction ask from here if that comes first. The newest messages after this call that fit are kept verbatim behind it, the rest named as not carried, so finish the step in hand; you need not stop.";
+  const EARLY = ' A broken field can end a call early: if the lines above lack something you meant to send, send it before it installs.';
+  const BEHIND = ' The newest messages after this call that fit are kept verbatim behind it, the rest named as not carried.';
   it.each([
     [{ party: 'subagent' as const, files: 0, tokens: 41_200, askPoint: 67_000 }, `Frontier stored.${BELOW}`],
     [{ party: 'subagent' as const, files: 0, askPoint: 67_000 }, `Frontier stored.${BELOW}`],
@@ -197,14 +202,19 @@ describe('receipt says what was stored and when it installs, per party (R16)', (
     [{ party: 'subagent' as const, files: 2, tokens: 67_000, askPoint: 67_000 }, `Frontier stored with 2 files to load.${DUE}`],
     [{ party: 'subagent' as const, files: 1, tokens: 90_000, askPoint: 67_000, replaced: true }, `Frontier stored with 1 file to load.${DUE} This call applied on top of your earlier one since the last wake.`],
     [{ party: 'main' as const, files: 3 }, `Frontier stored with 3 files to load.${MAIN}`],
-    [{ party: 'main' as const, files: 0, missing: ['next'] }, `Frontier stored, without next: send it before it installs, or the wake names it missing.${MAIN}`],
-    [{ party: 'main' as const, files: 0, missing: ['objective', 'next'], replaced: true }, `Frontier stored, without objective and next: send them before it installs, or the wake names them missing.${MAIN} This call applied on top of your earlier one since the last wake.`],
+    [{ party: 'main' as const, files: 0, missing: ['next'] }, `Frontier stored, without next: send it before it installs, or the wake names it missing.${MAIN_WAITS}`],
+    [{ party: 'main' as const, files: 0, missing: ['objective', 'next'], replaced: true }, `Frontier stored, without objective and next: send them before it installs, or the wake names them missing.${MAIN_WAITS} This call applied on top of your earlier one since the last wake.`],
     [{ party: 'main' as const, files: 0, tokens: 66_999, askPoint: 67_000 }, `Frontier stored.${MAIN}`],
     [{ party: 'main' as const, files: 0, tokens: 67_000, askPoint: 67_000 }, `Frontier stored.${INSIDE}`],
     [{ party: 'main' as const, files: 2, tokens: 150_000, askPoint: 67_000, replaced: true }, `Frontier stored with 2 files to load.${INSIDE} This call applied on top of your earlier one since the last wake.`],
     [{ party: 'main' as const, files: 0, tokens: 86_000, askPoint: 67_000, compacts: false }, `Frontier updated.${NOTHING}`],
     [{ party: 'main' as const, files: 0, missing: ['next'], compacts: false }, `Frontier updated, without next: send it before it installs, or the wake names it missing.${NOTHING}`],
     [{ party: 'subagent' as const, files: 2, tokens: 120_000, askPoint: 67_000, compacts: false, replaced: true }, `Frontier updated with 2 files to load.${NOTHING} This call applied on top of your earlier one since the last wake.`],
+    [{ party: 'subagent' as const, files: 0, tokens: 201_373, askPoint: 67_000, missing: ['next'], broken: ['orders'] }, `Frontier stored, without next: send it before it installs, or the wake names it missing.${EARLY} It installs after your next request.${BEHIND}`],
+    [{ party: 'subagent' as const, files: 0, tokens: 209_322, askPoint: 67_000, broken: ['orders'] }, `Frontier stored.${EARLY} It installs after your next request.${BEHIND}`],
+    [{ party: 'subagent' as const, files: 0, askPoint: 67_000, broken: ['done'] }, `Frontier stored.${EARLY} Claude Code has not asked to compact you yet: it installs at Claude Code's second ask, from about 67k context.${BEHIND} Carry on with your work.`],
+    [{ party: 'main' as const, files: 0, tokens: 150_000, askPoint: 67_000, broken: ['done'] }, `Frontier stored.${EARLY} It installs after your next request, inside this turn: what you have read is gone then, and the rest of the turn, your reply to the user included, is written from the frontier.${BEHIND}`],
+    [{ party: 'main' as const, files: 0, tokens: 86_000, askPoint: 67_000, compacts: false, broken: ['done'] }, `Frontier updated.${NOTHING}`],
   ])('%j', (input, want) => {
     expect(receipt(input)).toBe(want);
   });

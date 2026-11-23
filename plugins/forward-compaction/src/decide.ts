@@ -32,6 +32,8 @@ export type DecideInput = {
   party: PartyKind;
   /** A frontier is stored for the party, whether or not its `forward_compaction` call is still in `e.messages`. */
   stored?: boolean;
+  /** The stored call waits (frontier.ts `callWaits`) and no ask has been held for it yet (`Parties.waited`): this automatic ask is held, so the party's next request can send the rest. */
+  waits?: boolean;
   /** The party's last reading; undefined when it has none (none yet, or none since an install): no ceiling is reached then. */
   tokens?: number;
   /** The context at which a party with no frontier gets a mechanical wake. Left out, it is never reached. */
@@ -51,7 +53,7 @@ export type DecideInput = {
 /** The decision row's `decision` for the action. */
 export type Action =
   | { action: 'next'; decision: 'native' | 'pass' | 'foreign'; why: 'manual' | 'plugin' | 'foreign' | 'ceiling' | 'reactive'; dropStored?: true }
-  | { action: 'skip'; decision: 'skip'; why: 'precompute' | 'waiting' | 'no-reading' | 'ignored-model'; reason: string }
+  | { action: 'skip'; decision: 'skip'; why: 'precompute' | 'waiting' | 'no-reading' | 'ignored-model' | 'unfinished'; reason: string }
   | { action: 'install'; decision: 'install'; why: 'stored' }
   | { action: 'mechanical'; decision: 'mechanical'; why: 'ceiling' | 'reactive' };
 
@@ -63,9 +65,11 @@ export type Action =
  * gets a mechanical wake, or Claude Code's own summary when the ceiling is native. A foreign party (the engine's own
  * fork) is never ours: its automatic ask passes. A party whose model is on the ignore list with nothing stored has its ask
  * held as `ignored-model` until the ceiling; its stored frontier installs like any other's. An automatic ask from any other party with no reading and nothing stored is
- * held as `no-reading`: the next reading decides.
+ * held as `no-reading`: the next reading decides. A stored call that waits (frontier.ts `callWaits`) has one automatic
+ * ask held as `unfinished`, so the party's next request can send the rest; an ask that reports the request too long
+ * installs it at once.
  */
-export function decide({ trigger, party, stored = false, tokens, ceiling = Number.POSITIVE_INFINITY, reactive = false, ceilingNative = false, label = 'main', ignored = false, windowUnknown = false }: DecideInput): Action {
+export function decide({ trigger, party, stored = false, waits = false, tokens, ceiling = Number.POSITIVE_INFINITY, reactive = false, ceilingNative = false, label = 'main', ignored = false, windowUnknown = false }: DecideInput): Action {
   if (trigger === 'manual') return { action: 'next', decision: 'native', why: 'manual', dropStored: true };
   if (trigger === 'precompute') return { action: 'skip', decision: 'skip', why: 'precompute', reason: 'forward-compaction: precompute is never used' };
   if (trigger === 'plugin') {
@@ -73,6 +77,7 @@ export function decide({ trigger, party, stored = false, tokens, ceiling = Numbe
     return { action: 'next', decision: 'pass', why: 'plugin' };
   }
   if (party === 'foreign') return { action: 'next', decision: 'foreign', why: 'foreign' };
+  if (stored && waits && !reactive) return { action: 'skip', decision: 'skip', why: 'unfinished', reason: `forward-compaction: holding Claude Code's compaction for ${label} for one request: its forward_compaction call arrived broken or without its objective or next, and its next request can send the rest` };
   if (stored) return { action: 'install', decision: 'install', why: 'stored' };
   const atCeiling = !windowUnknown && tokens !== undefined && tokens >= ceiling;
   if (atCeiling || reactive) {

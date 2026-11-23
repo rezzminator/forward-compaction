@@ -21,6 +21,8 @@ export type StoredFrontier = {
   seq: number;
   /** Whether a door installs it (`Parties.compacts`): a call made before the party's context reached where a notice goes only changes its held frontier, and nothing compacts. */
   compacts: boolean;
+  /** The call arrived broken or left the frontier without its objective or next (frontier.ts `callWaits`): one automatic ask is held before it installs (decide.ts `decide`), and `waited` ends the wait. */
+  waits?: boolean;
 };
 
 /** What the party's last `session.compact` ask ended in (the decision row's `decision`). */
@@ -169,6 +171,12 @@ export class Parties {
     const state = this.get(key);
     state.judged ??= judged;
     if (typeof model === 'string') state.model ??= model;
+  }
+
+  /** The one ask held for the party's stored call that waits (`StoredFrontier.waits`) has passed: the next ask installs it. A party never seen gains no state. */
+  waited(key: string): void {
+    const stored = this.states.get(key)?.stored;
+    if (stored !== undefined) stored.waits = false;
   }
 
   /** Removes the party's stored frontier and returns it; a party never seen gains no state. */

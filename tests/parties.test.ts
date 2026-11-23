@@ -102,6 +102,16 @@ describe('nudgeDue (R30)', () => {
     expect(parties.get('main').nudges).toBe(2); // the delivered ones only
   });
 
+  it('ends the one ask a stored call waits for, and touches no party that stored nothing', () => {
+    const parties = new Parties();
+    parties.waited('main');
+    expect(parties.get('main').stored).toBeUndefined();
+    parties.store('main', { ...frontier('t1'), waits: true });
+    expect(parties.get('main').stored).toMatchObject({ toolUseId: 't1', compacts: true, waits: true });
+    parties.waited('main');
+    expect(parties.get('main').stored).toMatchObject({ toolUseId: 't1', compacts: true, waits: false });
+  });
+
   it('owes nothing at level 0 and nothing while a frontier is stored', () => {
     const parties = new Parties();
     expect(parties.nudgeDue('main', 0)).toBe(false);

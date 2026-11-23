@@ -1,6 +1,6 @@
 import type { EngineInterface, On, PluginOptions, Register, SessionCompactInput, SessionCompactResult, ToolCallResult, TurnStartInput, TurnStepInput, TurnStepResult, TurnCompleteInput, PromptSubmitInput, SessionAppendInput, SkillPromptInput, AgentSpawnInput, AgentSpawnResult } from 'claude-code';
 import { bounded, unlessAborted } from '../src/bounded';
-import { applyCall, experimental, isAbsolutePath, parseCall, loadFileNote, readLoadFiles, receipt, LOAD_FILE_MAX_CHARS, toolInput, type FileCheck, type LoadFile } from '../src/frontier';
+import { applyCall, experimental, isAbsolutePath, parseCall, loadFileNote, readLoadFiles, callWaits, receipt, LOAD_FILE_MAX_CHARS, toolInput, type FileCheck, type LoadFile } from '../src/frontier';
 import { descriptionOf, pinnedBy } from '../src/carry';
 import { emptyHeld, frontierSize, sizeLines, TEXTS } from '../src/lists';
 import { absent, loadParty, partyRoot, notSaved, NO_FOLDER, type FileProblem, type Fs } from '../src/disk';
@@ -516,10 +516,11 @@ async function applyForward(st: State, $: EngineInterface, e: Record<string, unk
     const loadFiles = call.loadFiles === undefined ? party.stored?.loadFiles ?? [] : carried; // a call that sends no load_files keeps the earlier call's
     const tokens = party.reading, m = marks(st, key); // the reading that stands now, after every wait above: the call's own request is often measured during them, and a reading taken before them judged a woken party's first call as one with no reading, which compacts
     const compacts = callCompacts(st.parties, key, tokens, m, st.config.ignoreModels); // below where its notice goes a call changes the held frontier and compacts nothing
-    const replaced = st.parties.store(key, { loadFiles, toolUseId, storedAtTokens: tokens, since: st.ledger.nextSeq, compacts });
+    const waits = compacts && callWaits(applied.missing, call.broken ?? []); // a call a broken field may have ended early, or one without its objective or next, installs one request later, so the rest can still arrive
+    const replaced = st.parties.store(key, { loadFiles, toolUseId, storedAtTokens: tokens, since: st.ledger.nextSeq, compacts, ...(waits ? { waits } : {}) });
     const size = frontierSize(party.held), sizes = sizeLines(size, st.config.frontierWarnChars), missing = applied.missing;
-    record(st, $, { event: 'stored', party: key, compacts, argChars: JSON.stringify(input).length, lists: applied.counts, frontier: { chars: size.chars, items: size.items }, storage: storage.count, warned: sizes.length > 1, files: loadFiles.length, notes: applied.notes.length + storage.notes.length + checked.length, tokens: tokens ?? null, ...(problems.length > 0 ? { writeFailed: problems.map((p) => p.file) } : {}), ...(replaced !== undefined ? { replaced: replaced.storedAtTokens ?? null } : {}), ...(missing.length > 0 ? { incomplete: missing } : {}) });
-    const door = key === 'main' ? receipt({ party: 'main', files: loadFiles.length, tokens, askPoint: m?.askPoint, replaced: replaced !== undefined, missing, compacts }) : receipt({ party: 'subagent', files: loadFiles.length, tokens, askPoint: m!.askPoint, replaced: replaced !== undefined, missing, compacts });
+    record(st, $, { event: 'stored', party: key, compacts, ...(waits ? { waits } : {}), argChars: JSON.stringify(input).length, lists: applied.counts, frontier: { chars: size.chars, items: size.items }, storage: storage.count, warned: sizes.length > 1, files: loadFiles.length, notes: applied.notes.length + storage.notes.length + checked.length, tokens: tokens ?? null, ...(problems.length > 0 ? { writeFailed: problems.map((p) => p.file) } : {}), ...(replaced !== undefined ? { replaced: replaced.storedAtTokens ?? null } : {}), ...(missing.length > 0 ? { incomplete: missing } : {}) });
+    const door = key === 'main' ? receipt({ party: 'main', files: loadFiles.length, tokens, askPoint: m?.askPoint, replaced: replaced !== undefined, missing, broken: call.broken ?? [], compacts }) : receipt({ party: 'subagent', files: loadFiles.length, tokens, askPoint: m!.askPoint, replaced: replaced !== undefined, missing, broken: call.broken ?? [], compacts });
     return [...applied.lines, ...storage.lines, ...applied.notes, ...storage.notes, ...checked, ...problems.map((p) => notSaved(p, files!.root)), ...sizes, storageHeld(storage.entries), door].join('\n');
   } catch (error) {
     say(st, $, `forward-compaction: storing ${key}'s frontier failed: ${message(error)}`, 'error', { event: 'store-error', where: 'answerForward', party: key, error: message(error) });
@@ -601,7 +602,7 @@ async function compactAsk(st: State, $: EngineInterface, e: SessionCompactInput,
   const tokens = party.reading; // measured only; none since an install, or yet, is unknown
   const m = marks(st, key);
   const matched = st.parties.ignored(key, st.config.ignoreModels);
-  const action = decide({ trigger, party: kind, stored: held?.compacts === true, tokens, ceiling: m?.ceiling, reactive: st.parties.reactive(key), ceilingNative: st.config.ceilingNative, label, ignored: matched !== undefined, windowUnknown: st.parties.windowUnknown(key, judging(st).mainKnown) });
+  const action = decide({ trigger, party: kind, stored: held?.compacts === true, waits: held?.waits === true, tokens, ceiling: m?.ceiling, reactive: st.parties.reactive(key), ceilingNative: st.config.ceilingNative, label, ignored: matched !== undefined, windowUnknown: st.parties.windowUnknown(key, judging(st).mainKnown) });
   const row: Row = { event: 'compact', party: key, trigger, decision: action.decision, why: action.why, tokens: tokens ?? null, ceiling: m?.ceiling ?? null, askPoint: m?.askPoint ?? null, ...(matched !== undefined ? { matched } : {}) };
   if ('dropStored' in action && action.dropStored && held !== undefined) (st.parties.takeStored(key), held.compacts && say(st, $, `forward-compaction: /compact ran Claude Code's own summary; ${label}'s stored frontier was dropped.`, 'error', { event: 'dropped', where: 'compactAsk', party: key, why: action.why })); // a call that compacts nothing had no install to lose
   if (action.action === 'next') {
@@ -613,7 +614,7 @@ async function compactAsk(st: State, $: EngineInterface, e: SessionCompactInput,
   }
   if (action.action === 'skip') {
     // A precompute is no ask for a frontier: only a held one makes the next ask reactive (D8).
-    if (action.why !== 'precompute') st.parties.asked(key, 'skip');
+    if (action.why !== 'precompute') st.parties.asked(key, 'skip'); if (action.why === 'unfinished') st.parties.waited(key); // the one ask a call that waits is given has passed: the next installs it
     record(st, $, { ...row, reason: action.reason });
     return { skip: action.reason };
   }

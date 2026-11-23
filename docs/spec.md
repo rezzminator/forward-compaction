@@ -9,8 +9,9 @@ This is the full behaviour of the plugin: every rule, limit and edge case the co
   `remaining`, `blocked` and `findings` as numbered lists the model changes
   by item number; whatever a call leaves out stays. The plugin holds the
   frontier in files on disk, never summarized, and renders the wake from it;
-  one with no objective or next installs as it is, its wake naming what it
-  lacks.
+  one with no objective or next, or one whose call had a field repaired from
+  broken JSON, waits one request before it installs, and installs as it
+  stands, its wake naming what it lacks.
 - 🧾 **Facts are recorded, never reconstructed.** The user's messages (main
   chat) or the brief (sub-agent), the messages delivered to it, the skills
   loaded, the agents and the background shells come from typed hook events as
@@ -158,12 +159,23 @@ and no ceiling, and an automatic ask from it with nothing stored is held as
    call carries `compacts` (`StoredFrontier.compacts`), and the `stored`
    decision row logs `compacts: true|false`; a later call from the notice
    point on applies on top of the earlier one and compacts. A second call
-   before the install applies on top of the first. A frontier with no objective or next installs like a complete one,
-   its wake naming what it lacks.
+   before the install applies on top of the first. A frontier with no objective or next, or a call with a field repaired from
+   broken JSON, waits one request (see Installing) and then installs as it
+   stands, its wake naming what it lacks.
 3. **Installing.** A stored call that compacts installs at the next door Claude Code
    opens: for the main chat at the end of the turn (the plugin asks Claude
    Code to compact) or at an automatic ask if one comes first; for a
    sub-agent at Claude Code's next automatic ask. No summarizer request runs.
+   A call that waits (`callWaits(missing, broken)`: it leaves the frontier
+   without `objective` or `next`, or a field of it was repaired from broken
+   JSON) stores `StoredFrontier.waits`; the first automatic ask after it is
+   skipped (`compact` row, decision `skip`, why `unfinished`, built in `decide`
+   from `DecideInput.waits`), so the party's next request can send the rest of
+   the frontier; each further waiting call renews the wait, and the ask after
+   that installs the frontier as it stands, its wake naming what it lacks
+   (`Parties.waited(key)` marks the held ask as passed). A compaction the
+   plugin starts itself (the main chat's turn end) and an ask that reports the
+   request too long install at once and never wait. Nothing is refused.
 4. **The ceiling.** An automatic ask with nothing stored is held. Once the
    party reaches its ceiling with still
    nothing stored, or Claude Code asks again with no response in between
@@ -223,7 +235,10 @@ stays.
   namespace prefix before `parameter` allowed, are read the same way, with the
   same note; a tag inside an item's string stays text), and a value closed early read together with the
   arguments written after it inside the same text; each repaired field gets
-  one note. An item's text loses a number the model typed before it
+  one note. A repaired field makes the call wait one request before it
+  installs (`callWaits`, `ParsedCall.broken`): a model's response can end
+  right after a leaked tool-call tag, so the call arrives carrying only its
+  first fields. An item's text loses a number the model typed before it
   (`[9] Parser merged`); an edit's text only its own number. A list's text
   that is an empty array or object changes nothing. A text that is no
   JSON stays one added item, except a text that is only an operation's name
@@ -308,7 +323,9 @@ installs:
   on; a forward-compaction notice asks for the call once it has grown enough.`
 - `Frontier stored`, with `with {n} files to load` when it carries any, and
   `, without {objective|next}: send it before it installs, or the wake names
-  it missing` when the frontier holds no objective or next; then when it
+  it missing` when the frontier holds no objective or next; `A broken field can
+  end a call early: if the lines above lack something you meant to send, send
+  it before it installs.` when a field was repaired; then when it
   installs — for the main chat at or past Claude Code's ask point, inside
   this turn, before its next request (`It installs before your next request,
   inside this turn: what you have read is gone then, and the rest of the turn,
@@ -318,11 +335,16 @@ installs:
   this turn or at Claude Code's next ask if one comes first, for a sub-agent at
   Claude Code's next ask (with where that ask comes) — and, when an earlier
   call since the last wake was stored, `This call applied on top of your
-  earlier one since the last wake.` It prints no context size: the plugin
+  earlier one since the last wake.` For a call that waits, the installing
+  sentence says so: the main chat past the ask point, `It installs after your
+  next request, inside this turn`; the main chat below it, at the end of this
+  turn or at Claude Code's second compaction ask from here if that comes
+  first; a sub-agent, after its next request, or at Claude Code's second ask
+  when none has come yet. It prints no context size: the plugin
   measures none for that moment.
 
 A frontier with no objective or next installs at the same doors as a complete
-one: the frontier message names what it lacks and says to re-establish it
+one, one request later (see Installing): the frontier message names what it lacks and says to re-establish it
 from the user's messages (main) or the brief (sub-agent) and send it in the
 next call, and a warning row names it. The decision log's `stored` row and
 the installing `compact` row name it as `incomplete`.
@@ -758,7 +780,7 @@ With the defaults, on a 200k sub-agent max context (on 1M the ceiling is
 
 | Path | What | Retention |
 | --- | --- | --- |
-| `~/.local/state/forward-compaction/logs/decisions/{session}.jsonl` (`$PLUGIN_LOG_DIR/forward-compaction/decisions/` when set) | decision rows: every frontier stored (with `argChars`, the characters the call's arguments held; `lists`, per list it changed `{added, removed, edited, skipped}`; `frontier`, `{chars, items}` after it; `storage`, `{added, removed}`; `warned`, true when the size warning fired; `files`, the files to load; `notes`, the count of notes its result named; `writeFailed`, the files it could not write, when any; and `incomplete`, the texts it lacks, when any), every nudge (with `notice`, its count since the party's last install, and `last`, true for the last one before the ceiling), every `finish-notice` row (`{party, tokens, start}`), every compaction decision (an installing one with `skills`, `{carried, listed}`, the skills carried whole and the lines under `## Skills not carried`, `frontier`, `{chars, items}`, and `storage`, the entries listed), every `landed` row (`{party, kind, before, after, read, written, line}`, `kind` being `frontier` or `mechanical`, `before` and `after` the measured readings or `null`, `read` and `written` what the first request after the install read from and wrote to the prompt cache, written with the landed line), every `ignore` row (`{party, label, model, judged, matched}`, `judged` being `managed`, `ignored` or `unknown`, `matched` the ignore-list entry or `null`, written when a party's judgement is first made or changes), every `window` row (`{party, label, model, maxContext, source, ceiling}`, with `unknown` on the `fallback` source, written when a sub-agent's max context is first known or changes); a held-ask streak is one folded `skips` row, written when the streak closes and stamped with its last ask's time, so it can follow later rows; rows past the first 500 that come before the environment layer is read are counted in one `rows-lost` row | a file over 8 MiB moves to `.1`; other sessions' files older than 14 days, then all but the newest 200, are deleted |
+| `~/.local/state/forward-compaction/logs/decisions/{session}.jsonl` (`$PLUGIN_LOG_DIR/forward-compaction/decisions/` when set) | decision rows: every frontier stored (with `argChars`, the characters the call's arguments held; `lists`, per list it changed `{added, removed, edited, skipped}`; `frontier`, `{chars, items}` after it; `storage`, `{added, removed}`; `warned`, true when the size warning fired; `files`, the files to load; `notes`, the count of notes its result named; `writeFailed`, the files it could not write, when any; `waits`, true when the call waits one request before it installs; and `incomplete`, the texts it lacks, when any), every nudge (with `notice`, its count since the party's last install, and `last`, true for the last one before the ceiling), every `finish-notice` row (`{party, tokens, start}`), every compaction decision (a `skip` row with why `unfinished` for the one ask a waiting call holds; an installing one with `skills`, `{carried, listed}`, the skills carried whole and the lines under `## Skills not carried`, `frontier`, `{chars, items}`, and `storage`, the entries listed), every `landed` row (`{party, kind, before, after, read, written, line}`, `kind` being `frontier` or `mechanical`, `before` and `after` the measured readings or `null`, `read` and `written` what the first request after the install read from and wrote to the prompt cache, written with the landed line), every `ignore` row (`{party, label, model, judged, matched}`, `judged` being `managed`, `ignored` or `unknown`, `matched` the ignore-list entry or `null`, written when a party's judgement is first made or changes), every `window` row (`{party, label, model, maxContext, source, ceiling}`, with `unknown` on the `fallback` source, written when a sub-agent's max context is first known or changes); a held-ask streak is one folded `skips` row, written when the streak closes and stamped with its last ask's time, so it can follow later rows; rows past the first 500 that come before the environment layer is read are counted in one `rows-lost` row | a file over 8 MiB moves to `.1`; other sessions' files older than 14 days, then all but the newest 200, are deleted |
 | `~/.local/state/forward-compaction/logs/{errors,warnings,info}.jsonl` (`$PLUGIN_LOG_DIR/forward-compaction/` when set) | the plugin's errors, warnings and info: every decision event lands at its level — errors and warnings in their files, every other operational event (nudge, stored, each compaction decision, party, skill, tool-registered, look-back, the lines said) in `info.jsonl`, a held-ask streak folded into its first row and one `skips` row. Each row's `event` names what happened (never a bare `error` or `warning`), and an error or warning row's `where` names the function that raised it. One failure is one row: a tool that fails to register writes one error row and one screen line, and is tried again at each `turn.start`: at once for its first three tries, then after a wait of 30 seconds that doubles with each failure, up to 15 minutes, for the rest of the session. Rows a write could not append (the lock held past its 10-second wait, the writer killed at its 15-second bound, any failure) stay queued, order kept, and are retried with the next write: a row may be written twice, never lost or torn. Only past 2,000 held rows are the oldest dropped, and their count goes to `errors.jsonl` (`plugin-log-rows-dropped`) once a write succeeds. A lock stage or broken lock whose writer died is cleared | a level file over 20 MiB moves to `.1`, the older ones to `.2` … `.5`, the oldest of five deleted |
 | `debug.jsonl` in the same directory (with `FORWARD_COMPACTION_DEBUG` on) | a row at every step: each hook entry (hook, party, trigger, model), each `$` answer the plugin decides on (`session.usage` figures, the `agent.list` count, each `turn.step` reading with its four counts and model, `fs.stat` results), the options and variables resolved, each ratio base and each ratio, measured or not and why, with the base's characters and tokens and the characters and reading now, each wake's section sizes and files (`briefFiles` the picked brief documents, which also stand in `carried` or `notCarried`), its `start` (how many messages stand before the facts: a sub-agent's kept start and its end line, 0 without one), `kept`, `dropped`, `skills` and `storage` counts, each nudge sent or withheld and why, and every decision row whole; numbers as the API gave them | as the level files: `.1` … `.5` |
 | `issues.md` in the same directory | notes a model appends when the plugin gave it trouble, as each tool answer asks | not managed by the plugin |

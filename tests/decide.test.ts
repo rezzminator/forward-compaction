@@ -53,6 +53,14 @@ describe('decide: automatic ask (C6-C10, R26-R28)', () => {
     expect(ask({ stored: true, reactive: true })).toMatchObject({ action: 'install' });
   });
 
+  it('C7 holds one automatic ask for a stored call that waits, and installs it at a plugin request or when the request was too long', () => {
+    const held = { action: 'skip', decision: 'skip', why: 'unfinished', reason: "forward-compaction: holding Claude Code's compaction for main for one request: its forward_compaction call arrived broken or without its objective or next, and its next request can send the rest" };
+    for (const party of ['main', 'subagent'] as const) expect(ask({ party, stored: true, waits: true, tokens: 201_373 })).toEqual(held);
+    expect(ask({ stored: true, waits: true, reactive: true })).toEqual({ action: 'install', decision: 'install', why: 'stored' });
+    expect(ask({ trigger: 'plugin', party: 'main', stored: true, waits: true })).toEqual({ action: 'install', decision: 'install', why: 'stored' });
+    expect(ask({ stored: false, waits: true, tokens: 80_000 })).toMatchObject({ action: 'skip', why: 'waiting' });
+  });
+
   it('C9 skips below the ceiling with nothing stored, names the party, and asks for no nudge of its own', () => {
     const skip = ask({ stored: false, tokens: 80_000, ceiling: 100_000, reactive: false });
     expect(skip).toMatchObject({

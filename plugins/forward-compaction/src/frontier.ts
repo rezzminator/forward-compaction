@@ -104,6 +104,8 @@ export type ParsedCall = {
   /** The place in the call's `load_files` of each entry of `loadFiles`, so a note on one names the entry the model sent. */
   loadAt: number[];
   notes: string[];
+  /** The fields that arrived as text whose JSON was broken and was repaired; absent when none. A broken field can end its call early (`callWaits`). */
+  broken?: string[];
 };
 
 /** Fields an older call shape held: each read one way or ignored, with a note. */
@@ -188,7 +190,7 @@ function jsonOf(key: string, text: string, list: boolean): { own: unknown; besid
  * changes nothing and is read as not sent. A text that is no JSON, or one holding a key that
  * is neither an operation nor a field the call left out, stays as it arrived, and lists.ts reads it as one added item.
  */
-function unstring(fields: Record<string, unknown>, notes: string[]): void {
+function unstring(fields: Record<string, unknown>, notes: string[], broken: string[]): void {
   const pending: string[] = [...LISTS, 'storage', 'load_files'];
   for (let key = pending.shift(); key !== undefined; key = pending.shift()) {
     const value = fields[key];
@@ -215,6 +217,7 @@ function unstring(fields: Record<string, unknown>, notes: string[]): void {
     if (mine === undefined) delete fields[key];
     else fields[key] = mine;
     for (const k of names) (fields[k] = others[k]), pending.push(k);
+    if (found.repaired) broken.push(key);
     const whole = found.repaired ? `${key} arrived as text whose JSON was broken: repaired and read, this result's lines show what it changed` : `${key} arrived as the text of its JSON: read as JSON`;
     notes.push(`${whole}${names.length === 0 ? '' : `, and ${andList(names)} inside it taken out as ${names.length === 1 ? 'its own field' : 'their own fields'}`}.`);
   }
@@ -228,9 +231,10 @@ function unstring(fields: Record<string, unknown>, notes: string[]): void {
  * `$.fs.stat` checks (V12-V15) are the adapter's, through `loadFileNote`.
  */
 export function parseCall(input: unknown, cwd?: string): ParsedCall {
-  const { fields, notes } = unfold(isObject(input) ? input : {});
-  unstring(fields, notes);
+  const { fields, notes } = unfold(isObject(input) ? input : {}), broken: string[] = [];
+  unstring(fields, notes, broken);
   const call: ParsedCall = { texts: {}, lists: {}, extra: {}, loadAt: [], notes };
+  if (broken.length > 0) call.broken = broken;
   for (const name of TEXTS) if (fields[name] !== undefined) call.texts[name] = fields[name];
   for (const name of LISTS) if (fields[name] !== undefined) call.lists[name] = fields[name];
   if (fields.storage !== undefined) call.storage = fields.storage;
@@ -324,23 +328,31 @@ export function loadFileNote(index: number, path: string, check: FileCheck): str
   return undefined;
 }
 
-/** `tokens`: the party's last reading, absent when it has none; it picks the sentence and is never printed, being a step behind the call. `missing`: the texts the frontier still lacks, which its wake names. `compacts`: parties.ts `Parties.compacts` for the call; true when absent. */
+/** `tokens`: the party's last reading, absent when it has none; it picks the sentence and is never printed, being a step behind the call. `missing`: the texts the frontier still lacks, which its wake names. `broken`: the fields whose broken JSON was repaired (`ParsedCall.broken`). `compacts`: parties.ts `Parties.compacts` for the call; true when absent. */
 export type ReceiptInput =
-  | { party: 'main'; files: number; tokens?: number; askPoint?: number; replaced?: boolean; missing?: readonly string[]; compacts?: boolean }
-  | { party: 'subagent'; files: number; tokens?: number; askPoint: number; replaced?: boolean; missing?: readonly string[]; compacts?: boolean };
+  | { party: 'main'; files: number; tokens?: number; askPoint?: number; replaced?: boolean; missing?: readonly string[]; broken?: readonly string[]; compacts?: boolean }
+  | { party: 'subagent'; files: number; tokens?: number; askPoint: number; replaced?: boolean; missing?: readonly string[]; broken?: readonly string[]; compacts?: boolean };
 
-/** The result's last sentences: whether the call compacts, when the frontier then installs, true to the party's door (a sub-agent's only door is Claude Code's ask), and what it lacks. */
+/**
+ * Whether a stored call's install waits one request (decide.ts `decide`): a call a broken field may have ended early
+ * (`ParsedCall.broken`: the model's markup closed the call at that field, and what it meant to send after it never
+ * arrived) or one that left the frontier without its objective or next (`Applied.missing`). Installed at once, the
+ * party wakes on a part of its frontier with everything it read gone; its next request can still send the rest.
+ */
+export const callWaits = (missing: readonly string[], broken: readonly string[]): boolean => missing.length > 0 || broken.length > 0;
+
+/** The result's last sentences: whether the call compacts, when the frontier then installs, true to the party's door (a sub-agent's only door is Claude Code's ask) and one request later for a call that waits (`callWaits`), and what it lacks. */
 export function receipt(input: ReceiptInput): string {
-  const missing = input.missing ?? [];
+  const missing = input.missing ?? [], broken = input.broken ?? [], waits = callWaits(missing, broken);
   const replaced = input.replaced ? ' This call applied on top of your earlier one since the last wake.' : '';
   const held = `${input.files === 0 ? '' : ` with ${input.files} ${input.files === 1 ? 'file' : 'files'} to load`}${missing.length === 0 ? '' : `, without ${andList(missing)}: send ${missing.length === 1 ? 'it' : 'them'} before it installs, or the wake names ${missing.length === 1 ? 'it' : 'them'} missing`}.`;
   if (input.compacts === false) return `Frontier updated${held} Nothing compacts: your context is still too small for a compaction to pay, and stays as it is. Carry on; a forward-compaction notice asks for the call once it has grown enough.${replaced}`;
-  const stored = `Frontier stored${held}`;
+  const stored = `Frontier stored${held}${broken.length === 0 ? '' : ' A broken field can end a call early: if the lines above lack something you meant to send, send it before it installs.'}`;
   const behind = 'The newest messages after this call that fit are kept verbatim behind it, the rest named as not carried';
-  if (input.party === 'main' && input.tokens !== undefined && input.askPoint !== undefined && input.tokens >= input.askPoint) return `${stored} It installs before your next request, inside this turn: what you have read is gone then, and the rest of the turn, your reply to the user included, is written from the frontier. ${behind}.${replaced}`;
-  if (input.party === 'main') return `${stored} It installs at the end of this turn, or at Claude Code's next compaction ask if one comes first. ${behind}, so finish the step in hand; you need not stop.${replaced}`;
-  if (input.tokens !== undefined && input.tokens >= input.askPoint) return `${stored} It installs at Claude Code's next compaction ask, before your next request. ${behind}.${replaced}`;
-  return `${stored} Claude Code has not asked to compact you yet: it installs at Claude Code's next ask, from about ${k(input.askPoint)} context. ${behind}. Carry on with your work.${replaced}`;
+  if (input.party === 'main' && input.tokens !== undefined && input.askPoint !== undefined && input.tokens >= input.askPoint) return `${stored} It installs ${waits ? 'after' : 'before'} your next request, inside this turn: what you have read is gone then, and the rest of the turn, your reply to the user included, is written from the frontier. ${behind}.${replaced}`;
+  if (input.party === 'main') return `${stored} It installs at the end of this turn, or at Claude Code's ${waits ? 'second compaction ask from here if that' : 'next compaction ask if one'} comes first. ${behind}, so finish the step in hand; you need not stop.${replaced}`;
+  if (input.tokens !== undefined && input.tokens >= input.askPoint) return `${stored} It installs ${waits ? 'after your next request' : "at Claude Code's next compaction ask, before your next request"}. ${behind}.${replaced}`;
+  return `${stored} Claude Code has not asked to compact you yet: it installs at Claude Code's ${waits ? 'second' : 'next'} ask, from about ${k(input.askPoint)} context. ${behind}. Carry on with your work.${replaced}`;
 }
 
 /** Keys the tool.call event carries beside the tool's arguments (`requestMeta` a hook may add, `consent` a press may carry). */
