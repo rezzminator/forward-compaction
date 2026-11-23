@@ -85,7 +85,7 @@ describe('forward_compaction tool answers (R31)', () => {
     const f = await begin();
     const r = await f.dispatch('tool.call', { tool: FORWARD, tool_use_id: 'tu-x', objective: 'x' }, async () => ({ result: 'not ours' }));
     expect(r.result.split('\n').slice(0, 2)).toEqual(['objective set', 'Frontier: 1 characters in 0 items']);
-    expect(r.result.split('\n')[2]).toMatch(/^Frontier stored, without next: send it before it installs, or the wake names it missing\. It installs /);
+    expect(r.result.split('\n')[3]).toMatch(/^Frontier stored, without next: send it before it installs, or the wake names it missing\. It installs /);
   });
 
   it('skips a bad or absent load file (stat ENOENT) and keeps the good ones, a storage file the same call adds among them, each note naming the entry the model sent', async () => {
@@ -433,7 +433,7 @@ describe('ignored models: FORWARD_COMPACTION_IGNORE_MODELS, Haiku by default', (
     await spawn(f);
     await haikuStep(f, 30_000);
     const r = await store(f, A1);
-    expect(r.result.split('\n')[5]).toMatch(/^Frontier stored\. Claude Code has not asked to compact you yet: /);
+    expect(r.result.split('\n')[6]).toMatch(/^Frontier stored\. Claude Code has not asked to compact you yet: /);
     expect(r.result).not.toContain('refused');
     await haikuStep(f, 64_000);
     const wake = await f.dispatch('session.compact', { trigger: 'auto', agentId: A1, messages: transcript() }, async () => ({ skip: 'native ran' }));

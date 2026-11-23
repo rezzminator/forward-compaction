@@ -1,10 +1,20 @@
 import { describe, expect, it } from 'vitest';
 import { PartyFiles } from '../plugins/forward-compaction/src/disk.ts';
-import { storageApply, storageName, storageSection } from '../plugins/forward-compaction/src/storage.ts';
+import { storageApply, storageHeld, storageName, storageSection } from '../plugins/forward-compaction/src/storage.ts';
 import { memFs } from './fakes/fs.ts';
 
 const R = '/h/.local/state/forward-compaction/proj/s1';
 const S = `${R}/storage`;
+
+describe("storageHeld: the storage line of a call's result", () => {
+  it.each([
+    ['no listed file', [], 'Storage: none'],
+    ['one listed file', [{ name: 'survey.md', description: 'the survey' }], 'Storage: 1 file (survey.md)'],
+    ['two listed files, in their listed order', [{ name: 'survey.md', description: '' }, { name: 'gate-recipe.md', description: 'the fence command' }], 'Storage: 2 files (survey.md, gate-recipe.md)'],
+  ])('%s', (_name, entries, line) => {
+    expect(storageHeld(entries)).toBe(line);
+  });
+});
 
 describe('storageName', () => {
   it.each([

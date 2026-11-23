@@ -139,8 +139,11 @@ and no ceiling, and an automatic ask from it with nothing stored is held as
    call's changes to that party's frontier, writes them to its files, and
    never refuses the call: an argument it cannot use is skipped, and the
    result names it. Whether the call also compacts is decided at the call
-   (`callCompacts`, `Parties.compacts`) by the party's last reading and the
-   marks its notices go by: it compacts once the party's context has reached
+   (`callCompacts`, `Parties.compacts`) by the context reading that stands at the moment
+   the call is judged, after the call's own writes (Claude Code measures the
+   calling request while the call is answered, so a call in the first request
+   after a compaction, or in a chat's first request, is judged by that
+   request's reading), and the marks its notices go by: it compacts once the party's context has reached
    where a notice goes since its last install (main: its finish notice point,
    `finishReached`, or a nudge point; a sub-agent: a nudge point; a nudge
    point is the nudge start, with a nudge room set that room above the floor,
@@ -297,6 +300,9 @@ installs:
   item also gets `Frontier is {n} characters, over {threshold}: in your next
   forward_compaction call send a shorter objective and next.`; one whose
   lists hold items is asked nothing. Nothing is cut and no call is refused;
+- `Storage: none`, `Storage: 1 file (notes.md)` or `Storage: 2 files (survey.md,
+  gate-recipe.md)`, on every call after the size line(s) and before the receipt
+  sentence: the listed storage files by name, in listed order;
 - a call that does not compact: `Frontier updated{…}. Nothing compacts: your
   context is still too small for a compaction to pay, and stays as it is. Carry
   on; a forward-compaction notice asks for the call once it has grown enough.`
@@ -366,44 +372,66 @@ same text typed or pasted by the user is drawn whole.
 A `forward_compaction` call's own row is drawn the same way (`callRow`,
 `callResultRow`, `call-row.ts`). Outside the expanded view the call's row draws
 what the call did in place of its raw arguments, and the result block under it
-draws nothing:
-
-```text
-● forward_compaction  frontier stored · compacts before the next request
-  ⎿  done       +2 [1] [2]
-     remaining  +2 [1] [2]
-     findings   +1 [1]
-     objective  set
-     next       set
-     wrote      229 chars of arguments · its request wrote 218 tokens
-     frontier   128 chars · 5 items (done 2, remaining 2, findings 1)
-     context    206k at the call
-```
-
-and a call below the notice point:
+draws nothing. The block draws every part of the frontier on every call,
+changed or not, empty or not (`statLines`, `callStats`):
 
 ```text
 ● forward_compaction  frontier updated · nothing compacts, the context is still small
-  ⎿  done       ~1 [1]
-     remaining  -1 [1]
-     findings   +1 [2]
+  ⎿  orders     0
+     decisions  0
+     done       1    +1 [1]
+     remaining  0
+     blocked    0
+     findings   1    +1 [1]
+     objective  set
+     next       set
+     storage    1 file: notes.md  +notes.md
+     load_files none
+     wrote      221 chars of arguments · its request wrote 208 tokens
+     frontier   70 chars · 2 items
+     context    73k at the call
+```
+
+and a call that leaves the frontier as it was:
+
+```text
+● forward_compaction  frontier updated · nothing compacts, the context is still small
+  ⎿  orders     0
+     decisions  0
+     done       1
+     remaining  0
+     blocked    0
+     findings   1
+     objective  unchanged
      next       replaced
-     wrote      171 chars of arguments · its request wrote 184 tokens
-     frontier   157 chars · 5 items (done 2, remaining 1, findings 2)
+     storage    1 file: notes.md
+     load_files none
+     wrote      15 chars of arguments · its request wrote 62 tokens
+     frontier   61 chars · 2 items
      context    74k at the call
 ```
+
+A call that compacts has the same block under the head `frontier stored ·
+compacts {when}`.
 
 - The head line: `writing the frontier` while the call runs; `frontier stored ·
   compacts {when}` with the receipt's own words for when; `frontier updated ·
   nothing compacts, the context is still small`; and `· without {objective|next}`
   when the receipt names one missing.
-- One line per changed list: `+` added (green), `~` edited (yellow), `-` removed
-  (red), each with its count and item numbers. `objective` and `next` read `set`
-  or `replaced`. A `storage` line and a `load_files` line appear when the call
-  has them; a call that changed nothing reads `changes none`.
+- The six lists `orders`, `decisions`, `done`, `remaining`, `blocked`,
+  `findings` come first, in that order, each with the number of items it holds
+  (a dim `0` when empty), then its changes when the call made any: `+` added
+  (green), `~` edited (yellow), `-` removed (red), each with its count and item
+  numbers.
+- `objective` and `next` read `set`, `replaced`, `unchanged` (dim) or `missing`
+  (red, when the receipt names it missing).
+- `storage` reads `none` (dim) or `{n} file(s): {names}`, followed by `+name`
+  stored, `~name` described, `-name` no longer listed, and `not reported`
+  (dim) for a result written by a build before the storage line. `load_files`
+  reads `none` (dim) or `{n} read in at the install`.
 - `wrote` is the characters of the call's arguments as JSON, plus the output
   tokens of the request that made the call when Claude Code reported them;
-  `frontier` is the result's own size line; `context` is that request's context
+  `frontier` is `{n} chars · {m} items`; `context` is that request's context
   reading. The two token figures are Claude Code's readings for the request
   (`turn.step` usage), never estimates, and are absent until the step reports.
 - A call that failed, errored or was interrupted, the expanded view, and every

@@ -4,7 +4,7 @@ import { applyCall, experimental, isAbsolutePath, parseCall, loadFileNote, readL
 import { descriptionOf, pinnedBy } from '../src/carry';
 import { emptyHeld, frontierSize, sizeLines, TEXTS } from '../src/lists';
 import { absent, loadParty, partyRoot, notSaved, NO_FOLDER, type FileProblem, type Fs } from '../src/disk';
-import { storageApply } from '../src/storage';
+import { storageApply, storageHeld } from '../src/storage';
 import { keptOrders } from '../src/orders';
 import { answersOf, workOf, type CallAnswer } from '../src/work';
 import { newLedger, markStart, addEntry, deliveryOf, runStartOf, resolveSpawn, attributeSkill, shellsOf, factsFor, promptsKept, restorePrompts, skillsKept, restoreSkills, isUserOrigin, keyOf, originKind, type Ledger, type PartyKey } from '../src/ledger';
@@ -507,7 +507,6 @@ async function applyForward(st: State, $: EngineInterface, e: Record<string, unk
     if ((call.loadFiles ?? []).some((file) => !isAbsolutePath(file.path))) call = parseCall(input, await Promise.resolve().then(() => $.session.cwd()).catch((error: unknown) => (dbg(st, $, 'session.cwd-failed', { error: message(error) }), undefined))); // the session's directory, read only for a relative load file; unknown when the read fails
     const checked: string[] = [], carried: LoadFile[] = [];
     const toolUseId = typeof e.tool_use_id === 'string' ? e.tool_use_id : ''; if (toolUseId === '') checked.push('the call has no tool_use_id, so the wake cannot place it: at the install your frontier is carried with the newest messages that fit, not every message after this call.');
-    const tokens = party.reading, m = marks(st, key); // the last reading: the call's own context is measured only by the next request
     const applied = applyCall(party.held ?? emptyHeld(), call), files = party.files;
     const storage = files !== undefined ? await storageApply(fs, files, applied.held.storage, call.storage) : { entries: applied.held.storage, lines: [], notes: call.storage === undefined ? [] : ['storage: this run has no folder for your frontier, so there is no storage folder: nothing stored.'], count: { added: 0, removed: 0 } };
     party.held = { ...applied.held, storage: storage.entries }; for (const c of applied.changed) files?.changed(c.key, c.left);
@@ -515,12 +514,13 @@ async function applyForward(st: State, $: EngineInterface, e: Record<string, unk
     for (const [i, file] of (call.loadFiles ?? []).entries()) { const note = loadFileNote(call.loadAt[i]!, file.path, await statFile(st, $, file.path)); if (note === undefined) carried.push(file); else checked.push(note); } // after the write, so a storage file this call adds is found
     if (files === undefined) checked.push(NO_FOLDER);
     const loadFiles = call.loadFiles === undefined ? party.stored?.loadFiles ?? [] : carried; // a call that sends no load_files keeps the earlier call's
+    const tokens = party.reading, m = marks(st, key); // the reading that stands now, after every wait above: the call's own request is often measured during them, and a reading taken before them judged a woken party's first call as one with no reading, which compacts
     const compacts = callCompacts(st.parties, key, tokens, m, st.config.ignoreModels); // below where its notice goes a call changes the held frontier and compacts nothing
     const replaced = st.parties.store(key, { loadFiles, toolUseId, storedAtTokens: tokens, since: st.ledger.nextSeq, compacts });
     const size = frontierSize(party.held), sizes = sizeLines(size, st.config.frontierWarnChars), missing = applied.missing;
     record(st, $, { event: 'stored', party: key, compacts, argChars: JSON.stringify(input).length, lists: applied.counts, frontier: { chars: size.chars, items: size.items }, storage: storage.count, warned: sizes.length > 1, files: loadFiles.length, notes: applied.notes.length + storage.notes.length + checked.length, tokens: tokens ?? null, ...(problems.length > 0 ? { writeFailed: problems.map((p) => p.file) } : {}), ...(replaced !== undefined ? { replaced: replaced.storedAtTokens ?? null } : {}), ...(missing.length > 0 ? { incomplete: missing } : {}) });
     const door = key === 'main' ? receipt({ party: 'main', files: loadFiles.length, tokens, askPoint: m?.askPoint, replaced: replaced !== undefined, missing, compacts }) : receipt({ party: 'subagent', files: loadFiles.length, tokens, askPoint: m!.askPoint, replaced: replaced !== undefined, missing, compacts });
-    return [...applied.lines, ...storage.lines, ...applied.notes, ...storage.notes, ...checked, ...problems.map((p) => notSaved(p, files!.root)), ...sizes, door].join('\n');
+    return [...applied.lines, ...storage.lines, ...applied.notes, ...storage.notes, ...checked, ...problems.map((p) => notSaved(p, files!.root)), ...sizes, storageHeld(storage.entries), door].join('\n');
   } catch (error) {
     say(st, $, `forward-compaction: storing ${key}'s frontier failed: ${message(error)}`, 'error', { event: 'store-error', where: 'answerForward', party: key, error: message(error) });
     return `forward_compaction failed, nothing stored: ${message(error)}`;

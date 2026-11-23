@@ -7,7 +7,7 @@
 [![Claude Code plugin](https://img.shields.io/badge/Claude%20Code-plugin-D97757)](https://docs.claude.com/en/docs/claude-code/plugins)
 [![Version](https://img.shields.io/badge/version-2.4.0-blue)](./CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
-[![Tests](https://img.shields.io/badge/tests-901%20passing-brightgreen)](#development)
+[![Tests](https://img.shields.io/badge/tests-906%20passing-brightgreen)](#development)
 [![Built with Professor](https://img.shields.io/badge/built%20with-Professor-8A2BE2)](https://github.com/rezzminator/professor)
 
 </div>
@@ -168,18 +168,23 @@ forward_compaction({
 | `storage` | Markdown files the model keeps for a later step, each with a description; every compaction lists them, and the model reads or edits them with Read and Edit. |
 | `load_files` | Files to read back in after the compaction, up to 250 lines each; a binary file is named, never carried. |
 
-Outside the expanded view (ctrl+o, `--verbose`, an export) the call's row in the transcript draws what the call did in place of its raw arguments, and the result block under it draws nothing: each changed list with `+` added, `~` edited and `-` removed item numbers, whether `objective` and `next` were set or replaced, the characters written and the output tokens of the request that made the call, the handoff's size and the context at the call. Both token figures are Claude Code's own readings, absent until the request reports them. A failed or interrupted call keeps Claude Code's drawing, and the stored result the model reads is unchanged.
+Outside the expanded view (ctrl+o, `--verbose`, an export) the call's row in the transcript draws what the call did in place of its raw arguments, and the result block under it draws nothing. Every part of the frontier is drawn on every call, changed or not: the six lists with the number of items each holds and their `+` added, `~` edited and `-` removed item numbers, whether `objective` and `next` were set, replaced or left unchanged, the storage files, the files to load, the characters written and the output tokens of the request that made the call, the handoff's size and the context at the call. Both token figures are Claude Code's own readings, absent until the request reports them. A failed or interrupted call keeps Claude Code's drawing, and the stored result the model reads is unchanged.
 
 ```text
-● forward_compaction  frontier stored · compacts before the next request
-  ⎿  done       +2 [1] [2]
-     remaining  +2 [1] [2]
-     findings   +1 [1]
+● forward_compaction  frontier updated · nothing compacts, the context is still small
+  ⎿  orders     0
+     decisions  0
+     done       1    +1 [1]
+     remaining  0
+     blocked    0
+     findings   1    +1 [1]
      objective  set
      next       set
-     wrote      229 chars of arguments · its request wrote 218 tokens
-     frontier   128 chars · 5 items (done 2, remaining 2, findings 1)
-     context    206k at the call
+     storage    1 file: notes.md  +notes.md
+     load_files none
+     wrote      221 chars of arguments · its request wrote 208 tokens
+     frontier   70 chars · 2 items
+     context    73k at the call
 ```
 
 Each list takes `{add, remove, edit}`: texts to add, item numbers to remove, `{id, text}` to replace an item's text. An item's number never changes and is never reused. At a compaction each list item shows how many compactions it has passed unchanged (`[3 rounds unchanged]`), counted by the plugin, so the model sees what has gone stale and removes it. The call is never refused: the reply gives the new numbers and one line per change, names anything it skipped, gives the handoff's size, and says when the handoff will install; past `FORWARD_COMPACTION_FRONTIER_WARN_CHARS` a handoff with no list item is also asked for a shorter objective and next. An item that left (removed, or the text an edit replaced) is shown by its first 80 characters, its whole text staying in the list's history file. A list, `storage` or `load_files` value sent as the text of its own JSON is read as that JSON, and one whose JSON does not parse is repaired, each with a note in the reply. Old call shapes are never refused: `standing_orders` entries are taken as `orders.add`, and `lifted`, `keep_skills`, `drop_files`, `drop_skills` and a `load_files` entry's `later` are answered by a note. Everything is written to disk as it arrives, and what leaves a list, a text or the storage goes to a history folder beside it, so a restarted chat keeps every number; [State on disk](./docs/spec.md#state-on-disk) has the layout.

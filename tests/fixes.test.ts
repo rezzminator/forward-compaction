@@ -241,7 +241,7 @@ describe('L8 + L9: one row per registration failure, and every error and warning
     expect((await call()).result).toBe('not ours');
     f.advance(30_000);
     await turn();
-    expect((await call()).result.split('\n')[5]).toMatch(/^Frontier stored\. /);
+    expect((await call()).result.split('\n')[6]).toMatch(/^Frontier stored\. /);
   });
 });
 
@@ -275,5 +275,20 @@ describe('a call before the notice point only updates the frontier', () => {
     const r = await rows(f);
     expect(r.filter((row) => row.event === 'stored').map((row) => [row.tokens, row.compacts])).toEqual([[64_000, true], [41_000, false], [70_999, false], [71_000, true]]);
     expect(r.filter((row) => row.event === 'compact').map((row) => [row.decision, row.why])).toEqual([['install', 'stored'], ['skip', 'waiting']]);
+  });
+
+  it.each([
+    ['the first request after a wake', true, [[64_000, true], [20_000, false]]],
+    ['the first request of a chat', false, [[20_000, false]]],
+  ])('a call in %s, whose request Claude Code measures while the call is being answered, is judged by that reading and only updates the frontier', async (_name, woken, stored) => {
+    const f = await begin();
+    if (woken) {
+      await step(f, 64_000);
+      await store(f);
+      expect(await f.dispatch('session.compact', { trigger: 'auto', messages: transcript('tu-h') }, async () => ({ skip: 'native ran' }))).toHaveProperty('messages');
+    }
+    const [called] = await Promise.all([store(f, undefined, 'tu-2'), step(f, 20_000)]);
+    expect(called.result.split('\n').find((line: string) => line.startsWith('Frontier '))).toBe('Frontier updated. Nothing compacts: your context is still too small for a compaction to pay, and stays as it is. Carry on; a forward-compaction notice asks for the call once it has grown enough.');
+    expect((await rows(f)).filter((row) => row.event === 'stored').map((row) => [row.tokens, row.compacts])).toEqual(stored);
   });
 });

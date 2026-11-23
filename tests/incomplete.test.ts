@@ -12,9 +12,10 @@ describe('a frontier without its next is stored and installs without it', () => 
     const f = await begin();
     await step(f, 64_000);
     const r = await cutOff(f);
-    expect(r.result.split('\n').slice(0, 3)).toEqual([
+    expect(r.result.split('\n').slice(0, 4)).toEqual([
       'objective set',
       'Frontier: 23 characters in 0 items',
+      'Storage: none',
       "Frontier stored, without next: send it before it installs, or the wake names it missing. It installs before your next request, inside this turn: what you have read is gone then, and the rest of the turn, your reply to the user included, is written from the frontier. The newest messages after this call that fit are kept verbatim behind it, the rest named as not carried.",
     ]);
     const wake = await f.dispatch('session.compact', { trigger: 'auto', messages: transcript() }, async () => ({ skip: 'native ran' }));

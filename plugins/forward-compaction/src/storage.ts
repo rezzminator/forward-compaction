@@ -22,6 +22,9 @@ export function storageSection(dir: string, entries: readonly StorageEntry[]): s
   return [`## Storage — files in ${dir}/`, ...entries.map((e) => (e.description === '' ? e.name : `${e.name} — ${e.description}`))].join('\n');
 }
 
+/** The result's storage line, on every call: the listed files by name, which the call's transcript row draws (call-row.ts). */
+export const storageHeld = (entries: readonly StorageEntry[]): string => (entries.length === 0 ? 'Storage: none' : `Storage: ${entries.length} ${entries.length === 1 ? 'file' : 'files'} (${entries.map((e) => e.name).join(', ')})`);
+
 /** The party's storage folder, absolute. */
 export const storageDir = (files: PartyFiles): string => `${files.root}/${STORAGE_DIR}`;
 
