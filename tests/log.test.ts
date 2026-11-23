@@ -110,16 +110,20 @@ describe('decision log', () => {
   const lines = (path: string): string[] => existsSync(path) ? readFileSync(path, 'utf8').split('\n').filter(Boolean) : [];
   const skip = (ts: string, tokens: number, agentId: string | null = null, trigger = 'auto') => ({ ts, event: 'compact', party: agentId ? `agent:${agentId}` : 'main', trigger, decision: 'skip', why: trigger === 'precompute' ? 'precompute' : 'waiting', tokens });
 
-  it('writes the first skip of a streak, folds the rest, and closes the streak at the party\'s next decision', () => {
+  it('writes the first skip of a streak, folds the rest, and closes the streak at the party\'s next decision or at a skip held for another reason', () => {
     const fold = future.SkipFold ? new future.SkipFold() : undefined;
     const out: any[] = [];
+    const unfinished = (ts: string, tokens: number) => ({ ...skip(ts, tokens), why: 'unfinished' });
     for (let i = 0; i < 5; i++) out.push(...(fold?.add(skip(`t${i}`, 1000 + i)) ?? []));
+    out.push(...(fold?.add(unfinished('u0', 2000)) ?? []), ...(fold?.add(unfinished('u1', 2001)) ?? []));
     out.push(...(fold?.add({ ts: 't5', event: 'said', line: 'x' }) ?? []));
     out.push(...(fold?.add({ ts: 't6', event: 'compact', party: 'main', trigger: 'auto', decision: 'install', why: 'stored', tokens: 125_000 }) ?? []));
     expect(out).toEqual([
       skip('t0', 1000),
-      { ts: 't5', event: 'said', line: 'x' },
       { ts: 't4', event: 'skips', party: 'main', trigger: 'auto', count: 4, from: 't1', to: 't4', firstTokens: 1001, lastTokens: 1004 },
+      unfinished('u0', 2000),
+      { ts: 't5', event: 'said', line: 'x' },
+      { ts: 'u1', event: 'skips', party: 'main', trigger: 'auto', count: 1, from: 'u1', to: 'u1', firstTokens: 2001, lastTokens: 2001 },
       { ts: 't6', event: 'compact', party: 'main', trigger: 'auto', decision: 'install', why: 'stored', tokens: 125_000 },
     ]);
   });

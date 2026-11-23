@@ -468,7 +468,7 @@ describe('a resumed sub-agent with no reading yet', () => {
     expect((await read('tu-2')).context ?? []).toEqual([]);
     expect(await f.dispatch('session.compact', { trigger: 'auto', agentId: A1, messages: big }, async () => ({ skip: 'native ran' }))).toMatchObject({ skip: expect.stringContaining('until its frontier is stored') });
     const compacts = (await rows(f)).filter((row) => row.event === 'compact');
-    expect(compacts.map((row) => [row.decision, row.why, row.tokens])).toEqual([['skip', 'no-reading', null]]); // the second held ask folds into the streak
+    expect(compacts.map((row) => [row.decision, row.why, row.tokens])).toEqual([['skip', 'no-reading', null], ['skip', 'waiting', 189_000]]); // the second ask is held for another reason, so it is a row of its own
     expect(f.texts().some((t) => /mechanical wake/.test(t))).toBe(false);
   });
 });

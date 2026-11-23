@@ -155,12 +155,13 @@ export function retentionArgv(logFile: string, sessionPath: string, policy: { da
 }
 
 type DecisionRow = Record<string, unknown>;
-type SkipStreak = { party: unknown; trigger: unknown; count: number; from?: unknown; to?: unknown; firstTokens?: unknown; lastTokens?: unknown };
+type SkipStreak = { party: unknown; trigger: unknown; why: unknown; count: number; from?: unknown; to?: unknown; firstTokens?: unknown; lastTokens?: unknown };
 
 /**
  * Skips fold (C2, C9): a party whose compaction is held on every request writes the first `compact` skip row of a
- * streak and counts the rest, closed as one `skips` row at the party's next compaction decision, every
- * `every` folded skips, and at session end. Every other row passes as it came.
+ * streak and counts the rest, closed as one `skips` row at the party's next compaction decision, at a skip held for
+ * another reason (its `why`, so the one ask a waiting call holds is a row of its own), every `every` folded skips,
+ * and at session end. Every other row passes as it came.
  */
 export class SkipFold {
   private readonly open = new Map<string, SkipStreak>();
@@ -173,9 +174,9 @@ export class SkipFold {
     if (row.decision !== 'skip') return [...this.close(owner), row];
     const key = `${owner}\u0000${String(row.trigger)}`;
     const streak = this.open.get(key);
-    if (streak === undefined) {
-      this.open.set(key, { party: row.party, trigger: row.trigger, count: 0 });
-      return [row];
+    if (streak === undefined || streak.why !== row.why) {
+      this.open.set(key, { party: row.party, trigger: row.trigger, why: row.why, count: 0 });
+      return streak !== undefined && streak.count > 0 ? [summary(streak), row] : [row];
     }
     if (streak.count === 0) { streak.from = row.ts; streak.firstTokens = row.tokens; }
     streak.count++;
