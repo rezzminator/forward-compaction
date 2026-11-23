@@ -55,7 +55,7 @@ describe('resolveOptions', () => {
     expect(resolveOptions()).toEqual({
       main: { ceiling: { percent: 60 }, nudgeStart: { percent: 15 }, nudgeEvery: { percent: 5 }, finishStart: { tokens: 100_000 } },
       subagent: { ceiling: { percent: 80 }, nudgeStart: { tokens: 165_000 }, nudgeEvery: { tokens: 65_000 } },
-      ceilingNative: false, ignoreModels: ['haiku'], keepSkills: [], frontierWarnChars: 12_000, debug: true, errors: [],
+      ceilingNative: false, ignoreModels: ['haiku'], keepSkills: [], subagentCallCompacts: [], frontierWarnChars: 12_000, debug: true, errors: [],
     });
   });
 
@@ -75,6 +75,7 @@ describe('resolveOptions', () => {
       ceilingNative: 'FORWARD_COMPACTION_CEILING_NATIVE',
       ignoreModels: 'FORWARD_COMPACTION_IGNORE_MODELS',
       keepSkills: 'FORWARD_COMPACTION_KEEP_SKILLS',
+      subagentCallCompacts: 'FORWARD_COMPACTION_SUBAGENT_CALL_COMPACTS',
       frontierWarnChars: 'FORWARD_COMPACTION_FRONTIER_WARN_CHARS',
       debug: 'FORWARD_COMPACTION_DEBUG',
     });
@@ -86,6 +87,7 @@ describe('resolveOptions', () => {
     expect(resolveOptions({ vars: { FORWARD_COMPACTION_IGNORE_MODELS: '' } }).ignoreModels).toEqual([]);
     expect(resolveOptions({ vars: { FORWARD_COMPACTION_IGNORE_MODELS: ' , ' } }).ignoreModels).toEqual([]);
     expect(resolveOptions({ vars: { FORWARD_COMPACTION_KEEP_SKILLS: ' god-speed, deploy:Release ,,' } }).keepSkills).toEqual(['god-speed', 'deploy:Release']);
+    expect(resolveOptions({ vars: { FORWARD_COMPACTION_SUBAGENT_CALL_COMPACTS: ' flights:lander, Explore ,,' } }).subagentCallCompacts).toEqual(['flights:lander', 'Explore']);
   });
 
   it('reads the debug flag, on by default, and names a bad value by its variable', () => {

@@ -177,10 +177,18 @@ export const INVARIANTS: Record<Name, (view: View, recorded: boolean) => Verdict
       const stop = [...view].reverse().find((i) => i.seq < c.seq && (i.hook === 'classic.Stop' || i.hook === 'classic.SubagentStop'));
       if (!stop) continue;
       subjects++;
-      const wake = texts(wakeOf(c)!);
+      const wake = texts(wakeOf(c)!), agent: string | undefined = c.input?.agentId;
       // the woken sub-agent is not its own background task: its wake leaves it out (CHANGELOG 1.0.0-dev.2)
       // a SubagentStop lists its own sub-agent running though it stopped: the wake leaves it out
-      for (const t of stop.input?.background_tasks ?? []) if (t.id !== c.input?.agentId && !(stop.hook === 'classic.SubagentStop' && t.id === stop.input?.agent_id) && (!wake.includes(String(t.id)) || (typeof t.command === 'string' && !wake.includes(t.command)))) failures.push(`I8 ${at(c)}: shell ${t.id} of ${stop.hook} #${stop.id} is not in the wake`);
+      const tasks = (stop.input?.background_tasks ?? []).filter((t: any) => t.id !== agent && !(stop.hook === 'classic.SubagentStop' && t.id === stop.input?.agent_id));
+      // main's wake lists every task; a sub-agent's only those tied to it (a shell whose command one of its Bash calls sent, an agent its own loop spawned), the rest counted and never named
+      const tied = (t: any): boolean => agent === undefined || view.some((i) => i.seq < c.seq && ((i.hook === 'tool.call' && i.input?.tool === 'Bash' && i.input?.agentId === agent && i.input?.command === t.command) || (i.hook === 'agent.spawn' && i.input?.parentAgentId === agent && i.nextResult?.result?.agentId === t.id)));
+      for (const t of tasks) {
+        if (tied(t) && (!wake.includes(String(t.id)) || (typeof t.command === 'string' && !wake.includes(t.command)))) failures.push(`I8 ${at(c)}: shell ${t.id} of ${stop.hook} #${stop.id} is not in the wake`);
+        if (!tied(t) && wake.includes(`- ${t.type} ${t.id} `)) failures.push(`I8 ${at(c)}: shell ${t.id} of ${stop.hook} #${stop.id}, another party's, is listed in the wake`);
+      }
+      const others = agent === undefined ? 0 : tasks.filter((t: any) => !tied(t)).length + (stop.input?.session_crons ?? []).length;
+      if (others > 0 && !wake.includes(`(not listed: ${others} other background task${others === 1 ? '' : 's'} or cron${others === 1 ? '' : 's'} of this session, not recorded as yours)`)) failures.push(`I8 ${at(c)}: the ${others} other tasks and crons of ${stop.hook} #${stop.id} are not counted in the wake`);
     }
     return { subjects, failures };
   },
@@ -240,14 +248,18 @@ export const INVARIANTS: Record<Name, (view: View, recorded: boolean) => Verdict
     }
     return { subjects, failures };
   },
+  // The call reads its party's reading on the line that words the receipt, and the calling request's own turn.step can land
+  // while the call runs: the receipt is held to the readings the call could see, the one before its start and the one before its end.
   I13(view) {
     const failures: string[] = [];
     let subjects = 0;
     for (const t of view.filter((i) => i.hook === 'tool.call' && isForward(i.input?.tool) && party(i.input) !== 'main')) {
-      const reading = readingAt(view, party(t.input), t.seq);
-      if (reading === undefined || reading >= askPointAt(view, party(t.input)) || !/Frontier stored/.test(String(t.end?.result?.result))) continue;
+      const result = String(t.end?.result?.result);
+      const seen = [readingAt(view, party(t.input), t.seq), readingAt(view, party(t.input), t.endSeq)].filter((r): r is number => r !== undefined);
+      if (seen.length === 0 || !/Frontier stored/.test(result)) continue;
       subjects++;
-      if (!String(t.end?.result?.result).includes('from about')) failures.push(`I13 ${at(t)}: a sub-agent's receipt below its ask point lacks "from about"`);
+      const ask = askPointAt(view, party(t.input)), below = result.includes('from about');
+      if (below ? !seen.some((r) => r < ask) : !seen.some((r) => r >= ask)) failures.push(`I13 ${at(t)}: a sub-agent's receipt says it is ${below ? 'below' : 'at or past'} its ask point ${ask}, and its readings around the call are ${seen.join(', ')}`);
     }
     return { subjects, failures };
   },

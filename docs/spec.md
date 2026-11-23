@@ -155,9 +155,19 @@ and no ceiling, and an automatic ask from it with nothing stored is held as
    main's turn end does not compact, and nudges and the finish notice still go
    out when due. A party with no marks (window unknown), a party on the ignore
    list and a party with no reading yet are not judged and the call compacts;
-   a woken party with no reading since its wake does not compact. The stored
+   a woken party with no reading since its wake does not compact, a listed
+   type below included. A sub-agent spawned as one of the agent types in
+   `FORWARD_COMPACTION_SUBAGENT_CALL_COMPACTS` (comma-separated, trimmed,
+   matched exactly, default none; `PartyState.type`, set from `agent.spawn`'s
+   `subagentType` or `$.agent.list()`'s `type`; `Parties.typed`) is not judged
+   by its context size either: `callCompacts` passes `always` to
+   `Parties.compacts` and its call compacts at any size, for an agent whose
+   definition tells it when to shed its context; it installs as any
+   sub-agent's stored frontier does, at Claude Code's next compaction ask. The
+   `start` decision row carries `subagentCallCompacts`. The stored
    call carries `compacts` (`StoredFrontier.compacts`), and the `stored`
-   decision row logs `compacts: true|false`; a later call from the notice
+   decision row logs `compacts: true|false` (`true` at any `tokens` for such a
+   party); a later call from the notice
    point on applies on top of the earlier one and compacts. A second call
    before the install applies on top of the first. A frontier with no objective or next, or a call with a field repaired from
    broken JSON, waits one request (see Installing) and then installs as it
@@ -561,9 +571,22 @@ above, kept verbatim.` It holds, each section only when it has content:
   the party spawned that the list no longer holds, as `not in the list
   (finished, stopped or gone)`, so a frontier's "still running" is not
   trusted; past the cap the newest of those stay;
-- the background shells and crons, from the newest Stop event, with its age.
-  The list is session-wide, not per agent; before any Stop event it says the
-  running shells are unknown;
+- the background shells and crons, from the newest Stop event, with its age;
+  before any Stop event it says the running shells are unknown. Main's wake
+  (`## Background shells and crons (session-wide, from the Stop event {age}
+  before install…)`) lists every task and cron of that snapshot. A
+  sub-agent's (`## Background shells and agents you started (from the Stop
+  event {age} before install…)`) lists only the tasks tied to it: a shell
+  whose command equals a command one of its own Bash calls sent (a Stop event
+  names a shell by the command its call sent) and an agent it spawned; crons
+  are not listed. Every other task and cron of the session, the sub-agent
+  itself left out, is counted in one line with no id and no command, `(not
+  listed: N other background task(s) or cron(s) of this session, not recorded
+  as yours)`, absent when N is 0 (`Facts.otherTasks`; the filtered
+  `Facts.shells`). The heading's "started since" count counts only the
+  sub-agent's own background commands; main's counts every party's. The
+  commands a party ran are held in memory only, so after a plugin reload a
+  shell the sub-agent started before the reload is counted, not listed;
 - the files the frontier asked to carry, each at most 250 lines;
 - the storage, when it lists an entry, under `## Storage — files in
   {absolute storage folder}/`: one line per entry, `{name} — {description}`;

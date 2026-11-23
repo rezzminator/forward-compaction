@@ -42,6 +42,8 @@ export const DEFAULT_CEILING_NATIVE = false;
 export const DEFAULT_IGNORE_MODELS: readonly string[] = ['haiku'];
 /** Skills and commands pinned in every wake by name, as frontmatter's forward-compaction-keep pins one by its file: none. */
 export const DEFAULT_KEEP_SKILLS: readonly string[] = [];
+/** Agent types whose `forward_compaction` call compacts at any size: none, every sub-agent's call is judged by its notice point. */
+export const DEFAULT_SUBAGENT_CALL_COMPACTS: readonly string[] = [];
 /** The frontier's size, in characters of every live item, the objective and next, past which the result of a call whose lists hold no item asks for a shorter objective and next (lists.ts `sizeLines`): 1.5 times the 8,000 a whole-rewrite frontier stayed near, a design budget to tune, never a measured size. */
 export const DEFAULT_FRONTIER_WARN_CHARS = 12_000;
 /** The debug log (`debug.jsonl`): a row at every step. */
@@ -104,6 +106,7 @@ export const OPTION_ENV = {
   ceilingNative: 'FORWARD_COMPACTION_CEILING_NATIVE',
   ignoreModels: 'FORWARD_COMPACTION_IGNORE_MODELS',
   keepSkills: 'FORWARD_COMPACTION_KEEP_SKILLS',
+  subagentCallCompacts: 'FORWARD_COMPACTION_SUBAGENT_CALL_COMPACTS',
   frontierWarnChars: 'FORWARD_COMPACTION_FRONTIER_WARN_CHARS',
   debug: 'FORWARD_COMPACTION_DEBUG',
 } as const;
@@ -131,6 +134,8 @@ export type ResolvedOptions = {
   ignoreModels: string[];
   /** Skill and command names every wake carries whole, as given, trimmed; `*` names every one (carry.ts `KEEP_ALL`). */
   keepSkills: string[];
+  /** Agent types, as given, trimmed, whose `forward_compaction` call compacts at any size (nudge.ts `callCompacts`): a definition that picks its own moment to shed. */
+  subagentCallCompacts: string[];
   /** The frontier's size in characters past which a call's result warns (lists.ts `sizeLines`). */
   frontierWarnChars: number;
   debug: boolean;
@@ -226,13 +231,16 @@ export function resolveOptions(env: OptionEnvironment = {}): ResolvedOptions {
   // A count of characters: a percentage has nothing to be of.
   const rawWarn = fromEnv('frontierWarnChars'), warn = rawWarn === undefined ? undefined : parseSize(rawWarn);
   const frontierWarnChars = warn === undefined ? DEFAULT_FRONTIER_WARN_CHARS : warn.ok && 'tokens' in warn.value ? warn.value.tokens : (badEnv('frontierWarnChars', warn.ok ? `a character count, not a percentage: ${JSON.stringify(rawWarn)}` : warn.error, String(DEFAULT_FRONTIER_WARN_CHARS)), DEFAULT_FRONTIER_WARN_CHARS);
+  /** A comma list's entries as given, trimmed, the empty ones dropped. */
+  const list = (raw: string): string[] => raw.split(',').map((entry) => entry.trim()).filter((entry) => entry !== '');
   // Unset is the default; set empty (or only commas) is a list of none: the one option whose empty value is a value.
   const rawIgnore = env.vars?.[OPTION_ENV.ignoreModels];
-  const ignoreModels = rawIgnore === undefined ? [...DEFAULT_IGNORE_MODELS] : rawIgnore.split(',').map((entry) => entry.trim().toLowerCase()).filter((entry) => entry !== '');
-  const keepSkills = (env.vars?.[OPTION_ENV.keepSkills] ?? DEFAULT_KEEP_SKILLS.join(',')).split(',').map((entry) => entry.trim()).filter((entry) => entry !== '');
+  const ignoreModels = rawIgnore === undefined ? [...DEFAULT_IGNORE_MODELS] : list(rawIgnore).map((entry) => entry.toLowerCase());
+  const keepSkills = list(env.vars?.[OPTION_ENV.keepSkills] ?? DEFAULT_KEEP_SKILLS.join(','));
+  const subagentCallCompacts = list(env.vars?.[OPTION_ENV.subagentCallCompacts] ?? DEFAULT_SUBAGENT_CALL_COMPACTS.join(','));
   for (const late of [nudgeAfterCeiling('main', main), nudgeAfterCeiling('subagent', subagent)]) if (late !== undefined) errors.push(late);
   // The decision log lives in the plugin's log directory (PLUGIN_LOG_DIR, else under HOME); with neither, there is none.
   const base = pluginLogDir(env.pluginLogDir, env.home, 'forward-compaction');
   const logFile = base === undefined ? undefined : `${base}/decisions/.jsonl`;
-  return { main, subagent, ceilingNative, ...(logFile ? { logFile } : {}), ignoreModels, keepSkills, frontierWarnChars, debug, errors };
+  return { main, subagent, ceilingNative, ...(logFile ? { logFile } : {}), ignoreModels, keepSkills, subagentCallCompacts, frontierWarnChars, debug, errors };
 }

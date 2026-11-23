@@ -179,19 +179,21 @@ describe('noticeFor', () => {
 });
 
 describe('k', () => {
-  it('callCompacts judges a call by the marks the party\'s notices go by: its nudge start, its working room above its floor when one is set, main\'s finish start; no marks and an ignored model are not judged', () => {
+  it('callCompacts judges a call by the marks the party\'s notices go by: its nudge start, its working room above its floor when one is set, main\'s finish start; no marks and an ignored model are not judged; a sub-agent of a type the host names compacts at any size', () => {
     const START = { start: 165_000, every: 65_000, ceiling: 800_000 }, ROOM = { ...START, every: 15_000, room: 60_000 }, MAIN = { start: 200_000, every: 50_000, ceiling: 600_000, finish: 100_000 };
-    const at = (key: string, floor: number, tokens: number, marks: typeof START & { room?: number; finish?: number } | undefined, model?: string) => {
+    const at = (key: string, floor: number, tokens: number, marks: typeof START & { room?: number; finish?: number } | undefined, model?: string, type?: string) => {
       const parties = new Parties();
       if (model !== undefined) parties.describe(key, { model });
+      if (type !== undefined) parties.describe(key, { type });
       parties.read(key, floor);
       parties.read(key, tokens);
-      return callCompacts(parties, key, tokens, marks, ['haiku']);
+      return callCompacts(parties, key, tokens, marks, ['haiku'], ['Explore', 'flights:lander']);
     };
     expect([164_999, 165_000].map((tokens) => at('agent:a1', 42_000, tokens, START))).toEqual([false, true]);
     expect([101_999, 102_000].map((tokens) => at('agent:a1', 42_000, tokens, ROOM))).toEqual([false, true]);
     expect([107_999, 108_000].map((tokens) => at('main', 58_000, tokens, MAIN))).toEqual([false, true]);
     expect([at('agent:a1', 42_000, 43_000, undefined), at('agent:a1', 42_000, 43_000, START, 'claude-haiku-4-5'), at('agent:a1', 42_000, 43_000, START, 'claude-sonnet-4-5')]).toEqual([true, true, false]);
+    expect([at('agent:a1', 42_000, 43_000, START, undefined, 'flights:lander'), at('agent:a1', 42_000, 43_000, START, undefined, 'flights:foreman')]).toEqual([true, false]);
   });
 
   it('prints thousands as k and a million or more as M with at most one decimal', () => {

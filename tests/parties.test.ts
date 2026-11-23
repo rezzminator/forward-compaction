@@ -296,7 +296,7 @@ describe('compacts: a call compacts only from where the party\'s notice goes', (
   const SUB = { room: 200_000, every: 50_000, ceiling: 600_000 }, MAIN = { ...SUB, finish: 100_000 };
   const woken = (key: string, first: number, second: number) => { const parties = new Parties(); parties.installed(key); parties.read(key, first); parties.read(key, second); return parties; };
   const read = (key: string, floor: number) => { const parties = new Parties(); parties.read(key, floor); return parties; };
-  const justWoken = () => { const parties = new Parties(); parties.installed('main'); return parties; };
+  const justWoken = (key = 'main') => { const parties = new Parties(); parties.installed(key); return parties; };
   it.each([
     ['a party with no marks, its window unknown or its model ignored, is not judged', justWoken(), 'main', undefined, 0, undefined, true],
     ['a party with no reading yet, a process just started, is not judged', new Parties(), 'main', undefined, 0, MAIN, true],
@@ -311,6 +311,8 @@ describe('compacts: a call compacts only from where the party\'s notice goes', (
     ['a sub-agent at its nudge start', read('agent:a1', 45_000), 'agent:a1', 200_000, 1, SUB, true],
     ['a sub-agent after a wake, past its nudge start but under its room past the settled floor', woken('agent:a1', 45_000, 50_000), 'agent:a1', 249_999, 1, SUB, false],
     ['a sub-agent after a wake, its room past the settled floor', woken('agent:a1', 45_000, 50_000), 'agent:a1', 250_000, 2, SUB, true],
+    ['a sub-agent of a type the host names, under its nudge start', read('agent:a1', 45_000), 'agent:a1', 60_000, 0, { ...SUB, always: true }, true],
+    ['a sub-agent of such a type, woken with no reading since, has grown nothing', justWoken('agent:a1'), 'agent:a1', undefined, 0, { ...SUB, always: true }, false],
   ] as const)('%s', (_name, parties, key, tokens, level, marks, want) => {
     expect(parties.compacts(key, tokens, level, marks)).toBe(want);
   });

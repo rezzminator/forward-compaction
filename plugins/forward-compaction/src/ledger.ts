@@ -191,8 +191,11 @@ export type Facts = {
   received: ReceivedEntry[];
   skills: SkillEntry[];
   unattributedSkills: SkillEntry[];
+  /** The newest Stop event's tasks and crons; a sub-agent's holds only the tasks tied to it: a shell whose command it ran, an agent it spawned. */
   shells?: ShellsEntry;
-  /** Background commands any party started after `shells` was taken: a running shell the snapshot cannot list. */
+  /** A sub-agent's only: the session's other tasks and crons, itself left out, which nothing ties to it. */
+  otherTasks?: number;
+  /** Background commands started after `shells` was taken, a running shell the snapshot cannot list: any party's for main, its own for a sub-agent. */
   backgroundSince: number;
   /** The files the party's calls touched and its task list, from its finished tool calls. */
   work: WorkSummary;
@@ -215,12 +218,21 @@ export function factsFor(ledger: Ledger, party: PartyKey, opts: { keptTexts: rea
   const arrived = delivered.filter((e) => !before(e) && e.text !== '' && fresh(e)).map((e) => ({ at: e.at, origin: e.kind === 'user' ? 'user' : e.origin, text: e.text }));
   const user = mine('user', party).filter(before);
   const kept = user.filter(fresh);
-  const shells = entries.find((e): e is ShellsEntry => e.kind === 'shells');
+  const snapshot = entries.find((e): e is ShellsEntry => e.kind === 'shells');
   const children = new Map<string, Facts['children'][number]>();
   for (const e of entries) {
     if (e.kind !== 'brief' || e.spawnedBy !== party || !e.party.startsWith('agent:')) continue; // a `spawn:` party never got its id
     const id = e.party.slice('agent:'.length);
     children.set(id, { id, ...(e.subagentType !== undefined ? { subagentType: e.subagentType } : {}), ...(e.description !== undefined ? { description: e.description } : {}) });
+  }
+  // The snapshot is session-wide. A sub-agent is given the tasks tied to it (a Stop event names a shell by the command its call sent) and a count of the rest.
+  const self = party.startsWith('agent:') ? party.slice('agent:'.length) : undefined;
+  let shells = snapshot, otherTasks: number | undefined;
+  if (self !== undefined && snapshot !== undefined) {
+    const ran = new Set(mine('work', party).flatMap((e) => (e.fact.kind === 'command' ? [e.fact.command] : [])));
+    const tasks = snapshot.tasks.filter((t) => (t.command !== undefined && ran.has(t.command)) || children.has(t.id));
+    shells = { ...snapshot, tasks, crons: [] };
+    otherTasks = snapshot.tasks.filter((t) => t.id !== self).length - tasks.length + snapshot.crons.length;
   }
   return {
     user: kept,
@@ -233,7 +245,8 @@ export function factsFor(ledger: Ledger, party: PartyKey, opts: { keptTexts: rea
     skills: newestFirst(party).filter(fresh),
     unattributedSkills: newestFirst('unknown').filter((s) => !carried.has(s.skill)).filter(fresh),
     shells,
-    backgroundSince: shells === undefined ? 0 : entries.filter((e) => e.kind === 'work' && e.fact.kind === 'command' && e.fact.background === true && e.at > shells.at).length,
+    ...(otherTasks !== undefined ? { otherTasks } : {}),
+    backgroundSince: snapshot === undefined ? 0 : entries.filter((e) => e.kind === 'work' && (self === undefined || e.party === party) && e.fact.kind === 'command' && e.fact.background === true && e.at > snapshot.at).length,
     work: workSummary(mine('work', party).map((e) => e.fact)),
     startedAt: ledger.startedAt,
     startReason: ledger.startReason,

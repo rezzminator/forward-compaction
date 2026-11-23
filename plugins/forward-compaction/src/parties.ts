@@ -46,6 +46,8 @@ export type PartyState = {
   /** What screen lines call the party: "main", or "{subagentType} {agentId first 6}". */
   label: string;
   model?: string;
+  /** The agent type a sub-agent was spawned as (`$.agent.list()`'s `type`, `agent.spawn`'s `subagentType`); main has none. */
+  type?: string;
   /** The measured context of the party's last completed request; none from an install until its next reading. */
   reading?: number;
   /** The ratio base (window.ts `charsPerToken`), taken at the party's first reading in its live window; none from any compaction of it until its next reading. */
@@ -113,8 +115,14 @@ export class Parties {
   }
 
   /** Sets what is named; a step that names no model keeps the one known, so its judgement never falls back to unknown. */
-  describe(key: string, patch: { label?: string; model?: string }): void {
+  describe(key: string, patch: { label?: string; model?: string; type?: string }): void {
     Object.assign(this.get(key), Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== undefined)));
+  }
+
+  /** Whether the party is a sub-agent spawned as one of `types`. */
+  typed(key: string, types: readonly string[]): boolean {
+    const type = this.get(key).type;
+    return type !== undefined && types.includes(type);
   }
 
   /** The ignore-list entry the party's model matches: the plugin leaves it to Claude Code. Undefined while its model is not known. */
@@ -318,13 +326,15 @@ export class Parties {
    * party's held frontier: a compaction writes the whole context again, which costs more than a small context
    * saves, and a party that keeps its frontier current would compact at every step. A woken party with no reading
    * since has grown nothing. Not judged, so its call compacts: a party no notice can reach (no `marks`: its window
-   * unknown, or its model on the ignore list) and one with no reading yet (a process just started).
+   * unknown, or its model on the ignore list) and one with no reading yet (a process just started). `always`: a
+   * sub-agent whose definition picks the moment (its type is on the host's list) compacts at any size once it has a
+   * reading since its last wake.
    */
-  compacts(key: string, tokens: number | undefined, level = 0, marks?: NudgeMarks & { finish?: number }): boolean {
+  compacts(key: string, tokens: number | undefined, level = 0, marks?: NudgeMarks & { finish?: number; always?: true }): boolean {
     const state = this.get(key);
     if (marks === undefined) return true;
     if (state.absorbNext) return false;
-    if (tokens === undefined) return true;
+    if (tokens === undefined || marks.always === true) return true;
     if (marks.finish !== undefined && finishReached(state, tokens, marks.finish, marks.every)) return true;
     return level > 0 && (state.wokeAt === undefined || tokens >= state.wokeAt + roomAbove(state.wokeAt, marks));
   }

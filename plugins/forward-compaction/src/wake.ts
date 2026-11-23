@@ -66,6 +66,8 @@ export type WakeFacts = {
     tasks: readonly { id: string; type: string; status: string; description: string; command?: string }[];
     crons: readonly { id: string; schedule: string; recurring: boolean; prompt: string }[];
   };
+  /** A sub-agent's only (ledger.ts `Facts`): `shells` then holds the tasks tied to it, and this many other tasks and crons of the session are counted, never listed. */
+  otherTasks?: number;
   /** Background commands started after `shells` was taken, which it cannot list. */
   backgroundSince?: number;
   /** The files the party's finished calls touched, newest first, and its task list as last set. */
@@ -303,9 +305,11 @@ function renderFacts<M>(input: Shared<M>, facts: WakeFacts, { siblings, files, r
       ...facts.shells.tasks.filter((t) => t.id !== input.self).map((t) => `- ${t.type} ${t.id} ${t.status}: ${t.command ?? t.description}`),
       ...facts.shells.crons.map((c) => `- cron ${c.id} ${c.schedule}${c.recurring ? ' recurring' : ''}: ${c.prompt}`),
     ];
-    const since = facts.backgroundSince ?? 0;
-    const header = `## Background shells and crons (session-wide, from the Stop event ${age(input.now - facts.shells.at)} before install${since === 0 ? '' : `; ${since} background command${since === 1 ? '' : 's'} started since ${since === 1 ? 'is' : 'are'} not in this list`})`;
-    sections.push({ text: [header, ...(rows.length > 0 ? rows : ['(none running)'])].join('\n'), content: rows.length > 0 });
+    const since = facts.backgroundSince ?? 0, others = facts.otherTasks;
+    const header = `## Background shells and ${others === undefined ? 'crons (session-wide, ' : 'agents you started ('}from the Stop event ${age(input.now - facts.shells.at)} before install${since === 0 ? '' : `; ${since} background command${since === 1 ? '' : 's'} started since ${since === 1 ? 'is' : 'are'} not in this list`})`;
+    // What another party started is counted with no id or command: nothing there for the woken sub-agent to wait on, stop or look up.
+    const rest = others === undefined || others === 0 ? [] : [`(not listed: ${others} other background task${others === 1 ? '' : 's'} or cron${others === 1 ? '' : 's'} of this session, not recorded as yours)`];
+    sections.push({ text: [header, ...(rows.length > 0 ? rows : ['(none running)']), ...rest].join('\n'), content: rows.length > 0 });
   }
 
   if (files.length > 0) {

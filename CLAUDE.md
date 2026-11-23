@@ -1,8 +1,6 @@
 # forward-compaction
 
-A Claude Code function-hooks plugin: the model writes its own frontier through
-one tool, and the plugin installs it at Claude Code's compaction. `docs/spec.md`
-is the behavioural spec.
+A Claude Code function-hooks plugin; `docs/spec.md` is the behavioural spec.
 
 ## Function
 
@@ -13,7 +11,7 @@ Claude Code's own compaction has a separate call summarize the transcript. Here 
 `model works -> plugin nudges as its context grows -> from a notice on, model picks its milestone and calls forward_compaction -> frontier stored -> Claude Code's next compaction ask -> plugin installs the frontier -> model wakes`
 
 - The model chooses when to compact, from a notice on: the plugin only nudges, first at a party's nudge-start (absolute), then one per nudge-every; after a wake, a nudge-start above its floor (`roomAbove`, held two nudge-every below the ceiling). A set nudge-room moves the first nudge, after a wake too, that far above the floor (`nudgeStart`). Floor (`floor.json`): a party's first reading ever; after an install, the larger of its first two readings, as only the second request carries what Claude Code sends back (`Held.settling` between them); any reading below a settled floor, which restarts the nudges and the finish notice.
-- A `forward_compaction` call always stores, and compacts (`callCompacts`, `Parties.compacts`) only once the party's context has reached a notice point since its last install: main's finish notice point (`finishReached`) or a nudge point, after a wake its room (`roomAbove`) above the wake's floor. Below it a call only updates the held frontier: nothing compacts, and nudges and the finish notice still go out when due. Not judged, so its call compacts: a party with no marks (its window unknown), an ignored model, a party with no reading yet; a woken party with no reading since its wake does not compact.
+- A `forward_compaction` call always stores, and compacts (`callCompacts`, `Parties.compacts`) only once the party's context has reached a notice point since its last install: main's finish notice point (`finishReached`) or a nudge point, after a wake its room (`roomAbove`) above the wake's floor. Below it a call only updates the held frontier: nothing compacts, and nudges and the finish notice still go out when due. Not judged, so its call compacts: a party with no marks (its window unknown), an ignored model, a party with no reading yet, a sub-agent of a type in `FORWARD_COMPACTION_SUBAGENT_CALL_COMPACTS`; a woken party with no reading since its wake does not compact.
 - Each nudge names the context's size and asks for a frontier in the words of its count since the party's last install (`nudgeBody`), each firmer than the one before, the first three timing the call between two steps, the last before the ceiling saying the plugin compacts next; it names no max context and no ceiling, and prints no list: a party holding a frontier is asked for its changes by item number, one holding none for a first frontier.
 - Main also compacts when its whole work is finished, before the final report, so the user's reply meets a small context: its first three nudges carry that rule (`FINISH_RULE`), and at or past `FORWARD_COMPACTION_MAIN_FINISH_START` and one nudge-every above its floor (`finishReached`), with no nudge sent, it reads the finish notice once per install (`finishDue`); a sub-agent, whose context ends with its report, is never asked, its first three nudges saying when it may skip (`SKIP_RULES`).
 - The plugin holds Claude Code's compaction. `CLAUDE_CODE_AUTO_COMPACT_WINDOW=100000` exists only so Claude Code asks early, about every request from about 63k; it is never the compaction point.

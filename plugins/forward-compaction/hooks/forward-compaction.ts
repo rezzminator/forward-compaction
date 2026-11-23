@@ -268,6 +268,7 @@ async function readOptionEnv($: EngineInterface): Promise<Pick<OptionEnvironment
     readOptionVar('FORWARD_COMPACTION_CEILING_NATIVE', () => $.env.get('FORWARD_COMPACTION_CEILING_NATIVE')),
     readOptionVar('FORWARD_COMPACTION_IGNORE_MODELS', () => $.env.get('FORWARD_COMPACTION_IGNORE_MODELS')),
     readOptionVar('FORWARD_COMPACTION_KEEP_SKILLS', () => $.env.get('FORWARD_COMPACTION_KEEP_SKILLS')),
+    readOptionVar('FORWARD_COMPACTION_SUBAGENT_CALL_COMPACTS', () => $.env.get('FORWARD_COMPACTION_SUBAGENT_CALL_COMPACTS')),
     readOptionVar('FORWARD_COMPACTION_FRONTIER_WARN_CHARS', () => $.env.get('FORWARD_COMPACTION_FRONTIER_WARN_CHARS')),
     readOptionVar('FORWARD_COMPACTION_DEBUG', () => $.env.get('FORWARD_COMPACTION_DEBUG')),
   ]);
@@ -310,7 +311,7 @@ function start(st: State, $: EngineInterface): Promise<void> {
       say(st, $, `forward-compaction: reading CLAUDE_CONFIG_DIR failed: ${message(error)}; look_back reads ~/.claude only`, 'warning', { event: 'config-dir-read-failed', where: 'start', error: message(error) });
       st.configDir = home ? `${home}/.claude` : undefined;
     }
-    record(st, $, { event: 'start', main: st.config.main, subagent: st.config.subagent, ceilingNative: st.config.ceilingNative, ignoreModels: st.config.ignoreModels });
+    record(st, $, { event: 'start', main: st.config.main, subagent: st.config.subagent, ceilingNative: st.config.ceilingNative, ignoreModels: st.config.ignoreModels, subagentCallCompacts: st.config.subagentCallCompacts });
   })().finally(() => settleConfig(st, $));
   return st.started;
 }
@@ -515,7 +516,7 @@ async function applyForward(st: State, $: EngineInterface, e: Record<string, unk
     if (files === undefined) checked.push(NO_FOLDER);
     const loadFiles = call.loadFiles === undefined ? party.stored?.loadFiles ?? [] : carried; // a call that sends no load_files keeps the earlier call's
     const tokens = party.reading, m = marks(st, key); // the reading that stands now, after every wait above: the call's own request is often measured during them, and a reading taken before them judged a woken party's first call as one with no reading, which compacts
-    const compacts = callCompacts(st.parties, key, tokens, m, st.config.ignoreModels); // below where its notice goes a call changes the held frontier and compacts nothing
+    const compacts = callCompacts(st.parties, key, tokens, m, st.config.ignoreModels, st.config.subagentCallCompacts); // below where its notice goes a call changes the held frontier and compacts nothing
     const waits = compacts && callWaits(applied.missing, call.broken ?? []); // a call a broken field may have ended early, or one without its objective or next, installs one request later, so the rest can still arrive
     const replaced = st.parties.store(key, { loadFiles, toolUseId, storedAtTokens: tokens, since: st.ledger.nextSeq, compacts, ...(waits ? { waits } : {}) });
     const size = frontierSize(party.held), sizes = sizeLines(size, st.config.frontierWarnChars), missing = applied.missing;
@@ -555,7 +556,7 @@ async function partyKind(st: State, $: EngineInterface, agentId: string): Promis
     dbg(st, $, 'agent.list', { count: agents.length, agentId, found: agent !== undefined });
     if (agent === undefined) return 'foreign';
     st.knownAgents.set(agentId, agent.type);
-    st.parties.describe(`agent:${agentId}`, { label: `${agent.type} ${agentId.slice(0, 6)}` });
+    st.parties.describe(`agent:${agentId}`, { label: `${agent.type} ${agentId.slice(0, 6)}`, type: agent.type });
     return 'subagent';
   } catch (error) {
     warnOnce(st, $, 'partyKind', 'agent-list-failed', `forward-compaction: listing agents failed: ${message(error)}; agent ${agentId} is handled as a sub-agent`);
@@ -815,7 +816,7 @@ async function noteSpawn(st: State, $: EngineInterface, e: AgentSpawnInput, r: A
   const fact = e.resume !== undefined ? (e.prompt === '' ? undefined : { kind: 'received' as const, party: key, at: await $.clock.now(), origin: 'resume', text: e.prompt }) : { kind: 'brief' as const, party: key, at: await $.clock.now(), text: e.prompt, description: e.description, subagentType: e.subagentType, spawnedBy: st.inFlight.get(e.tool_use_id)?.party ?? 'unknown' };
   st.ledger = resolveSpawn(fact === undefined ? st.ledger : addEntry(st.ledger, fact), e.tool_use_id, id);
   st.knownAgents.set(id, e.subagentType);
-  st.parties.describe(key, { label: `${e.subagentType} ${id.slice(0, 6)}` }); await judge(st, $, key);
+  st.parties.describe(key, { label: `${e.subagentType} ${id.slice(0, 6)}`, type: e.subagentType }); await judge(st, $, key);
   await keepKept(st, $, key); // its brief, and its preloaded skills filed under the spawn until now
 }
 

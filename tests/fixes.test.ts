@@ -32,8 +32,8 @@ async function begin(script: Script = {}): Promise<Fake> {
 
 const step = (f: Fake, tokens: number, agentId?: string, model: string | undefined = 'claude-sonnet-4-5') =>
   f.dispatch('turn.step', { turnId: 't1', index: 0, ...(model !== undefined ? { model } : {}), messageCount: 4, ...(agentId ? { agentId } : {}) }, async () => ({ turnId: 't1', index: 0, answer: '', toolUses: [], stopReason: 'tool_use', ...usage(tokens) }));
-const spawn = (f: Fake, agentId = A1, prompt = 'Brief for agent one') =>
-  f.dispatch('agent.spawn', { tool_use_id: 'tu-spawn', prompt, description: 'one', subagentType: 'general-purpose', provider: { kind: 'local' } }, async () => ({ model: 'sonnet', agentId }));
+const spawn = (f: Fake, agentId = A1, prompt = 'Brief for agent one', subagentType = 'general-purpose') =>
+  f.dispatch('agent.spawn', { tool_use_id: 'tu-spawn', prompt, description: 'one', subagentType, provider: { kind: 'local' } }, async () => ({ model: 'sonnet', agentId }));
 
 /** The decision rows written this session, read once session.end has flushed them. */
 async function rows(f: Fake): Promise<Record<string, unknown>[]> {
@@ -101,13 +101,15 @@ describe("L5 + S1 + S5: each sub-agent is measured against its own model's max c
 });
 
 describe('M2 + M4: the wake carries the commands the party ran', () => {
-  it("lists a sub-agent's Bash commands verbatim with their descriptions, newest first, never their output", async () => {
+  it("lists a sub-agent's Bash commands verbatim with their descriptions, newest first, never their output, and of the session's background tasks only those tied to it", async () => {
     const f = await begin();
     await spawn(f);
     await step(f, 64_000, A1);
     const bash = (id: string, command: string, description: string) => f.dispatch('tool.call', { tool: 'Bash', tool_use_id: id, agentId: A1, command, description }, async () => ({ result: 'OUTPUT-NEVER-CARRIED' }));
     await bash('tu-b1', 'npm run build', 'Build the plugin');
     await bash('tu-b2', "npx vitest run fixes.test.ts -t 'S6'", 'Run the S6 test');
+    const tasks = [{ id: 'b7', type: 'shell', status: 'running', description: 'Sleep', command: 'sleep 1800' }, { id: 'b8', type: 'shell', status: 'running', description: 'Build the plugin', command: 'npm run build' }];
+    await f.dispatch('classic.Stop', { background_tasks: tasks, session_crons: [{ id: 'c1', schedule: '0 9 * * *', recurring: true, prompt: 'check ci' }] }, async () => ({}));
     await f.dispatch('tool.call', { tool: FORWARD, tool_use_id: 'tu-h', agentId: A1, ...SECTIONS }, async () => ({ result: 'not ours' }));
     const messages = [
       { role: 'user', text: 'Brief for agent one', toolUses: [], handle: 'h0' },
@@ -117,6 +119,8 @@ describe('M2 + M4: the wake carries the commands the party ran', () => {
     const wake = fromFacts(await f.dispatch('session.compact', { trigger: 'auto', agentId: A1, messages }, async () => ({ skip: 'native ran' })))[0]!.text;
     expect(wake).toContain("## Shell commands you ran, newest first\n### Run the S6 test\nnpx vitest run fixes.test.ts -t 'S6'\n### Build the plugin\nnpm run build");
     expect(wake).not.toContain('OUTPUT-NEVER-CARRIED');
+    expect(wake).toContain('## Background shells and agents you started (from the Stop event 0s before install)\n- shell b8 running: npm run build\n(not listed: 2 other background tasks or crons of this session, not recorded as yours)');
+    expect(wake).not.toContain('sleep 1800');
   });
 });
 
@@ -246,13 +250,13 @@ describe('L8 + L9: one row per registration failure, and every error and warning
 });
 
 describe('a call before the notice point only updates the frontier', () => {
+  const UPDATED = 'Frontier updated. Nothing compacts: your context is still too small for a compaction to pay, and stays as it is. Carry on; a forward-compaction notice asks for the call once it has grown enough.';
   it('after a wake a call made before the context has grown again only updates the frontier: the receipt says so, the next ask and the turn end compact nothing, and a call from the notice point on (the 30k start above the settled floor: 71k after 20k and 41k) compacts', async () => {
     const f = await begin();
     const ask = (id: string) => f.dispatch('session.compact', { trigger: 'auto', messages: transcript(id) }, async () => ({ skip: 'native ran' }));
     const answer = (turnId: string) => f.dispatch('turn.complete', { reason: 'answer', answer: 'done', durationMs: 1, isAborted: false, turnId }, async () => ({ text: 'done' }));
     const read = (id: string) => f.dispatch('tool.call', { tool: 'Read', tool_use_id: id, file_path: '/x' }, async () => ({ result: 'file' }));
     const receiptOf = async (id: string) => (await store(f, undefined, id)).result.split('\n').find((line: string) => line.startsWith('Frontier stored') || line.startsWith('Frontier updated'));
-    const UPDATED = 'Frontier updated. Nothing compacts: your context is still too small for a compaction to pay, and stays as it is. Carry on; a forward-compaction notice asks for the call once it has grown enough.';
     const AGAIN = ' This call applied on top of your earlier one since the last wake.';
     await step(f, 64_000);
     await store(f);
@@ -288,7 +292,20 @@ describe('a call before the notice point only updates the frontier', () => {
       expect(await f.dispatch('session.compact', { trigger: 'auto', messages: transcript('tu-h') }, async () => ({ skip: 'native ran' }))).toHaveProperty('messages');
     }
     const [called] = await Promise.all([store(f, undefined, 'tu-2'), step(f, 20_000)]);
-    expect(called.result.split('\n').find((line: string) => line.startsWith('Frontier '))).toBe('Frontier updated. Nothing compacts: your context is still too small for a compaction to pay, and stays as it is. Carry on; a forward-compaction notice asks for the call once it has grown enough.');
+    expect(called.result.split('\n').find((line: string) => line.startsWith('Frontier '))).toBe(UPDATED);
     expect((await rows(f)).filter((row) => row.event === 'stored').map((row) => [row.tokens, row.compacts])).toEqual(stored);
+  });
+
+  it.each([
+    ['of a type FORWARD_COMPACTION_SUBAGENT_CALL_COMPACTS names compacts', 'flights:lander', true],
+    ['of any other type only updates the frontier', 'general-purpose', false],
+  ])("a sub-agent's call under its nudge start, %s", async (_name, subagentType, compacts) => {
+    const f = await begin({ env: { FORWARD_COMPACTION_SUBAGENT_CALL_COMPACTS: 'Explore, flights:lander', FORWARD_COMPACTION_SUBAGENT_NUDGE_START: '100000' } });
+    await spawn(f, A1, 'Brief for agent one', subagentType);
+    await step(f, 20_000, A1);
+    await step(f, 80_000, A1);
+    expect((await store(f, A1)).result.split('\n').find((line: string) => line.startsWith('Frontier '))).toBe(compacts ? "Frontier stored. It installs at Claude Code's next compaction ask, before your next request. The newest messages after this call that fit are kept verbatim behind it, the rest named as not carried." : UPDATED);
+    expect('messages' in (await f.dispatch('session.compact', { trigger: 'auto', agentId: A1, messages: transcript('tu-h') }, async () => ({ skip: 'native ran' })))).toBe(compacts);
+    expect((await rows(f)).filter((row) => row.event === 'stored').map((row) => [row.party, row.tokens, row.compacts])).toEqual([[`agent:${A1}`, 80_000, compacts]]);
   });
 });

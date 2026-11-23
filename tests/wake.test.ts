@@ -508,6 +508,16 @@ describe('F sections', () => {
     expect(wakeOf({ self: 'me', f: { shells: { ...shells, tasks: [shells.tasks[0]!] } } }).f).toContain('(none running)');
   });
 
+  it("heads a sub-agent's list as what it started and counts the session's other tasks and crons, naming none of them", () => {
+    const shells = { at: T0, tasks: [{ id: 'b1', type: 'shell', status: 'running', description: 'tests', command: 'npm test' }], crons: [] };
+    const heading = '## Background shells and agents you started (from the Stop event 1m before install)';
+    expect(wakeOf({ self: 'me', f: { shells, otherTasks: 2 } }, 'subagent').f).toContain(`${heading}\n- shell b1 running: npm test\n(not listed: 2 other background tasks or crons of this session, not recorded as yours)`);
+    expect(wakeOf({ self: 'me', f: { shells: { ...shells, tasks: [] }, otherTasks: 1 } }, 'subagent').f).toContain(`${heading}\n(none running)\n(not listed: 1 other background task or cron of this session, not recorded as yours)`);
+    const alone = wakeOf({ self: 'me', f: { shells, otherTasks: 0 } }, 'subagent').f;
+    expect(alone).toContain(`${heading}\n- shell b1 running: npm test`);
+    expect(alone).not.toContain('not listed');
+  });
+
   it('says a snapshot with nothing running as that, not as unknown', () => {
     const f = wakeOf({ f: { shells: { at: T0, tasks: [], crons: [] } } }).f;
     expect(f).toContain('(none running)');

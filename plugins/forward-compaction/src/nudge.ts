@@ -120,12 +120,13 @@ const nudgeMarks = (marks: NoticeMarks): NudgeMarks => ({ room: marks.room ?? ma
 /**
  * Whether a forward_compaction call from the party compacts at its reading (`tokens`), by the marks its notices go
  * by (`Parties.compacts`). A party with no marks and one whose model is on the ignore list are sent no notice and
- * are not judged.
+ * are not judged. A sub-agent spawned as one of `always` (`FORWARD_COMPACTION_SUBAGENT_CALL_COMPACTS`: agent types
+ * whose definition picks the moment to shed) compacts at any size.
  */
-export function callCompacts(parties: Parties, key: string, tokens: number | undefined, marks: NoticeMarks | undefined, ignore: readonly string[]): boolean {
+export function callCompacts(parties: Parties, key: string, tokens: number | undefined, marks: NoticeMarks | undefined, ignore: readonly string[], always: readonly string[]): boolean {
   if (marks === undefined || parties.ignored(key, ignore) !== undefined) return parties.compacts(key, tokens);
   const level = tokens === undefined ? 0 : nudgeLevel(tokens, nudgeStart(parties.get(key).held?.floor ?? tokens, marks), marks.every);
-  return parties.compacts(key, tokens, level, { ...nudgeMarks(marks), ...(marks.finish === undefined ? {} : { finish: marks.finish }) });
+  return parties.compacts(key, tokens, level, { ...nudgeMarks(marks), ...(marks.finish === undefined ? {} : { finish: marks.finish }), ...(parties.typed(key, always) ? { always: true as const } : {}) });
 }
 
 export type Notice = {
