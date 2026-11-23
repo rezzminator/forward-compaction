@@ -20,14 +20,24 @@ ask point spawning a background child, then storing its frontier in the message 
 return reaches C as a `session.append` `delivery` row after the frontier and before its install (I7, I12; `settings.json`
 sets `CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH` so C may spawn).
 
+A forward_compaction call compacts only once its party's context has reached where its notice goes, judged by the
+party's last completed request: the one before the request that makes the call. `settings.json` therefore holds
+main's finish notice at 30k and 10k above its floor (`FORWARD_COMPACTION_MAIN_FINISH_START`,
+`FORWARD_COMPACTION_MAIN_NUDGE_EVERY`) and a sub-agent's first nudge at 32k
+(`FORWARD_COMPACTION_SUBAGENT_NUDGE_START`: above a sub-agent's first request, about 29k, and below its request
+after the Skill call, about 35k), all under the 100k ceilings. S2, S6 and S8 read one file per message: a call made
+right after files read together in one message is judged by the context before them and only updates the
+frontier. C is told not to call before its scripted message: a call made earlier would install before the child's
+return.
+
 | step | wait | prompt |
 |---|---|---|
 | S1 | main-turn | /forward-compaction:replay-rules |
-| S2 | main-turn | Read filler/filler-1.txt, filler/filler-2.txt and filler/filler-3.txt whole, one Read call each. Then call the forward_compaction tool with objective "replay step S2", findings "replay finding S2", and load_files holding one entry: path the absolute path of filler/filler-1.txt, lines "1-100", why "replay load file". End your turn. |
+| S2 | main-turn | Read filler/filler-1.txt, filler/filler-2.txt and filler/filler-3.txt whole, one Read call per message, waiting for each result before the next. Then call the forward_compaction tool with objective "replay step S2", findings "replay finding S2", and load_files holding one entry: path the absolute path of filler/filler-1.txt, lines "1-100", why "replay load file". End your turn. |
 | S3 | main-turn | In one message, spawn two background general-purpose agents. Agent A's prompt: "Call the Skill tool for forward-compaction:replay-rules. Read filler/filler-1.txt and filler/filler-2.txt whole, one Read call each, then call forward_compaction with Objective 'agent A frontier'. Then read filler/filler-3.txt to filler/filler-7.txt whole, one Read call each, and answer 'A done' with the coordinator note you received, if any." Agent B's prompt: "Call the Skill tool for forward-compaction:replay-rules. Read filler/filler-1.txt to filler/filler-10.txt whole, one Read call each, then answer 'B done'. Never call forward_compaction." Then end your turn. |
 | S4 | main-turn | Use SendMessage to send agent A exactly: coordinator note 5c1e. Then end your turn. |
 | S5 | notification | Run the Bash command "sleep 20; echo replay-done" with run_in_background set, then end your turn. |
-| S6 | main-turn | Read filler/filler-4.txt and filler/filler-5.txt whole, one Read call each. Then call forward_compaction with objective "replay step S6" and blocked "nothing blocks S6", and end your turn. |
+| S6 | main-turn | Read filler/filler-4.txt and filler/filler-5.txt whole, one Read call per message, waiting for each result before the next. Then call forward_compaction with objective "replay step S6" and blocked "nothing blocks S6", and end your turn. |
 | S7 | manual-compact | /compact |
 | S8 | main-turn | Read filler/filler-1.txt to filler/filler-8.txt whole, one Read call per message, waiting for each result before the next. Right after the result of filler/filler-2.txt, call forward_compaction with Objective "replay step S8", then read on. |
-| S9 | main-turn | Spawn one background general-purpose agent C, then end your turn. C's prompt: "Read filler/filler-1.txt, filler/filler-2.txt and filler/filler-3.txt whole, one Read call each. Then spawn one background general-purpose agent whose prompt tells it to run the Bash command python3 -c 'import time; time.sleep(20)' and then answer child-done-7f3a. Right after the spawn, in ONE message, call forward_compaction with Objective 'agent C frontier' and Remaining 'wait for the child' together with the Bash command python3 -c 'import time; time.sleep(45)'. Then answer 'C done' with the child's reply." |
+| S9 | main-turn | Spawn one background general-purpose agent C, then end your turn. C's prompt: "Read filler/filler-1.txt, filler/filler-2.txt and filler/filler-3.txt whole, one Read call each. Then spawn one background general-purpose agent whose prompt tells it to run the Bash command python3 -c 'import time; time.sleep(20)' and then answer child-done-7f3a. Right after the spawn, in ONE message, call forward_compaction with Objective 'agent C frontier' and Remaining 'wait for the child' together with the Bash command python3 -c 'import time; time.sleep(45)'. Never call forward_compaction before that message. Then answer 'C done' with the child's reply." |

@@ -1,14 +1,15 @@
 import type { Landing } from './wake';
 import { ignoredBy, type RatioBase } from './window';
-import { keptOrders, type LiftedOrder, type StandingOrder } from './orders';
 import type { PlanSeen } from './plan';
 import type { LoadFile } from './frontier';
-import { keptLater } from './carry';
+import { emptyHeld, renderFrontier, roundPassed, type Held, type Item, type StorageEntry } from './lists';
+import type { PartyFiles } from './disk';
+import { storageDir } from './storage';
 import type { SubagentWindow } from './options';
+import { roomAbove, type NudgeMarks } from './nudge';
 
-/** A frontier the model wrote, held in memory until a door installs it. */
+/** A `forward_compaction` call since the party's last wake, held until a door installs the frontier: the frontier itself is the party's held lists (`PartyState.held`), rendered at the wake. */
 export type StoredFrontier = {
-  text: string;
   loadFiles: LoadFile[];
   /** The `forward_compaction` call that stored it: the anchor `splitAtCall` finds in the messages. */
   toolUseId: string;
@@ -16,16 +17,12 @@ export type StoredFrontier = {
   storedAtTokens?: number;
   /** The ledger's next seq when it was stored: what the ledger records for the party from it, the model never saw (ledger.ts `factsFor` `since`). */
   since: number;
-  /** The standing orders it carried (the tool's `standing_orders`). */
-  standingOrders?: StandingOrder[];
-  /** The orders lifted since the last install: its own `lifted`, plus a replaced frontier's still unshown, each shown once in its wake. */
-  lifted?: LiftedOrder[];
-  /** The required sections it lacks (frontier.ts `ParsedFrontier.missing`): it installs without them, its wake naming each. */
-  missing?: string[];
-  /** The skills and commands its wake carries whole (the tool's `keep_skills`), for that one wake. */
-  keepSkills?: string[];
   /** Store order across all parties. */
   seq: number;
+  /** Whether a door installs it (`Parties.compacts`): a call made before the party's context reached where a notice goes only changes its held frontier, and nothing compacts. */
+  compacts: boolean;
+  /** The call arrived broken or left the frontier without its objective or next (frontier.ts `callWaits`): one automatic ask is held before it installs (decide.ts `decide`), and `waited` ends the wait. */
+  waits?: boolean;
 };
 
 /** What the party's last `session.compact` ask ended in (the decision row's `decision`). */
@@ -49,6 +46,8 @@ export type PartyState = {
   /** What screen lines call the party: "main", or "{subagentType} {agentId first 6}". */
   label: string;
   model?: string;
+  /** The agent type a sub-agent was spawned as (`$.agent.list()`'s `type`, `agent.spawn`'s `subagentType`); main has none. */
+  type?: string;
   /** The measured context of the party's last completed request; none from an install until its next reading. */
   reading?: number;
   /** The ratio base (window.ts `charsPerToken`), taken at the party's first reading in its live window; none from any compaction of it until its next reading. */
@@ -59,8 +58,12 @@ export type PartyState = {
   /** An installed wake whose landed line waits for the party's first reading after it. */
   landing?: Landing;
   stored?: StoredFrontier;
-  /** The standing orders of the party's last stored frontier: the next frontier carries or lifts each; an install or a dropped frontier keeps them. */
-  orders?: StandingOrder[];
+  /** The party's frontier as the plugin holds it, loaded from its files at first touch in this process (disk.ts); absent until then. */
+  held?: Held;
+  /** The party's files, and what waits to be written to them. */
+  files?: PartyFiles;
+  /** The party's `forward_compaction` call being applied: the next one waits for it, so each applies on the one before. */
+  calling?: Promise<unknown>;
   lastDecision?: AskDecision;
   /** False from a skip until a request completes: the next ask is then a prompt too long (D8). */
   answeredSinceSkip: boolean;
@@ -68,7 +71,7 @@ export type PartyState = {
   nudgeLevel: number;
   /** True from an install until the party's next reading, whose nudge level is then absorbed silently. */
   absorbNext: boolean;
-  /** The party's first reading after its last install: its next nudge waits until the context has grown by its working room past it (`roomAfterWake`). */
+  /** The party's floor after its last install (`Held.floor`): its next nudge waits until the context has grown by its room past it (nudge.ts `roomAbove`). */
   wokeAt?: number;
   /** The reading the party's last nudge went out at, since its last install: the next one waits until the context has grown by `every` past it. */
   nudgedAt?: number;
@@ -81,8 +84,6 @@ export type PartyState = {
   installs: number;
   /** An install happened in the party's current turn: the turn-end door (P1) does not fire again. */
   installedThisTurn: boolean;
-  /** The files for later its frontiers listed (carry.ts `laterApply`), named in every wake until one leaves; absent until a frontier or `$.state` sets it. */
-  later?: LoadFile[];
   /** The judgement last returned by `judged`. */
   judged?: Judgement;
   /** The max context, source and unknown reason of the last window row returned for the party (`windowed`). */
@@ -91,18 +92,14 @@ export type PartyState = {
   plan?: PlanSeen;
 };
 
-/** Per-party state, memory only, keyed "main" or "agent:{id}". A party is created on first touch. */
-/** The marks a nudge is timed by, in tokens. */
-export type NudgeMarks = { start: number; every: number; ceiling: number };
-
 /**
- * The growth a party gets after a wake before its next nudge: as much as it had before its first nudge (`start`),
- * held to two `every` below its ceiling so a nudge still comes before the mechanical wake, and never under one `every`.
+ * Where main's finish notice goes: a reading (`tokens`) of `start` or more that has grown by `every` past the party's
+ * floor (`Held.floor`, which a restart keeps). A compaction sooner frees next to nothing: the context it leaves is the
+ * floor again.
  */
-export function roomAfterWake(wokeAt: number, { start, every, ceiling }: NudgeMarks): number {
-  return Math.max(every, Math.min(start, ceiling - 2 * every - wokeAt));
-}
+const finishReached = (state: PartyState, tokens: number, start: number, every: number): boolean => tokens >= start && (state.held?.floor === undefined || tokens >= state.held.floor + every);
 
+/** Per-party state, memory only, keyed "main" or "agent:{id}". A party is created on first touch. */
 export class Parties {
   private readonly states = new Map<string, PartyState>();
   private seq = 0;
@@ -118,8 +115,14 @@ export class Parties {
   }
 
   /** Sets what is named; a step that names no model keeps the one known, so its judgement never falls back to unknown. */
-  describe(key: string, patch: { label?: string; model?: string }): void {
+  describe(key: string, patch: { label?: string; model?: string; type?: string }): void {
     Object.assign(this.get(key), Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== undefined)));
+  }
+
+  /** Whether the party is a sub-agent spawned as one of `types`. */
+  typed(key: string, types: readonly string[]): boolean {
+    const type = this.get(key).type;
+    return type !== undefined && types.includes(type);
   }
 
   /** The ignore-list entry the party's model matches: the plugin leaves it to Claude Code. Undefined while its model is not known. */
@@ -160,27 +163,12 @@ export class Parties {
     return { event: 'window', party: key, label: state.label, model: state.model, ...window, ceiling };
   }
 
-  /** Stores the party's frontier, the latest winning; returns the one it replaced. */
+  /** Records the party's call, the latest winning; returns the one it follows. */
   store(key: string, frontier: Omit<StoredFrontier, 'seq'>): StoredFrontier | undefined {
     const state = this.get(key);
     const replaced = state.stored;
-    const standing = frontier.standingOrders ?? [];
-    const unshown = (replaced?.lifted ?? []).filter((l) => !standing.some((o) => o.order === l.order)); // an order carried again is no longer lifted
-    state.stored = { ...frontier, lifted: [...unshown, ...(frontier.lifted ?? [])], seq: ++this.seq };
-    state.orders = [...standing];
+    state.stored = { ...frontier, seq: ++this.seq };
     return replaced;
-  }
-
-  /** The orders `$.state` kept for the party before a plugin reload, when usable; a frontier stored in this process wins, and nothing kept adds no party. */
-  restoreOrders(key: string, kept: unknown): void {
-    const orders = keptOrders(kept);
-    if (orders !== undefined) this.get(key).orders ??= orders;
-  }
-
-  /** The files for later `$.state` kept for the party before a plugin reload, when usable; a list set in this process wins. */
-  restoreLater(key: string, kept: unknown): void {
-    const later = keptLater(kept);
-    if (later !== undefined) this.get(key).later ??= later;
   }
 
   /** The judgement and model `$.state` kept for the party before a plugin reload, when usable; what this process already knows wins. */
@@ -191,6 +179,12 @@ export class Parties {
     const state = this.get(key);
     state.judged ??= judged;
     if (typeof model === 'string') state.model ??= model;
+  }
+
+  /** The one ask held for the party's stored call that waits (`StoredFrontier.waits`) has passed: the next ask installs it. A party never seen gains no state. */
+  waited(key: string): void {
+    const stored = this.states.get(key)?.stored;
+    if (stored !== undefined) stored.waits = false;
   }
 
   /** Removes the party's stored frontier and returns it; a party never seen gains no state. */
@@ -204,6 +198,12 @@ export class Parties {
   /**
    * A completed request's reading and its nudge level; that request also answers a held ask. The first reading after
    * an install is the party's floor plus what it kept: its level is absorbed, so the next nudge goes only past it.
+   * The party's first reading ever, its first after an install and any reading below its floor (a compaction this
+   * plugin did not make) is its new floor (`Held.floor`), due in its file. After an install the floor settles at the
+   * second reading, as the larger of the two: only the second request carries what Claude Code sends back after a
+   * compaction (its skill, tool and agent listings). A reading below a settled floor also starts the notices over, as
+   * an install does: its level is absorbed, the next nudge is the first again, the finish notice is owed again, and
+   * a woken party's room is measured from it.
    * Returns the landing that reading measures, taken: its line is due now.
    */
   read(key: string, tokens: number, level = 0): Landing | undefined {
@@ -211,7 +211,19 @@ export class Parties {
     const landing = state.landing;
     state.reading = tokens;
     state.landing = undefined;
-    if (state.absorbNext) {
+    const first = state.absorbNext, floor = state.held?.floor;
+    const second = !first && state.held?.settling === true;
+    const fell = !first && !second && floor !== undefined && tokens < floor;
+    if (first || second || floor === undefined || fell) {
+      const held: Held = { ...(state.held ?? emptyHeld()), floor: second ? Math.max(floor ?? 0, tokens) : tokens };
+      if (first) held.settling = true;
+      else delete held.settling;
+      state.held = held;
+      state.files?.changed('floor');
+    }
+    if (fell) Object.assign(state, { nudgeLevel: level, nudges: 0, nudgedAt: undefined, finishTold: false, ...(state.wokeAt === undefined ? {} : { wokeAt: tokens }) });
+    if (second && state.wokeAt !== undefined) state.wokeAt = state.held!.floor;
+    if (first) {
       state.absorbNext = false;
       state.nudgeLevel = Math.max(state.nudgeLevel, level);
       state.wokeAt = tokens;
@@ -276,17 +288,17 @@ export class Parties {
   }
 
   /**
-   * Whether a nudge goes out now, recorded as sent: once per level while nothing is stored. None goes between an
+   * Whether a nudge goes out now, recorded as sent: once per level while no call waits to install. None goes between an
    * install and the party's next reading: until then no size is measured. After a wake none goes until the reading
-   * (`tokens`) has grown by the party's working room (`roomAfterWake`) past the first one after it: a wake lands
+   * (`tokens`) has grown by the party's room (nudge.ts `roomAbove`) past the first one after it: a wake lands
    * near or above the nudge start, and a nudge a few thousand tokens later makes the party compact in a loop. None
    * goes within `every` of the last one either: a nudge held back past a level boundary is not followed by the next level's.
    */
   nudgeDue(key: string, level: number, tokens?: number, marks?: NudgeMarks): boolean {
     const state = this.get(key);
-    if (state.stored !== undefined || state.absorbNext || level <= state.nudgeLevel) return false;
+    if (state.stored?.compacts === true || state.absorbNext || level <= state.nudgeLevel) return false;
     if (tokens !== undefined && marks !== undefined) {
-      if (state.wokeAt !== undefined && tokens < state.wokeAt + roomAfterWake(state.wokeAt, marks)) return false;
+      if (state.wokeAt !== undefined && tokens < state.wokeAt + roomAbove(state.wokeAt, marks)) return false;
       if (state.nudgedAt !== undefined && tokens < state.nudgedAt + marks.every) return false;
     }
     state.nudgeLevel = level;
@@ -297,21 +309,40 @@ export class Parties {
 
   /**
    * Whether the finish notice goes out now, recorded as sent: once since the party's last install, at a reading
-   * (`tokens`) of `start` or more, while nothing is stored and no nudge has gone, as a nudge's first wordings carry
-   * the finish rule themselves. After a wake none goes until the reading has grown by `every` past the first one
-   * after it: a compaction that soon frees next to nothing.
+   * (`tokens`) of `start` or more, while no call waits to install and no nudge has gone, as a nudge's first wordings carry
+   * the finish rule themselves, and only where `finishReached` holds.
    */
   finishDue(key: string, tokens: number, start: number, every: number): boolean {
     const state = this.get(key);
-    if (state.finishTold || state.nudges > 0 || state.stored !== undefined || state.absorbNext || tokens < start) return false;
-    if (state.wokeAt !== undefined && tokens < state.wokeAt + every) return false;
+    if (state.finishTold || state.nudges > 0 || state.stored?.compacts === true || state.absorbNext || !finishReached(state, tokens, start, every)) return false;
     state.finishTold = true;
     return true;
   }
 
   /**
+   * Whether a call from the party compacts: only once its context (`tokens`, its last reading) has reached where a
+   * notice goes since its last install: main's finish notice (`finishReached`), or a nudge (`level` 1 or more and,
+   * after a wake, grown by the party's room past the floor the wake left). Before that a call only changes the
+   * party's held frontier: a compaction writes the whole context again, which costs more than a small context
+   * saves, and a party that keeps its frontier current would compact at every step. A woken party with no reading
+   * since has grown nothing. Not judged, so its call compacts: a party no notice can reach (no `marks`: its window
+   * unknown, or its model on the ignore list) and one with no reading yet (a process just started). `always`: a
+   * sub-agent whose definition picks the moment (its type is on the host's list) compacts at any size once it has a
+   * reading since its last wake.
+   */
+  compacts(key: string, tokens: number | undefined, level = 0, marks?: NudgeMarks & { finish?: number; always?: true }): boolean {
+    const state = this.get(key);
+    if (marks === undefined) return true;
+    if (state.absorbNext) return false;
+    if (tokens === undefined || marks.always === true) return true;
+    if (marks.finish !== undefined && finishReached(state, tokens, marks.finish, marks.every)) return true;
+    return level > 0 && (state.wokeAt === undefined || tokens >= state.wokeAt + roomAbove(state.wokeAt, marks));
+  }
+
+  /**
    * A compaction installed: the frontier goes, the nudges and the finish notice start over from the next reading's level, and no reading
-   * stands until the next request measures one, whose landing line then goes out. Returns a landing still waiting from an earlier install.
+   * stands until the next request measures one, whose landing line then goes out. A party holding any item has passed one more round: its count
+   * moves, due in its file. Returns a landing still waiting from an earlier install.
    */
   installed(key: string, landing?: Landing): Landing | undefined {
     const earlier = this.get(key).landing;
@@ -330,7 +361,9 @@ export class Parties {
       landing,
       installedThisTurn: true,
     });
-    this.get(key).installs += 1;
+    const state = this.get(key), passed = state.held === undefined ? undefined : roundPassed(state.held);
+    state.installs += 1;
+    if (passed !== state.held) (state.held = passed), state.files?.changed('rounds');
     return earlier;
   }
 
@@ -343,4 +376,10 @@ export class Parties {
   forget(key: string): void {
     this.states.delete(key);
   }
+}
+
+/** What a wake shows of a party's held frontier: its live orders, its storage listing (with no files, none) and its lists rendered. */
+export function heldShown(party: { held?: Held; files?: PartyFiles }): { orders: Item[]; rounds: number; storage?: { dir: string; entries: StorageEntry[] }; frontier: string } {
+  const held = party.held ?? emptyHeld();
+  return { orders: held.lists.orders.items, rounds: held.rounds ?? 0, ...(party.files !== undefined ? { storage: { dir: storageDir(party.files), entries: held.storage } } : {}), frontier: renderFrontier(held) };
 }

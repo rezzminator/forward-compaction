@@ -19,6 +19,7 @@ describe('the mechanical wake re-reads the newest files the party touched', () =
     expect(wake).toContain(`### /work/r3.ts\n${'y'.repeat(40_000)}\n[cut at 40000 characters: Read /work/r3.ts for the rest]\n`);
     expect(wake).toContain('### /work/r2.ts\nbody of /work/r2.ts');
     expect(wake).not.toContain('### /work/r1.ts');
+    await step(f, 20_000); await step(f, 20_000); // the floor after the mechanical wake: 64k is past the 30k start above it
     await step(f, 64_000);
     await store(f);
     const frontierWake = (await f.dispatch('session.compact', { trigger: 'auto', messages: transcript() }, async () => ({ skip: 'native ran' }))).messages[0].text;

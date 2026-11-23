@@ -3,10 +3,10 @@ import { pluginLogDir } from './plugin-log';
 /** A context size: a token count, or a percentage of the party's max context. */
 export type Size = { tokens: number } | { percent: number };
 
-/** Each party's sizes: the ceiling (with no frontier stored, the context at which a mechanical wake is installed), where the first nudge goes out and the growth between nudges, each a token count or a percentage of the party's max context. */
-export type PartySizes = { ceiling: Size; nudgeStart: Size; nudgeEvery: Size };
+/** Each party's sizes: the ceiling (with no frontier stored, the context at which a mechanical wake is installed), where the first nudge goes out, the room after each wake as large, and the growth between nudges, each a token count or a percentage of the party's max context; `nudgeRoom`, only when its variable is set, the working room: the growth above the party's floor (its first reading ever, or its first after a compaction) at which its first nudge goes out instead of at the nudge start. */
+export type PartySizes = { ceiling: Size; nudgeStart: Size; nudgeEvery: Size; nudgeRoom?: Size };
 export const DEFAULT_MAIN: PartySizes = { ceiling: { percent: 60 }, nudgeStart: { percent: 15 }, nudgeEvery: { percent: 5 } };
-/** The ceiling is a share of the sub-agent's max context (160k on 200k, 800k on 1m); the nudges are token counts, the same on every max context. */
+/** The ceiling is a share of the sub-agent's max context (160k on 200k, 800k on 1m); the nudges are token counts, the same on every max context, and late: every compaction re-writes Claude Code's own blocks at the cache-write price (28k to 33k tokens on a measured sub-agent) and the party reads its way back in, which on measured sub-agent runs cost what a smaller context saved. */
 export const DEFAULT_SUBAGENT: PartySizes = { ceiling: { percent: 80 }, nudgeStart: { tokens: 165_000 }, nudgeEvery: { tokens: 65_000 } };
 /** The fallback: a sub-agent's max context while its model's window is not known. The smallest window the Models API lists, and the one Claude Code itself takes for a model it does not know: a ceiling reached early costs a mechanical wake, one set too high a request too long. Main's max context defaults to the window `$.session.usage()` reports. */
 /** Main's finish start: the context from which main is told to compact at the end of its whole work, before the final report. A token count: what a compaction leaves behind does not grow with the max context. */
@@ -42,6 +42,10 @@ export const DEFAULT_CEILING_NATIVE = false;
 export const DEFAULT_IGNORE_MODELS: readonly string[] = ['haiku'];
 /** Skills and commands pinned in every wake by name, as frontmatter's forward-compaction-keep pins one by its file: none. */
 export const DEFAULT_KEEP_SKILLS: readonly string[] = [];
+/** Agent types whose `forward_compaction` call compacts at any size: none, every sub-agent's call is judged by its notice point. */
+export const DEFAULT_SUBAGENT_CALL_COMPACTS: readonly string[] = [];
+/** The frontier's size, in characters of every live item, the objective and next, past which the result of a call whose lists hold no item asks for a shorter objective and next (lists.ts `sizeLines`): 1.5 times the 8,000 a whole-rewrite frontier stayed near, a design budget to tune, never a measured size. */
+export const DEFAULT_FRONTIER_WARN_CHARS = 12_000;
 /** The debug log (`debug.jsonl`): a row at every step. */
 export const DEFAULT_DEBUG = true;
 
@@ -90,16 +94,20 @@ export function formatSize(size: Size): string {
 export const OPTION_ENV = {
   mainMaxContext: 'FORWARD_COMPACTION_MAIN_MAX_CONTEXT',
   mainCeiling: 'FORWARD_COMPACTION_MAIN_CEILING',
+  mainNudgeRoom: 'FORWARD_COMPACTION_MAIN_NUDGE_ROOM',
   mainNudgeStart: 'FORWARD_COMPACTION_MAIN_NUDGE_START',
   mainNudgeEvery: 'FORWARD_COMPACTION_MAIN_NUDGE_EVERY',
   mainFinishStart: 'FORWARD_COMPACTION_MAIN_FINISH_START',
   subagentMaxContext: 'FORWARD_COMPACTION_SUBAGENT_MAX_CONTEXT',
   subagentCeiling: 'FORWARD_COMPACTION_SUBAGENT_CEILING',
+  subagentNudgeRoom: 'FORWARD_COMPACTION_SUBAGENT_NUDGE_ROOM',
   subagentNudgeStart: 'FORWARD_COMPACTION_SUBAGENT_NUDGE_START',
   subagentNudgeEvery: 'FORWARD_COMPACTION_SUBAGENT_NUDGE_EVERY',
   ceilingNative: 'FORWARD_COMPACTION_CEILING_NATIVE',
   ignoreModels: 'FORWARD_COMPACTION_IGNORE_MODELS',
   keepSkills: 'FORWARD_COMPACTION_KEEP_SKILLS',
+  subagentCallCompacts: 'FORWARD_COMPACTION_SUBAGENT_CALL_COMPACTS',
+  frontierWarnChars: 'FORWARD_COMPACTION_FRONTIER_WARN_CHARS',
   debug: 'FORWARD_COMPACTION_DEBUG',
 } as const;
 
@@ -126,6 +134,10 @@ export type ResolvedOptions = {
   ignoreModels: string[];
   /** Skill and command names every wake carries whole, as given, trimmed; `*` names every one (carry.ts `KEEP_ALL`). */
   keepSkills: string[];
+  /** Agent types, as given, trimmed, whose `forward_compaction` call compacts at any size (nudge.ts `callCompacts`): a definition that picks its own moment to shed. */
+  subagentCallCompacts: string[];
+  /** The frontier's size in characters past which a call's result warns (lists.ts `sizeLines`). */
+  frontierWarnChars: number;
   debug: boolean;
   /** One line per option that was invalid and fell back; empty when all were valid. */
   errors: string[];
@@ -139,8 +151,19 @@ export type OptionEnvironment = {
   readErrors?: readonly string[];
 };
 
-/** A nudge start at or past the ceiling in the same unit: both are kept, the user is told. Across units only the max context decides. */
-function nudgeAfterCeiling(party: 'main' | 'subagent', { nudgeStart: start, ceiling }: PartySizes): string | undefined {
+/** One option variable, read through the adapter's own getter into `env`: its value when set, and for a read that failed the line naming it, the option then at its default. */
+export async function readOptionVarInto(env: { vars: Record<string, string>; readErrors: string[] }, name: string, get: () => Promise<string | undefined>): Promise<void> {
+  try {
+    const value = await get();
+    if (value !== undefined) env.vars[name] = value;
+  } catch (error) {
+    env.readErrors.push(`forward-compaction: reading ${name} failed: ${error instanceof Error ? error.message : String(error)}; using the default`);
+  }
+}
+
+/** A nudge start at or past the ceiling in the same unit: both are kept, the user is told. Across units only the max context decides, and with a working room set the nudge start decides nothing. */
+function nudgeAfterCeiling(party: 'main' | 'subagent', { nudgeStart: start, ceiling, nudgeRoom }: PartySizes): string | undefined {
+  if (nudgeRoom !== undefined) return undefined;
   const past = 'tokens' in start && 'tokens' in ceiling ? start.tokens >= ceiling.tokens : 'percent' in start && 'percent' in ceiling ? start.percent >= ceiling.percent : false;
   if (!past) return undefined;
   return `forward-compaction: env ${OPTION_ENV[`${party}NudgeStart`]} ${formatSize(start)} is not below ${OPTION_ENV[`${party}Ceiling`]} ${formatSize(ceiling)}; no nudge goes out before the ceiling`;
@@ -186,24 +209,38 @@ export function resolveOptions(env: OptionEnvironment = {}): ResolvedOptions {
     badEnv(option, parsed.ok ? `a max context is a token count, not a percentage: ${JSON.stringify(raw)}` : parsed.error, fallback);
     return undefined;
   };
-  const sizes = (party: 'main' | 'subagent', fallback: PartySizes): PartySizes => ({
-    ceiling: size(`${party}Ceiling`, fallback.ceiling),
-    nudgeStart: size(`${party}NudgeStart`, fallback.nudgeStart),
-    nudgeEvery: size(`${party}NudgeEvery`, fallback.nudgeEvery),
-  });
+  // A working room has no default: unset, or invalid, the party's nudges start at its nudge start.
+  const room = (option: OptionName): Size | undefined => {
+    const raw = fromEnv(option);
+    if (raw === undefined) return undefined;
+    const parsed = parseSize(raw);
+    if (parsed.ok) return parsed.value;
+    badEnv(option, parsed.error, 'none: the nudge start decides');
+    return undefined;
+  };
+  const sizes = (party: 'main' | 'subagent', fallback: PartySizes): PartySizes => {
+    const nudgeRoom = room(`${party}NudgeRoom`);
+    return { ceiling: size(`${party}Ceiling`, fallback.ceiling), nudgeStart: size(`${party}NudgeStart`, fallback.nudgeStart), nudgeEvery: size(`${party}NudgeEvery`, fallback.nudgeEvery), ...(nudgeRoom !== undefined ? { nudgeRoom } : {}) };
+  };
   const mainMax = maxContext('mainMaxContext', "main's window");
   const main = { ...sizes('main', DEFAULT_MAIN), finishStart: size('mainFinishStart', DEFAULT_MAIN_FINISH_START), ...(mainMax !== undefined ? { maxContext: mainMax } : {}) };
   const subagentMax = maxContext('subagentMaxContext', "each sub-agent's model's max context");
   const subagent = { ...sizes('subagent', DEFAULT_SUBAGENT), ...(subagentMax !== undefined ? { maxContext: subagentMax } : {}) };
   const ceilingNative = flag('ceilingNative', DEFAULT_CEILING_NATIVE);
   const debug = flag('debug', DEFAULT_DEBUG);
+  // A count of characters: a percentage has nothing to be of.
+  const rawWarn = fromEnv('frontierWarnChars'), warn = rawWarn === undefined ? undefined : parseSize(rawWarn);
+  const frontierWarnChars = warn === undefined ? DEFAULT_FRONTIER_WARN_CHARS : warn.ok && 'tokens' in warn.value ? warn.value.tokens : (badEnv('frontierWarnChars', warn.ok ? `a character count, not a percentage: ${JSON.stringify(rawWarn)}` : warn.error, String(DEFAULT_FRONTIER_WARN_CHARS)), DEFAULT_FRONTIER_WARN_CHARS);
+  /** A comma list's entries as given, trimmed, the empty ones dropped. */
+  const list = (raw: string): string[] => raw.split(',').map((entry) => entry.trim()).filter((entry) => entry !== '');
   // Unset is the default; set empty (or only commas) is a list of none: the one option whose empty value is a value.
   const rawIgnore = env.vars?.[OPTION_ENV.ignoreModels];
-  const ignoreModels = rawIgnore === undefined ? [...DEFAULT_IGNORE_MODELS] : rawIgnore.split(',').map((entry) => entry.trim().toLowerCase()).filter((entry) => entry !== '');
-  const keepSkills = (env.vars?.[OPTION_ENV.keepSkills] ?? DEFAULT_KEEP_SKILLS.join(',')).split(',').map((entry) => entry.trim()).filter((entry) => entry !== '');
+  const ignoreModels = rawIgnore === undefined ? [...DEFAULT_IGNORE_MODELS] : list(rawIgnore).map((entry) => entry.toLowerCase());
+  const keepSkills = list(env.vars?.[OPTION_ENV.keepSkills] ?? DEFAULT_KEEP_SKILLS.join(','));
+  const subagentCallCompacts = list(env.vars?.[OPTION_ENV.subagentCallCompacts] ?? DEFAULT_SUBAGENT_CALL_COMPACTS.join(','));
   for (const late of [nudgeAfterCeiling('main', main), nudgeAfterCeiling('subagent', subagent)]) if (late !== undefined) errors.push(late);
   // The decision log lives in the plugin's log directory (PLUGIN_LOG_DIR, else under HOME); with neither, there is none.
   const base = pluginLogDir(env.pluginLogDir, env.home, 'forward-compaction');
   const logFile = base === undefined ? undefined : `${base}/decisions/.jsonl`;
-  return { main, subagent, ceilingNative, ...(logFile ? { logFile } : {}), ignoreModels, keepSkills, debug, errors };
+  return { main, subagent, ceilingNative, ...(logFile ? { logFile } : {}), ignoreModels, keepSkills, subagentCallCompacts, frontierWarnChars, debug, errors };
 }

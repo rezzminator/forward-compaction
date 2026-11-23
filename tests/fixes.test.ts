@@ -2,6 +2,7 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { fakeEngine, usage, type Script } from './fakes/engine.ts';
+import { fromFacts, store, transcript } from './fakes/session.ts';
 
 // The adapter's wiring of the audited faults (2026-10-27): each row keys and judges its party once, a lift is
 // checked against its time, a rejected turn-end install is an error, and the wake carries what the party ran.
@@ -17,7 +18,7 @@ afterEach(() => {
 
 const FORWARD = 'mcp__forward-compaction__forward_compaction';
 const LOOK_BACK = 'mcp__forward-compaction__look_back';
-const SECTIONS = { objective: 'Fix the audit.', decisions: 'none', done: 'Item 20.', remaining: 'Item 21.', next: 'Write its test.' };
+const SECTIONS = { objective: 'Fix the audit.', next: 'Write its test.', done: { add: ['Item 20.'] }, remaining: { add: ['Item 21.'] } };
 const A1 = 'a1b2c3d4e5';
 
 async function begin(script: Script = {}): Promise<Fake> {
@@ -31,8 +32,8 @@ async function begin(script: Script = {}): Promise<Fake> {
 
 const step = (f: Fake, tokens: number, agentId?: string, model: string | undefined = 'claude-sonnet-4-5') =>
   f.dispatch('turn.step', { turnId: 't1', index: 0, ...(model !== undefined ? { model } : {}), messageCount: 4, ...(agentId ? { agentId } : {}) }, async () => ({ turnId: 't1', index: 0, answer: '', toolUses: [], stopReason: 'tool_use', ...usage(tokens) }));
-const spawn = (f: Fake, agentId = A1, prompt = 'Brief for agent one') =>
-  f.dispatch('agent.spawn', { tool_use_id: 'tu-spawn', prompt, description: 'one', subagentType: 'general-purpose', provider: { kind: 'local' } }, async () => ({ model: 'sonnet', agentId }));
+const spawn = (f: Fake, agentId = A1, prompt = 'Brief for agent one', subagentType = 'general-purpose') =>
+  f.dispatch('agent.spawn', { tool_use_id: 'tu-spawn', prompt, description: 'one', subagentType, provider: { kind: 'local' } }, async () => ({ model: 'sonnet', agentId }));
 
 /** The decision rows written this session, read once session.end has flushed them. */
 async function rows(f: Fake): Promise<Record<string, unknown>[]> {
@@ -73,13 +74,16 @@ describe("L5 + S1 + S5: each sub-agent is measured against its own model's max c
   const unset = { FORWARD_COMPACTION_SUBAGENT_MAX_CONTEXT: '', FORWARD_COMPACTION_SUBAGENT_CEILING: '', FORWARD_COMPACTION_SUBAGENT_NUDGE_START: '', FORWARD_COMPACTION_SUBAGENT_NUDGE_EVERY: '' };
   const read = (f: Fake, id: string, agentId: string) => f.dispatch('tool.call', { tool: 'Read', tool_use_id: id, file_path: '/x', agentId }, async () => ({ result: 'file' }));
   const ask = (f: Fake, agentId: string) => f.dispatch('session.compact', { trigger: 'auto', agentId, messages: [{ role: 'user', text: 'Brief for agent one', toolUses: [], handle: 'h0' }] }, async () => ({ skip: 'native ran' }));
-  it('nudges a [1m] sub-agent at 170k (the start is 165k on every max context), where a 200k one is already past its 160k ceiling and is woken mechanically', async () => {
+  it('nudges a [1m] sub-agent at 165k and again at 230k (the start and the step are the same on every max context) and holds it there, where a 200k one at 170k is past its 160k ceiling and is woken mechanically', async () => {
     const f = await begin({ env: unset });
     await spawn(f, 'b1b1b1b1b1');
     await spawn(f, 'c2c2c2c2c2');
     await step(f, 170_000, 'b1b1b1b1b1', 'claude-haiku-4-5');
-    await step(f, 170_000, 'c2c2c2c2c2', 'claude-opus-5-5[1m]');
-    expect(((await read(f, 'tu-r2', 'c2c2c2c2c2')).context ?? []).join('\n')).toMatch(/context 170k /);
+    const grown = async (tokens: number) => (await step(f, tokens, 'c2c2c2c2c2', 'claude-opus-5-5[1m]'), ((await read(f, `tu-${tokens}`, 'c2c2c2c2c2')).context ?? []).join('\n'));
+    expect([await grown(40_000), await grown(164_999)]).toEqual(['', '']);
+    expect(await grown(165_000)).toMatch(/^forward-compaction: context 165k and increasing\. /);
+    expect(await grown(229_999)).toBe('');
+    expect(await grown(230_000)).toMatch(/^forward-compaction: context 230k, and every request re-sends all of it\. /);
     expect(await ask(f, 'b1b1b1b1b1')).toHaveProperty('messages');
     expect(await ask(f, 'c2c2c2c2c2')).toHaveProperty('skip');
   });
@@ -97,22 +101,26 @@ describe("L5 + S1 + S5: each sub-agent is measured against its own model's max c
 });
 
 describe('M2 + M4: the wake carries the commands the party ran', () => {
-  it("lists a sub-agent's Bash commands verbatim with their descriptions, newest first, never their output", async () => {
+  it("lists a sub-agent's Bash commands verbatim with their descriptions, newest first, never their output, and of the session's background tasks only those tied to it", async () => {
     const f = await begin();
     await spawn(f);
     await step(f, 64_000, A1);
     const bash = (id: string, command: string, description: string) => f.dispatch('tool.call', { tool: 'Bash', tool_use_id: id, agentId: A1, command, description }, async () => ({ result: 'OUTPUT-NEVER-CARRIED' }));
     await bash('tu-b1', 'npm run build', 'Build the plugin');
     await bash('tu-b2', "npx vitest run fixes.test.ts -t 'S6'", 'Run the S6 test');
+    const tasks = [{ id: 'b7', type: 'shell', status: 'running', description: 'Sleep', command: 'sleep 1800' }, { id: 'b8', type: 'shell', status: 'running', description: 'Build the plugin', command: 'npm run build' }];
+    await f.dispatch('classic.Stop', { background_tasks: tasks, session_crons: [{ id: 'c1', schedule: '0 9 * * *', recurring: true, prompt: 'check ci' }] }, async () => ({}));
     await f.dispatch('tool.call', { tool: FORWARD, tool_use_id: 'tu-h', agentId: A1, ...SECTIONS }, async () => ({ result: 'not ours' }));
     const messages = [
       { role: 'user', text: 'Brief for agent one', toolUses: [], handle: 'h0' },
       { role: 'assistant', text: 'storing', toolUses: [{ tool_use_id: 'tu-h', tool: FORWARD, input: SECTIONS }], handle: 'h1' },
       { role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: 'tu-h', text: 'Frontier stored' }], handle: 'h2' },
     ];
-    const wake = (await f.dispatch('session.compact', { trigger: 'auto', agentId: A1, messages }, async () => ({ skip: 'native ran' }))).messages[0].text;
+    const wake = fromFacts(await f.dispatch('session.compact', { trigger: 'auto', agentId: A1, messages }, async () => ({ skip: 'native ran' })))[0]!.text;
     expect(wake).toContain("## Shell commands you ran, newest first\n### Run the S6 test\nnpx vitest run fixes.test.ts -t 'S6'\n### Build the plugin\nnpm run build");
     expect(wake).not.toContain('OUTPUT-NEVER-CARRIED');
+    expect(wake).toContain('## Background shells and agents you started (from the Stop event 0s before install)\n- shell b8 running: npm run build\n(not listed: 2 other background tasks or crons of this session, not recorded as yours)');
+    expect(wake).not.toContain('sleep 1800');
   });
 });
 
@@ -197,6 +205,22 @@ describe('L7: a rejected turn-end install is an error', () => {
   });
 });
 
+describe('a turn-end install marks only the turn it ends', () => {
+  it("installs the next turn's frontier at that turn's end", async () => {
+    const call = (id: string) => [{ role: 'assistant', text: '', toolUses: [{ tool_use_id: id, tool: FORWARD, input: SECTIONS }], handle: `${id}-1` }, { role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: id, text: 'Frontier stored' }], handle: `${id}-2` }];
+    let messages = call('tu-1');
+    const f: Fake = await begin({ compact: () => f.dispatch('session.compact', { trigger: 'plugin', messages }, async () => ({ skip: 'native ran' })) });
+    await f.dispatch('tool.call', { tool: FORWARD, tool_use_id: 'tu-1', ...SECTIONS }, async () => ({ result: 'not ours' }));
+    await turnEnd(f);
+    await f.dispatch('turn.start', { text: 'Part 3', turnId: 't2' }, async () => ({}));
+    await step(f, 20_000); await step(f, 20_000); await step(f, 50_000); // the woken main, back at its notice point: the 30k start above its 20k floor
+    messages = call('tu-2');
+    await f.dispatch('tool.call', { tool: FORWARD, tool_use_id: 'tu-2', ...SECTIONS }, async () => ({ result: 'not ours' }));
+    await turnEnd(f);
+    expect((await rows(f)).filter((r) => r.event === 'compact').map((r) => `${r.trigger}:${r.decision}`)).toEqual(['plugin:install', 'plugin:install']);
+  });
+});
+
 describe('L8 + L9: one row per registration failure, and every error and warning row names its origin', () => {
   it('writes one error row and one screen line per tool that failed to register, each with its raising function and a specific event', async () => {
     const f = await begin({ registerError: 'no tools in this session', breakdown: { rawMaxTokens: 1_000_000, autocompactSource: 'model-default', autoCompactThreshold: 967_000 } });
@@ -221,6 +245,67 @@ describe('L8 + L9: one row per registration failure, and every error and warning
     expect((await call()).result).toBe('not ours');
     f.advance(30_000);
     await turn();
-    expect((await call()).result).toMatch(/^Frontier stored/);
+    expect((await call()).result.split('\n')[6]).toMatch(/^Frontier stored\. /);
+  });
+});
+
+describe('a call before the notice point only updates the frontier', () => {
+  const UPDATED = 'Frontier updated. Nothing compacts: your context is still too small for a compaction to pay, and stays as it is. Carry on; a forward-compaction notice asks for the call once it has grown enough.';
+  it('after a wake a call made before the context has grown again only updates the frontier: the receipt says so, the next ask and the turn end compact nothing, and a call from the notice point on (the 30k start above the settled floor: 71k after 20k and 41k) compacts', async () => {
+    const f = await begin();
+    const ask = (id: string) => f.dispatch('session.compact', { trigger: 'auto', messages: transcript(id) }, async () => ({ skip: 'native ran' }));
+    const answer = (turnId: string) => f.dispatch('turn.complete', { reason: 'answer', answer: 'done', durationMs: 1, isAborted: false, turnId }, async () => ({ text: 'done' }));
+    const read = (id: string) => f.dispatch('tool.call', { tool: 'Read', tool_use_id: id, file_path: '/x' }, async () => ({ result: 'file' }));
+    const receiptOf = async (id: string) => (await store(f, undefined, id)).result.split('\n').find((line: string) => line.startsWith('Frontier stored') || line.startsWith('Frontier updated'));
+    const AGAIN = ' This call applied on top of your earlier one since the last wake.';
+    await step(f, 64_000);
+    await store(f);
+    expect(await ask('tu-h')).toHaveProperty('messages');
+    await answer('t1');
+    await step(f, 20_000); // the first request after the wake
+    await step(f, 41_000); // the second, Claude Code's listings sent again: the floor
+    expect(await receiptOf('tu-2')).toBe(UPDATED);
+    expect(await ask('tu-2')).toEqual({ skip: "forward-compaction: holding Claude Code's compaction for main until its frontier is stored or the ceiling is reached" });
+    await answer('t2');
+    expect(f.compactCalls).toEqual([]);
+    await step(f, 70_999);
+    expect((await read('tu-r1')).context ?? []).toEqual([]);
+    expect(await receiptOf('tu-3')).toBe(`${UPDATED}${AGAIN}`);
+    await step(f, 71_000);
+    expect((await read('tu-r2')).context?.at(-1)).toContain('forward-compaction: context 71k and increasing.');
+    expect(await receiptOf('tu-4')).toBe(`Frontier stored. It installs before your next request, inside this turn: what you have read is gone then, and the rest of the turn, your reply to the user included, is written from the frontier. The newest messages after this call that fit are kept verbatim behind it, the rest named as not carried.${AGAIN}`);
+    await answer('t3');
+    expect(f.compactCalls).toEqual([[]]);
+    const r = await rows(f);
+    expect(r.filter((row) => row.event === 'stored').map((row) => [row.tokens, row.compacts])).toEqual([[64_000, true], [41_000, false], [70_999, false], [71_000, true]]);
+    expect(r.filter((row) => row.event === 'compact').map((row) => [row.decision, row.why])).toEqual([['install', 'stored'], ['skip', 'waiting']]);
+  });
+
+  it.each([
+    ['the first request after a wake', true, [[64_000, true], [20_000, false]]],
+    ['the first request of a chat', false, [[20_000, false]]],
+  ])('a call in %s, whose request Claude Code measures while the call is being answered, is judged by that reading and only updates the frontier', async (_name, woken, stored) => {
+    const f = await begin();
+    if (woken) {
+      await step(f, 64_000);
+      await store(f);
+      expect(await f.dispatch('session.compact', { trigger: 'auto', messages: transcript('tu-h') }, async () => ({ skip: 'native ran' }))).toHaveProperty('messages');
+    }
+    const [called] = await Promise.all([store(f, undefined, 'tu-2'), step(f, 20_000)]);
+    expect(called.result.split('\n').find((line: string) => line.startsWith('Frontier '))).toBe(UPDATED);
+    expect((await rows(f)).filter((row) => row.event === 'stored').map((row) => [row.tokens, row.compacts])).toEqual(stored);
+  });
+
+  it.each([
+    ['of a type FORWARD_COMPACTION_SUBAGENT_CALL_COMPACTS names compacts', 'flights:lander', true],
+    ['of any other type only updates the frontier', 'general-purpose', false],
+  ])("a sub-agent's call under its nudge start, %s", async (_name, subagentType, compacts) => {
+    const f = await begin({ env: { FORWARD_COMPACTION_SUBAGENT_CALL_COMPACTS: 'Explore, flights:lander', FORWARD_COMPACTION_SUBAGENT_NUDGE_START: '100000' } });
+    await spawn(f, A1, 'Brief for agent one', subagentType);
+    await step(f, 20_000, A1);
+    await step(f, 80_000, A1);
+    expect((await store(f, A1)).result.split('\n').find((line: string) => line.startsWith('Frontier '))).toBe(compacts ? "Frontier stored. It installs at Claude Code's next compaction ask, before your next request. The newest messages after this call that fit are kept verbatim behind it, the rest named as not carried." : UPDATED);
+    expect('messages' in (await f.dispatch('session.compact', { trigger: 'auto', agentId: A1, messages: transcript('tu-h') }, async () => ({ skip: 'native ran' })))).toBe(compacts);
+    expect((await rows(f)).filter((row) => row.event === 'stored').map((row) => [row.party, row.tokens, row.compacts])).toEqual([[`agent:${A1}`, 80_000, compacts]]);
   });
 });

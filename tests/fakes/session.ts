@@ -1,11 +1,11 @@
 // A fake session as tests/adapter.test.ts drives one, for the adapter-level tests kept in their own files.
-import { readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { expect } from 'vitest';
 import { fakeEngine, usage, type Script } from './engine.ts';
 
 export const FORWARD = 'mcp__forward-compaction__forward_compaction';
-export const SECTIONS = { objective: 'Ship U5.', decisions: 'none', done: 'The fake.', remaining: 'The adapter.', next: 'Wire session.compact.' };
+export const SECTIONS = { objective: 'Ship U5.', next: 'Wire session.compact.', done: { add: ['The fake.'] }, remaining: { add: ['The adapter.'] } };
 export const A1 = 'a1b2c3d4e5';
 
 export type Fake = ReturnType<typeof fakeEngine>;
@@ -48,9 +48,26 @@ export function transcript(id = 'tu-h') {
   ];
 }
 
+/** An installed wake from its facts message on, [facts, head, ...tail]: a sub-agent's kept start, its first messages and their end line, stands before them. */
+export function fromFacts(wake: { messages: { text: string }[] }): { text: string }[] {
+  const at = wake.messages.findIndex((m) => m.text.startsWith('[forward-compaction: facts]'));
+  if (at < 0) throw new Error(`no facts message in the wake: ${JSON.stringify(wake.messages.map((m) => m.text.slice(0, 80)))}`);
+  return wake.messages.slice(at);
+}
+
 /** The decision rows written this session, read once session.end has flushed them. */
 export async function rows(f: Fake): Promise<Record<string, unknown>[]> {
   await f.dispatch('session.end', { reason: 'other' }, async () => ({}));
   const dir = join(f.home, '.local/state/forward-compaction/logs/decisions');
   return readdirSync(dir).filter((n) => n.endsWith('.jsonl')).flatMap((n) => readFileSync(join(dir, n), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)));
 }
+
+/** The level file `name` (errors, warnings, info) of this session, once session.end has flushed it. */
+export async function level(f: Fake, name: string): Promise<Record<string, unknown>[]> {
+  await rows(f);
+  const path = join(f.home, `.local/state/forward-compaction/logs/${name}.jsonl`);
+  for (let i = 0; i < 50 && !existsSync(path); i++) await new Promise((resolve) => setTimeout(resolve, 10));
+  return existsSync(path) ? readFileSync(path, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)) : [];
+}
+/** The msg of each `event` row in the level file `name`. */
+export const logged = async (f: Fake, name: string, event: string): Promise<unknown[]> => (await level(f, name)).filter((r) => r.event === event).map((r) => r.msg);

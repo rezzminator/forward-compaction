@@ -3,7 +3,7 @@
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { setImmediate as macrotask } from 'node:timers/promises';
 import { register } from '../../plugins/forward-compaction/hooks/forward-compaction.ts';
 
@@ -13,13 +13,20 @@ export type FileEntry = { content: string; kind?: 'file' | 'dir' | 'other' };
 
 export type Script = {
   env?: Record<string, string>;
+  /** Awaited inside each `$.clock.now()` before it answers: a test holds one call's clock while another call runs. */
+  beforeNow?: () => Promise<void> | undefined;
   /** Main's window `$.session.usage()` reports; a function is read at each call (a /model switch). */
   window?: number | (() => number);
   /** The `context.breakdown` `$.session.usage({ breakdown: 'summary' })` reports: by default a 100k compaction window asking at 63k; null reports none. */
   breakdown?: Record<string, unknown> | null;
   /** What `$.session.messages(args)` answers; an empty transcript by default. */
   messages?: (args?: { agentId?: string }) => unknown;
+  /** `$.fs`'s files, which its writes join; pass one map, with one `home`, to two fakes to model a restart that finds them. */
   files?: Record<string, FileEntry>;
+  /** `$.fs.write` rejects with this message for a path it answers for (a full disk, a read-only folder); undefined writes. */
+  writeError?: (path: string) => string | undefined;
+  /** The home directory; a fresh temporary one by default. */
+  home?: string;
   agents?: () => unknown;
   compact?: (args?: unknown) => unknown;
   now?: number;
@@ -46,16 +53,17 @@ const apiError = (type: string, message: string): string => JSON.stringify({ typ
 export function onInto(hooks: Map<string, Fn>): any {
   return (name: string, a: Fn | Record<string, unknown>, b?: Fn): void => {
     if (b === undefined) return void hooks.set(name, a as Fn);
-    const matcher = Object.entries(a);
-    hooks.set(name, ($: unknown, e: unknown, next: Fn) => (matcher.every(([key, value]) => (e as Record<string, unknown>)[key] === value) ? b($, e, next) : next(e)));
+    const matcher = Object.entries(a), beneath = hooks.get(name); // a second matched hook on one event leaves the first in place beneath it
+    hooks.set(name, ($: unknown, e: unknown, next: Fn) => (matcher.every(([key, value]) => (e as Record<string, unknown>)[key] === value) ? b($, e, next) : beneath !== undefined ? beneath($, e, next) : next(e)));
   };
 }
 
 export function fakeEngine(script: Script = {}) {
-  const home = mkdtempSync(join(tmpdir(), 'fc-engine-'));
+  const home = script.home ?? mkdtempSync(join(tmpdir(), 'fc-engine-'));
   const vars: Record<string, string> = { HOME: home, CLAUDE_CONFIG_DIR: join(home, '.claude'), ...script.env };
   const screen: ScreenCall[] = [];
   const unscripted: string[] = [];
+  const invalidated: string[] = [];
   const compactCalls: unknown[][] = [];
   const fetches: { url: string; init?: unknown }[] = [];
   const credential = script.credential === undefined ? { handle: 'handle-1', kind: 'bearer' as const } : script.credential;
@@ -66,11 +74,12 @@ export function fakeEngine(script: Script = {}) {
   const hangs = (call: 'session.id' | 'tool.register') => script.hang?.includes(call) === true;
   const state = script.state ?? new Map<string, { value: unknown; version: number }>();
 
-  const enoent = (path: string) => Object.assign(new Error(`ENOENT: no such file, ${path}`), { code: 'ENOENT' });
+  const enoent = (path: string) => new Error(`forward-compaction: $.fs.read(${path}) failed: ENOENT`);
   const base = {
     session: {
       id: () => (hangs('session.id') ? never : Promise.resolve('session-1')),
       cwd: async () => home,
+      root: async () => home,
       usage: async () => ({
         context: {
           tokens: 0,
@@ -112,6 +121,13 @@ export function fakeEngine(script: Script = {}) {
         if (!file) throw enoent(path);
         return file.content;
       },
+      /** Writes into `script.files`, so two fakes sharing that map model a restart that finds the files. */
+      write: async (path: string, text: string) => {
+        const error = script.writeError?.(path);
+        if (error !== undefined) throw new Error(error);
+        (script.files ??= {})[path] = { content: text };
+      },
+      exists: async (path: string) => script.files?.[path] !== undefined,
     },
     process: {
       run: async (argv: string[], init?: { stdin?: string; cwd?: string }) => {
@@ -121,8 +137,8 @@ export function fakeEngine(script: Script = {}) {
         return { exitCode: out.status ?? -1, stdout: out.stdout, stderr: out.stderr };
       },
     },
-    clock: { now: async () => now, after: (ms: number, fn: () => void) => { const t = setTimeout(fn, ms); return { cancel: () => clearTimeout(t) }; } },
-    ui: { log: (text: string, opts?: unknown) => void screen.push(opts === undefined ? { text } : { text, opts }) },
+    clock: { now: async () => (await script.beforeNow?.(), now), after: (ms: number, fn: () => void) => { const t = setTimeout(fn, ms); return { cancel: () => clearTimeout(t) }; } },
+    ui: { log: (text: string, opts?: unknown) => void screen.push(opts === undefined ? { text } : { text, opts }), invalidate: (event: string) => void invalidated.push(event) },
     agent: { list: async () => (script.agents ? script.agents() : []) },
     state: {
       get: async (ref: unknown) => state.get(JSON.stringify(ref)) ?? { value: undefined, version: 0 },
@@ -175,7 +191,7 @@ export function fakeEngine(script: Script = {}) {
   }
 
   return {
-    $, home, vars, screen, unscripted, compactCalls, fetches, hooks, dispatch,
+    $, home, vars, screen, unscripted, invalidated, compactCalls, fetches, hooks, dispatch,
     advance: (ms: number) => void (now += ms),
     texts: () => screen.map((c) => c.text),
     cleanup: () => rmSync(home, { recursive: true, force: true }),
@@ -184,3 +200,6 @@ export function fakeEngine(script: Script = {}) {
 
 /** A turn.step whose response was answered over `input` tokens and wrote `output` (left out when absent). */
 export const usage = (input: number, output?: number) => ({ usage: { input_tokens: input, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, ...(output !== undefined ? { output_tokens: output } : {}) } });
+
+/** A nudge's call words for a fake's main party while it holds no frontier: its storage folder under the fake's `home`, the session `session-1` in the session root `home`. */
+export const nudgeArgs = (f: { home: string }): string => `with objective, next and what the rest of the work needs added to orders, decisions, done, remaining and findings; what only a later step reads goes in storage (write it as a .md file in ${join(f.home, '.local/state/forward-compaction', basename(f.home), 'session-1', 'storage')}/, then storage.add its name and description); load_files only what the next step reads, a long file by its line range`;

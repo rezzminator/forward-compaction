@@ -85,8 +85,9 @@ describe('apiChars and charsPerToken: the ratio measured on the growth', () => {
 describe('partyMarks: a party sized against its max context', () => {
   const sub = { ceiling: { percent: 80 }, nudgeStart: { percent: 40 }, nudgeEvery: { percent: 10 } };
 
-  it('sizes the ceiling and nudges against the max context, the ask point held at or below it (Ignored models example)', () => {
+  it('sizes the ceiling, the nudge start and the step against the max context, a working room only when one is set, the ask point held at or below it (Ignored models example)', () => {
     expect(partyMarks(sub, 200_000, 63_000)).toEqual({ maxContext: 200_000, askPoint: 63_000, ceiling: 160_000, start: 80_000, every: 20_000 });
+    expect(partyMarks({ ...sub, nudgeRoom: { percent: 30 } }, 200_000, 63_000)).toEqual({ maxContext: 200_000, askPoint: 63_000, ceiling: 160_000, start: 80_000, every: 20_000, room: 60_000 });
     expect(partyMarks(sub, 200_000, 963_000)).toMatchObject({ askPoint: 200_000 });
     expect(partyMarks(sub, 200_000, undefined)).toMatchObject({ askPoint: 200_000 });
   });

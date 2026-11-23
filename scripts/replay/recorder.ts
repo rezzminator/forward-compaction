@@ -56,7 +56,7 @@ async function writeVersion($: EngineInterface): Promise<void> {
 }
 
 /** The plugin's environment reads, each spelled as the literal Claude Code requires; `tests/replay.test.ts` holds this list to the adapter's. */
-export const ENV_NAMES = ['HOME', 'PLUGIN_LOG_DIR', 'CLAUDE_CONFIG_DIR', 'FORWARD_COMPACTION_MAIN_MAX_CONTEXT', 'FORWARD_COMPACTION_MAIN_CEILING', 'FORWARD_COMPACTION_MAIN_NUDGE_START', 'FORWARD_COMPACTION_MAIN_NUDGE_EVERY', 'FORWARD_COMPACTION_MAIN_FINISH_START', 'FORWARD_COMPACTION_SUBAGENT_MAX_CONTEXT', 'FORWARD_COMPACTION_SUBAGENT_CEILING', 'FORWARD_COMPACTION_SUBAGENT_NUDGE_START', 'FORWARD_COMPACTION_SUBAGENT_NUDGE_EVERY', 'FORWARD_COMPACTION_CEILING_NATIVE', 'FORWARD_COMPACTION_IGNORE_MODELS', 'FORWARD_COMPACTION_KEEP_SKILLS', 'FORWARD_COMPACTION_DEBUG'] as const;
+export const ENV_NAMES = ['HOME', 'PLUGIN_LOG_DIR', 'CLAUDE_CONFIG_DIR', 'FORWARD_COMPACTION_MAIN_MAX_CONTEXT', 'FORWARD_COMPACTION_MAIN_CEILING', 'FORWARD_COMPACTION_MAIN_NUDGE_ROOM', 'FORWARD_COMPACTION_MAIN_NUDGE_START', 'FORWARD_COMPACTION_MAIN_NUDGE_EVERY', 'FORWARD_COMPACTION_MAIN_FINISH_START', 'FORWARD_COMPACTION_SUBAGENT_MAX_CONTEXT', 'FORWARD_COMPACTION_SUBAGENT_CEILING', 'FORWARD_COMPACTION_SUBAGENT_NUDGE_ROOM', 'FORWARD_COMPACTION_SUBAGENT_NUDGE_START', 'FORWARD_COMPACTION_SUBAGENT_NUDGE_EVERY', 'FORWARD_COMPACTION_CEILING_NATIVE', 'FORWARD_COMPACTION_IGNORE_MODELS', 'FORWARD_COMPACTION_KEEP_SKILLS', 'FORWARD_COMPACTION_SUBAGENT_CALL_COMPACTS', 'FORWARD_COMPACTION_FRONTIER_WARN_CHARS', 'FORWARD_COMPACTION_DEBUG'] as const;
 
 function envGet($: EngineInterface, name: string): Promise<string | undefined> {
   switch (name) {
@@ -65,28 +65,31 @@ function envGet($: EngineInterface, name: string): Promise<string | undefined> {
     case 'CLAUDE_CONFIG_DIR': return $.env.get('CLAUDE_CONFIG_DIR');
     case 'FORWARD_COMPACTION_MAIN_MAX_CONTEXT': return $.env.get('FORWARD_COMPACTION_MAIN_MAX_CONTEXT');
     case 'FORWARD_COMPACTION_MAIN_CEILING': return $.env.get('FORWARD_COMPACTION_MAIN_CEILING');
+    case 'FORWARD_COMPACTION_MAIN_NUDGE_ROOM': return $.env.get('FORWARD_COMPACTION_MAIN_NUDGE_ROOM');
     case 'FORWARD_COMPACTION_MAIN_NUDGE_START': return $.env.get('FORWARD_COMPACTION_MAIN_NUDGE_START');
     case 'FORWARD_COMPACTION_MAIN_NUDGE_EVERY': return $.env.get('FORWARD_COMPACTION_MAIN_NUDGE_EVERY');
     case 'FORWARD_COMPACTION_MAIN_FINISH_START': return $.env.get('FORWARD_COMPACTION_MAIN_FINISH_START');
     case 'FORWARD_COMPACTION_SUBAGENT_MAX_CONTEXT': return $.env.get('FORWARD_COMPACTION_SUBAGENT_MAX_CONTEXT');
     case 'FORWARD_COMPACTION_SUBAGENT_CEILING': return $.env.get('FORWARD_COMPACTION_SUBAGENT_CEILING');
+    case 'FORWARD_COMPACTION_SUBAGENT_NUDGE_ROOM': return $.env.get('FORWARD_COMPACTION_SUBAGENT_NUDGE_ROOM');
     case 'FORWARD_COMPACTION_SUBAGENT_NUDGE_START': return $.env.get('FORWARD_COMPACTION_SUBAGENT_NUDGE_START');
     case 'FORWARD_COMPACTION_SUBAGENT_NUDGE_EVERY': return $.env.get('FORWARD_COMPACTION_SUBAGENT_NUDGE_EVERY');
     case 'FORWARD_COMPACTION_CEILING_NATIVE': return $.env.get('FORWARD_COMPACTION_CEILING_NATIVE');
     case 'FORWARD_COMPACTION_IGNORE_MODELS': return $.env.get('FORWARD_COMPACTION_IGNORE_MODELS');
     case 'FORWARD_COMPACTION_KEEP_SKILLS': return $.env.get('FORWARD_COMPACTION_KEEP_SKILLS');
+    case 'FORWARD_COMPACTION_SUBAGENT_CALL_COMPACTS': return $.env.get('FORWARD_COMPACTION_SUBAGENT_CALL_COMPACTS');
+    case 'FORWARD_COMPACTION_FRONTIER_WARN_CHARS': return $.env.get('FORWARD_COMPACTION_FRONTIER_WARN_CHARS');
     case 'FORWARD_COMPACTION_DEBUG': return $.env.get('FORWARD_COMPACTION_DEBUG');
     default: throw new Error(`recorder: env ${name} is not in ENV_NAMES (scripts/replay/recorder.ts)`);
   }
 }
 
 /** The plugin's state keys: Claude Code requires each ref's plugin and key as string literals, so each is spelled out; `tests/replay.test.ts` holds this list to the adapter's. */
-export const STATE_KEYS = ['judged', 'later', 'orders', 'prompts', 'skills'] as const;
+export const STATE_KEYS = ['judged', 'orders', 'prompts', 'skills'] as const;
 
 function stateGet($: EngineInterface, ref: { key: string; id?: string }): unknown {
   switch (ref.key) {
     case 'judged': return $.state.get({ plugin: 'forward-compaction', key: 'judged', id: ref.id } as never);
-    case 'later': return $.state.get({ plugin: 'forward-compaction', key: 'later', id: ref.id } as never);
     case 'orders': return $.state.get({ plugin: 'forward-compaction', key: 'orders', id: ref.id } as never);
     case 'prompts': return $.state.get({ plugin: 'forward-compaction', key: 'prompts', id: ref.id } as never);
     case 'skills': return $.state.get({ plugin: 'forward-compaction', key: 'skills', id: ref.id } as never);
@@ -97,7 +100,6 @@ function stateGet($: EngineInterface, ref: { key: string; id?: string }): unknow
 function stateSet($: EngineInterface, ref: { key: string; id?: string }, value: unknown): unknown {
   switch (ref.key) {
     case 'judged': return $.state.set({ plugin: 'forward-compaction', key: 'judged', id: ref.id } as never, value as never);
-    case 'later': return $.state.set({ plugin: 'forward-compaction', key: 'later', id: ref.id } as never, value as never);
     case 'orders': return $.state.set({ plugin: 'forward-compaction', key: 'orders', id: ref.id } as never, value as never);
     case 'prompts': return $.state.set({ plugin: 'forward-compaction', key: 'prompts', id: ref.id } as never, value as never);
     case 'skills': return $.state.set({ plugin: 'forward-compaction', key: 'skills', id: ref.id } as never, value as never);
@@ -117,7 +119,7 @@ const given = (...args: unknown[]): unknown[] => {
  * this list to the adapter's. Each call is answered by the engine and written with its path, arguments and outcome;
  * a path missing here is written as an error row and throws, so the recording shows it.
  */
-export const PATHS = ['agent.list', 'clock.after', 'clock.now', 'env.get', 'fs.read', 'fs.stat', 'http.fetch', 'process.run', 'session.authorize', 'session.compact', 'session.cwd', 'session.id', 'session.messages', 'session.usage', 'state.get', 'state.set', 'tool.register', 'ui.log'] as const;
+export const PATHS = ['agent.list', 'clock.after', 'clock.now', 'env.get', 'fs.exists', 'fs.read', 'fs.stat', 'fs.write', 'http.fetch', 'process.run', 'session.authorize', 'session.compact', 'session.cwd', 'session.id', 'session.messages', 'session.root', 'session.usage', 'state.get', 'state.set', 'tool.register', 'ui.invalidate', 'ui.log'] as const;
 /** Written to a row in place of the handle `$.session.authorize()` answers, in that answer and in the request that spends it: the handle stands for the session's credential, so no row carries it, and a replayed lookup passes this word back as recorded. */
 export const CREDENTIAL_HANDLE = 'credential-handle';
 
@@ -153,6 +155,8 @@ function engineFor($: EngineInterface, id: number): any {
     fs: {
       read: (path: string, options?: any) => call('fs.read', given(path, options), () => (options === undefined ? $.fs.read(path) : $.fs.read(path, options))),
       stat: (path: string) => call('fs.stat', [path], () => $.fs.stat(path)),
+      exists: (path: string) => call('fs.exists', [path], () => $.fs.exists(path)),
+      write: (path: string, text: string) => call('fs.write', [path, text], () => $.fs.write(path, text)),
     },
     http: { fetch: (url: string, init?: any) => call('http.fetch', given(url, init?.auth === undefined ? init : { ...init, auth: CREDENTIAL_HANDLE }), () => (init === undefined ? $.http.fetch(url) : $.http.fetch(url, init))) },
     process: { run: (argv: string[], init?: any) => call('process.run', given(argv, init), () => $.process.run(argv, init)) },
@@ -161,6 +165,7 @@ function engineFor($: EngineInterface, id: number): any {
       compact: (args?: any) => call('session.compact', given(args), () => (args === undefined ? $.session.compact() : $.session.compact(args))),
       cwd: () => call('session.cwd', [], () => $.session.cwd()),
       id: () => call('session.id', [], () => $.session.id()),
+      root: () => call('session.root', [], () => $.session.root()),
       messages: (args?: any) => call('session.messages', given(args), () => (args === undefined ? $.session.messages() : $.session.messages(args))),
       usage: (args?: any) => call('session.usage', given(args), () => (args === undefined ? $.session.usage() : $.session.usage(args))),
     },
@@ -169,7 +174,7 @@ function engineFor($: EngineInterface, id: number): any {
       set: (ref: any, value: unknown) => call('state.set', [ref, value], () => stateSet($, ref, value)),
     },
     tool: { register: (spec: any) => call('tool.register', [spec], () => $.tool.register(spec)) },
-    ui: { log: (text: string, options?: any) => call('ui.log', given(text, options), () => (options === undefined ? $.ui.log(text) : $.ui.log(text, options))) },
+    ui: { log: (text: string, options?: any) => call('ui.log', given(text, options), () => (options === undefined ? $.ui.log(text) : $.ui.log(text, options))), invalidate: (event: any) => call('ui.invalidate', [event], () => $.ui.invalidate(event)) },
   };
   const missing = (path: string) => (...args: unknown[]) => call(path, args, () => {
     throw new Error(`recorder: $.${path} is not in PATHS (scripts/replay/recorder.ts)`);
@@ -250,15 +255,16 @@ export const RECORDED = ['session.start', 'tool.call', 'session.compact', 'turn.
 let unrecorded: string[] = [];
 /** The recorded events the plugin registers under a matcher, each recorded under that same matcher: what the engine narrows to is what the recording holds. */
 export const MATCHED: Partial<Record<(typeof RECORDED)[number], Record<string, string>>> = { 'session.append': { door: 'delivery' } };
-/** The plugin's draw hook reaches the engine as registered and is never recorded: a draw decides nothing a replay holds, and tests/wake-row.test.ts holds what it draws. */
-export const DRAWN = { event: 'ui.render', matcher: { component: 'UserMessage' } } as const;
-let draw: (...args: any[]) => any = passOn;
+/** The plugin's draw hooks reach the engine as registered and are never recorded: a draw decides nothing a replay holds, and tests/wake-row.test.ts and tests/call-row.test.ts hold what they draw. */
+export const DRAWN = { event: 'ui.render', matchers: [{ component: 'UserMessage' }, { component: 'ToolUse' }, { component: 'ToolResult' }] } as const;
+const draws = new Map<string, (...args: any[]) => any>();
 
 export const register: Register = (on: On, options) => {
   const result = plugin(((pattern: string, ...rest: any[]) => {
     if (pattern === DRAWN.event) {
-      if (rest.length !== 2 || JSON.stringify(rest[0]) !== JSON.stringify(DRAWN.matcher)) unrecorded.push(`${pattern} (not the ${JSON.stringify(DRAWN.matcher)} draw)`);
-      draw = rest.at(-1);
+      const drawn = rest.length === 2 ? DRAWN.matchers.find((m) => JSON.stringify(m) === JSON.stringify(rest[0])) : undefined;
+      if (drawn === undefined) unrecorded.push(`${pattern} (not one of the ${JSON.stringify(DRAWN.matchers)} draws)`);
+      else draws.set(drawn.component, rest.at(-1));
       return { dispose: () => undefined };
     }
     const matcher = MATCHED[pattern as (typeof RECORDED)[number]];
@@ -282,6 +288,8 @@ export const register: Register = (on: On, options) => {
   on('classic.Stop', async ($, e, next) => invoke('classic.Stop', $, e, next) as any);
   on('classic.SubagentStop', async ($, e, next) => invoke('classic.SubagentStop', $, e, next) as any);
   on('session.end', async ($, e, next) => invoke('session.end', $, e, next) as any);
-  on('ui.render', { component: 'UserMessage' }, (_$, e, next) => draw(undefined, e, next)); // the draw reads no `$`
+  on('ui.render', { component: 'UserMessage' }, (_$, e, next) => (draws.get('UserMessage') ?? passOn)(undefined, e, next)); // a draw reads no `$`
+  on('ui.render', { component: 'ToolUse' }, (_$, e, next) => (draws.get('ToolUse') ?? passOn)(undefined, e, next));
+  on('ui.render', { component: 'ToolResult' }, (_$, e, next) => (draws.get('ToolResult') ?? passOn)(undefined, e, next));
   return result;
 };

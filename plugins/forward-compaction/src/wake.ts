@@ -1,43 +1,31 @@
-// The wake: what a compaction installs. [facts] [frontier] [tail…] — the facts and the frontier are built here from typed values,
-// the tail is the engine's own messages returned untouched. Pure: files, agents and the clock arrive as inputs.
+// The wake: what a compaction installs. [start…] [facts] [frontier] [tail…] — the facts and the frontier are built here from
+// typed values; a sub-agent's start and the tail are the engine's own messages, chosen in kept.ts and returned untouched.
+// Pure: files, agents and the clock arrive as inputs.
 import { andList, DEFAULT_TOOL, k as kilo } from './nudge';
 import { keptSaid, PROMPTS_KEPT } from './ledger';
-import { experimental, EXPERIMENTAL_OPENING, type LoadFile } from './frontier';
-import { fitSkills, pinned, LATER_NOTE, SKILLS_LISTED_NOTE, SKILLS_MAX_CHARS } from './carry';
-import { ordersSection, type LiftedOrder, type StandingOrder } from './orders';
+import { experimental, EXPERIMENTAL_OPENING } from './frontier';
+import { fitSkills, pinned, SKILLS_LISTED_NOTE, SKILLS_MAX_CHARS } from './carry';
+import { fitTail, keptStart, keptTexts, messageTokens, splitAtCall, tokensOf, type BuiltMessage, type Sibling, type WakeMessage } from './kept';
+import { ordersSection } from './orders';
+import { num, unchangedNote, type Item, type StorageEntry } from './lists';
+import { storageSection } from './storage';
 import type { WakePlan } from './plan';
 import { WAKE_OPENING } from './wake-row';
 
-/** A message in `session.compact`'s shape; a SessionMessage fits. */
-export type WakeMessage = {
-  role: 'user' | 'assistant';
-  text: string;
-  toolUses: readonly { tool_use_id: string; tool?: string; input?: unknown; text?: string }[];
-  toolResults?: readonly { tool_use_id: string; text?: string }[];
-  handle?: string;
-};
-
-/** A message this module builds; no handle, so the engine reads it as built. */
-export type BuiltMessage = { role: 'user'; text: string; toolUses: [] };
-
-export type Sibling = { tool: string; input: unknown; text: string };
-
-// Characters and tokens convert only at the party's measured ratio (`charsPerToken` in window.ts), never at a fixed one.
-const tokensOf = (chars: number, ratio: number): number => Math.ceil(chars / ratio);
+// Tokens to characters, only ever at the party's measured ratio (`charsPerToken` in window.ts; `tokensOf` in kept.ts the other way): unmeasured, no limit.
 const charsIn = (tokens: number, ratio: number | undefined): number => (ratio === undefined ? Number.POSITIVE_INFINITY : Math.floor(tokens * ratio));
-const num = (value: number): string => value.toLocaleString('en-US');
 const iso = (at: number): string => new Date(at).toISOString();
 
 /**
  * Per-section shares of the budget B (D18), design budgets and never measured sizes: what arrived after the frontier a quarter,
  * sibling results a tenth, coordinator notices and the shell commands run a twentieth each; the rest of B goes to the messages
  * kept after the call. The user's newest messages or the brief, the task list, the skills in force (within their own
- * character limits below) and the load files (each within LOAD_FILE_MAX_LINES) are what a woken model most needs, so they
- * are carried outside any share.
+ * character limits below), the load files (each within LOAD_FILE_MAX_LINES) and the documents a brief names (together
+ * within brief-files.ts `BRIEF_FILES_MAX_CHARS`) are what a woken model most needs, so they are carried outside any share.
  */
 const SHARE = { arrived: 0.25, notices: 0.05, siblings: 0.1, commands: 0.05 } as const;
 /** The plugin version that builds a wake, named in its facts header so a chat on an old build is visible; tests/layout.test.ts pins it to plugin.json. */
-export const PLUGIN_VERSION = '2.4.0';
+export const PLUGIN_VERSION = '2.5.0';
 /** An image the user attached: a built wake message holds only text (`session.compact`'s messages), so each is named, never silently gone. */
 const IMAGE = /\[Image #\d+\]/g;
 const IMAGE_NOTE = '$& (image not carried: the wake cannot hold images)';
@@ -56,65 +44,6 @@ export const AGENTS_MAX_ROWS = 50;
  */
 export function wakeBudget(askPoint: number): number {
   return Math.floor(0.5 * askPoint);
-}
-
-/**
- * The anchor is the last assistant message whose tool uses hold `toolUseId`; the response is the run of assistant
- * messages around it; the user messages right after it whose results all answer that response's calls are its results.
- * `tail` is everything after them, the same objects (handles kept); `siblings` are the response's other calls with
- * their result text; `own` is the call's own result (its receipt and experimental line), which the tail no longer holds.
- * Undefined when the anchor is not in `messages`.
- */
-export function splitAtCall<M extends WakeMessage>(messages: readonly M[], toolUseId: string): { tail: M[]; siblings: Sibling[]; own?: string } | undefined {
-  let at = -1;
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const m = messages[i]!;
-    if (m.role === 'assistant' && m.toolUses.some((u) => u.tool_use_id === toolUseId)) {
-      at = i;
-      break;
-    }
-  }
-  if (at < 0) return undefined;
-  let first = at;
-  while (first > 0 && messages[first - 1]!.role === 'assistant') first--;
-  let last = at;
-  while (last + 1 < messages.length && messages[last + 1]!.role === 'assistant') last++;
-  const uses = messages.slice(first, last + 1).flatMap((m) => m.toolUses);
-  const ids = new Set(uses.map((u) => u.tool_use_id));
-  const results = new Map<string, string>();
-  let next = last + 1;
-  while (next < messages.length) {
-    const m = messages[next]!;
-    const answers = m.toolResults ?? [];
-    if (m.role !== 'user' || answers.length === 0 || !answers.every((r) => ids.has(r.tool_use_id))) break;
-    for (const r of answers) results.set(r.tool_use_id, r.text ?? '');
-    next++;
-  }
-  const siblings = uses
-    .filter((u) => u.tool_use_id !== toolUseId)
-    .map((u) => ({ tool: u.tool ?? 'tool', input: u.input, text: results.get(u.tool_use_id) ?? u.text ?? '(no result recorded)' }));
-  const own = results.get(toolUseId);
-  return { tail: messages.slice(next), siblings, ...(own !== undefined ? { own } : {}) };
-}
-
-/** A message's size at `ratio` characters a token: its text, its tool inputs and its tool results (a call's own result text is the answer's, counted there). */
-function messageTokens(m: WakeMessage, ratio: number): number {
-  let chars = m.text.length;
-  for (const u of m.toolUses) chars += JSON.stringify(u.input ?? {}).length;
-  for (const r of m.toolResults ?? []) chars += (r.text ?? '').length;
-  return tokensOf(chars, ratio);
-}
-
-/**
- * The newest whole messages that fit `budgetTokens`: the oldest are dropped until the rest fits, then any leading user
- * message carrying tool results too, so no result stands without its call. The kept messages are the input objects.
- */
-export function fitTail<M extends WakeMessage>(messages: readonly M[], budgetTokens: number, ratio: number): { messages: M[]; dropped: number } {
-  let total = messages.reduce((sum, m) => sum + messageTokens(m, ratio), 0);
-  let from = 0;
-  while (from < messages.length && total > budgetTokens) total -= messageTokens(messages[from++]!, ratio);
-  while (from < messages.length && messages[from]!.role === 'user' && (messages[from]!.toolResults?.length ?? 0) > 0) from++;
-  return { messages: messages.slice(from), dropped: from };
 }
 
 /** What the ledger gives for a party (ledger.ts `Facts` fits); only what the wake renders. */
@@ -137,6 +66,8 @@ export type WakeFacts = {
     tasks: readonly { id: string; type: string; status: string; description: string; command?: string }[];
     crons: readonly { id: string; schedule: string; recurring: boolean; prompt: string }[];
   };
+  /** A sub-agent's only (ledger.ts `Facts`): `shells` then holds the tasks tied to it, and this many other tasks and crons of the session are counted, never listed. */
+  otherTasks?: number;
   /** Background commands started after `shells` was taken, which it cannot list. */
   backgroundSince?: number;
   /** The files the party's finished calls touched, newest first, and its task list as last set. */
@@ -145,6 +76,10 @@ export type WakeFacts = {
   startReason?: string;
 };
 
+/** The heading over the documents a sub-agent's brief names, as the adapter read them at install. */
+export const BRIEF_FILES_HEADING = '## The documents your brief names, read at install';
+/** The sentence under it: a frontier that reworded a document's rule loses to the document. */
+export const BRIEF_FILES_NOTE = 'They are part of your brief: where your frontier words one of their rules differently, their words hold.';
 /** A load file, already read by the adapter: its content, or why it could not be read. */
 export type WakeFile = { path: string; lines?: string; why?: string } & ({ content: string; problem?: undefined } | { problem: string; content?: undefined });
 /** One of the party's newest files, read by the adapter at a mechanical install (frontier.ts `sliceFile`): its content, or why it could not be read. */
@@ -177,17 +112,20 @@ type Shared<M> = {
   tool?: string;
   /** The level-log directory, where the issues file the wake's last line names lives. */
   logDir?: string;
-  /** The party's standing orders, and the orders lifted since its last install, shown once; absent or empty, no section. */
-  orders?: { standing: readonly StandingOrder[]; lifted?: readonly LiftedOrder[] };
+  /** The party's live standing orders (lists.ts), and its count of installed compactions, against which each order's rounds unchanged are counted; absent or empty, no section. */
+  orders?: readonly Item[]; rounds?: number;
+  /** The party's storage folder, absolute, and its listed entries (storage.ts); none listed, no section. */
+  storage?: { dir: string; entries: readonly StorageEntry[] };
   /** Plan mode and the plan file, when the party's plan-mode attachments named them; absent, no section. */
   plan?: WakePlan;
-  /** The skills and commands this wake carries whole besides the frontmatter-pinned ones: `keepSkills` the frontier's keep_skills, `pins` FORWARD_COMPACTION_KEEP_SKILLS (carry.ts `pinned`); every other one is listed. */
-  keepSkills?: readonly string[];
+  /** The skills and commands this wake carries whole besides the frontmatter-pinned ones: FORWARD_COMPACTION_KEEP_SKILLS (carry.ts `pinned`); every other one is listed. */
   pins?: readonly string[];
-  /** The party's files for later (carry.ts `laterApply`): `listed` named by path and why, never read; `gone` the ones missing or unreadable now, named as not carried. */
-  later?: { listed: readonly LoadFile[]; gone: readonly { path: string; problem: string }[] };
+  /** The frontier as the plugin holds it, rendered (lists.ts `renderFrontier`): a frontier wake installs it, a mechanical wake shows it as it stands; '' or absent when nothing is held. */
+  frontier?: string;
+  /** The documents a sub-agent's brief names, already read by the adapter (brief-files.ts `readBriefFiles`); absent or empty, no section. */
+  briefFiles?: readonly WakeFile[];
 };
-/** `missing`: the required sections the frontier lacks (frontier.ts `ParsedFrontier.missing`), each named in the head. */
+/** `missing`: the texts the held frontier lacks (frontier.ts `Applied.missing`), each named in the head. */
 export type BuildWakeInput<M> = Shared<M> & { toolUseId: string; frontier: string; files?: readonly WakeFile[]; missing?: readonly string[] };
 export type MechanicalWakeInput<M> = Shared<M> & {
   reason: { kind: 'ceiling'; ceiling: number } | { kind: 'reactive' };
@@ -196,8 +134,10 @@ export type MechanicalWakeInput<M> = Shared<M> & {
 };
 
 export type Wake<M> = {
-  /** [F, H, ...tail]: H is the last message built here; the tail is the input objects. */
+  /** [...start, F, H, ...tail]: the start is a sub-agent's kept one with its end line (`keptStart`), H the last message built here; the tail is the input objects. */
   messages: (BuiltMessage | M)[];
+  /** The messages before F: a kept start and its end line; 0 without one. */
+  start: number;
   /** F sections that hold content. */
   facts: number;
   kept: number;
@@ -207,9 +147,9 @@ export type Wake<M> = {
   headChars: number;
   carried: string[];
   notCarried: string[];
-  /** For the wake's log rows: the skills carried whole and those listed under `## Skills not carried`, and the files for later listed. */
+  /** For the wake's log rows: the skills carried whole and those listed under `## Skills not carried`, and the storage entries listed. */
   skills: { carried: number; listed: number };
-  later: number;
+  storage: number;
 };
 
 type Section = { text: string; content: boolean };
@@ -235,12 +175,12 @@ function age(ms: number): string {
   return `${Math.round(s / 3600)}h`;
 }
 
-type Extras = { siblings: readonly Sibling[]; files: readonly WakeFile[]; recent?: readonly RecentFile[]; mechanical?: boolean };
+type Extras = { siblings: readonly Sibling[]; files: readonly WakeFile[]; recent?: readonly RecentFile[]; mechanical?: boolean; /** The party's kept start (`keptStart`), the messages above the facts. */ start?: readonly WakeMessage[] };
 
-type Rendered = { text: string; sections: number; sizes: Wake<never>['sizes']; carried: string[]; notCarried: string[]; skills: Wake<never>['skills']; later: number };
+type Rendered = { text: string; sections: number; sizes: Wake<never>['sizes']; carried: string[]; notCarried: string[]; skills: Wake<never>['skills']; storage: number };
 
 /** F: every section with its cap; whole or not, never cut. With no measured ratio no section is capped. */
-function renderFacts<M>(input: Shared<M>, facts: WakeFacts, { siblings, files, recent = [], mechanical = false }: Extras): Rendered {
+function renderFacts<M>(input: Shared<M>, facts: WakeFacts, { siblings, files, recent = [], mechanical = false, start }: Extras): Rendered {
   const B = wakeBudget(input.askPoint);
   const room = (share: number): number => charsIn(B * share, input.charsPerToken);
   const filesCarried: string[] = [];
@@ -249,7 +189,7 @@ function renderFacts<M>(input: Shared<M>, facts: WakeFacts, { siblings, files, r
   const sub = input.party === 'subagent';
 
   // Above all: the user's standing orders, binding and carried whole, outside every budget.
-  const orders = ordersSection(input.orders?.standing ?? [], input.orders?.lifted ?? []);
+  const orders = ordersSection(input.orders ?? [], input.rounds);
   if (orders !== undefined) sections.push(section(orders));
 
   // Then: what the model has not seen, which a notification-driven party would otherwise wait on forever.
@@ -265,9 +205,26 @@ function renderFacts<M>(input: Shared<M>, facts: WakeFacts, { siblings, files, r
   if (plan?.path !== undefined && plan.content !== undefined) sections.push(section(`## Plan file\n${plan.path}\n${plan.content}`));
   else if (plan?.path !== undefined && plan.problem !== undefined) sections.push({ text: `## Plan file\n${plan.path}\n(could not be read: ${plan.problem})`, content: false });
 
+  // the load files and the brief's documents not carried, each named once with why
+  const dropped: string[] = [];
+  // A kept start already shows the brief as the run's first message: the head says so and no section repeats it.
+  const brief = facts.brief?.text.trim();
+  const briefAbove = sub && brief !== undefined && brief !== '' && (start ?? []).some((m) => m.text.includes(brief));
   if (sub) {
-    if (facts.brief === undefined) sections.push({ text: '## Your brief\n(not recorded: this agent was spawned before forward-compaction started in this process)', content: false });
-    else sections.push(section(`## Your brief\n${facts.brief.text}`));
+    const unrecorded = start !== undefined ? "not recorded by forward-compaction: this run's first message, above, is kept verbatim" : 'not recorded: this agent was spawned before forward-compaction started in this process';
+    if (!briefAbove) sections.push(facts.brief !== undefined ? section(`## Your brief\n${facts.brief.text}`) : { text: `## Your brief\n(${unrecorded})`, content: false });
+    // The documents the brief names are part of it: a brief kept verbatim still only points at them, so each wake reads them in (brief-files.ts).
+    const named: string[] = [];
+    for (const f of input.briefFiles ?? []) {
+      if (f.problem !== undefined) {
+        dropped.push(`- ${f.path}: ${f.problem}`);
+        filesNotCarried.push(f.path);
+        continue;
+      }
+      filesCarried.push(f.path);
+      named.push(`### ${f.path}${f.lines === undefined ? '' : ` lines ${f.lines}`}\n${f.content}`);
+    }
+    if (named.length > 0) sections.push(section([BRIEF_FILES_HEADING, BRIEF_FILES_NOTE, ...named].join('\n')));
   } else if (facts.user.length === 0 && (facts.userInTail ?? 0) > 0) {
     sections.push({ text: `## The user's messages\n(all ${facts.userInTail} are in the messages below)`, content: false });
   } else if (facts.user.length === 0) {
@@ -304,13 +261,12 @@ function renderFacts<M>(input: Shared<M>, facts: WakeFacts, { siblings, files, r
   }
 
   const notCarried: string[] = [];
-  // a pinned skill, or one the frontier's keep_skills names, carried whole within Claude Code's own post-compaction limits,
-  // outside B; every other one listed by name, source and description. The tail is fitted after them.
-  const keep = new Set(input.keepSkills ?? []);
-  const whole = (s: WakeFacts['skills'][number]): boolean => pinned(s, input.pins ?? []) || keep.has(s.skill);
+  // a pinned skill carried whole within Claude Code's own post-compaction limits, outside B; every other one listed by
+  // name, source and description. The tail is fitted after them.
+  const whole = (s: WakeFacts['skills'][number]): boolean => pinned(s, input.pins ?? []);
   const from = (s: WakeFacts['skills'][number]): string => `${s.source ?? 'unknown source'}${s.path === undefined ? '' : `, ${s.path}`}`;
   const skills = fitSkills(facts.skills.filter(whole));
-  const carriedSkills = skills.carried.map((s) => `### ${s.skill} (${from(s)}${pinned(s, input.pins ?? []) ? ', pinned' : ', named in your keep_skills'})\n${s.text}`);
+  const carriedSkills = skills.carried.map((s) => `### ${s.skill} (${from(s)}, pinned)\n${s.text}`);
   if (carriedSkills.length > 0) sections.push(section(['## Skills in force, as loaded', ...carriedSkills].join('\n')));
   const listed = facts.skills.filter((s) => !whole(s));
   for (const s of listed) notCarried.push(`- ${s.skill} (${from(s)})${s.description === undefined ? '' : `: ${s.description}`}`);
@@ -349,13 +305,13 @@ function renderFacts<M>(input: Shared<M>, facts: WakeFacts, { siblings, files, r
       ...facts.shells.tasks.filter((t) => t.id !== input.self).map((t) => `- ${t.type} ${t.id} ${t.status}: ${t.command ?? t.description}`),
       ...facts.shells.crons.map((c) => `- cron ${c.id} ${c.schedule}${c.recurring ? ' recurring' : ''}: ${c.prompt}`),
     ];
-    const since = facts.backgroundSince ?? 0;
-    const header = `## Background shells and crons (session-wide, from the Stop event ${age(input.now - facts.shells.at)} before install${since === 0 ? '' : `; ${since} background command${since === 1 ? '' : 's'} started since ${since === 1 ? 'is' : 'are'} not in this list`})`;
-    sections.push({ text: [header, ...(rows.length > 0 ? rows : ['(none running)'])].join('\n'), content: rows.length > 0 });
+    const since = facts.backgroundSince ?? 0, others = facts.otherTasks;
+    const header = `## Background shells and ${others === undefined ? 'crons (session-wide, ' : 'agents you started ('}from the Stop event ${age(input.now - facts.shells.at)} before install${since === 0 ? '' : `; ${since} background command${since === 1 ? '' : 's'} started since ${since === 1 ? 'is' : 'are'} not in this list`})`;
+    // What another party started is counted with no id or command: nothing there for the woken sub-agent to wait on, stop or look up.
+    const rest = others === undefined || others === 0 ? [] : [`(not listed: ${others} other background task${others === 1 ? '' : 's'} or cron${others === 1 ? '' : 's'} of this session, not recorded as yours)`];
+    sections.push({ text: [header, ...(rows.length > 0 ? rows : ['(none running)']), ...rest].join('\n'), content: rows.length > 0 });
   }
 
-  // the load files not carried, and the files for later now missing or unreadable, each named once with why
-  const dropped: string[] = [];
   if (files.length > 0) {
     // each already cut to LOAD_FILE_MAX_LINES (frontier.ts `sliceFile`); no room and no count cap
     const carried: string[] = [];
@@ -370,9 +326,8 @@ function renderFacts<M>(input: Shared<M>, facts: WakeFacts, { siblings, files, r
     }
     if (carried.length > 0) sections.push(section(['## Files you asked to carry', ...carried].join('\n')));
   }
-  const later = input.later?.listed ?? [];
-  if (later.length > 0) sections.push(section(['## Files for later, not loaded', LATER_NOTE, ...later.map((f) => `- ${f.path}${f.lines === undefined ? '' : ` lines ${f.lines}`}${f.why === undefined ? '' : ` — ${f.why}`}`)].join('\n')));
-  for (const f of input.later?.gone ?? []) (dropped.push(`- ${f.path}: ${f.problem}`), filesNotCarried.push(f.path));
+  const storage = input.storage === undefined ? undefined : storageSection(input.storage.dir, input.storage.entries);
+  if (storage !== undefined) sections.push(section(storage));
   if (dropped.length > 0) sections.push({ text: ['## Files not carried', ...dropped].join('\n'), content: false });
 
   if (recent.length > 0) {
@@ -385,7 +340,7 @@ function renderFacts<M>(input: Shared<M>, facts: WakeFacts, { siblings, files, r
   }
 
   const resume = facts.startReason === 'resume' && facts.startedAt !== undefined ? [`The ledger started at ${iso(facts.startedAt)} when this process resumed; anything earlier is not recorded.`] : [];
-  const head = `${WAKE_OPENING.facts} Your context was compacted by forward-compaction ${PLUGIN_VERSION}. These facts were recorded as they happened, never reconstructed. ${mechanical ? 'You wrote no frontier: the note after these facts says what happened.' : 'Your own frontier follows in the next message.'}`;
+  const head = `${WAKE_OPENING.facts} Your context was compacted by forward-compaction ${PLUGIN_VERSION}.${briefAbove ? ' Your brief is the first message above, kept verbatim.' : ''} These facts were recorded as they happened, never reconstructed. ${mechanical ? 'You wrote no frontier: the note after these facts says what happened.' : 'Your own frontier follows in the next message.'}`;
   return {
     text: [[head, ...resume].join('\n'), ...sections.map((s) => s.text)].join('\n\n'),
     sections: sections.filter((s) => s.content).length,
@@ -393,18 +348,14 @@ function renderFacts<M>(input: Shared<M>, facts: WakeFacts, { siblings, files, r
     carried: filesCarried,
     notCarried: filesNotCarried,
     skills: { carried: skills.carried.length, listed: notCarried.length },
-    later: later.length,
+    storage: input.storage?.entries.length ?? 0,
   };
 }
 
-/** Every text a kept message holds, for the facts to leave out what the tail already says. */
-function keptTexts(kept: readonly WakeMessage[]): string[] {
-  return kept.flatMap((m) => [m.text, ...m.toolUses.map((u) => u.text ?? ''), ...(m.toolResults ?? []).map((r) => r.text ?? '')]).filter((t) => t !== '');
-}
-
 /**
- * [F, ...H, ...tail] around a head text: the tail is fitted to what the facts and the head leave of the budget, and the
- * facts are rendered against the tail kept, so each is sized for the other (the tail is only ever shrunk, so this ends).
+ * [...start, F, ...H, ...tail] around a head text: a sub-agent's kept start (`keptStart`) goes first and is no tail
+ * candidate; the tail is fitted to what the start, the facts and the head leave of the budget, and the facts are rendered
+ * against the tail kept, so each is sized for the other (the tail is only ever shrunk, so this ends).
  * With no measured ratio nothing is fitted: `unmeasured` says whether every candidate is kept (the messages after a
  * frontier's call) or none is (a mechanical wake's earlier tail).
  */
@@ -417,20 +368,25 @@ function assemble<M extends WakeMessage>(
 ): Wake<M> {
   const B = wakeBudget(input.askPoint);
   const ratio = input.charsPerToken;
-  const longest = head({ kept: Math.max(1, candidates.length), dropped: Math.max(1, candidates.length) }).length;
-  let kept: readonly M[] = candidates;
+  const opening = input.party === 'subagent' ? keptStart(input.messages) : undefined;
+  const open: (M | BuiltMessage)[] = opening === undefined ? [] : [...opening.start, opening.end];
+  const pool = candidates.filter((m) => !open.includes(m));
+  const above = ratio === undefined ? 0 : open.reduce((sum, m) => sum + messageTokens(m, ratio), 0); // the start is kept whole and counts against the budget
+  const longest = head({ kept: Math.max(1, pool.length), dropped: Math.max(1, pool.length) }).length;
+  let kept: readonly M[] = pool;
   for (;;) {
-    const f = renderFacts(input, input.facts(keptTexts(kept)), extras);
-    const fit = ratio === undefined ? { messages: unmeasured === 'all' ? [...candidates] : [] } : fitTail(candidates, B - tokensOf(f.text.length, ratio) - tokensOf(longest, ratio), ratio);
+    const f = renderFacts(input, input.facts(keptTexts(kept)), { ...extras, ...(opening === undefined ? {} : { start: opening.start }) });
+    const fit = ratio === undefined ? { messages: unmeasured === 'all' ? [...pool] : [] } : fitTail(pool, B - above - tokensOf(f.text.length, ratio) - tokensOf(longest, ratio), ratio);
     // only a smaller fit is taken: facts can shrink with the tail, and a fit growing back would loop forever
     if (fit.messages.length < kept.length) {
       kept = fit.messages;
       continue;
     }
-    const counts = { kept: kept.length, dropped: candidates.length - kept.length };
+    const counts = { kept: kept.length, dropped: pool.length - kept.length };
     const text = head(counts);
     return {
-      messages: [{ role: 'user', text: f.text, toolUses: [] }, { role: 'user', text, toolUses: [] }, ...kept],
+      messages: [...open, { role: 'user', text: f.text, toolUses: [] }, { role: 'user', text, toolUses: [] }, ...kept],
+      start: open.length,
       facts: f.sections,
       ...counts,
       sizes: f.sizes,
@@ -438,30 +394,27 @@ function assemble<M extends WakeMessage>(
       carried: f.carried,
       notCarried: f.notCarried,
       skills: f.skills,
-      later: f.later,
+      storage: f.storage,
     };
   }
 }
 
+/** How a call changes a held frontier: by item number, the rest staying. */
+const BY_NUMBER = 'send only changes, by item number; whatever you leave out stays.';
+/** The head's line on how the next call changes the frontier, and when it is made: once a notice asks. */
+export const CHANGES_ONLY = `When a notice next asks for a forward_compaction call, ${BY_NUMBER}`;
 /** The head's clause when standing orders bind: the next step is taken within them. */
-const within = (orders: Shared<never>['orders']): string => ((orders?.standing.length ?? 0) > 0 ? ', within the standing orders above' : '');
+const within = (orders: Shared<never>['orders']): string => ((orders?.length ?? 0) > 0 ? ', within the standing orders above' : '');
 /** Where a woken party finds what its frontier did not say: the user's messages (main) or its brief. */
 const sourceOf = (party: 'main' | 'subagent'): string => (party === 'main' ? "the user's messages" : 'your brief');
 
-/**
- * The wake for a stored frontier: facts, the frontier verbatim, then every message after the `forward_compaction` call.
- * A call not in `messages` (compacted by something else, or one with no id) cannot be placed: the frontier is carried
- * with the newest messages that fit, as a mechanical wake keeps them, and the head says so.
- */
+/** The wake for a stored call: facts, the held frontier rendered, then every message after the call. A call not in `messages` (compacted by something else, or one with no id) cannot be placed: the frontier is carried with the newest messages that fit, as a mechanical wake keeps them, and the head says so. */
 export function buildWake<M extends WakeMessage>(input: BuildWakeInput<M>): Wake<M> {
   const split = splitAtCall(input.messages, input.toolUseId);
   const missing = input.missing ?? [];
   return assemble(input, split?.tail ?? input.messages, { siblings: split?.siblings ?? [], files: input.files ?? [] }, ({ kept, dropped }) => {
-    const lines = [
-      `${WAKE_OPENING.frontier} Below is the frontier you wrote with forward_compaction: continue from its ## Next${within(input.orders)}.`,
-      `=== frontier ===\n${input.frontier}\n=== end of frontier ===`,
-    ];
-    if (missing.length > 0) lines.push(`Your frontier was missing ${andList(missing)}: re-establish ${missing.length === 1 ? 'it' : 'them'} from ${sourceOf(input.party)} and the messages below.`);
+    const lines = [`${WAKE_OPENING.frontier} Below is your frontier as forward-compaction holds it: continue from its ## Next${within(input.orders)}. ${CHANGES_ONLY}${unchangedNote(input.frontier, ordersSection(input.orders ?? [], input.rounds))}`, `=== frontier ===\n${input.frontier}\n=== end of frontier ===`];
+    if (missing.length > 0) lines.push(`Your frontier has no ${andList(missing)}: re-establish ${missing.length === 1 ? 'it' : 'them'} from ${sourceOf(input.party)} and the messages below, and send ${missing.length === 1 ? 'it' : 'them'} in your next forward_compaction call.`);
     // The receipt's own experimental line moves to the wake's end, where it is read last.
     if (split?.own !== undefined) lines.push(`Your forward_compaction call returned:\n${split.own.split(`\n${EXPERIMENTAL_OPENING}`)[0]}`);
     if (split === undefined) lines.push(`Your forward_compaction call is not in the transcript, so which messages came after it is unknown: ${kept > 0 ? `the newest ${kept} are kept verbatim after this one, some perhaps from before your frontier` : 'none is kept'}${dropped > 0 ? `; ${dropped} older did not fit and are gone (look_back finds an exact detail)` : ''}. Continue from ## Next.`);
@@ -476,20 +429,30 @@ export function buildWake<M extends WakeMessage>(input: BuildWakeInput<M>): Wake
 
 /** The wake for a party with no frontier: the same facts, then the newest messages of `messages` that fit. */
 export function mechanicalWake<M extends WakeMessage>(input: MechanicalWakeInput<M>): Wake<M> {
-  const why = input.reason.kind === 'ceiling' ? `, past the ${kilo(input.reason.ceiling)} ceiling` : ', and Claude Code reported your request too long';
-  const source = sourceOf(input.party);
+  const why = input.reason.kind === 'ceiling' ? `, past the ${kilo(input.reason.ceiling)} ceiling` : ', and Claude Code reported your request too long', source = sourceOf(input.party);
+  const frontier = input.frontier ?? '', reached = `${WAKE_OPENING.mechanical} Your context reached ${input.tokens === undefined ? 'a size not measured yet' : `${kilo(input.tokens)} tokens`}${why}, ${frontier === '' ? 'and you had not called forward_compaction' : 'before a forward_compaction call compacted it'}, so the plugin compacted it mechanically`; // a call made below its notice point changes the frontier and compacts nothing, so a held frontier does not say no call was made
   return assemble(input, input.messages, { siblings: [], files: [], recent: input.recent ?? [], mechanical: true }, ({ kept, dropped }) => experimental(
-    `${WAKE_OPENING.mechanical} Your context reached ${input.tokens === undefined ? 'a size not measured yet' : `${kilo(input.tokens)} tokens`}${why}, and you had not called forward_compaction, so the plugin compacted it mechanically: the facts above and your newest ${kept} messages below, kept verbatim; ${dropped} older messages are gone (look_back finds an exact detail). No objective or next step was written. Re-establish them from ${source} and the messages below, then continue${within(input.orders)}; call ${input.tool ?? DEFAULT_TOOL} at your next milestone.`, input.logDir),
+    frontier === ''
+      ? `${reached}: the facts above and your newest ${kept} messages below, kept verbatim; ${dropped} older messages are gone (look_back finds an exact detail). No objective or next step was written. Re-establish them from ${source} and the messages below, then continue${within(input.orders)}; call ${input.tool ?? DEFAULT_TOOL} at your next milestone.`
+      : `${reached}: the facts above, your frontier below as forward-compaction holds it, and your newest ${kept} messages after this one, kept verbatim; ${dropped} older messages are gone (look_back finds an exact detail). The frontier is as your last call left it: what you did after that call is missing from its ## Done, ## Remaining and ## Next, and the facts above show it (files touched, shell commands run, messages). Continue from where the messages leave off, or from its ## Next less every step the facts show done${within(input.orders)}; at your next milestone bring the frontier up to date with one ${input.tool ?? DEFAULT_TOOL} call: ${BY_NUMBER}${unchangedNote(frontier, ordersSection(input.orders ?? [], input.rounds))}\n\n=== frontier ===\n${frontier}\n=== end of frontier ===`,
+    input.logDir),
   'none');
 }
 
 /** An installed wake whose landed line waits for the party's first reading after it: what the line says, `before` the last reading before the install. */
-export type Landing = { label: string; before?: number } & ({ kind: 'frontier'; chars: number; facts: number; kept: number; dropped: number } | { kind: 'mechanical'; tokens?: number; ceiling: number });
+export type Landing = { label: string; before?: number; row?: string | undefined } & ({ kind: 'frontier'; chars: number; facts: number; kept: number; dropped: number } | { kind: 'mechanical'; tokens?: number; ceiling: number });
 
 /** The measured sizes: the last reading before the install and the first after it; one never read is said as unknown, never estimated. */
 function measured(before: number | undefined, after: number | undefined): string {
   const unknown = after === undefined ? ' (it ended before a request after the install measured it)' : ', measured';
   return `${before === undefined ? 'unknown' : kilo(before)} → ${after === undefined ? 'unknown' : kilo(after)} context${before === undefined && after !== undefined ? ' (no reading before the install), measured after' : unknown}`;
+}
+
+/** An install's measured sizes as its folded row draws them (wake-row.ts `wakeRow`): the readings before and after it, and what the first request after it read from the prompt cache and wrote to it; undefined until a request after the install measured it. */
+export function landedShort(before: number | undefined, after: number | undefined, usage?: { cache_read_input_tokens?: number | null; cache_creation_input_tokens?: number | null } | null): string | undefined {
+  if (after === undefined) return undefined;
+  const read = usage?.cache_read_input_tokens, written = usage?.cache_creation_input_tokens;
+  return `${before === undefined ? 'unknown' : kilo(before)} → ${kilo(after)} context${typeof read === 'number' && typeof written === 'number' ? `, its first request read ${kilo(read)} from the prompt cache and wrote ${kilo(written)}` : ''}`;
 }
 
 /** The landed line for an installed wake (an info row, never on screen), at the party's first reading after it (`after`), or at its end with `after` unknown. */

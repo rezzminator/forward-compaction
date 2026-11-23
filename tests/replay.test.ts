@@ -9,7 +9,9 @@ import { describe, expect, it, vi } from 'vitest';
 import { ANSWERS, SYNTHETIC_HANDLE, SYNTHETIC_MODEL, loadFixture, invocations, replay, recordSynthetic, type Invocation } from './fakes/replay-engine.ts';
 import { DRAWN, ENV_NAMES, PATHS, PART_CHARS, RECORDED, STATE_KEYS, register as recorder, rowFiles, type Row } from '../scripts/replay/recorder.ts';
 import { contextTokens } from '../plugins/forward-compaction/src/decide.ts';
-import { parseFrontier } from '../plugins/forward-compaction/src/frontier.ts';
+import { applyCall, parseCall, toolInput } from '../plugins/forward-compaction/src/frontier.ts';
+import { emptyHeld, renderFrontier, roundPassed } from '../plugins/forward-compaction/src/lists.ts';
+import { WAKE_OPENING } from '../plugins/forward-compaction/src/wake-row.ts';
 import { resolveOptions, subagentWindow } from '../plugins/forward-compaction/src/options.ts';
 import { askPointOf, partyMarks } from '../plugins/forward-compaction/src/window.ts';
 import { modelWindowRequest, parseModelWindow } from '../plugins/forward-compaction/src/model-window.ts';
@@ -32,12 +34,14 @@ const texts = (messages: readonly any[]): string => messages.map((m) => [m.text 
 /** Whether a wake lists a skill under `## Skills not carried` by its name: the wake carries a skill's text only when it is pinned or kept, and lists every other one. */
 const listsSkill = (wake: string, skill: string): boolean => wake.includes('## Skills not carried\n') && wake.slice(wake.indexOf('## Skills not carried\n')).includes(`\n- ${skill} (`);
 const nextWake = (view: View, key: string, after: number): Invocation | undefined => view.find((c) => c.seq > after && party(c.input) === key && wakeOf(c) !== undefined);
-/** The frontier the plugin assembled from the call's section arguments, or undefined when the call carried none. */
-const SECTION_KEYS = ['objective', 'decisions', 'done', 'remaining', 'next', 'blocked', 'findings'];
-const frontierOf = (call: Invocation): string | undefined => {
-  const args = call.input?.objective !== undefined ? call.input : call.input?.input ?? {};
-  const out = parseFrontier(Object.fromEntries(SECTION_KEYS.filter((key) => key in args).map((key) => [key, args[key]])));
-  return out.frontier === '' ? undefined : out.frontier;
+/**
+ * The frontier the wake after `call` installs. The plugin holds it as lists that every call of the party changes, so it
+ * is each such call up to this one applied in order, a round passing at each wake between them.
+ */
+const frontierOf = (view: View, call: Invocation): string => {
+  return renderFrontier(view
+    .filter((t) => t.seq <= call.seq && party(t.input) === party(call.input) && ((t.hook === 'tool.call' && isForward(t.input?.tool)) || wakeOf(t) !== undefined))
+    .reduce((held, t) => (t.hook === 'tool.call' ? applyCall(held, parseCall(toolInput(t.input))).held : roundPassed(held)), emptyHeld()));
 };
 /** What a delivery reaching a sub-agent mid-turn (`session.append` door `delivery`) says: its row's text blocks. */
 const delivered = (inv: Invocation): string => (inv.input?.message?.content ?? []).filter((b: any) => b?.type === 'text' && typeof b.text === 'string').map((b: any) => b.text).join('\n');
@@ -97,13 +101,13 @@ export const INVARIANTS: Record<Name, (view: View, recorded: boolean) => Verdict
     let subjects = 0;
     for (const c of view) {
       const wake = wakeOf(c);
-      if (!wake || !wake.some((m) => typeof m.text === 'string' && m.text.includes('=== frontier ==='))) continue;
+      if (!wake || !wake.some((m) => typeof m.text === 'string' && m.text.startsWith(WAKE_OPENING.frontier))) continue;
       subjects++;
       const ask: any[] = c.input?.messages ?? [];
       const call = [...view].reverse().find((t) => t.seq < c.seq && t.hook === 'tool.call' && isForward(t.input?.tool) && party(t.input) === party(c.input) && tailAfterAnchor(ask, t.input.tool_use_id) !== undefined);
       if (!call) { failures.push(`I3 ${at(c)}: no forward_compaction call of this party is in the ask's messages`); continue; }
       const h = wake.findLastIndex((m) => m.handle === undefined);
-      if (h < 0 || !String(wake[h].text).includes(`=== frontier ===\n${frontierOf(call)}\n=== end of frontier ===`)) failures.push(`I3 ${at(c)}: the last hook-built message lacks the frontier of tool.call #${call.id} verbatim`);
+      if (h < 0 || !String(wake[h].text).includes(`=== frontier ===\n${frontierOf(view, call)}\n=== end of frontier ===`)) failures.push(`I3 ${at(c)}: the last hook-built message lacks the frontier of tool.call #${call.id} verbatim`);
       const tail = wake.slice(h + 1).map((m) => m.handle);
       const after = tailAfterAnchor(ask, call.input.tool_use_id)!;
       if (tail.some((x) => typeof x !== 'string')) failures.push(`I3 ${at(c)}: a tail message carries no handle`);
@@ -135,9 +139,22 @@ export const INVARIANTS: Record<Name, (view: View, recorded: boolean) => Verdict
     const failures: string[] = [];
     let subjects = 0;
     for (const spawn of view.filter((i) => i.hook === 'agent.spawn' && typeof i.nextResult?.result?.agentId === 'string')) {
+      // A resume (a message sent to an agent that had ended) is no brief: its text reaches the party's next wake as a message it received.
+      if (spawn.input?.resume !== undefined) {
+        const resumed = nextWake(view, `agent:${spawn.nextResult!.result.agentId}`, spawn.seq);
+        if (!resumed) continue;
+        subjects++;
+        if (!texts(wakeOf(resumed)!).includes(spawn.input.prompt)) failures.push(`I6 ${at(resumed)}: the wake lacks the text agent.spawn #${spawn.id} resumed the party with`);
+        continue;
+      }
       for (const c of view.filter((i) => party(i.input) === `agent:${spawn.nextResult!.result.agentId}` && wakeOf(i) !== undefined)) {
         subjects++;
-        if (!texts(wakeOf(c)!).includes(`## Your brief\n${spawn.input.prompt}`)) failures.push(`I6 ${at(c)}: "## Your brief" is not agent.spawn #${spawn.id}'s prompt`);
+        // The brief reaches a woken sub-agent whole: in its kept start, its own first messages handed back by handle before the facts, or under
+        // `## Your brief` when no kept message holds it (every wake of the 2.1.325 recording's build).
+        const wake = wakeOf(c)!;
+        const start = wake.slice(0, Math.max(0, wake.findIndex((m) => typeof m.text === 'string' && m.text.startsWith(WAKE_OPENING.facts))));
+        const kept = start.some((m) => m.role === 'user' && typeof m.handle === 'string' && String(m.text).includes(spawn.input.prompt));
+        if (!kept && !texts(wake).includes(`## Your brief\n${spawn.input.prompt}`)) failures.push(`I6 ${at(c)}: the wake neither keeps agent.spawn #${spawn.id}'s prompt in its start nor carries it under "## Your brief"`);
       }
     }
     return { subjects, failures };
@@ -160,10 +177,18 @@ export const INVARIANTS: Record<Name, (view: View, recorded: boolean) => Verdict
       const stop = [...view].reverse().find((i) => i.seq < c.seq && (i.hook === 'classic.Stop' || i.hook === 'classic.SubagentStop'));
       if (!stop) continue;
       subjects++;
-      const wake = texts(wakeOf(c)!);
+      const wake = texts(wakeOf(c)!), agent: string | undefined = c.input?.agentId;
       // the woken sub-agent is not its own background task: its wake leaves it out (CHANGELOG 1.0.0-dev.2)
       // a SubagentStop lists its own sub-agent running though it stopped: the wake leaves it out
-      for (const t of stop.input?.background_tasks ?? []) if (t.id !== c.input?.agentId && !(stop.hook === 'classic.SubagentStop' && t.id === stop.input?.agent_id) && (!wake.includes(String(t.id)) || (typeof t.command === 'string' && !wake.includes(t.command)))) failures.push(`I8 ${at(c)}: shell ${t.id} of ${stop.hook} #${stop.id} is not in the wake`);
+      const tasks = (stop.input?.background_tasks ?? []).filter((t: any) => t.id !== agent && !(stop.hook === 'classic.SubagentStop' && t.id === stop.input?.agent_id));
+      // main's wake lists every task; a sub-agent's only those tied to it (a shell whose command one of its Bash calls sent, an agent its own loop spawned), the rest counted and never named
+      const tied = (t: any): boolean => agent === undefined || view.some((i) => i.seq < c.seq && ((i.hook === 'tool.call' && i.input?.tool === 'Bash' && i.input?.agentId === agent && i.input?.command === t.command) || (i.hook === 'agent.spawn' && i.input?.parentAgentId === agent && i.nextResult?.result?.agentId === t.id)));
+      for (const t of tasks) {
+        if (tied(t) && (!wake.includes(String(t.id)) || (typeof t.command === 'string' && !wake.includes(t.command)))) failures.push(`I8 ${at(c)}: shell ${t.id} of ${stop.hook} #${stop.id} is not in the wake`);
+        if (!tied(t) && wake.includes(`- ${t.type} ${t.id} `)) failures.push(`I8 ${at(c)}: shell ${t.id} of ${stop.hook} #${stop.id}, another party's, is listed in the wake`);
+      }
+      const others = agent === undefined ? 0 : tasks.filter((t: any) => !tied(t)).length + (stop.input?.session_crons ?? []).length;
+      if (others > 0 && !wake.includes(`(not listed: ${others} other background task${others === 1 ? '' : 's'} or cron${others === 1 ? '' : 's'} of this session, not recorded as yours)`)) failures.push(`I8 ${at(c)}: the ${others} other tasks and crons of ${stop.hook} #${stop.id} are not counted in the wake`);
     }
     return { subjects, failures };
   },
@@ -223,14 +248,18 @@ export const INVARIANTS: Record<Name, (view: View, recorded: boolean) => Verdict
     }
     return { subjects, failures };
   },
+  // The call reads its party's reading on the line that words the receipt, and the calling request's own turn.step can land
+  // while the call runs: the receipt is held to the readings the call could see, the one before its start and the one before its end.
   I13(view) {
     const failures: string[] = [];
     let subjects = 0;
     for (const t of view.filter((i) => i.hook === 'tool.call' && isForward(i.input?.tool) && party(i.input) !== 'main')) {
-      const reading = readingAt(view, party(t.input), t.seq);
-      if (reading === undefined || reading >= askPointAt(view, party(t.input)) || !/Frontier stored/.test(String(t.end?.result?.result))) continue;
+      const result = String(t.end?.result?.result);
+      const seen = [readingAt(view, party(t.input), t.seq), readingAt(view, party(t.input), t.endSeq)].filter((r): r is number => r !== undefined);
+      if (seen.length === 0 || !/Frontier stored/.test(result)) continue;
       subjects++;
-      if (!String(t.end?.result?.result).includes('from about')) failures.push(`I13 ${at(t)}: a sub-agent's receipt below its ask point lacks "from about"`);
+      const ask = askPointAt(view, party(t.input)), below = result.includes('from about');
+      if (below ? !seen.some((r) => r < ask) : !seen.some((r) => r >= ask)) failures.push(`I13 ${at(t)}: a sub-agent's receipt says it is ${below ? 'below' : 'at or past'} its ask point ${ask}, and its readings around the call are ${seen.join(', ')}`);
     }
     return { subjects, failures };
   },
@@ -310,7 +339,9 @@ describe('replay gate (D19)', { timeout: 60_000 }, () => {
     const rows = LIVE();
     const { skill, call, wake } = skillSubject(invocations(rows));
     const key = party(call.input);
-    const edited = rows.map((r) => (r.id === wake.id && r.phase === 'end' ? JSON.parse(JSON.stringify(r).split(JSON.stringify(skill.input.text).slice(1, -1)).join('(gone)')) : r));
+    // The wake holds the skill as its whole text when pinned, else as a line under `## Skills not carried`: both leave.
+    const strip = (json: string, part: string): string => json.split(JSON.stringify(part).slice(1, -1)).join('(gone)');
+    const edited = rows.map((r) => (r.id === wake.id && r.phase === 'end' ? JSON.parse(strip(strip(JSON.stringify(r), skill.input.text), `\n- ${skill.input.skill} (`)) : r));
     expect(await gate(edited, LIVE_EXERCISES)).toContain(`recorded: I5 session.compact #${wake.id} ${key}: the wake neither carries nor lists skill.prompt #${skill.id} (${skill.input.skill}), loaded inside ${key}'s Skill call tool.call #${call.id}`);
   });
 
@@ -377,7 +408,7 @@ describe('replay gate (D19)', { timeout: 60_000 }, () => {
 
   it('classifies every $ path the adapter calls, and the utility paths are the harness\'s', () => {
     expect(new Set(Object.keys(ANSWERS))).toEqual(new Set(PATHS));
-    expect(Object.entries(ANSWERS).filter(([, how]) => how.from === 'harness').map(([path]) => path).sort()).toEqual(['clock.after', 'clock.now', 'process.run', 'session.id', 'state.get', 'state.set', 'tool.register', 'ui.log']);
+    expect(Object.entries(ANSWERS).filter(([, how]) => how.from === 'harness').map(([path]) => path).sort()).toEqual(['clock.after', 'clock.now', 'fs.exists', 'fs.write', 'process.run', 'session.id', 'session.root', 'state.get', 'state.set', 'tool.register', 'ui.invalidate', 'ui.log']);
   });
 
   it('replays concurrent parties on the recorded timeline: a step that starts inside another party\'s open step runs after the steps recorded before it', async () => {
@@ -458,10 +489,10 @@ describe('the recorder', () => {
   it('records a matched hook under the plugin\'s own matcher, and hands the draw hook to the engine unrecorded', async () => {
     const registered: { pattern: string; matcher?: unknown; hook: (...args: any[]) => any }[] = [];
     recorder(((pattern: string, ...rest: any[]) => void registered.push({ pattern, ...(rest.length === 2 ? { matcher: rest[0] } : {}), hook: rest.at(-1) })) as any, {} as any);
-    expect(registered.map((r) => r.pattern)).toEqual([...RECORDED, 'ui.render']);
-    expect(registered.filter((r) => r.matcher !== undefined).map((r) => [r.pattern, r.matcher])).toEqual([['session.append', { door: 'delivery' }], ['ui.render', { component: 'UserMessage' }]]);
-    const draw = registered.at(-1)!;
-    expect(draw.matcher).toEqual({ component: 'UserMessage' });
+    expect(registered.map((r) => r.pattern)).toEqual([...RECORDED, 'ui.render', 'ui.render', 'ui.render']);
+    expect(registered.filter((r) => r.matcher !== undefined).map((r) => [r.pattern, r.matcher])).toEqual([['session.append', { door: 'delivery' }], ['ui.render', { component: 'UserMessage' }], ['ui.render', { component: 'ToolUse' }], ['ui.render', { component: 'ToolResult' }]]);
+    const draw = registered.at(-3)!, result = registered.at(-1)!;
+    expect(await result.hook({}, { surface: 'terminal', component: 'ToolResult', requestId: 't1', props: { tool: 'mcp__forward-compaction__forward_compaction', output: 'Frontier updated. Nothing compacts', isErrored: false } }, async () => 'engine')).toEqual({ type: 'Box', props: { display: 'none' } });
     const row = (isExpanded: boolean) => ({ surface: 'terminal', component: 'UserMessage', requestId: 'm1', props: { text: '[forward-compaction: facts] Your context was compacted', origin: { kind: 'unclassified' }, isExpanded } });
     expect(await draw.hook({}, row(false), async () => 'engine')).toEqual({ type: 'Box', props: { display: 'none' } });
     expect(await draw.hook({}, row(true), async () => 'engine')).toBe('engine');

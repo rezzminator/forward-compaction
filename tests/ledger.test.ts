@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  promptsKept, restorePrompts, PROMPTS_KEPT, skillsKept, restoreSkills, liftSources,
+  promptsKept, restorePrompts, PROMPTS_KEPT, skillsKept, restoreSkills,
   PERSON_ORIGINS, addEntry, attributeSkill, deliveryOf, factsFor, isUserOrigin, markStart, newLedger, resolveSpawn, runStartOf, shellsOf,
   type EntryInput, type Ledger, type PartyKey,
 } from '../plugins/forward-compaction/src/ledger.ts';
@@ -263,6 +263,20 @@ describe('factsFor', () => {
   it('has no shells before any Stop event', () => {
     expect(factsFor(build(user('a')), 'main', none).shells).toBeUndefined();
   });
+
+  it("gives a sub-agent the tasks tied to it (a shell whose command it ran, an agent it spawned), counts every other task and cron, and leaves it out of both; main's are the whole snapshot", () => {
+    const task = (id: string, type: string, command?: string) => ({ id, type, status: 'running', description: `d-${id}`, ...(command !== undefined ? { command } : {}) });
+    const ran = (party: PartyKey, command: string, at: number, background = false): EntryInput => ({ kind: 'work', party, at, fact: { kind: 'command', command, ...(background ? { background: true as const } : {}) } });
+    const ledger = build(
+      ran('agent:a1', 'npm test', 1), ran('main', 'sleep 900', 2, true),
+      { kind: 'brief', party: 'agent:c1', text: 'child', spawnedBy: 'agent:a1', at: 3 },
+      { kind: 'shells', at: 10, tasks: [task('a1', 'subagent'), task('s1', 'shell', 'npm test'), task('s2', 'shell', 'sleep 900'), task('c1', 'subagent'), task('x9', 'subagent')], crons: [{ id: 'k1', schedule: '* * * * *', recurring: true, prompt: 'p' }] },
+      ran('agent:a1', 'npm run watch', 20, true), ran('main', 'sleep 5', 21, true),
+    );
+    const own = factsFor(ledger, 'agent:a1', none), main = factsFor(ledger, 'main', none);
+    expect([own.shells?.tasks.map((t) => t.id), own.shells?.crons, own.otherTasks, own.backgroundSince]).toEqual([['s1', 'c1'], [], 3, 1]);
+    expect([main.shells?.tasks.map((t) => t.id), main.shells?.crons.map((c) => c.id), main.otherTasks, main.backgroundSince]).toEqual([['a1', 's1', 's2', 'c1', 'x9'], ['k1'], undefined, 2]);
+  });
 });
 
 describe('resolveSpawn', () => {
@@ -335,11 +349,6 @@ describe('the prompts kept across a plugin reload', () => {
     expect(promptsKept(l, 'main').map((p) => p.text)).toEqual(['Which quote?\nAnswer: Segment', 'm1', 'm2', 'm3', 'm4', 'm5', 'm6', 'm7', 'm8', 'm9', 'm10']);
     const back = restorePrompts(newLedger(), 'main', promptsKept(l, 'main'));
     expect(back.entries[0]).toMatchObject({ kind: 'user', text: 'Which quote?\nAnswer: Segment', answer: 'Segment' });
-  });
-
-  it("lifts orders with only the user's own words of an answer, never the question the model wrote", () => {
-    const l = build({ kind: 'user', party: 'main', at: 5, text: 'Shall I push?\nAnswer: Not yet', answer: 'Not yet' }, user('typed', 6));
-    expect(liftSources(l, 'main')).toEqual(['Not yet', 'typed']);
   });
 });
 

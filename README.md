@@ -5,9 +5,9 @@
 **Claude Code compaction without the wait. The model writes its own handoff while it still remembers everything, so your exact words carry through.**
 
 [![Claude Code plugin](https://img.shields.io/badge/Claude%20Code-plugin-D97757)](https://docs.claude.com/en/docs/claude-code/plugins)
-[![Version](https://img.shields.io/badge/version-2.4.0-blue)](./CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-2.5.0-blue)](./CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
-[![Tests](https://img.shields.io/badge/tests-722%20passing-brightgreen)](#development)
+[![Tests](https://img.shields.io/badge/tests-921%20passing-brightgreen)](#development)
 [![Built with Professor](https://img.shields.io/badge/built%20with-Professor-8A2BE2)](https://github.com/rezzminator/professor)
 
 </div>
@@ -114,7 +114,7 @@ Coming from this repository's earlier plugin? The [CHANGELOG](./CHANGELOG.md) en
 flowchart LR
     A[Model works] --> B{Context past<br/>a nudge point?}
     B -- no --> A
-    B -- yes --> C[Nudge: write your handoff<br/>at your first milestone]
+    B -- yes --> C[Nudge: write your handoff<br/>between two steps]
     C --> D[Model calls forward_compaction:<br/>handoff stored]
     D --> E[Next compaction:<br/>facts + handoff + later messages]
     E --> A
@@ -122,22 +122,25 @@ flowchart LR
     F --> A
 ```
 
-1. **Nudge.** After a tool result, once the context passes 15% of the main chat's window (165k for a sub-agent), the model reads one line saying how large its context is and asking it to write its handoff at its first milestone. Another line follows every 5% (65k for a sub-agent), and no two read alike: each is worded more firmly than the one before, from "at your first milestone" through "compact now" to a last notice, before the ceiling, that the plugin is about to compact by itself. After a compaction the wording starts over and the next line waits until the context has grown by as much as the first one waited for: 80k for a sub-agent, 15% of its window for the main chat.
-2. **Handoff.** The model calls `forward_compaction`. The plugin stores the handoff and changes nothing yet; a later call replaces it.
-3. **Install.** The main chat's handoff installs at the end of its turn, and a sub-agent's at Claude Code's next compaction ask. Everything before the call is replaced by the facts the plugin recorded and the handoff, and the messages after the call are kept, as many as fit.
+1. **Nudge.** After a tool result, once the context has reached the nudge start (15% of the window for the main chat, 165k tokens for a sub-agent), the model reads one line saying how large its context is and asking it to call `forward_compaction` once the step in hand has its result saved and checked, and before it reads for the next step, since a compaction drops what it has read. Another line follows every 5% (main chat) or 65k (sub-agent), and no two read alike: each is worded more firmly than the one before, from timing the call between two steps through "compact now" to a last notice, before the ceiling, that the plugin is about to compact by itself. On a 200k max context a sub-agent's 165k start lies past its 160k ceiling, so it is not nudged and is compacted mechanically at 160k. A line prints no list: a model that holds a handoff is asked for only what changed since, by item number, and one that holds none for its first. After a compaction the next nudge waits until the context has grown as much as the nudge start past the party's first reading, so a handoff never loops. Every party also has a floor: its first context reading ever; after a compaction the larger of its first two readings, because only the second request carries what Claude Code sends back (its skill, tool and agent listings); or any lower reading, which starts the notices over. Setting `FORWARD_COMPACTION_MAIN_NUDGE_ROOM` or `FORWARD_COMPACTION_SUBAGENT_NUDGE_ROOM` makes the first nudge come that working room above the floor instead of at the nudge start.
+2. **Handoff.** The model calls `forward_compaction` with what changed since its last call, by item number. The plugin writes the change to its files on disk and installs nothing yet; a second call before the install applies on top of the first. A call with no `objective` or `next`, or one whose field arrived as broken JSON that the plugin repaired, waits one request before it installs: the first compaction ask Claude Code makes after it is skipped, so the next request can send the rest of the frontier, and the ask after that installs it as it stands, its wake naming what it lacks. A model's response can end right after a leaked tool-call tag, so a call can arrive carrying only its first fields. A call made before the context has reached the point where a notice asks only updates the handoff and compacts nothing: the reply says so, and a notice asks for the call once the context has grown enough.
+3. **Install.** A handoff stored from the notice point on installs: the main chat's at the end of its turn, and a sub-agent's at Claude Code's next compaction ask. Everything before the call is replaced by the facts the plugin recorded and the handoff, and the messages after the call are kept, as many as fit.
 4. **Ceiling.** A chat that reaches 60% of its window with no handoff (80% for a sub-agent) is compacted automatically, keeping the recorded facts, its newest messages and a note that no handoff was written.
 
-The main chat also writes its handoff when its whole work is finished, before its final report. A finished chat otherwise sits on a large context until you reply, the prompt cache expires meanwhile, and your reply, whatever it says, re-sends all of it at full price. Past 100k (`FORWARD_COMPACTION_MAIN_FINISH_START`) the main chat reads that rule once, and its first three nudges repeat it. A sub-agent is never asked: its context ends with its report.
+The main chat also writes its handoff when its whole work is finished, before its final report. A finished chat otherwise sits on a large context until you reply, the prompt cache expires meanwhile, and your reply, whatever it says, re-sends all of it at full price. Once its context is past 100k (`FORWARD_COMPACTION_MAIN_FINISH_START`) and has grown one nudge step above its floor, the main chat reads that rule once, and its first three nudges repeat it. A sub-agent is never asked: its context ends with its report.
 
 ### What the model wakes up with
 
 After a compaction the model's context holds, oldest first:
 
-1. **The facts the plugin recorded as they happened:** your standing orders; anything that arrived after the handoff call; the plan file when in plan mode; your ten newest messages and every answer you gave (or the sub-agent's brief); the skills in use, each listed by name and description, its text carried only when it is pinned or the handoff's `keep_skills` names it; the files the handoff listed for later, by path and why, never read in; the agents and background shells; the shell commands it ran; the files it touched; the task list; and any files the handoff asked to carry.
-2. **The handoff, word for word**, with an instruction to continue from its next action.
-3. **The messages after the call, word for word**, as many as fit. Any dropped are named as not carried.
+1. **A sub-agent's start, kept in place:** the messages its transcript opens with, its brief and what Claude Code attached to it, handed back untouched, then one fixed line saying its context was compacted. A compaction that follows another within the prompt cache's lifetime reads this start from the cache instead of writing it again. The main chat has none.
+2. **The facts the plugin recorded as they happened:** your standing orders; anything that arrived after the handoff call; the plan file when in plan mode; for a sub-agent, the documents its brief names (below); your ten newest messages and every answer you gave (a sub-agent's brief is the first message above, not repeated here); the skills in use, each listed by name and description, its text carried only when it is pinned; the agents and background shells; the shell commands it ran; the files it touched; the task list; any files the handoff asked to carry; and the model's storage, each file by name and description under the folder it reads them from.
+3. **The handoff as the plugin holds it**, each list item under its number, with an instruction to continue from its next action and to send only changes in the next call.
+4. **The messages after the call, word for word**, as many as fit. Any dropped are named as not carried.
 
-On your screen the first two fold to one dim line, `forward-compaction installed the frontier: …`, where Claude Code's fullscreen view would otherwise draw them whole; the transcript view (ctrl+o) shows both in full. Only the drawing folds: the model reads every word.
+A sub-agent's brief is kept word for word, but a brief that hands its rules to a file ("build per /flight/spec.md") would lose that file's text with the context a compaction drops. So every wake of a sub-agent, handoff or mechanical, reads in the documents its brief names: each path in it, absolute or under `~`, ending in `md`, `markdown`, `txt`, `rst` or `adoc`, that the sub-agent itself opened and did not write or edit, and that its handoff does not already carry. They are read from disk at install within 40,000 characters together, the one that crosses the limit cut at its last line that fits with a line saying where to Read on, and one with no room left or that cannot be read is named as not carried. Source, data and log files a brief names are never carried this way. On a mechanical wake such a document is left out of the newest files, so it appears once.
+
+On your screen the facts and the handoff fold to one dim line, where Claude Code's fullscreen view would otherwise draw them whole; the transcript view (ctrl+o) shows both in full. Once the first request after the install has reported its usage, the line carries the measured sizes: `forward-compaction installed the frontier, 135k → 58k context, its first request read 11k from the prompt cache and wrote 47k: …` (a missing reading before is said as `unknown`; the cache clause appears only when both counts are reported; until then the line stands without the sizes). Only the drawing folds: the model reads every word.
 
 Every figure, limit and edge case is in the [behaviour reference](./docs/spec.md).
 
@@ -145,33 +148,46 @@ Every figure, limit and edge case is in the [behaviour reference](./docs/spec.md
 
 ### `forward_compaction`
 
-The model writes its handoff with one call, one argument per section:
+The model keeps its handoff as two texts and six numbered lists, and each call sends only what changed; whatever it leaves out stays:
 
 ```text
 forward_compaction({
-  "objective": "…", "decisions": "…", "done": "…", "remaining": "…", "next": "…",
-  "load_files": [
-    { "path": "/abs/plan.md", "why": "the plan I am executing" },
-    { "path": "/abs/release-steps.md", "why": "step 5's checklist", "later": true }
-  ]
+  "objective": "…", "next": "…",
+  "done": { "add": ["the parser, tested"] },
+  "remaining": { "remove": [2], "edit": [{ "id": 3, "text": "…" }], "add": ["…"] },
+  "storage": { "add": [{ "name": "survey", "description": "the API survey", "value": "…" }] },
+  "load_files": [{ "path": "/abs/plan.md", "why": "the plan I am executing" }]
 })
 ```
 
-| Argument | Required | What goes in it |
-| --- | --- | --- |
-| `objective` | yes | What the work is for and what done means. |
-| `decisions` | yes | Every ruling you gave on how something gets done, in your words. |
-| `done` | yes | The finished pieces, each with how it was verified. |
-| `remaining` | yes | Every step left, in order. |
-| `next` | yes | The first concrete action after the compaction. |
-| `blocked`, `findings` | no | What waits on whom; the model's own notes, errors and commands it will need again. |
-| `standing_orders` | no | Your orders that bind the rest of the work, in your exact words. The plugin keeps them across compactions until you lift them. |
-| `lifted` | no | Orders you have lifted, with the words you lifted them with. |
-| `load_files` | no | Files to read back in after the compaction, up to 250 lines each; a binary file is named, never carried. One marked `"later": true` is never read in: every compaction lists it by path and why until a handoff names it again or drops it. |
-| `drop_files` | no | Files listed for later that no step needs any more. |
-| `keep_skills` | no | Skills and commands whose text the next compaction carries whole; every other one is listed by name and description, to load again with the Skill tool. |
+| Argument | What goes in it |
+| --- | --- |
+| `objective`, `next` | What the work is for and what done means; the first concrete action after the compaction. A text sent replaces the one stored. |
+| `orders` | Your orders that bind the rest of the work, in your exact words. They open every compaction until the model removes one by its number. |
+| `decisions`, `done`, `remaining`, `blocked`, `findings` | Your rulings on how something gets done; the finished pieces, each with how it was verified; every step left, in order; what waits on whom; the model's own notes, errors and commands it will need again. |
+| `storage` | Markdown files the model keeps for a later step, each with a description; every compaction lists them, and the model reads or edits them with Read and Edit. |
+| `load_files` | Files to read back in after the compaction, up to 250 lines each; a binary file is named, never carried. |
 
-The call is never refused. The reply says when the handoff will install and names anything it left out. A handoff missing a required section is stored and installs as it is, the compaction naming each section it lacks; a complete one sent later replaces it.
+Outside the expanded view (ctrl+o, `--verbose`, an export) the call's row in the transcript draws what the call did in place of its raw arguments, and the result block under it draws nothing. Every part of the frontier is drawn on every call, changed or not: the six lists with the number of items each holds and their `+` added, `~` edited and `-` removed item numbers, whether `objective` and `next` were set, replaced or left unchanged, the storage files, the files to load, the characters written and the output tokens of the request that made the call, the handoff's size and the context at the call. Both token figures are Claude Code's own readings, absent until the request reports them. A failed or interrupted call keeps Claude Code's drawing, and the stored result the model reads is unchanged.
+
+```text
+● forward_compaction  frontier updated · nothing compacts, the context is still small
+  ⎿  orders     0
+     decisions  0
+     done       1    +1 [1]
+     remaining  0
+     blocked    0
+     findings   1    +1 [1]
+     objective  set
+     next       set
+     storage    1 file: notes.md  +notes.md
+     load_files none
+     wrote      221 chars of arguments · its request wrote 208 tokens
+     frontier   70 chars · 2 items
+     context    73k at the call
+```
+
+Each list takes `{add, remove, edit}`: texts to add, item numbers to remove, `{id, text}` to replace an item's text. An item's number never changes and is never reused. At a compaction each list item shows how many compactions it has passed unchanged (`[3 rounds unchanged]`), counted by the plugin, so the model sees what has gone stale and removes it. The call is never refused: the reply gives the new numbers and one line per change, names anything it skipped, gives the handoff's size, and says when the handoff will install; past `FORWARD_COMPACTION_FRONTIER_WARN_CHARS` a handoff with no list item is also asked for a shorter objective and next. An item that left (removed, or the text an edit replaced) is shown by its first 80 characters, its whole text staying in the list's history file. A list, `storage` or `load_files` value sent as the text of its own JSON is read as that JSON, and one whose JSON does not parse is repaired, each with a note in the reply, and a repaired field makes the call wait one request before it installs; the reply says so and names when the frontier installs. Old call shapes are never refused: `standing_orders` entries are taken as `orders.add`, and `lifted`, `keep_skills`, `drop_files`, `drop_skills` and a `load_files` entry's `later` are answered by a note. Everything is written to disk as it arrives, and what leaves a list, a text or the storage goes to a history folder beside it, so a restarted chat keeps every number; [State on disk](./docs/spec.md#state-on-disk) has the layout.
 
 ### `look_back`
 
@@ -183,22 +199,26 @@ Searches the chat's own transcript from before its latest compaction for an exac
 
 Every option is an environment variable, set in the shell that starts Claude Code or in the `env` block of `settings.json`. The plugin has no `/config` screen. An unset or blank variable uses the default, and a bad value is named on screen and the default applies.
 
-A **size** is a token count (`100000`), a number with a k or m suffix (`100k`, `0.6m`), or a percentage of the max context (`60%`). A **max context** is a token count, never a percentage. A **flag** is `1`, `0`, `true` or `false`. A **model list** is comma-separated parts of model ids, matched in any case; set to empty, it ignores no model.
+A **size** is a token count (`100000`), a number with a k or m suffix (`100k`, `0.6m`), or a percentage of the max context (`60%`). A **max context** is a token count, never a percentage. A **character count** is a number, a k suffix allowed (`12000`, `12k`). A **flag** is `1`, `0`, `true` or `false`. A **model list** is comma-separated parts of model ids, matched in any case; set to empty, it ignores no model.
 
 | Variable | Type | Default | Meaning |
 | --- | --- | --- | --- |
 | `FORWARD_COMPACTION_MAIN_MAX_CONTEXT` | max context | `window` | The main chat's max context, which its sizes are a percentage of: by default the window Claude Code reports, read again after `/model`. |
 | `FORWARD_COMPACTION_MAIN_CEILING` | size | `60%` | With no handoff stored, the main chat's context at which it is compacted automatically (1M window → 600k). |
-| `FORWARD_COMPACTION_MAIN_NUDGE_START` | size | `15%` | The main chat's context at which it is first told its size and asked to write a handoff. |
+| `FORWARD_COMPACTION_MAIN_NUDGE_ROOM` | size | `unset` | Set, the main chat's first nudge goes out once its context has grown this much above its floor (its first size in the session, or after a compaction the larger of its first two sizes, or any lower size), instead of at its nudge start, and after each compaction again this much above the new floor. Held to two `NUDGE_EVERY` below the ceiling, never under one `NUDGE_EVERY`. A set room wins over the nudge start. An invalid value is named in the options errors and no room applies. |
+| `FORWARD_COMPACTION_MAIN_NUDGE_START` | size | `15%` | The main chat's context at which it is first told its size and asked to write a handoff; after a compaction the next nudge waits for this much growth past its first reading. Decides nothing while the room is set. |
 | `FORWARD_COMPACTION_MAIN_NUDGE_EVERY` | size | `5%` | How much the main chat's context grows between nudges. |
-| `FORWARD_COMPACTION_MAIN_FINISH_START` | size | `100k` | The main chat's context from which it is told, once after each compaction, to write a handoff when its whole work is finished, before the final report, so your reply meets a small context. |
+| `FORWARD_COMPACTION_MAIN_FINISH_START` | size | `100k` | The main chat's context from which, once it has also grown one `NUDGE_EVERY` above its floor, it is told, once after each compaction, to write a handoff when its whole work is finished, before the final report, so your reply meets a small context. |
 | `FORWARD_COMPACTION_SUBAGENT_MAX_CONTEXT` | max context | `model` | Every sub-agent's max context when set; unset, each sub-agent's own model's: 1M for a model id carrying `[1m]`, the main chat's window for a sub-agent on the main chat's model, and for any other the context window Anthropic's Models API states for that model, asked once per model in a session; 200k while that is not known, and the decision log says so ([Max contexts](./docs/spec.md#max-contexts)). |
 | `FORWARD_COMPACTION_SUBAGENT_CEILING` | size | `80%` | With no handoff stored, a sub-agent's context at which it is compacted automatically (160k on 200k, 800k on 1M). |
-| `FORWARD_COMPACTION_SUBAGENT_NUDGE_START` | size | `165k` | A sub-agent's first nudge; on a 200k max context it lies past the 160k ceiling, so that sub-agent is never nudged and wakes mechanically; after a compaction the next nudge waits for this much growth, so a handoff never loops. |
+| `FORWARD_COMPACTION_SUBAGENT_NUDGE_ROOM` | size | `unset` | Set, a sub-agent's first nudge goes out once its context has grown this much above its floor (its first size, or after a compaction the larger of its first two sizes, or any lower size), instead of at its nudge start, and after each compaction again this much above the new floor. Held to two `NUDGE_EVERY` below the ceiling, so a sub-agent on a 200k max context is still nudged before its 160k ceiling, and never under one `NUDGE_EVERY`. A set room wins over the nudge start. An invalid value is named in the options errors and no room applies. |
+| `FORWARD_COMPACTION_SUBAGENT_NUDGE_START` | size | `165k` | A sub-agent's context, a token count the same on every max context, at which it is first nudged; after a compaction the next nudge waits for this much growth past its first reading. On a 200k max context it lies past the 160k ceiling, so that sub-agent is never nudged and is compacted mechanically at 160k; on 1M it is nudged at 165k, then 230k. Decides nothing while the room is set. |
 | `FORWARD_COMPACTION_SUBAGENT_NUDGE_EVERY` | size | `65k` | How much a sub-agent's context grows between nudges. |
 | `FORWARD_COMPACTION_CEILING_NATIVE` | flag | `0` | `1`: at the ceiling with no handoff, Claude Code's own summary runs instead of the automatic compaction. |
 | `FORWARD_COMPACTION_IGNORE_MODELS` | model list | `haiku` | Models that get no nudge and are compacted automatically at their ceiling; a handoff they write still installs ([Ignored models](./docs/spec.md#ignored-models)). |
 | `FORWARD_COMPACTION_KEEP_SKILLS` | name list | `none` | Skills and commands whose text every compaction carries whole, comma-separated, `*` for all of them; a skill file's `forward-compaction-keep: true` frontmatter does the same. Every other one is listed by name and description. |
+| `FORWARD_COMPACTION_SUBAGENT_CALL_COMPACTS` | name list | `none` | Agent types, comma-separated (`flights:lander`), whose forward_compaction call compacts at any context size: for an agent whose definition tells it when to shed its context. A sub-agent of any other type compacts only from its nudge start on; below it, a call only updates its frontier. |
+| `FORWARD_COMPACTION_FRONTIER_WARN_CHARS` | character count | `12000` | The size of the frontier the plugin holds (every live item, the objective and next) past which a forward_compaction result asks for a shorter objective and next, when the frontier holds no list item; a frontier whose lists hold items is asked nothing. Nothing is cut and no call is refused. |
 | `FORWARD_COMPACTION_DEBUG` | flag | `1` | `0`: no `debug.jsonl`, the row the plugin writes at every step. |
 
 An example `settings.json`:
@@ -227,8 +247,8 @@ Only errors reach the screen. Logs never hold handoff or transcript text, and th
 ## Limits
 
 - **Sub-agents are slower to compact.** Writing a handoff takes a sub-agent 28.7 s at the median, against 21.5 s for Claude Code's summary. The gain there is what the handoff keeps, not speed.
-- **Your own `/compact` runs Claude Code's summary.** A stored handoff is dropped, and the screen says so.
-- **Handoffs live in memory.** Quitting before a handoff installs loses it, though its text stays in the transcript, where `look_back` finds it.
+- **Your own `/compact` runs Claude Code's summary.** A pending handoff does not install, and the screen says so; its lists stay for the next one.
+- **A quit before the install keeps the handoff, not the install.** The lists stay on disk and a restarted chat keeps every number, but the pending install is gone: the next compaction is automatic unless the model calls again, and it shows the lists as they stand.
 - **A sub-agent's window is asked online.** For a sub-agent on another model than the main chat, the plugin asks Anthropic's Models API for that model's context window, once per model in a session, with the session's own login. Where it gets no answer (no Anthropic login, as with a third-party provider; `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`; no network), the sub-agent is measured against 200k and `warnings.jsonl` says why; `FORWARD_COMPACTION_SUBAGENT_MAX_CONTEXT` sets the figure instead, and then nothing is asked. Set it to `200k` with `CLAUDE_CODE_DISABLE_1M_CONTEXT`, since the API states a model's own window.
 - **Function hooks are early access** and may change between Claude Code releases.
 
@@ -255,7 +275,7 @@ The classic `PreCompact` hook fires for a sub-agent's compaction without the age
 <details>
 <summary><b>Does a handoff survive a restart or <code>claude --resume</code>?</b></summary>
 
-No. Stored handoffs and recorded facts live in the plugin's memory: the main chat installs its handoff at the same turn's end, and a sub-agent's ends with its process. The handoff text stays in the transcript as the tool call's input, where `look_back` finds it. After a resume the facts message says when recording started.
+The lists do: they live on disk and a resumed chat keeps every number. The pending install does not, and the recorded facts live in the plugin's memory: the main chat installs its handoff at the same turn's end, and a sub-agent's ends with its process. The handoff text stays in the transcript as the tool call's input, where `look_back` finds it. After a resume the facts message says when recording started.
 </details>
 
 <details>

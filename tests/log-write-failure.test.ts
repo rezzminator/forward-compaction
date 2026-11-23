@@ -181,7 +181,8 @@ describe('only errors reach the screen', () => {
     await step(650_000); // main past its 600k ceiling, no frontier: a mechanical wake, whose landed line is info
     await f.dispatch('session.compact', { trigger: 'auto', messages: [{ role: 'user', text: 'go', toolUses: [], handle: 'm0' }] }, async () => ({ messages: [] }));
     await step(40_000);
-    await f.dispatch('tool.call', { tool: 'mcp__forward-compaction__forward_compaction', tool_use_id: 'tu-h', objective: 'o', decisions: 'none', done: 'd', remaining: 'r', next: 'n' }, async () => ({ result: 'not ours' }));
+    await step(40_000); await step(100_000); // the floor after the wake, then main's finish point: the call below compacts
+    await f.dispatch('tool.call', { tool: 'mcp__forward-compaction__forward_compaction', tool_use_id: 'tu-h', objective: 'o', next: 'n', done: { add: ['d'] } }, async () => ({ result: 'not ours' }));
     await f.dispatch('session.compact', { trigger: 'manual', messages: [{ role: 'user', text: 'go', toolUses: [], handle: 'm1' }] }, async () => ({ messages: [] }));
     const texts = f.texts();
     expect(texts.filter((line) => /no compaction this plugin handled|mechanical wake installed/.test(line))).toEqual([]);

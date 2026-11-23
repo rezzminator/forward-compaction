@@ -1,44 +1,72 @@
-// The forward_compaction tool contract: what the model may send, what is stored whole (never trimmed, never refused), and what the receipt says.
+// The forward_compaction tool contract: what the model may send, how a call changes the frontier the plugin holds
+// (lists.ts), and what the result says. A call is never refused: whatever cannot be read is one note.
 
-import { k } from './nudge';
-import { carryOrders, type LiftedOrder, type OrderMemory, type StandingOrder } from './orders';
-export { descriptionOf, keepNote, keepOutcome, keptLater, laterApply, laterChecked, laterNote, laterProblem, pinned, pinnedBy, FRONTMATTER_KEEP, KEEP_ALL } from './carry';
+import { k, andList } from './nudge';
+import type { WakeFile } from './wake';
+import { LISTS, listApply, textApply, TEXTS, type Held, type Left, type ListCount, type ListName, type TextName } from './lists';
+import { repairJson } from './repair';
 
 /** The tool's name as registered; the model sees `mcp__forward-compaction__forward_compaction`. */
 export const FORWARD_TOOL = 'forward_compaction';
 
 export const FORWARD_TOOL_DESCRIPTION =
-  'Compacts your large context at a clean milestone. Stores your frontier; at your next compaction it and recorded facts replace all before this call, the newest later messages that fit stay verbatim, the rest named as not carried. The user\'s binding orders go in standing_orders. Write what only a later step needs to a file, list it in load_files with later: true, and name that step in remaining or next. Always stores. Example: forward_compaction({"objective": "…", "decisions": "…", "done": "…", "remaining": "…", "next": "…", "load_files": [{"path": "…"}]}). Exact old detail later → look_back.';
+  'Compacts your context — call it when a forward-compaction notice asks; a call on a small context only updates your frontier. A compaction drops what you have read; the frontier stays: numbered lists, so send only changes: add texts, remove or edit by number; what you leave out stays. One fact or step per item. MANDATORY: keep it clean: each call removes what is finished, lifted or wrong, edits what changed. Always stores. Example: forward_compaction({"next": "Run the gate", "done": {"add": ["Parser merged, 41 tests pass"]}, "remaining": {"remove": [3]}}). Exact old detail later → look_back.';
 
-/**
- * The frontier's sections in the order they are assembled: the argument, its heading, whether it is required, and what it
- * holds. A frontier missing a required one is stored and installs as it is, its wake naming each one it lacks (`missing`).
- */
-const SECTIONS = [
-  { key: 'objective', heading: 'Objective', required: true, description: 'MANDATORY: what the work is for and what done means.' },
-  { key: 'decisions', heading: 'Decisions', required: true, description: 'MANDATORY: every ruling the user gave on how something gets done, in the user\'s words, each with its undo when one exists; "none" when there are none. Rules binding the rest of the work go in standing_orders.' },
-  { key: 'done', heading: 'Done', required: true, description: 'MANDATORY: finished pieces, each with how it was verified; every figure with the command that produced it.' },
-  { key: 'remaining', heading: 'Remaining', required: true, description: 'MANDATORY: every step left, in order; "none" when nothing is left. A plan file you update at each milestone may stand in: name its path here and put it in load_files.' },
-  { key: 'next', heading: 'Next', required: true, description: 'MANDATORY: the first concrete action after the wake.' },
-  { key: 'blocked', heading: 'Blocked', required: false, description: 'Optional: what waits on whom.' },
-  { key: 'findings', heading: 'Findings', required: false, description: 'Optional: your own choices with why, errors verbatim, the commands and recipes you will need again.' },
-] as const;
+/** What each list holds, as its field's description says it. */
+const LIST_DESCRIPTION: Record<ListName, string> = {
+  decisions: "Every ruling the user gave on how something gets done, in the user's words, each with its undo when one exists. A question the user put on hold goes to blocked.",
+  done: 'Finished pieces, each with how it was verified; every figure with the command that produced it.',
+  remaining: 'Every step left, in order. An added step lands last, or before a step it names: {"before": 4, "text": "..."}.',
+  blocked: "Every question or choice on hold until the user answers, in the user's words; removed once answered.",
+  findings: 'Your own choices with why, errors verbatim, the commands and recipes you will need again.',
+  orders:
+    "Every rule of the user's that binds the rest of the work (a prohibition, a limit, a rule), in the user's words; several may share one item. An instruction for one part of the work is no order: it goes to remaining. A rule the user changes is edited. A rule the user lifts leaves entirely, never kept as a LIFTED note: remove its item, or edit the item down to its other rules. Example: [2] reads 'Never push. Tests go in tests/. One CHANGELOG line per fix.' and the user drops the CHANGELOG rule. Wrong: {\"edit\": [{\"id\": 2, \"text\": \"Never push. Tests go in tests/. LIFTED: one CHANGELOG line per fix.\"}]}. Right: {\"edit\": [{\"id\": 2, \"text\": \"Never push. Tests go in tests/.\"}]}.",
+};
+
+/** One list field: its three operations, each optional. */
+const listSchema = (name: ListName) => ({
+  type: 'object',
+  additionalProperties: false,
+  description: LIST_DESCRIPTION[name],
+  properties: {
+    add: {
+      type: 'array',
+      description: 'New items, one text each; the result gives each its number. Your first call has only adds.',
+      items: name === 'remaining' ? { anyOf: [{ type: 'string' }, { type: 'object', additionalProperties: false, required: ['text'], properties: { before: { type: 'integer' }, text: { type: 'string' } } }] } : { type: 'string' },
+    },
+    remove: { type: 'array', description: 'Numbers of items to drop, as the wake shows them: [2, 5].', items: { type: 'integer' } },
+    edit: { type: 'array', description: 'Replaces one item\'s whole text: [{"id": 4, "text": "..."}].', items: { type: 'object', additionalProperties: false, required: ['id', 'text'], properties: { id: { type: 'integer' }, text: { type: 'string' } } } },
+  },
+});
 
 export const FORWARD_INPUT_SCHEMA = {
   type: 'object',
   additionalProperties: false,
-  required: ['objective', 'decisions', 'done', 'remaining', 'next'],
   properties: {
-    objective: { type: 'string', description: SECTIONS[0].description },
-    decisions: { type: 'string', description: SECTIONS[1].description },
-    done: { type: 'string', description: SECTIONS[2].description },
-    remaining: { type: 'string', description: SECTIONS[3].description },
-    next: { type: 'string', description: SECTIONS[4].description },
-    blocked: { type: 'string', description: SECTIONS[5].description },
-    findings: { type: 'string', description: SECTIONS[6].description },
+    objective: { type: 'string', description: 'What the work is for and what done means. Send it on your first call, then only when it changes.' },
+    next: { type: 'string', description: 'Every call: the first concrete action after the wake.' },
+    decisions: listSchema('decisions'),
+    done: listSchema('done'),
+    remaining: listSchema('remaining'),
+    blocked: listSchema('blocked'),
+    findings: listSchema('findings'),
+    orders: listSchema('orders'),
+    storage: {
+      type: 'object',
+      additionalProperties: false,
+      description: 'Markdown files you keep for a later step and read or edit yourself with Read and Edit; the wake lists each by name and description.',
+      properties: {
+        add: {
+          type: 'array',
+          description: '[{"name": "survey.md", "description": "one line the wake shows", "value": "the whole content"}] writes the file; without value it lists a file you wrote in the storage folder, or changes a listed entry\'s description.',
+          items: { type: 'object', additionalProperties: false, required: ['name'], properties: { name: { type: 'string' }, description: { type: 'string' }, value: { type: 'string' } } },
+        },
+        remove: { type: 'array', description: 'Names to stop listing: ["survey.md"].', items: { type: 'string' } },
+      },
+    },
     load_files: {
       type: 'array',
-      description: 'Files the next step reads, read into the new context when it installs: each up to 250 lines; a longer file or range carries its first 250 and names where to Read the rest. Pass lines ranges to carry only what you need. A file only a later step needs takes later: true.',
+      description: 'Files read into the new context when it installs: each up to 250 lines; a longer file or range carries its first 250 and names where to Read the rest.',
       items: {
         type: 'object',
         additionalProperties: false,
@@ -46,43 +74,7 @@ export const FORWARD_INPUT_SCHEMA = {
         properties: {
           path: { type: 'string', description: 'Absolute path.' },
           lines: { type: 'string', description: 'Line ranges, like "10-40" or "1-60,160-185".' },
-          why: { type: 'string', description: 'What you need it for, one line; past 200 characters it is cut.' },
-          later: { type: 'boolean', description: 'true: not read in; listed by path and why in every wake until load_files names it again or drop_files drops it.' },
-        },
-      },
-    },
-    drop_files: {
-      type: 'array',
-      items: { type: 'string' },
-      description: 'Paths listed for later (load_files later: true) that no step needs any more.',
-    },
-    keep_skills: {
-      type: 'array',
-      items: { type: 'string' },
-      description: 'Skills or commands whose text this one wake carries whole; any other is listed by name and description, to load again with the Skill tool.',
-    },
-    standing_orders: {
-      type: 'array',
-      description: "Every order of the user's that binds the rest of the work (a prohibition, a limit, a rule), each in every frontier until the user lifts it.",
-      // Open, so an entry still carrying a key an older schema had (`at`) is read for its order, never refused.
-      items: {
-        type: 'object',
-        required: ['order'],
-        properties: {
-          order: { type: 'string', description: "The user's words, verbatim." },
-        },
-      },
-    },
-    lifted: {
-      type: 'array',
-      description: 'Orders your last frontier carried that the user has since lifted.',
-      items: {
-        type: 'object',
-        additionalProperties: false,
-        required: ['order', 'by'],
-        properties: {
-          order: { type: 'string', description: 'The order, exactly as your last frontier carried it.' },
-          by: { type: 'string', description: "The user's words that lifted it, verbatim." },
+          why: { type: 'string', description: "One line, shown as the caption above the file's content." },
         },
       },
     },
@@ -97,28 +89,32 @@ export const LOAD_FILE_MAX_CHARS = 40_000;
 /** A load file's `why`: one line saying what it is for; a longer one is cut to it. */
 export const WHY_MAX_CHARS = 200;
 
-/** One file the model asked to carry into the wake: its path, absolute or resolved against the session's directory; `lines` and `why` the model's own text, `why` cut to WHY_MAX_CHARS; `later`, listed for a later step and never read in (carry.ts `laterApply`). */
-export type LoadFile = { path: string; lines?: string; why?: string; later?: true };
+/** One file the model asked to carry into the wake: its path, absolute or resolved against the session's directory; `lines` and `why` the model's own text, `why` cut to WHY_MAX_CHARS. */
+export type LoadFile = { path: string; lines?: string; why?: string };
 
-export type ParsedFrontier = {
-  frontier: string;
-  loadFiles: LoadFile[];
+/** A call as read: each text and list change as sent (lists.ts reads them leniently), the storage change, the load files, and one note per argument skipped or read another way. */
+export type ParsedCall = {
+  texts: Partial<Record<TextName, unknown>>;
+  lists: Partial<Record<ListName, unknown>>;
+  /** Items the call sent outside its lists that join one: an unknown field's text joins findings, a `standing_orders` entry joins orders. */
+  extra: Partial<Record<ListName, string[]>>;
+  storage?: unknown;
+  /** Absent when the call sent no `load_files`: the earlier call's stay. */
+  loadFiles?: LoadFile[];
   /** The place in the call's `load_files` of each entry of `loadFiles`, so a note on one names the entry the model sent. */
   loadAt: number[];
-  /** The paths of files for later the call takes off the party's list (carry.ts `laterApply`), resolved as `loadFiles` are. */
-  dropFiles: string[];
-  /** The skills and commands the call's wake carries whole (carry.ts `keepOutcome`). */
-  keepSkills: string[];
-  standingOrders: StandingOrder[];
-  lifted: LiftedOrder[];
-  /** The required sections absent, not a string or blank, in section order: the wake names each, and the receipt says so. */
-  missing: string[];
-  /** One line per argument left out, skipped or carried by the plugin instead: the receipt names each, the model fixes nothing. */
   notes: string[];
+  /** The fields that arrived as text whose JSON was broken and was repaired; absent when none. A broken field can end its call early (`callWaits`). */
+  broken?: string[];
 };
 
-const FIELDS = [...SECTIONS.map((section) => section.key), 'load_files', 'drop_files', 'keep_skills', 'standing_orders', 'lifted'];
-const num = (n: number): string => n.toLocaleString('en-US');
+/** Fields an older call shape held: each read one way or ignored, with a note. */
+const OLD_FIELDS = ['standing_orders', 'lifted', 'keep_skills', 'drop_files', 'drop_skills'];
+const FIELDS: string[] = [...TEXTS, ...LISTS, 'storage', 'load_files'];
+const JSON_FIELDS = [...LISTS, 'storage', 'load_files', ...OLD_FIELDS] as string[];
+const FIELDS_ARE = `The fields are ${FIELDS.slice(0, -1).join(', ')} and ${FIELDS.at(-1)}.`;
+/** A value that holds nothing to keep: null, a blank text, an empty array or object. */
+const hollow = (v: unknown): boolean => v === null || (typeof v === 'string' && v.trim() === '') || (Array.isArray(v) && v.length === 0) || (isObject(v) && Object.keys(v).length === 0);
 const kind = (v: unknown): string => (v === null ? 'null' : Array.isArray(v) ? 'array' : typeof v);
 /** Whether `p` is absolute, POSIX or Windows. */
 export const isAbsolutePath = (p: string): boolean => /^(\/|[A-Za-z]:[\\/]|\\\\)/.test(p);
@@ -126,19 +122,19 @@ export const isAbsolutePath = (p: string): boolean => /^(\/|[A-Za-z]:[\\/]|\\\\)
 const inDir = (dir: string, path: string): string => `${dir.replace(/[\\/]+$/, '')}/${path.replace(/^(\.[\\/])+/, '')}`;
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 
-const ARRAYS = ['load_files', 'drop_files', 'keep_skills', 'standing_orders', 'lifted'];
 const FOLD = /<\/(\w+)>\s*<parameter name="(\w+)">/g;
 
 /**
- * A section whose text holds its own closing tag and then `<parameter name="other">`: the model's call markup closed it
- * early and folded the parameters after it into its text. Each folded one is taken back out as its own field (an
- * array one parsed as JSON), one note each. One that cannot be (no field, one the call also sent, or an array one
- * that is not JSON) stays in the section it arrived in, under its name, so no text the model sent is lost.
+ * A text whose value holds its own closing tag and then `<parameter name="other">`: the model's call markup closed it
+ * early and folded the parameters after it into its text. Each folded one is taken back out as its own field (a list,
+ * storage or load_files one parsed as JSON, a list one that is no JSON kept as text), one note each. One that cannot be
+ * (no field, one the call also sent, or a storage or load_files one that is not JSON) stays where it arrived, under its name.
  */
 function unfold(input: Record<string, unknown>): { fields: Record<string, unknown>; notes: string[] } {
   const fields = { ...input };
   const notes: string[] = [];
-  for (const key of FIELDS) {
+  const known = [...FIELDS, ...OLD_FIELDS];
+  for (const key of known) {
     const value = fields[key];
     if (typeof value !== 'string') continue;
     const parts = value.split(FOLD);
@@ -149,16 +145,18 @@ function unfold(input: Record<string, unknown>): { fields: Record<string, unknow
       const segment = parts[i + 2] ?? '';
       const text = i + 3 < parts.length ? segment : segment.replace(new RegExp(`</${name}>\\s*$`), '');
       const at = `${name} arrived inside ${key}, after "</${key}>"`;
+      const taken = `${at}: your call's markup closed ${key} early; taken back out as its own field.`;
       const keep = (why: string): void => void (kept.push(`[${name}, as it arrived inside ${key}]\n${text}`), notes.push(`${at}, but ${why}: kept in ${key} as it arrived.`));
-      if (!FIELDS.includes(name)) keep(`${name} is no field`);
+      if (!known.includes(name)) keep(`${name} is no field`);
       else if (input[name] !== undefined) keep(`the call also sent ${name}`);
-      else if (!ARRAYS.includes(name)) (fields[name] = text, notes.push(`${at}: your call's markup closed ${key} early; taken back out as its own field.`));
+      else if (!JSON_FIELDS.includes(name)) (fields[name] = text, notes.push(taken));
       else {
         try {
           fields[name] = JSON.parse(text);
-          notes.push(`${at}: your call's markup closed ${key} early; taken back out as its own field.`);
+          notes.push(taken);
         } catch (err) {
-          keep(`it is not JSON (${(err as Error).message})`);
+          if ((LISTS as readonly string[]).includes(name)) (fields[name] = text, notes.push(taken));
+          else keep(`it is not JSON (${(err as Error).message})`);
         }
       }
     }
@@ -167,51 +165,96 @@ function unfold(input: Record<string, unknown>): { fields: Record<string, unknow
   return { fields, notes };
 }
 
-/** One line per section left out: a required one missing or blank, any one given but not a string; one per unknown field, carried under findings (`carryUnknown`). */
-function argumentNotes(fields: Record<string, unknown>): string[] {
-  const unknown = Object.keys(fields).filter((key) => !FIELDS.includes(key)).map((key) => `unknown field "${key}" carried under findings. The fields are ${FIELDS.slice(0, -1).join(', ')} and ${FIELDS.at(-1)}.`);
-  const sections = SECTIONS.flatMap(({ key, required }) => {
-    const value = fields[key];
-    if (typeof value === 'string' && value.trim() !== '') return [];
-    if (value === undefined || value === '' || (typeof value === 'string' && value.trim() === '')) return required ? [`${key} was ${value === undefined ? 'missing' : 'blank'}: your frontier is stored without it.`] : [];
-    return [`${key} must be a string; got ${kind(value)}: your frontier is stored without it.`];
-  });
-  return [...unknown, ...sections];
-}
+const OPS = ['add', 'remove', 'edit'];
 
-/** The fields with every unknown one's content appended to `findings` under its name: the model sent it, so the wake carries it. A `findings` that is no string is left out, as its note says. */
-function carryUnknown(fields: Record<string, unknown>): Record<string, unknown> {
-  const unknown = Object.keys(fields).filter((key) => !FIELDS.includes(key));
-  if (unknown.length === 0) return fields;
-  const own = typeof fields.findings === 'string' && fields.findings.trim() !== '' ? [fields.findings] : [];
-  const carried = unknown.map((key) => `[${key}, an argument forward_compaction does not take]\n${typeof fields[key] === 'string' ? fields[key] : JSON.stringify(fields[key])}`);
-  return { ...fields, findings: [...own, ...carried].join('\n\n') };
+/** What an argument's text holds when it is JSON: as it stands, or repaired (repair.ts) with the arguments found written after it in `beside`; undefined for a plain text. */
+function jsonOf(key: string, text: string, list: boolean): { own: unknown; beside: Record<string, unknown>; repaired: boolean } | undefined {
+  const json = /^\s*[[{]/.test(text);
+  if (!json && !list) return undefined; // a list's text may be its operations written bare (`add: [...]`), which the repair reads
+  if (json) {
+    try {
+      return { own: JSON.parse(text), beside: {}, repaired: false };
+    } catch {
+      // broken JSON: repaired below
+    }
+  }
+  const fixed = repairJson(key, text);
+  return fixed === undefined ? undefined : { ...fixed, repaired: true };
 }
 
 /**
- * Reads the model's tool input into a frontier that is always stored: nothing is refused. Each bad argument is left
- * out (a section) or skipped (one `drop_files`, `keep_skills`, `standing_orders` or `lifted` entry, or a `load_files` entry with no
- * path) and named in `notes` for the receipt, the sections' text and the files coming back as sent; an unknown argument
- * rides under findings. A load file's relative path, and a `drop_files` one, is resolved against `cwd`, the session's directory, when known.
- * With `memory`, the party's remembered standing orders, the plugin carries every one the frontier left out and keeps
- * every one a lift did not prove (orders.ts `carryOrders`).
+ * A list, storage or load_files value that arrived as the text of its own JSON is read as that JSON, with one note; one
+ * whose JSON is broken is repaired first (repair.ts). The text may also hold the fields the model wrote with it: inside a
+ * list's object beside its operations (`{"add": [...], "remaining": {...}}`), or after a value closed early
+ * (`{"add": [...]},"done": {...}}`); each is taken out as its own field. A list's text that is an empty array or object
+ * changes nothing and is read as not sent. A text that is no JSON, or one holding a key that
+ * is neither an operation nor a field the call left out, stays as it arrived, and lists.ts reads it as one added item.
+ */
+function unstring(fields: Record<string, unknown>, notes: string[], broken: string[]): void {
+  const pending: string[] = [...LISTS, 'storage', 'load_files'];
+  for (let key = pending.shift(); key !== undefined; key = pending.shift()) {
+    const value = fields[key];
+    if (typeof value !== 'string') continue;
+    const list = (LISTS as readonly string[]).includes(key);
+    const found = jsonOf(key, value, list);
+    if (found === undefined) continue; // no JSON: a plain text, read as one
+    const read = found.own;
+    const inside = list && isObject(read) ? Object.keys(read).filter((k) => !OPS.includes(k)) : [];
+    const others: Record<string, unknown> = { ...found.beside, ...Object.fromEntries(inside.map((k) => [k, (read as Record<string, unknown>)[k]])) };
+    const names = Object.keys(others);
+    if (names.some((k) => k === key || !FIELDS.includes(k) || fields[k] !== undefined)) continue;
+    let mine: unknown; // stays undefined when the text held only other fields
+    if (!list) {
+      if (key === 'storage' ? !isObject(read) : !Array.isArray(read)) continue;
+      mine = read;
+    } else if (Array.isArray(read)) {
+      if (!read.every((entry) => typeof entry === 'string' || isObject(entry))) continue;
+      if (read.length > 0) mine = read; // an empty array changes nothing: as if not sent
+    } else if (isObject(read)) {
+      const ops = Object.keys(read).filter((k) => OPS.includes(k));
+      if (ops.length > 0) mine = Object.fromEntries(ops.map((k) => [k, read[k]])); // an empty object changes nothing: as if not sent
+    } else continue;
+    if (mine === undefined) delete fields[key];
+    else fields[key] = mine;
+    for (const k of names) (fields[k] = others[k]), pending.push(k);
+    if (found.repaired) broken.push(key);
+    const whole = found.repaired ? `${key} arrived as text whose JSON was broken: repaired and read, this result's lines show what it changed` : `${key} arrived as the text of its JSON: read as JSON`;
+    notes.push(`${whole}${names.length === 0 ? '' : `, and ${andList(names)} inside it taken out as ${names.length === 1 ? 'its own field' : 'their own fields'}`}.`);
+  }
+}
+
+/**
+ * Reads the model's tool input; nothing is refused. Each text and list change is passed on as sent, for lists.ts to read
+ * leniently, after a value sent as the text of its JSON is read as JSON (`unstring`). An unknown field's text joins findings under its name, one that holds nothing is ignored; `standing_orders` entries join orders as adds;
+ * `lifted` is answered with orders.remove; keep_skills, drop_files, drop_skills and a load file's `later` are ignored;
+ * each with one note. A load file's relative path is resolved against `cwd`, the session's directory, when known.
  * `$.fs.stat` checks (V12-V15) are the adapter's, through `loadFileNote`.
  */
-export function parseFrontier(input: unknown, memory?: OrderMemory, cwd?: string): ParsedFrontier {
-  const unfolded = unfold(isObject(input) ? input : {});
-  const notes = [...unfolded.notes, ...argumentNotes(unfolded.fields)];
-  const fields = carryUnknown(unfolded.fields);
-  const given = (key: string): boolean => typeof fields[key] === 'string' && (fields[key] as string).trim() !== '';
-  const frontier = SECTIONS.flatMap(({ key, heading }) => (given(key) ? [`## ${heading}\n${fields[key] as string}`] : [])).join('\n\n');
-  const missing = SECTIONS.flatMap(({ key, required }) => (required && !given(key) ? [key] : []));
-  /** A list of names: each non-blank string kept, anything else skipped by its place, and a list that is none named whole. */
-  const names = (key: string, what: string, none: string): string[] => {
+export function parseCall(input: unknown, cwd?: string): ParsedCall {
+  const { fields, notes } = unfold(isObject(input) ? input : {}), broken: string[] = [];
+  unstring(fields, notes, broken);
+  const call: ParsedCall = { texts: {}, lists: {}, extra: {}, loadAt: [], notes };
+  if (broken.length > 0) call.broken = broken;
+  for (const name of TEXTS) if (fields[name] !== undefined) call.texts[name] = fields[name];
+  for (const name of LISTS) if (fields[name] !== undefined) call.lists[name] = fields[name];
+  if (fields.storage !== undefined) call.storage = fields.storage;
+  const join = (name: ListName, text: string): void => void (call.extra[name] ??= []).push(text);
+  for (const key of Object.keys(fields)) {
+    if (FIELDS.includes(key)) continue;
     const value = fields[key];
-    if (value === undefined) return [];
-    if (!Array.isArray(value)) return (notes.push(`${key} must be an array of ${what}: ${none}.`), []);
-    return value.filter((d, i): d is string => (typeof d === 'string' && d.trim() !== '') || (notes.push(`${key}[${i}] must be a non-blank string: skipped.`), false));
-  };
-  const keepSkills = names('keep_skills', 'skill or command names', 'none kept');
+    if (key === 'standing_orders') {
+      const entries = Array.isArray(value) ? value : [value];
+      const orders = entries.map((o) => (typeof o === 'string' ? o : isObject(o) && typeof o.order === 'string' ? o.order : '')).filter((o) => o.trim() !== '');
+      for (const order of orders) join('orders', order);
+      notes.push(`standing_orders is now orders: its ${orders.length} ${orders.length === 1 ? 'entry is' : 'entries are'} taken as orders.add.`);
+    } else if (key === 'lifted') notes.push('lifted is no field: to lift an order, send its number in orders.remove. Nothing lifted.');
+    else if (OLD_FIELDS.includes(key)) notes.push(`${key} is no field: ignored.`);
+    else if (hollow(value)) notes.push(`unknown field "${key}" held nothing: ignored. ${FIELDS_ARE}`);
+    else {
+      join('findings', `[${key}, an argument forward_compaction does not take]\n${typeof value === 'string' ? value : JSON.stringify(value)}`);
+      notes.push(`unknown field "${key}" added to findings. ${FIELDS_ARE}`);
+    }
+  }
   /** A path as sent, or resolved against `cwd`; a relative one is named in `notes` under `at`. */
   const resolve = (at: string, sent: string): string => {
     if (isAbsolutePath(sent)) return sent;
@@ -219,34 +262,58 @@ export function parseFrontier(input: unknown, memory?: OrderMemory, cwd?: string
     const path = inDir(cwd, sent);
     return (notes.push(`${at} "${sent}" is relative: carried as ${path}, in the session's directory.`), path);
   };
-  const dropFiles = names('drop_files', 'paths', 'none dropped').map((sent, i) => resolve(`drop_files[${i}]`, sent));
-  const orders = carryOrders(memory ?? { remembered: [], said: [], party: 'main' }, fields.standing_orders, fields.lifted);
-  notes.push(...orders.notes);
   const files = fields.load_files;
-  const loadFiles: LoadFile[] = [];
-  const loadAt: number[] = [];
   if (files !== undefined && !Array.isArray(files)) notes.push('load_files must be an array of {path, lines?, why}: none carried.');
-  else {
-    for (const [i, entry] of (files ?? []).entries()) {
-      const { path: sent, why, lines: ranges } = isObject(entry) ? entry : ({} as Record<string, unknown>);
+  else if (files !== undefined) {
+    call.loadFiles = [];
+    for (const [i, entry] of files.entries()) {
+      const { path: sent, why, lines: ranges, later } = isObject(entry) ? entry : ({} as Record<string, unknown>);
       if (typeof sent !== 'string' || sent.trim() === '') {
         notes.push(`load_files[${i}].path must be a non-blank string; got ${kind(sent)}: skipped.`);
         continue;
       }
       const path = resolve(`load_files[${i}].path`, sent);
       const file: LoadFile = { path };
-      const { later } = entry as Record<string, unknown>;
-      if (later === true) file.later = true;
-      else if (later !== undefined && later !== false) notes.push(`load_files[${i}].later must be true or false; got ${kind(later)}: ${path} carried whole.`);
+      if (later !== undefined) notes.push(`load_files[${i}].later is no field: ${path} is carried.`);
       if (ranges !== undefined && (typeof ranges !== 'string' || parseLineRanges(ranges) === undefined)) notes.push(`load_files[${i}].lines "${String(ranges)}" is not a range like "10-40" or "1-60,160-185": ${path} carried from line 1.`);
       else if (ranges !== undefined) file.lines = ranges as string;
       if (why !== undefined && typeof why !== 'string') notes.push(`load_files[${i}].why must be a string; got ${kind(why)}: ${path} carried without it.`);
       else if (why !== undefined && why.length > WHY_MAX_CHARS) (file.why = why.slice(0, WHY_MAX_CHARS)), notes.push(`load_files[${i}].why is ${why.length} characters, over ${WHY_MAX_CHARS}: cut to its first ${WHY_MAX_CHARS}.`);
       else if (why !== undefined && why.trim() !== '') file.why = why;
-      loadFiles.push(file), loadAt.push(i);
+      call.loadFiles.push(file), call.loadAt.push(i);
     }
   }
-  return { frontier, dropFiles, keepSkills, standingOrders: orders.standing, lifted: orders.lifted, loadFiles, loadAt, missing, notes };
+  return call;
+}
+
+/** What one call did to the held frontier: the frontier after it, the result's lines and notes, each list and text changed with the values that left (for disk.ts), each list's counts, and the texts still missing. */
+export type Applied = { held: Held; lines: string[]; notes: string[]; changed: { key: ListName | TextName; left: Left[] | string[] }[]; counts: Partial<Record<ListName, ListCount>>; missing: TextName[] };
+
+/** Applies a call's texts and list changes to `held`, objective first, each list in LISTS order, an item joined from outside its list (`extra`) after the list's own change. Storage is storage.ts's. */
+export function applyCall(held: Held, call: ParsedCall): Applied {
+  const out: Applied = { held: { ...held, lists: { ...held.lists } }, lines: [], notes: [...call.notes], changed: [], counts: {}, missing: [] };
+  const objective = textApply('objective', held.objective, call.texts.objective);
+  for (const name of LISTS) {
+    const changes = [call.lists[name], ...(call.extra[name] !== undefined ? [{ add: call.extra[name] }] : [])].filter((c) => c !== undefined);
+    if (name === 'orders') out.lines.push(...objective.lines), out.notes.push(...objective.notes);
+    for (const change of changes) {
+      const r = listApply(name, out.held.lists[name], change, held.rounds);
+      out.held.lists[name] = r.list;
+      out.lines.push(...r.lines), out.notes.push(...r.notes);
+      const c = out.counts[name] ?? { added: 0, removed: 0, edited: 0, skipped: 0 };
+      out.counts[name] = { added: c.added + r.count.added, removed: c.removed + r.count.removed, edited: c.edited + r.count.edited, skipped: c.skipped + r.count.skipped };
+      if (r.count.added + r.count.removed + r.count.edited > 0) out.changed.push({ key: name, left: r.left });
+    }
+  }
+  const next = textApply('next', held.next, call.texts.next);
+  out.lines.push(...next.lines), out.notes.push(...next.notes);
+  for (const [name, r] of [['objective', objective], ['next', next]] as const) {
+    if (r.text === undefined) delete out.held[name];
+    else out.held[name] = r.text;
+    if (r.text !== undefined && r.text !== held[name]) out.changed.push({ key: name, left: r.left === undefined ? [] : [r.left] });
+    if (r.text === undefined) out.missing.push(name);
+  }
+  return out;
 }
 
 /** What the adapter learned from `$.fs.stat(path)` on one load file: its stat, or `absent` (ENOENT), or the error text of any other throw. */
@@ -261,28 +328,31 @@ export function loadFileNote(index: number, path: string, check: FileCheck): str
   return undefined;
 }
 
-/** The receipt's list of what the plugin left out, skipped or carried on for the model: empty when it changed nothing; with a required section `missing`, it ends with INCOMPLETE_NOTE. */
-export function changesNote(notes: readonly string[], missing: readonly string[] = []): string {
-  const list = notes.length === 0 ? '' : `Stored with ${notes.length} ${notes.length === 1 ? 'change' : 'changes'}:\n${notes.map((n) => `- ${n}`).join('\n')}`;
-  return missing.length === 0 ? list : `${list}\n${INCOMPLETE_NOTE}`;
-}
-
-/** The last line of the changes list of a frontier missing a required section. */
-export const INCOMPLETE_NOTE = 'Call forward_compaction again with every MANDATORY section to replace it before it installs.';
-
-/** `tokens`: the party's last reading, absent when it has none; it picks the sentence and is never printed, being a step behind the call. `incomplete`: a required section is missing, which its wake names. */
+/** `tokens`: the party's last reading, absent when it has none; it picks the sentence and is never printed, being a step behind the call. `missing`: the texts the frontier still lacks, which its wake names. `broken`: the fields whose broken JSON was repaired (`ParsedCall.broken`). `compacts`: parties.ts `Parties.compacts` for the call; true when absent. */
 export type ReceiptInput =
-  | { party: 'main'; chars: number; files: number; tokens?: number; askPoint?: number; replaced?: boolean; incomplete?: boolean }
-  | { party: 'subagent'; chars: number; files: number; tokens?: number; askPoint: number; replaced?: boolean; incomplete?: boolean };
+  | { party: 'main'; files: number; tokens?: number; askPoint?: number; replaced?: boolean; missing?: readonly string[]; broken?: readonly string[]; compacts?: boolean }
+  | { party: 'subagent'; files: number; tokens?: number; askPoint: number; replaced?: boolean; missing?: readonly string[]; broken?: readonly string[]; compacts?: boolean };
 
-/** The tool result of a stored frontier: when it installs, true to the party's door (a sub-agent's only door is Claude Code's ask), and what it lacks. */
+/**
+ * Whether a stored call's install waits one request (decide.ts `decide`): a call a broken field may have ended early
+ * (`ParsedCall.broken`: the model's markup closed the call at that field, and what it meant to send after it never
+ * arrived) or one that left the frontier without its objective or next (`Applied.missing`). Installed at once, the
+ * party wakes on a part of its frontier with everything it read gone; its next request can still send the rest.
+ */
+export const callWaits = (missing: readonly string[], broken: readonly string[]): boolean => missing.length > 0 || broken.length > 0;
+
+/** The result's last sentences: whether the call compacts, when the frontier then installs, true to the party's door (a sub-agent's only door is Claude Code's ask) and one request later for a call that waits (`callWaits`), and what it lacks. */
 export function receipt(input: ReceiptInput): string {
-  const replaced = input.replaced ? ' It replaces the frontier you stored before.' : '';
-  const stored = `Frontier stored (${num(input.chars)} characters, ${input.files} files)${input.incomplete ? ', missing a MANDATORY section: the wake will name each one it lacks' : ''}.`;
+  const missing = input.missing ?? [], broken = input.broken ?? [], waits = callWaits(missing, broken);
+  const replaced = input.replaced ? ' This call applied on top of your earlier one since the last wake.' : '';
+  const held = `${input.files === 0 ? '' : ` with ${input.files} ${input.files === 1 ? 'file' : 'files'} to load`}${missing.length === 0 ? '' : `, without ${andList(missing)}: send ${missing.length === 1 ? 'it' : 'them'} before it installs, or the wake names ${missing.length === 1 ? 'it' : 'them'} missing`}.`;
+  if (input.compacts === false) return `Frontier updated${held} Nothing compacts: your context is still too small for a compaction to pay, and stays as it is. Carry on; a forward-compaction notice asks for the call once it has grown enough.${replaced}`;
+  const stored = `Frontier stored${held}${broken.length === 0 ? '' : ' A broken field can end a call early: if the lines above lack something you meant to send, send it before it installs.'}`;
   const behind = 'The newest messages after this call that fit are kept verbatim behind it, the rest named as not carried';
-  if (input.party === 'main') return `${stored} It installs at the end of this turn, or at Claude Code's next compaction ask if one comes first. ${behind}, so finish the step in hand; you need not stop.${replaced}`;
-  if (input.tokens !== undefined && input.tokens >= input.askPoint) return `${stored} It installs at Claude Code's next compaction ask, before your next request. ${behind}.${replaced}`;
-  return `${stored} Claude Code has not asked to compact you yet: it installs at Claude Code's next ask, from about ${k(input.askPoint)} context. ${behind}. Carry on with your work.${replaced}`;
+  if (input.party === 'main' && input.tokens !== undefined && input.askPoint !== undefined && input.tokens >= input.askPoint) return `${stored} It installs ${waits ? 'after' : 'before'} your next request, inside this turn: what you have read is gone then, and the rest of the turn, your reply to the user included, is written from the frontier. ${behind}.${replaced}`;
+  if (input.party === 'main') return `${stored} It installs at the end of this turn, or at Claude Code's ${waits ? 'second compaction ask from here if that' : 'next compaction ask if one'} comes first. ${behind}, so finish the step in hand; you need not stop.${replaced}`;
+  if (input.tokens !== undefined && input.tokens >= input.askPoint) return `${stored} It installs ${waits ? 'after your next request' : "at Claude Code's next compaction ask, before your next request"}. ${behind}.${replaced}`;
+  return `${stored} Claude Code has not asked to compact you yet: it installs at Claude Code's ${waits ? 'second' : 'next'} ask, from about ${k(input.askPoint)} context. ${behind}. Carry on with your work.${replaced}`;
 }
 
 /** Keys the tool.call event carries beside the tool's arguments (`requestMeta` a hook may add, `consent` a press may carry). */
@@ -326,8 +396,9 @@ const span = (r: { from: number; to: number }): string => (r.from === r.to ? `${
  * the ranges that loaded, clipped to the file and the cap ('' for a whole file). A range past the file's end, or clipped
  * by it, is a `problem`, and an empty load is one too: a slice of nothing never reaches the wake as a Load block that says nothing.
  * A file holding a NUL character is binary and is a `problem`, never a body; with `maxChars`, a body past it is cut there and says so.
+ * `maxLines` is the cap in place of LOAD_FILE_MAX_LINES, for a caller with a budget of its own (brief-files.ts).
  */
-export function sliceFile(path: string, text: string, ranges: readonly { from: number; to: number }[] | undefined, maxChars?: number): { body: string; shown: string; problem?: string } | { problem: string } {
+export function sliceFile(path: string, text: string, ranges: readonly { from: number; to: number }[] | undefined, maxChars?: number, maxLines: number = LOAD_FILE_MAX_LINES): { body: string; shown: string; problem?: string } | { problem: string } {
   if (text.includes('\u0000')) return { problem: 'not a text file' };
   const capped = (body: string): string => (maxChars === undefined || body.length <= maxChars ? body : `${body.slice(0, maxChars)}\n[cut at ${maxChars} characters: Read ${path} for the rest]`);
   const lines = text.split('\n');
@@ -336,8 +407,8 @@ export function sliceFile(path: string, text: string, ranges: readonly { from: n
   const more = (left: number, from: number): string => `[${left} more lines not carried: Read ${path} from line ${from}]`;
   if (ranges === undefined) {
     if (text.trim() === '') return { problem: 'the file is empty' };
-    if (count <= LOAD_FILE_MAX_LINES) return { body: capped(text), shown: '' };
-    return { body: capped([...lines.slice(0, LOAD_FILE_MAX_LINES), more(count - LOAD_FILE_MAX_LINES, LOAD_FILE_MAX_LINES + 1)].join('\n')), shown: `1-${LOAD_FILE_MAX_LINES}` };
+    if (count <= maxLines) return { body: capped(text), shown: '' };
+    return { body: capped([...lines.slice(0, maxLines), more(count - maxLines, maxLines + 1)].join('\n')), shown: `1-${maxLines}` };
   }
   const parts: string[] = [];
   const shown: { from: number; to: number }[] = [];
@@ -350,7 +421,7 @@ export function sliceFile(path: string, text: string, ranges: readonly { from: n
     else ordered.push({ ...r });
   }
   let held = false;
-  let room = LOAD_FILE_MAX_LINES;
+  let room = maxLines;
   // The lines asked for past the cap, and the first of them.
   let left = 0;
   let next: number | undefined;
@@ -383,3 +454,15 @@ export function sliceFile(path: string, text: string, ranges: readonly { from: n
   return { body: capped(parts.join('\n')), shown: shown.map(span).join(','), ...(problem !== undefined ? { problem } : {}) };
 }
 
+
+/** Each load file read now through `read` (`$.fs.read`), whole or by its lines, cut at `maxChars` when given; one that cannot be read is carried as its problem. */
+export async function readLoadFiles(read: (path: string) => Promise<string>, files: readonly LoadFile[], maxChars?: number): Promise<WakeFile[]> {
+  return Promise.all(files.map(async (file): Promise<WakeFile> => {
+    try {
+      const sliced = sliceFile(file.path, await read(file.path), file.lines === undefined ? undefined : parseLineRanges(file.lines), maxChars);
+      return 'body' in sliced ? { ...file, ...(sliced.shown ? { lines: sliced.shown } : {}), content: sliced.body } : { ...file, problem: sliced.problem };
+    } catch (error) {
+      return { ...file, problem: error instanceof Error ? error.message : String(error) };
+    }
+  }));
+}

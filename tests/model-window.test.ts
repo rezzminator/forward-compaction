@@ -2,6 +2,7 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { fakeEngine, usage, type Script } from './fakes/engine.ts';
+import { fromFacts } from './fakes/session.ts';
 import { MODEL_WINDOW_TIMEOUT_MS, ModelWindows, askModelWindow, modelWindowRequest, parseModelWindow, type ModelWindowAnswer, type ModelWindowIo } from '../plugins/forward-compaction/src/model-window.ts';
 
 /** The Models API's answers as recorded live on 2026-11-12, cut to the fields the plugin reads beside the ones that name the model. */
@@ -169,7 +170,7 @@ describe("a sub-agent measured against its own model's window, no max context se
     expect(asked, 'requests made while the step that names the model is still out: the lookup runs beside it, never after it').toBe(1);
     expect(await ask(f)).toHaveProperty('skip');
     await step(f, 800_000, model, A1);
-    expect((await ask(f)).messages[1].text).toMatch(/^\[forward-compaction: no frontier written by the model\] Your context reached 800k tokens, past the 800k ceiling/);
+    expect(fromFacts(await ask(f))[1]!.text).toMatch(/^\[forward-compaction: no frontier written by the model\] Your context reached 800k tokens, past the 800k ceiling/);
     const all = await rows(f);
     expect(windowRows(all)).toEqual([{ event: 'window', party: PARTY, label: LABEL, model, maxContext: 1_000_000, source: 'models-api', ceiling: 800_000 }]);
     expect(compactRows(all)).toEqual([['skip', 700_000, 800_000], ['mechanical', 800_000, 800_000]]);
@@ -180,7 +181,7 @@ describe("a sub-agent measured against its own model's window, no max context se
     const f = await begin({ window: 1_000_000 });
     await step(f, 20_000, 'claude-fable-5-2');
     await step(f, 160_000, 'claude-haiku-4-5-20251001', A1);
-    expect((await ask(f)).messages[1].text).toMatch(/Your context reached 160k tokens, past the 160k ceiling/);
+    expect(fromFacts(await ask(f))[1]!.text).toMatch(/Your context reached 160k tokens, past the 160k ceiling/);
     await step(f, 30_000, 'claude-fable-5-2', A1); // the same party, now on main's model
     const all = await rows(f);
     expect(windowRows(all)).toEqual([
@@ -195,7 +196,7 @@ describe("a sub-agent measured against its own model's window, no max context se
     const why = 'the Models API does not list this model (404 not_found_error)';
     await step(f, 20_000, 'claude-fable-5-2');
     for (const tokens of [40_000, 80_000, 120_000, 160_000]) await step(f, tokens, 'claude-no-such-model-9', A1);
-    expect((await ask(f)).messages[1].text).toMatch(/Your context reached 160k tokens, past the 160k ceiling/);
+    expect(fromFacts(await ask(f))[1]!.text).toMatch(/Your context reached 160k tokens, past the 160k ceiling/);
     const all = await rows(f);
     expect(windowRows(all)).toEqual([{ event: 'window', party: PARTY, label: LABEL, model: 'claude-no-such-model-9', maxContext: 200_000, source: 'fallback', unknown: why, ceiling: 160_000 }]);
     expect(f.fetches).toEqual([request('claude-no-such-model-9')]);
@@ -249,7 +250,7 @@ describe("a sub-agent measured against its own model's window, no max context se
   it('makes no lookup while FORWARD_COMPACTION_SUBAGENT_MAX_CONTEXT is set: that is every sub-agent\'s max context', async () => {
     const f = await begin({ env: { FORWARD_COMPACTION_SUBAGENT_MAX_CONTEXT: '400k' } });
     await step(f, 320_000, 'claude-sonnet-5-5', A1);
-    expect((await ask(f)).messages[1].text).toMatch(/Your context reached 320k tokens, past the 320k ceiling/);
+    expect(fromFacts(await ask(f))[1]!.text).toMatch(/Your context reached 320k tokens, past the 320k ceiling/);
     expect(windowRows(await rows(f))).toEqual([{ event: 'window', party: PARTY, label: LABEL, model: 'claude-sonnet-5-5', maxContext: 400_000, source: 'option', ceiling: 320_000 }]);
     expect(f.fetches).toEqual([]);
   });

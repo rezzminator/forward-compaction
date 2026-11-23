@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fakeEngine, usage, type Script } from './fakes/engine.ts';
+import { fromFacts } from './fakes/session.ts';
 
 // The adapter's wiring of session-lifetime facts: a new turn ends the request-too-long inference (D8), the user's
 // messages outlive a plugin reload through the host's session state, finished tool calls record the party's work, and a
@@ -68,8 +69,8 @@ describe('the prompts across a plugin reload', () => {
     const after = await begin({ state, agents: () => [{ id: 'a1b2c3d4e5', type: 'general-purpose', status: 'running', description: 'one' }] });
     await after.dispatch('turn.step', { turnId: 't1', index: 0, model: 'claude-sonnet-4-5', messageCount: 4, agentId: 'a1b2c3d4e5' }, async () => ({ turnId: 't1', index: 0, answer: '', toolUses: [], stopReason: 'tool_use', ...usage(170_000) }));
     const r = await after.dispatch('session.compact', { trigger: 'auto', agentId: 'a1b2c3d4e5', messages }, async () => ({ skip: 'native ran' }));
-    expect(r.messages[0].text).toContain('## Your brief\nBrief for agent one');
-    expect(r.messages[0].text).toContain(`(coordinator)\n${note}`);
+    expect(fromFacts(r)[0]!.text).toContain('## Your brief\nBrief for agent one');
+    expect(fromFacts(r)[0]!.text).toContain(`(coordinator)\n${note}`);
   });
 });
 
@@ -133,11 +134,18 @@ describe('a sub-agent far past its nudges', () => {
 });
 
 describe("the user's answers to AskUserQuestion", () => {
-  it("records main's answered questions as the user's words and carries each into the wake beside the ten newest typed", async () => {
-    const f = await begin();
+  it("records main's answered questions as the user's words and carries each into the wake beside the ten newest typed, and keeps both an answer and a file read that finish at the same moment", async () => {
+    // The Read's stamp (its first clock call once the tool ran) is held until the answer is recorded: two calls finishing together.
+    let reading = false, release: (() => void) | undefined;
+    const f = await begin({ beforeNow: () => (reading && release === undefined ? new Promise<void>((resolve) => { release = resolve; }) : undefined) });
     const questions = [{ question: 'What should notes and guidance show?', header: 'Quotes', options: [], multiSelect: false }];
     const result = { questions, answers: { 'What should notes and guidance show?': 'Quote if verbatim, else segment' }, annotations: {} };
+    const read = f.dispatch('tool.call', { tool: 'Read', tool_use_id: 'tu-r1', file_path: '/work/a.ts' }, async () => (reading = true, { result: 'read' }));
+    for (let i = 0; i < 400 && release === undefined; i++) await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(release, "the Read's clock call is held").toBeDefined();
     await f.dispatch('tool.call', { tool: 'AskUserQuestion', tool_use_id: 'tu-q1', questions }, async () => ({ result }));
+    release!();
+    await read;
     for (let i = 0; i < 11; i++) await f.dispatch('prompt.submit', { text: `typed ${i}.`, origin: { kind: 'composer' } }, async () => ({}));
     await step(f, 125_000);
     const text = (await ask(f)).messages[0].text;
@@ -145,5 +153,6 @@ describe("the user's answers to AskUserQuestion", () => {
     expect(text).toMatch(/### \S+ \(the user answering your question\)\nWhat should notes and guidance show\?\nAnswer: Quote if verbatim, else segment\n/);
     expect(text).not.toContain('typed 0.');
     expect(text).toContain('typed 10.');
+    expect(text).toContain('## Files touched, newest first (R read, E edited, W written)\nR /work/a.ts\n');
   });
 });

@@ -1,21 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import {
-  buildWake, COMMANDS_KEPT, fitTail, landedLine, mechanicalWake, recentFiles, RECENT_FILES_KEPT, splitAtCall, wakeBudget,
-  type BuiltMessage, type WakeFacts, type WakeMessage,
-} from '../plugins/forward-compaction/src/wake.ts';
+import { START_END, type BuiltMessage } from '../plugins/forward-compaction/src/kept.ts';
+import { buildWake, COMMANDS_KEPT, landedLine, landedShort, mechanicalWake, recentFiles, RECENT_FILES_KEPT, wakeBudget, type WakeFacts } from '../plugins/forward-compaction/src/wake.ts';
+import { assistant, results, user, type Msg } from './fakes/messages.ts';
 import { wakeRow, type RowNode } from '../plugins/forward-compaction/src/wake-row.ts';
 import { PLUGIN_VERSION } from '../plugins/forward-compaction/src/wake.ts';
 
-type Msg = WakeMessage & { handle: string };
 /** A built message as the transcript draws it folded (wake-row.ts): the engine stamps a hook's message `unclassified`. */
 const folded = (m: BuiltMessage): RowNode | undefined => wakeRow({ text: m.text, origin: { kind: 'unclassified' }, isExpanded: false });
 const dimLine = (text: string): RowNode => ({ type: 'Box', props: { marginTop: 1 }, children: [{ type: 'Text', props: { dimColor: true }, children: [text] }] });
-const user = (text: string, handle = `h-${text.slice(0, 12)}`): Msg => ({ role: 'user', text, toolUses: [], handle });
-const assistant = (text: string, uses: { id: string; tool: string; input?: Record<string, unknown> }[] = [], handle = `h-${text.slice(0, 12)}`): Msg => ({
-  role: 'assistant', text, handle,
-  toolUses: uses.map((u) => ({ tool_use_id: u.id, tool: u.tool, input: u.input ?? {} })),
-});
-const results = (...answers: [string, string][]): Msg => ({ role: 'user', text: '', toolUses: [], toolResults: answers.map(([id, text]) => ({ tool_use_id: id, text })), handle: `h-res-${answers[0]![0]}` });
 
 const noFacts: WakeFacts = { user: [], notices: [], received: [], skills: [], unattributedSkills: [] };
 const T0 = Date.UTC(2026, 9, 23, 10, 0, 0);
@@ -23,94 +15,6 @@ const T0 = Date.UTC(2026, 9, 23, 10, 0, 0);
 const base = { tokens: 41_200, askPoint: 67_000, now: T0 + 60_000, charsPerToken: 3.5 };
 const facts = (f: Partial<WakeFacts> = {}) => () => ({ ...noFacts, ...f });
 const mainInput = (messages: Msg[], f: Partial<WakeFacts> = {}) => ({ ...base, messages, party: 'main' as const, facts: facts(f) });
-
-describe('splitAtCall (R18)', () => {
-  const u0 = user('start');
-  const a1 = assistant('calling', [{ id: 't9', tool: 'mcp__forward-compaction__forward_compaction' }, { id: 't10', tool: 'Read', input: { file_path: '/a' } }]);
-  const u2 = results(['t9', 'Frontier stored'], ['t10', 'file body']);
-  const a3 = assistant('after');
-  const u4 = user('next');
-
-  it('returns the messages after the results, as the same objects, and the sibling calls with their results', () => {
-    const split = splitAtCall([u0, a1, u2, a3, u4], 't9')!;
-    expect(split.tail).toEqual([a3, u4]);
-    expect(split.tail[0]).toBe(a3);
-    expect(split.siblings).toEqual([{ tool: 'Read', input: { file_path: '/a' }, text: 'file body' }]);
-  });
-
-  it('returns undefined when the call is not in the transcript', () => {
-    expect(splitAtCall([u0, a1, u2], 'nope')).toBeUndefined();
-  });
-
-  it('takes the run of assistant messages around the anchor as one response, and finds the last anchor', () => {
-    const half = assistant('thinking', [{ id: 't8', tool: 'Grep' }]);
-    const split = splitAtCall([u0, half, a1, results(['t8', 'g'], ['t9', 'ok'], ['t10', 'r']), a3], 't9')!;
-    expect(split.tail).toEqual([a3]);
-    expect(split.siblings.map((s) => [s.tool, s.text])).toEqual([['Grep', 'g'], ['Read', 'r']]);
-  });
-
-  it('anchors on the last of two messages holding the call, and takes assistant messages after it into the response', () => {
-    const late = assistant('more calls', [{ id: 't11', tool: 'Grep' }]);
-    const split = splitAtCall([a1, u2, u0, a1, late, results(['t9', 'ok'], ['t10', 'r'], ['t11', 'g']), a3], 't9')!;
-    expect(split.tail).toEqual([a3]);
-    expect(split.siblings.map((s) => [s.tool, s.text])).toEqual([['Read', 'r'], ['Grep', 'g']]);
-  });
-
-  it('stops at a user message answering this response and another call alike', () => {
-    const mixed = results(['t10', 'r'], ['t0', 'old']);
-    expect(splitAtCall([a1, results(['t9', 'ok']), mixed, a3], 't9')!.tail).toEqual([mixed, a3]);
-  });
-
-  it("takes a sibling's recorded result over the text on its call", () => {
-    const withText: Msg = { ...a1, toolUses: a1.toolUses.map((u) => ({ ...u, text: 'call text' })) };
-    expect(splitAtCall([withText, u2], 't9')!.siblings[0]!.text).toBe('file body');
-  });
-
-  it('stops at a user message whose results answer other calls, leaving it in the tail', () => {
-    const stray = results(['t0', 'old']);
-    expect(splitAtCall([u0, a1, u2, stray, a3], 't9')!.tail).toEqual([stray, a3]);
-  });
-
-  it('says so for a sibling whose result was never recorded', () => {
-    const split = splitAtCall([a1, results(['t9', 'ok'])], 't9')!;
-    expect(split.siblings[0]!.text).toBe('(no result recorded)');
-  });
-});
-
-describe('fitTail (R19)', () => {
-  const orphan = results(['x', 'r'.repeat(700)]);
-  const a = assistant('a'.repeat(350));
-  const u = user('u'.repeat(350));
-  const a2 = assistant('b'.repeat(350));
-
-  it('drops from the oldest until the rest fits, then the leading tool-result user message too', () => {
-    // orphan 200 tokens, a/u/a2 100 each: budget 300 keeps the last three
-    expect(fitTail([orphan, a, u, a2], 300, 3.5)).toEqual({ messages: [a, u, a2], dropped: 1 });
-    // budget 250 drops `a` too
-    expect(fitTail([orphan, a, u, a2], 250, 3.5)).toEqual({ messages: [u, a2], dropped: 2 });
-  });
-
-  it('never starts with a tool-result user message, even when the budget would keep it', () => {
-    const kept = fitTail([assistant('x', [{ id: 'x', tool: 'Read' }]), orphan, a], 100_000, 3.5);
-    expect(kept.messages[0]!.toolResults).toBeUndefined();
-    const dropOrphan = fitTail([a, orphan, u], 100_000, 3.5 /* all fit */);
-    expect(dropOrphan.messages).toEqual([a, orphan, u]);
-    expect(fitTail([orphan, orphan, a], 100_000, 3.5).messages).toEqual([a]);
-  });
-
-  it('sizes a message by its tool inputs and its tool results, not its text alone', () => {
-    const bigInput = assistant('', [{ id: 'w', tool: 'Write', input: { content: 'i'.repeat(7000) } }]);
-    expect(fitTail([bigInput, u], 300, 3.5).messages).toEqual([u]);
-    const bigResult = results(['w', 'r'.repeat(7000)]);
-    expect(fitTail([a, bigResult, u], 300, 3.5).messages).toEqual([u]);
-  });
-
-  it('keeps the input objects, and nothing for a zero budget', () => {
-    const kept = fitTail([a, u], 1000, 3.5).messages;
-    expect(kept[0]).toBe(a);
-    expect(fitTail([a, u], 0, 3.5)).toEqual({ messages: [], dropped: 2 });
-  });
-});
 
 describe('buildWake (R20)', () => {
   const call = assistant('writing the frontier', [{ id: 't9', tool: 'mcp__forward-compaction__forward_compaction' }]);
@@ -238,7 +142,7 @@ describe('buildWake (R20)', () => {
 
   it('prints no size for the call: the plugin measures none at that moment', () => {
     const wake = buildWake({ ...mainInput([call, res]), toolUseId: 't9', frontier, tokens: 64_000 });
-    expect((wake.messages[1] as BuiltMessage).text.split('\n')[0]).toBe('[forward-compaction: frontier] Below is the frontier you wrote with forward_compaction: continue from its ## Next.');
+    expect((wake.messages[1] as BuiltMessage).text.split('\n')[0]).toBe('[forward-compaction: frontier] Below is your frontier as forward-compaction holds it: continue from its ## Next. When a notice next asks for a forward_compaction call, send only changes, by item number; whatever you leave out stays.');
   });
 
   it('counts the F sections that hold content', () => {
@@ -247,6 +151,97 @@ describe('buildWake (R20)', () => {
       toolUseId: 't9', frontier,
     });
     expect(wake.facts).toBe(2);
+  });
+});
+
+describe("a sub-agent's kept start", () => {
+  const call = assistant('writing the frontier', [{ id: 't9', tool: 'mcp__forward-compaction__forward_compaction' }]);
+  const res = results(['t9', 'Frontier stored']);
+  const frontier = '## Objective\nship\n## Next\nz';
+  const brief = user('Fix the parser. No git stash.', 'engine-brief');
+  const end = { role: 'assistant', text: START_END, toolUses: [] };
+  const sub = (messages: Msg[], f: Partial<WakeFacts> = {}) => ({ ...base, messages, party: 'subagent' as const, facts: facts(f), toolUseId: 't9', frontier });
+  const HEAD = `[forward-compaction: facts] Your context was compacted by forward-compaction ${PLUGIN_VERSION}.`;
+
+  it('hands the first message back by handle, then a built end line, then [F, H, ...tail], and names the brief in the head instead of repeating it', () => {
+    const t1 = assistant('step one', [], 'engine-1');
+    const wake = buildWake(sub([brief, assistant('reading'), call, res, t1], { brief: { text: 'Fix the parser. No git stash.' } }));
+    expect(wake.messages[0]).toBe(brief);
+    expect(wake.messages[1]).toEqual(end);
+    const f = (wake.messages[2] as BuiltMessage).text;
+    expect(f.split('\n')[0]).toBe(`${HEAD} Your brief is the first message above, kept verbatim. These facts were recorded as they happened, never reconstructed. Your own frontier follows in the next message.`);
+    expect(f).not.toContain('## Your brief');
+    expect((wake.messages[3] as BuiltMessage).text).toContain(`=== frontier ===\n${frontier}\n=== end of frontier ===`);
+    expect(wake.messages).toHaveLength(5);
+    expect(wake.messages[4]).toBe(t1);
+    expect(wake).toMatchObject({ start: 2, kept: 1, dropped: 0 });
+  });
+
+  it('renders the documents the brief names under the kept brief, each as read at install, names one not carried, and a mechanical wake renders them too', () => {
+    const briefFiles = [
+      { path: '/lab/brief.md', content: 'Watch each test fail first.' },
+      { path: '/lab/spec.md', lines: '1-2', content: 'a\nb\n[3 more lines not carried: Read /lab/spec.md from line 3]' },
+      { path: '/lab/gone.md', problem: 'ENOENT' },
+    ];
+    const block = '## The documents your brief names, read at install\nThey are part of your brief: where your frontier words one of their rules differently, their words hold.\n### /lab/brief.md\nWatch each test fail first.\n### /lab/spec.md lines 1-2\na\nb\n[3 more lines not carried: Read /lab/spec.md from line 3]';
+    const wake = buildWake({ ...sub([brief, call, res], { brief: { text: 'Fix the parser. No git stash.' } }), briefFiles });
+    const sections = (wake.messages[2] as BuiltMessage).text.split('\n\n');
+    expect(sections[1]).toBe(block); // right under the head, where a brief not kept above would stand
+    expect(sections).toContain('## Files not carried\n- /lab/gone.md: ENOENT');
+    expect([wake.carried, wake.notCarried]).toEqual([['/lab/brief.md', '/lab/spec.md'], ['/lab/gone.md']]);
+    const mechanical = mechanicalWake({ ...base, messages: [brief, assistant('reading')], party: 'subagent', facts: facts({ brief: { text: 'Fix the parser. No git stash.' } }), reason: { kind: 'reactive' }, briefFiles });
+    expect((mechanical.messages[2] as BuiltMessage).text.split('\n\n')[1]).toBe(block);
+  });
+
+  it("keeps the engine's own end line at the next compaction, building no second one", () => {
+    const ownEnd = assistant(START_END, [], 'engine-end');
+    const wake = buildWake(sub([brief, ownEnd, user('[forward-compaction: facts] earlier', 'engine-f'), user('[forward-compaction: frontier] earlier', 'engine-h'), assistant('more work'), call, res]));
+    expect(wake.messages).toHaveLength(4);
+    expect(wake.messages[0]).toBe(brief);
+    expect(wake.messages[1]).toBe(ownEnd);
+    expect((wake.messages[2] as BuiltMessage).text.startsWith(HEAD)).toBe(true);
+    expect(wake.start).toBe(2);
+  });
+
+  it.each([
+    ['a brief the start does not hold is carried in its section', { brief: { text: 'Another brief.' } }, '## Your brief\nAnother brief.'],
+    ['a brief never recorded points at the first message', {}, "## Your brief\n(not recorded by forward-compaction: this run's first message, above, is kept verbatim)"],
+  ])('%s', (_name, f, section) => {
+    const text = (buildWake(sub([brief, call, res], f as Partial<WakeFacts>)).messages[2] as BuiltMessage).text;
+    expect(text.split('\n')[0]).toBe(`${HEAD} These facts were recorded as they happened, never reconstructed. Your own frontier follows in the next message.`);
+    expect(text).toContain(section);
+  });
+
+  it.each([
+    ['the main party', { ...sub([brief, call, res]), party: 'main' as const }],
+    ['a sub-agent whose transcript opens with no message of its own to keep', sub([assistant('hi'), call, res])],
+  ])('builds no start for %s', (_name, input) => {
+    const wake = buildWake(input);
+    expect((wake.messages[0] as BuiltMessage).text.startsWith(HEAD)).toBe(true);
+    expect(wake.messages).toHaveLength(2);
+    expect(wake.start).toBe(0);
+  });
+
+  it.each([
+    ['a short one leaves the tail its room', 'Fix the parser. No git stash.', { start: 2, kept: 4, dropped: 0 }],
+    ['one near the whole budget leaves the tail none', 'b'.repeat(6650), { start: 2, kept: 0, dropped: 4 }],
+  ])('counts the start against the budget the tail is fitted to: %s', (_name, text, counts) => {
+    // askPoint 4000 at 3.5 characters a token: B is 2,000 tokens, each tail message 200, the long start 1,900
+    const first = user(text, 'engine-brief');
+    const tail = [1, 2, 3, 4].map((n) => assistant(`${n}`.repeat(700), [], `engine-${n}`));
+    const wake = buildWake({ ...sub([first, call, res, ...tail]), askPoint: 4000 });
+    expect(wake.messages[0]).toBe(first);
+    expect(wake).toMatchObject(counts);
+  });
+
+  it('keeps the start once in a mechanical wake, ahead of the facts and out of the kept tail', () => {
+    const a1 = assistant('step one', [], 'engine-1');
+    const wake = mechanicalWake({ ...base, messages: [brief, a1], party: 'subagent', facts: facts(), reason: { kind: 'reactive' } });
+    expect(wake.messages).toHaveLength(5);
+    expect(wake.messages[0]).toBe(brief);
+    expect(wake.messages[1]).toEqual(end);
+    expect(wake.messages[4]).toBe(a1);
+    expect(wake).toMatchObject({ start: 2, kept: 1, dropped: 0 });
   });
 });
 
@@ -296,7 +291,7 @@ describe('F sections', () => {
   it("carries at most a sub-agent's newest ten coordinator messages, and counts the older ones", () => {
     const received = Array.from({ length: 12 }, (_, i) => ({ at: T0 + i * 1000, origin: 'coordinator', text: `note${i}.` }));
     const w = mechanicalWake({ ...base, messages: [user('a'), assistant('b')], party: 'subagent', facts: facts({ brief: { text: 'brief' }, received }), reason: { kind: 'ceiling', ceiling: 120_000 } });
-    const f = (w.messages[0] as BuiltMessage).text;
+    const f = (w.messages[2] as BuiltMessage).text; // after the start: its first message and the end line
     expect(f).toContain('## Messages delivered to you\n(2 older not carried)');
     expect(f).toContain('note2.');
     expect(f).toContain('note11.');
@@ -405,14 +400,13 @@ describe('F sections', () => {
     expect(f).not.toContain('## Skills not carried');
   });
 
-  it("carries a pinned skill or one keep_skills names whole, cut past 20,000 characters to Claude Code's own marker, and lists every other one and the unattributed ones", () => {
+  it("carries a pinned skill whole, cut past 20,000 characters to Claude Code's own marker, and lists every other one and the unattributed ones", () => {
     const marker = '\n\n[... skill content truncated for compaction; use Read on the skill path if you need the full text]';
     const { f, wake } = wakeOf({
-      keepSkills: ['small', 'huge'],
       f: {
         skills: [
-          { skill: 'small', text: 'tiny', source: 'user', path: '/s/SKILL.md' },
-          { skill: 'huge', text: 'h'.repeat(40_000), source: 'plugin' },
+          { skill: 'small', text: 'tiny', source: 'user', path: '/s/SKILL.md', keep: true },
+          { skill: 'huge', text: 'h'.repeat(40_000), source: 'plugin', keep: true },
           { skill: 'pinned', text: 'p'.repeat(20_001), source: 'user', keep: true },
           { skill: 'listed', text: 'LISTED BODY', source: 'user', path: '/s/l/SKILL.md', description: 'What it is for.' },
           { skill: 'bare', text: 'BARE BODY', source: 'plugin' },
@@ -420,8 +414,8 @@ describe('F sections', () => {
         unattributedSkills: [{ skill: 'mystery' }],
       },
     });
-    expect(f).toContain('## Skills in force, as loaded\n### small (user, /s/SKILL.md, named in your keep_skills)\ntiny');
-    expect(f).toContain('### huge (plugin, named in your keep_skills)\n' + 'h'.repeat(20_000 - marker.length) + marker + '\n');
+    expect(f).toContain('## Skills in force, as loaded\n### small (user, /s/SKILL.md, pinned)\ntiny');
+    expect(f).toContain('### huge (plugin, pinned)\n' + 'h'.repeat(20_000 - marker.length) + marker + '\n');
     expect(f).toContain('### pinned (user, pinned)\n' + 'p'.repeat(20_000 - marker.length) + marker + '\n');
     expect(f).toContain('## Skills not carried\nTheir text is not in your context: load one again with the Skill tool before doing work it governs.\n- listed (user, /s/l/SKILL.md): What it is for.\n- bare (plugin)\n- mystery: loaded in this session by an unidentified party; call Skill mystery if it applies to you.');
     expect(f).not.toContain('LISTED BODY');
@@ -514,6 +508,16 @@ describe('F sections', () => {
     expect(wakeOf({ self: 'me', f: { shells: { ...shells, tasks: [shells.tasks[0]!] } } }).f).toContain('(none running)');
   });
 
+  it("heads a sub-agent's list as what it started and counts the session's other tasks and crons, naming none of them", () => {
+    const shells = { at: T0, tasks: [{ id: 'b1', type: 'shell', status: 'running', description: 'tests', command: 'npm test' }], crons: [] };
+    const heading = '## Background shells and agents you started (from the Stop event 1m before install)';
+    expect(wakeOf({ self: 'me', f: { shells, otherTasks: 2 } }, 'subagent').f).toContain(`${heading}\n- shell b1 running: npm test\n(not listed: 2 other background tasks or crons of this session, not recorded as yours)`);
+    expect(wakeOf({ self: 'me', f: { shells: { ...shells, tasks: [] }, otherTasks: 1 } }, 'subagent').f).toContain(`${heading}\n(none running)\n(not listed: 1 other background task or cron of this session, not recorded as yours)`);
+    const alone = wakeOf({ self: 'me', f: { shells, otherTasks: 0 } }, 'subagent').f;
+    expect(alone).toContain(`${heading}\n- shell b1 running: npm test`);
+    expect(alone).not.toContain('not listed');
+  });
+
   it('says a snapshot with nothing running as that, not as unknown', () => {
     const f = wakeOf({ f: { shells: { at: T0, tasks: [], crons: [] } } }).f;
     expect(f).toContain('(none running)');
@@ -535,15 +539,16 @@ describe('F sections', () => {
     expect(f).toContain('## Files not carried\n- /abs/gone.ts: lines 10-40 out of range (5 lines)\n- /abs/err.ts: EACCES: permission denied');
   });
 
-  it('lists the files for later by path, lines and why, never their content, and names one gone as not carried, on a mechanical wake too', () => {
-    const later = { listed: [{ path: '/abs/plan.md', lines: '1-40', why: 'step 4', later: true as const }, { path: '/abs/notes.md', later: true as const }], gone: [{ path: '/abs/gone.md', problem: 'no such file' }] };
-    const block = '## Files for later, not loaded\nTheir content is not in your context: read each with the Read tool (or the shell) at the step that needs it.\n- /abs/plan.md lines 1-40 — step 4\n- /abs/notes.md\n\n## Files not carried\n- /abs/gone.md: no such file';
-    const { f, wake } = wakeOf({ later, files: [{ path: '/abs/a.ts', content: 'A' }] });
+  it('lists the storage by name and description under its absolute folder, after the load files, never a file\'s content, on a mechanical wake too', () => {
+    const storage = { dir: '/h/fc/s1/storage', entries: [{ name: 'survey.md', description: 'the API survey' }, { name: 'raw.md', description: '' }] };
+    const block = '## Storage — files in /h/fc/s1/storage/\nsurvey.md — the API survey\nraw.md';
+    const { f, wake } = wakeOf({ storage, files: [{ path: '/abs/a.ts', content: 'A' }] });
     expect(f).toContain(`## Files you asked to carry\n### /abs/a.ts\nA\n\n${block}`);
-    expect([wake.later, wake.carried, wake.notCarried]).toEqual([2, ['/abs/a.ts'], ['/abs/gone.md']]);
-    const mechanical = mechanicalWake({ ...mainInput([user('before')]), reason: { kind: 'reactive' }, later });
-    expect((mechanical.messages[0] as BuiltMessage).text).toContain(block);
-    expect(mechanical.later).toBe(2);
+    expect([wake.storage, wake.carried]).toEqual([2, ['/abs/a.ts']]);
+    const mechanical = mechanicalWake({ ...mainInput([user('before')]), reason: { kind: 'reactive' }, storage });
+    expect((mechanical.messages[0] as BuiltMessage).text.split('\n\n').find((x) => x.startsWith('## Storage'))).toBe(block);
+    expect(mechanical.storage).toBe(2);
+    expect(wakeOf({ storage: { dir: '/h', entries: [] } }).wake.storage).toBe(0);
   });
 
   it('carries every load file it could read, with no room and no count cap, whatever the ask point or ratio', () => {
@@ -594,10 +599,16 @@ describe('mechanicalWake (R23)', () => {
   });
 
   it('words the reactive case and names the brief for a sub-agent', () => {
-    const h = mechanicalWake({ ...mainInput(msgs), party: 'subagent', reason: { kind: 'reactive' } }).messages[1] as BuiltMessage;
+    const h = mechanicalWake({ ...mainInput([user('the brief'), ...msgs.map((m) => ({ ...m, role: 'assistant' as const }))]), party: 'subagent', reason: { kind: 'reactive' } }).messages[3] as BuiltMessage; // [brief, end line, facts, head, ...]
     expect(h.text).toContain('Your context reached 41k tokens, and Claude Code reported your request too long, and you had not called');
     expect(h.text).toContain('Re-establish them from your brief');
     expect(h.text).toContain('0 older messages are gone');
+  });
+
+  it('tells a party that holds a frontier that it is as its last call left it, and to continue from its next less what the facts show done', () => {
+    const wake = mechanicalWake({ ...mainInput([user('a', 'e1'), user('b', 'e2')]), tokens: 116_000, frontier: '## Next\nRead c.txt', tool: 'fc', reason: { kind: 'ceiling', ceiling: 100_000 } });
+    const head = wake.messages.find((m) => (m as BuiltMessage).text?.startsWith('[forward-compaction: no frontier')) as BuiltMessage;
+    expect(head.text.split('\n\n')[0]).toBe('[forward-compaction: no frontier written by the model] Your context reached 116k tokens, past the 100k ceiling, before a forward_compaction call compacted it, so the plugin compacted it mechanically: the facts above, your frontier below as forward-compaction holds it, and your newest 2 messages after this one, kept verbatim; 0 older messages are gone (look_back finds an exact detail). The frontier is as your last call left it: what you did after that call is missing from its ## Done, ## Remaining and ## Next, and the facts above show it (files touched, shell commands run, messages). Continue from where the messages leave off, or from its ## Next less every step the facts show done; at your next milestone bring the frontier up to date with one fc call: send only changes, by item number; whatever you leave out stays.');
   });
 
   it('has the same facts as the frontier wake, and no load files or siblings', () => {
@@ -659,6 +670,17 @@ describe('screen lines', () => {
     expect(landedLine({ ...mechanical, before: undefined, tokens: undefined }, 38_000)).toBe('forward-compaction: main had no frontier at an unmeasured size (no reading yet) (ceiling 120k) — mechanical wake installed, unknown → 38k context (no reading before the install), measured after.');
   });
 
+  it.each<[string, number | undefined, number | undefined, Parameters<typeof landedShort>[2], string | undefined]>([
+    ['both readings and what the first request read and wrote', 135_000, 58_000, { cache_read_input_tokens: 11_000, cache_creation_input_tokens: 47_000 }, '135k → 58k context, its first request read 11k from the prompt cache and wrote 47k'],
+    ['a first request that read nothing from the cache', 135_000, 58_000, { cache_read_input_tokens: 0, cache_creation_input_tokens: 58_000 }, '135k → 58k context, its first request read 0k from the prompt cache and wrote 58k'],
+    ['no reading before the install as unknown', undefined, 58_000, undefined, 'unknown → 58k context'],
+    ['a usage without both counts, the cache clause left out', 135_000, 58_000, { cache_read_input_tokens: 11_000, cache_creation_input_tokens: null }, '135k → 58k context'],
+    ['no usage, the cache clause left out', 135_000, 58_000, null, '135k → 58k context'],
+    ['nothing until a request after the install measured it', 135_000, undefined, { cache_read_input_tokens: 11_000, cache_creation_input_tokens: 47_000 }, undefined],
+  ])("draws an install's measured sizes for its folded row: %s", (_name, before, after, usage, drawn) => {
+    expect(landedShort(before, after, usage)).toBe(drawn);
+  });
+
   it('sets the budget at half the ask point', () => {
     expect(wakeBudget(67_000)).toBe(33_500);
   });
@@ -691,13 +713,12 @@ describe("the mechanical wake re-places the party's newest files, as Claude Code
     expect(wake.text).not.toContain('## Files you were working on');
   });
 
-  it('names each MANDATORY section a stored frontier lacks, to re-establish from the user or the brief', () => {
+  it('names each text the held frontier lacks, to re-establish from the user or the brief and send in the next call', () => {
     const call = assistant('writing', [{ id: 't9', tool: 'mcp__forward-compaction__forward_compaction' }]);
-    const head = (party: 'main' | 'subagent', missing?: string[]) => (buildWake({ ...mainInput([call, results(['t9', 'ok'])]), party, toolUseId: 't9', frontier: '## Objective\nx', ...(missing ? { missing } : {}) }).messages[1] as BuiltMessage).text;
-    expect(head('main', ['decisions', 'done', 'next'])).toContain("Your frontier was missing decisions, done and next: re-establish them from the user's messages and the messages below.");
-    expect(head('subagent', ['next'])).toContain('Your frontier was missing next: re-establish it from your brief and the messages below.');
-    expect(head('main')).toContain('Nothing happened after you wrote it. Continue from ## Next.');
-    expect(head('main')).not.toContain('Your frontier was missing');
+    const head = (party: 'main' | 'subagent', missing?: string[]) => (buildWake({ ...mainInput([call, results(['t9', 'ok'])]), party, toolUseId: 't9', frontier: '## Objective\nx', ...(missing ? { missing } : {}) }).messages[1] as BuiltMessage).text.split('\n\n');
+    expect(head('main', ['objective', 'next'])[2]).toBe("Your frontier has no objective and next: re-establish them from the user's messages and the messages below, and send them in your next forward_compaction call.");
+    expect(head('subagent', ['next'])[2]).toBe('Your frontier has no next: re-establish it from your brief and the messages below, and send it in your next forward_compaction call.');
+    expect(head('main')[2]).toBe('Your forward_compaction call returned:\nok');
   });
 });
 
