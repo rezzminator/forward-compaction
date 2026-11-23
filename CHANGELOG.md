@@ -2,7 +2,7 @@
 
 Every release of forward-compaction, named sub-agent-compact before 1.0.0. Versions follow [semantic versioning](https://semver.org); each release is the `main` commit tagged `forward-compaction--v<version>` (`sub-agent-compact--v<version>` before 1.0.0), with a GitHub release carrying the section below.
 
-## [Unreleased]
+## [2.5.0] — 2026-11-23
 
 ### Changed
 
@@ -37,6 +37,8 @@ Every release of forward-compaction, named sub-agent-compact before 1.0.0. Versi
 - **Two hooks finishing together no longer lose a recorded fact.** A fact recorded while another hook of the same party waited on the clock (a file one tool call read while another's result arrived, the user's answer to a question, a loaded skill, the list of background shells) could be overwritten by that other hook's write, so the next wake missed it: seen live as a sub-agent's wake naming three of the five files it had read, which it then read again. Every such write now reads the party's facts only after its wait.
 - **A list value that is only an operation's name changes nothing.** A list value (`orders`, `decisions`, `done`, `remaining`, `blocked`, `findings`) sent as the text `add`, `remove` or `edit`, in any case with spaces around it, was added as an item. It now changes nothing and is answered by the note `{list} was only the word "{op}", an operation with no item: nothing changed.` Every other plain text that is no JSON is still one added item.
 - **Operations named by leaked tool-call tags are read.** A list value's text whose operations are named by tags such as `<parameter name="add">[…]</parameter>` (the closing tag optional, a namespace prefix before `parameter` allowed) is read as those operations by the same repair that reads bare `add: […]`, with the note that the value arrived as broken JSON and was repaired. A tag inside an item's string stays text.
+- **A missing file is said as missing.** Claude Code's file calls report a missing path only in the error's message (`failed: ENOENT`), with no error code, so the plugin took it for a failure: a `load_files` path that does not exist was answered `could not be checked: …` instead of `no such file: skipped`, and a plan file plan mode named but nobody had written yet showed in the wake as `(could not be read: …)` instead of as no plan file. Every file call now reads a missing path from the message as well as from the code.
+- **The main chat's frontier installs at the end of the next turn too.** After a turn-end install, the next turn's end took a newly stored frontier as already installed that turn and skipped it, so it waited for Claude Code's compaction ask, blocking every nudge meanwhile. The turn's mark now clears after its own turn-end install, and the debug log's `turn-end` row records each turn end's decision.
 
 ## [2.4.0] — 2026-11-21
 
