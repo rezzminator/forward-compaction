@@ -98,15 +98,17 @@ export type TurnEndInput = {
   stored: boolean;
   /** `parties.get(key).installedThisTurn`. */
   installedThisTurn: boolean;
+  /** FORWARD_COMPACTION_MAIN_FORK: a fork is due (`PartyState.forkDue`), which the turn end's own ask writes. */
+  forkDue?: boolean;
 };
 
 export type TurnEnd = { compact: true } | { compact: false; why: 'not-main' | 'not-answered' | 'nothing-stored' | 'installed-this-turn' };
 
-/** Row P1: whether main's turn end calls `$.session.compact()`. Everything else keeps the frontier stored for the next door. */
-export function turnEndDoor({ main, reason, stored, installedThisTurn }: TurnEndInput): TurnEnd {
+/** Row P1: whether main's turn end calls `$.session.compact()`: a frontier stored, or a fork due to write one. Everything else keeps the frontier stored for the next door. */
+export function turnEndDoor({ main, reason, stored, installedThisTurn, forkDue = false }: TurnEndInput): TurnEnd {
   if (!main) return { compact: false, why: 'not-main' };
   if (reason !== 'answer') return { compact: false, why: 'not-answered' };
-  if (!stored) return { compact: false, why: 'nothing-stored' };
+  if (!stored && !forkDue) return { compact: false, why: 'nothing-stored' };
   if (installedThisTurn) return { compact: false, why: 'installed-this-turn' };
   return { compact: true };
 }

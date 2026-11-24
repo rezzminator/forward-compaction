@@ -1,0 +1,7 @@
+{
+  "arms": [
+    { "name": "native", "plugin": false, "env": {} },
+    { "name": "fc", "plugin": true, "env": {} },
+    { "name": "fc-fork", "plugin": true, "env": { "FORWARD_COMPACTION_MAIN_FORK": "1" } }
+  ]
+}

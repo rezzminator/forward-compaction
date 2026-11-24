@@ -56,7 +56,7 @@ async function writeVersion($: EngineInterface): Promise<void> {
 }
 
 /** The plugin's environment reads, each spelled as the literal Claude Code requires; `tests/replay.test.ts` holds this list to the adapter's. */
-export const ENV_NAMES = ['HOME', 'PLUGIN_LOG_DIR', 'CLAUDE_CONFIG_DIR', 'FORWARD_COMPACTION_MAIN_MAX_CONTEXT', 'FORWARD_COMPACTION_MAIN_CEILING', 'FORWARD_COMPACTION_MAIN_NUDGE_ROOM', 'FORWARD_COMPACTION_MAIN_NUDGE_START', 'FORWARD_COMPACTION_MAIN_NUDGE_EVERY', 'FORWARD_COMPACTION_MAIN_FINISH_START', 'FORWARD_COMPACTION_SUBAGENT_MAX_CONTEXT', 'FORWARD_COMPACTION_SUBAGENT_CEILING', 'FORWARD_COMPACTION_SUBAGENT_NUDGE_ROOM', 'FORWARD_COMPACTION_SUBAGENT_NUDGE_START', 'FORWARD_COMPACTION_SUBAGENT_NUDGE_EVERY', 'FORWARD_COMPACTION_CEILING_NATIVE', 'FORWARD_COMPACTION_IGNORE_MODELS', 'FORWARD_COMPACTION_KEEP_SKILLS', 'FORWARD_COMPACTION_SUBAGENT_CALL_COMPACTS', 'FORWARD_COMPACTION_FRONTIER_WARN_CHARS', 'FORWARD_COMPACTION_DONE_MAX_CHARS', 'FORWARD_COMPACTION_DEBUG'] as const;
+export const ENV_NAMES = ['HOME', 'PLUGIN_LOG_DIR', 'CLAUDE_CONFIG_DIR', 'FORWARD_COMPACTION_MAIN_MAX_CONTEXT', 'FORWARD_COMPACTION_MAIN_CEILING', 'FORWARD_COMPACTION_MAIN_NUDGE_ROOM', 'FORWARD_COMPACTION_MAIN_NUDGE_START', 'FORWARD_COMPACTION_MAIN_NUDGE_EVERY', 'FORWARD_COMPACTION_MAIN_FINISH_START', 'FORWARD_COMPACTION_SUBAGENT_MAX_CONTEXT', 'FORWARD_COMPACTION_SUBAGENT_CEILING', 'FORWARD_COMPACTION_SUBAGENT_NUDGE_ROOM', 'FORWARD_COMPACTION_SUBAGENT_NUDGE_START', 'FORWARD_COMPACTION_SUBAGENT_NUDGE_EVERY', 'FORWARD_COMPACTION_CEILING_NATIVE', 'FORWARD_COMPACTION_IGNORE_MODELS', 'FORWARD_COMPACTION_KEEP_SKILLS', 'FORWARD_COMPACTION_SUBAGENT_CALL_COMPACTS', 'FORWARD_COMPACTION_FRONTIER_WARN_CHARS', 'FORWARD_COMPACTION_DONE_MAX_CHARS', 'FORWARD_COMPACTION_DEBUG', 'FORWARD_COMPACTION_MAIN_FORK', 'FORWARD_COMPACTION_MAIN_FORK_EFFORT'] as const;
 
 function envGet($: EngineInterface, name: string): Promise<string | undefined> {
   switch (name) {
@@ -81,6 +81,8 @@ function envGet($: EngineInterface, name: string): Promise<string | undefined> {
     case 'FORWARD_COMPACTION_FRONTIER_WARN_CHARS': return $.env.get('FORWARD_COMPACTION_FRONTIER_WARN_CHARS');
     case 'FORWARD_COMPACTION_DONE_MAX_CHARS': return $.env.get('FORWARD_COMPACTION_DONE_MAX_CHARS');
     case 'FORWARD_COMPACTION_DEBUG': return $.env.get('FORWARD_COMPACTION_DEBUG');
+    case 'FORWARD_COMPACTION_MAIN_FORK': return $.env.get('FORWARD_COMPACTION_MAIN_FORK');
+    case 'FORWARD_COMPACTION_MAIN_FORK_EFFORT': return $.env.get('FORWARD_COMPACTION_MAIN_FORK_EFFORT');
     default: throw new Error(`recorder: env ${name} is not in ENV_NAMES (scripts/replay/recorder.ts)`);
   }
 }
@@ -120,7 +122,7 @@ const given = (...args: unknown[]): unknown[] => {
  * this list to the adapter's. Each call is answered by the engine and written with its path, arguments and outcome;
  * a path missing here is written as an error row and throws, so the recording shows it.
  */
-export const PATHS = ['agent.list', 'clock.after', 'clock.now', 'env.get', 'fs.exists', 'fs.read', 'fs.stat', 'fs.write', 'http.fetch', 'process.run', 'session.authorize', 'session.compact', 'session.cwd', 'session.id', 'session.messages', 'session.root', 'session.usage', 'state.get', 'state.set', 'tool.register', 'ui.invalidate', 'ui.log'] as const;
+export const PATHS = ['agent.list', 'clock.after', 'clock.now', 'env.get', 'fs.exists', 'fs.read', 'fs.stat', 'fs.write', 'http.fetch', 'model.fork', 'process.run', 'session.authorize', 'session.compact', 'session.cwd', 'session.id', 'session.messages', 'session.root', 'session.usage', 'state.get', 'state.set', 'tool.register', 'ui.invalidate', 'ui.log'] as const;
 /** Written to a row in place of the handle `$.session.authorize()` answers, in that answer and in the request that spends it: the handle stands for the session's credential, so no row carries it, and a replayed lookup passes this word back as recorded. */
 export const CREDENTIAL_HANDLE = 'credential-handle';
 
@@ -160,6 +162,7 @@ function engineFor($: EngineInterface, id: number): any {
       write: (path: string, text: string) => call('fs.write', [path, text], () => $.fs.write(path, text)),
     },
     http: { fetch: (url: string, init?: any) => call('http.fetch', given(url, init?.auth === undefined ? init : { ...init, auth: CREDENTIAL_HANDLE }), () => (init === undefined ? $.http.fetch(url) : $.http.fetch(url, init))) },
+    model: { fork: (request: any) => call('model.fork', [request], () => $.model.fork(request)) },
     process: { run: (argv: string[], init?: any) => call('process.run', given(argv, init), () => $.process.run(argv, init)) },
     session: {
       authorize: () => call('session.authorize', [], () => $.session.authorize(), (auth: any) => (auth ? { ...auth, handle: CREDENTIAL_HANDLE } : auth)),

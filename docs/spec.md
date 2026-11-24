@@ -745,6 +745,65 @@ end, with after said as unknown, never guessed.
   plugin handled (another plugin or Claude Code compacted it) is a warning
   row (`unseen-compaction`).
 
+### Main's frontier written by a fork
+
+With `FORWARD_COMPACTION_MAIN_FORK` on, the plugin writes the main chat's
+frontier itself (`src/fork.ts`); sub-agents are unchanged.
+
+- Due points are the notice points: where a nudge or the finish notice would
+  go out to main, main reads nothing and a `fork-due` row records the point.
+  At main's answered turn end the same notice is checked once more, so a point
+  the turn's last request reached is due too.
+- A due nudge level forks at the next automatic ask; any due point forks at
+  main's turn end, whose own `$.session.compact()` the plugin raises
+  (`turnEndDoor` compacts for a due fork as for a stored frontier); the
+  ceiling tries a fork before its mechanical wake, due or not. A request too
+  long, a manual `/compact`, a precompute and Claude Code's own summary at a
+  native ceiling never fork; a model's own call that compacts installs with
+  no fork.
+- The ask awaits `$.model.fork` with a fixed prompt (`forkPrompt`): the stored
+  frontier, every list numbered as a wake shows it, `done` split as the wake
+  splits it; the storage entries; the results of main's last calls that its
+  last request has not sent, each cut at `FORK_RESULT_MAX_CHARS`; the fields
+  of the tool's own schema; and how to write the changes. Its opening says
+  where the turn stands (`forkStand`): ended, its last message sent to the
+  user, at main's turn end, whatever point is due; still running, its tool
+  results below, at an automatic ask. The fork names
+  `FORWARD_COMPACTION_MAIN_FORK_EFFORT` when it is set.
+- The reply's first top-level JSON object (`forkReply`; a code fence or prose
+  around it noted, broken JSON repaired by `repairJson`) is stored as one
+  `forward_compaction` call through the same door a model's call uses: its
+  `stored` row has `writer: "fork"`, and it never waits. The ask installs it:
+  its `compact` row has decision `install`, why `fork`.
+- The wake after a fork carries what a frontier wake carries, and keeps
+  verbatim what a model-written frontier keeps after its call, the fork's
+  call placed just before main's last assistant message: that message and
+  every one after it (its tool results mid-turn, a queued user message; at a
+  turn end the final reply alone, `forkTrailing`), fitted as the messages
+  after a call are. Every older message is named as not carried. Every wake of main with the option on says the plugin
+  brings the frontier up to date itself and asks for no call (`FORK_UPKEEP`).
+- A failure never holds a compaction and never runs Claude Code's own
+  summary (`forkFailure`): nothing to fork yet, or a fork the turn's abort
+  cut, skips the ask (why `fork-retry`) with the fork still due; an API
+  error, an empty reply, a reply holding no JSON object, a call that threw or
+  a reply the store did not take skips the ask (why `fork-failed`) and main
+  reads the notice it would have read with its next tool result (its row
+  `fallback: "fork-failed"`), the next level forking again; at the ceiling
+  the mechanical wake installs.
+- Each fork writes a `fork` row: the point, the outcome (`applied` or the
+  failure), its wall time, the effort sent, the reply's usage whole (input,
+  cache read, cache written, output), the prompt's and the reply's
+  characters and the messages kept as unanswered; a failure is an error row,
+  nothing to fork a warning, and its start and an applied fork info rows. A
+  `fork-prompt` debug row carries the prompt's section sizes.
+- A Claude Code without `$.model.fork` (or without `$.model`) throws a
+  `TypeError`, that it is no function or that it cannot read `fork`: that
+  fork fails as above, and the option reads as off for the session.
+- A headless (`-p` or SDK) chat refuses the plugin's own
+  `$.session.compact()`: known by its prompts' origin, or by that refusal,
+  its finish notice goes out as with the option off; its nudge levels fork
+  at its automatic asks.
+
 ### Look back
 
 `look_back` (`mcp__forward-compaction__look_back`), its schema in the prompt's

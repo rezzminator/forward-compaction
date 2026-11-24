@@ -50,6 +50,11 @@ export const DEFAULT_FRONTIER_WARN_CHARS = 12_000;
 export const DEFAULT_DONE_MAX_CHARS = 12_000;
 /** The debug log (`debug.jsonl`): a row at every step. */
 export const DEFAULT_DEBUG = true;
+/** Main's frontier written by the plugin's own fork at each notice point (fork.ts): off, the model writes it when a notice asks. */
+export const DEFAULT_MAIN_FORK = false;
+/** The effort levels a fork may name (`$.model.fork`'s ModelEffort); unset, the fork names none and runs at the session's level. */
+export const FORK_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
+export type ForkEffort = (typeof FORK_EFFORTS)[number];
 
 export type Parse<T> = { ok: true; value: T } | { ok: false; error: string };
 
@@ -112,6 +117,8 @@ export const OPTION_ENV = {
   frontierWarnChars: 'FORWARD_COMPACTION_FRONTIER_WARN_CHARS',
   doneMaxChars: 'FORWARD_COMPACTION_DONE_MAX_CHARS',
   debug: 'FORWARD_COMPACTION_DEBUG',
+  mainFork: 'FORWARD_COMPACTION_MAIN_FORK',
+  mainForkEffort: 'FORWARD_COMPACTION_MAIN_FORK_EFFORT',
 } as const;
 
 export type OptionName = keyof typeof OPTION_ENV;
@@ -144,6 +151,10 @@ export type ResolvedOptions = {
   /** The characters of done item texts a wake shows before the earlier items go to done-earlier.md (lists.ts `doneSplit`). */
   doneMaxChars: number;
   debug: boolean;
+  /** FORWARD_COMPACTION_MAIN_FORK: main's frontier written by a fork at each notice point. */
+  mainFork: boolean;
+  /** The effort the fork names; absent, none, and it runs at the session's level. */
+  mainForkEffort?: ForkEffort;
   /** One line per option that was invalid and fell back; empty when all were valid. */
   errors: string[];
 };
@@ -232,7 +243,9 @@ export function resolveOptions(env: OptionEnvironment = {}): ResolvedOptions {
   const subagentMax = maxContext('subagentMaxContext', "each sub-agent's model's max context");
   const subagent = { ...sizes('subagent', DEFAULT_SUBAGENT), ...(subagentMax !== undefined ? { maxContext: subagentMax } : {}) };
   const ceilingNative = flag('ceilingNative', DEFAULT_CEILING_NATIVE);
-  const debug = flag('debug', DEFAULT_DEBUG);
+  const debug = flag('debug', DEFAULT_DEBUG), mainFork = flag('mainFork', DEFAULT_MAIN_FORK);
+  const rawEffort = fromEnv('mainForkEffort')?.toLowerCase(), mainForkEffort = FORK_EFFORTS.find((level) => level === rawEffort);
+  if (rawEffort !== undefined && mainForkEffort === undefined) badEnv('mainForkEffort', `not one of ${FORK_EFFORTS.join(', ')}: ${JSON.stringify(fromEnv('mainForkEffort'))}`, "none: the session's level");
   // A count of characters: a percentage has nothing to be of.
   const chars = (option: OptionName, fallback: number): number => {
     const raw = fromEnv(option), parsed = raw === undefined ? undefined : parseSize(raw);
@@ -251,5 +264,5 @@ export function resolveOptions(env: OptionEnvironment = {}): ResolvedOptions {
   // The decision log lives in the plugin's log directory (PLUGIN_LOG_DIR, else under HOME); with neither, there is none.
   const base = pluginLogDir(env.pluginLogDir, env.home, 'forward-compaction');
   const logFile = base === undefined ? undefined : `${base}/decisions/.jsonl`;
-  return { main, subagent, ceilingNative, ...(logFile ? { logFile } : {}), ignoreModels, keepSkills, subagentCallCompacts, frontierWarnChars, doneMaxChars, debug, errors };
+  return { main, subagent, ceilingNative, ...(logFile ? { logFile } : {}), ignoreModels, keepSkills, subagentCallCompacts, frontierWarnChars, doneMaxChars, debug, mainFork, ...(mainForkEffort !== undefined ? { mainForkEffort } : {}), errors };
 }

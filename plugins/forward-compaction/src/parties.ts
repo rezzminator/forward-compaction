@@ -7,6 +7,7 @@ import type { PartyFiles } from './disk';
 import { storageDir } from './storage';
 import type { SubagentWindow } from './options';
 import { roomAbove, type NudgeMarks } from './nudge';
+import type { ForkDue, ForkNotice } from './fork';
 
 /** A `forward_compaction` call since the party's last wake, held until a door installs the frontier: the frontier itself is the party's held lists (`PartyState.held`), rendered at the wake. */
 export type StoredFrontier = {
@@ -90,6 +91,10 @@ export type PartyState = {
   windowed?: string;
   /** Plan mode and the plan file, as the party's last plan-mode attachment named them (plan.ts `planFrom`). */
   plan?: PlanSeen;
+  /** FORWARD_COMPACTION_MAIN_FORK: the fork due since main's last install, in place of the notice it holds (fork.ts `forkDueOf`). */
+  forkDue?: ForkDue;
+  /** The notice a failed fork leaves main to read with its next tool result (fork.ts `forkFailure`). */
+  forkNotice?: ForkNotice;
 };
 
 /**
@@ -348,6 +353,8 @@ export class Parties {
     const earlier = this.get(key).landing;
     Object.assign(this.get(key), {
       stored: undefined,
+      forkDue: undefined,
+      forkNotice: undefined,
       lastDecision: 'install',
       answeredSinceSkip: true,
       nudgeLevel: 0,
