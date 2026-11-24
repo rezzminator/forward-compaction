@@ -2,6 +2,12 @@
 
 Every release of forward-compaction, named sub-agent-compact before 1.0.0. Versions follow [semantic versioning](https://semver.org); each release is the `main` commit tagged `forward-compaction--v<version>` (`sub-agent-compact--v<version>` before 1.0.0), with a GitHub release carrying the section below.
 
+## [Unreleased]
+
+### Changed
+
+- **The README benchmark compares at the same compaction point.** At one 100k window Claude Code's own compaction started at about 77k tokens and forward-compaction at about 120k, so the native column compacted eight times a run against three. The native column now ran with a 143k window, which starts its compactions at about 114k, three a run: the whole-run cost gap is 17% ($1.80 against $1.50) where the table showed 37%, and the 100k-window runs stay in the results file. A benchmark arm takes its window from `window` in `scripts/bench/arms.json`, and `native-matched` is a new arm.
+
 ## [2.6.0] — 2026-11-24
 
 ### Changed
