@@ -29,6 +29,8 @@ const STORED = [
 const UPDATED = ['next unchanged', 'Frontier: 40 characters in 1 items (done 1)', 'Storage: none', 'Frontier updated. Nothing compacts: your context is still too small for a compaction to pay, and stays as it is. Carry on; a forward-compaction notice asks for the call once it has grown enough.', END].join('\n');
 /** A sub-agent's first call, with no objective, before Claude Code asked, as a build before the result's storage line wrote it. */
 const WAITING = ['next set', 'Frontier: 4 characters in 0 items', `Frontier stored, without objective: send it before it installs, or the wake names it missing. Claude Code has not asked to compact you yet: it installs at Claude Code's next ask, from about 67k context. ${BEHIND}. Carry on with your work.`, END].join('\n');
+/** A call whose done list overflows: its result names the split in a line of its own. */
+const SPLIT = ['next unchanged', 'Frontier: 63,704 characters in 57 items (done 57)', 'Done: 11 newest items stay in your wake, 46 earlier in /h/.local/state/forward-compaction/proj/s1/done-earlier.md', 'Storage: none', 'Frontier updated. Nothing compacts: your context is still too small for a compaction to pay, and stays as it is. Carry on; a forward-compaction notice asks for the call once it has grown enough.', END].join('\n');
 const FAILED = `forward_compaction failed, nothing stored: disk full\n${END}`;
 
 const DIM = { dimColor: true };
@@ -72,6 +74,20 @@ describe('callRow: what a forward_compaction call draws in place of its argument
       line('objective', T('missing', { color: 'error' })), line('next', T('set', { color: 'success' })), line('storage', T('not reported', DIM)), line('load_files', NONE),
       line('wrote', T('12 chars of arguments · its request wrote 300 tokens')),
       line('frontier', T('4 chars · 0 items')),
+    ])],
+    ['a call whose done list overflows draws the split, how many done items stay in the wake and how many are in the file, in a row of its own', call({ output: SPLIT }), undefined, drawn([...DONE, T('  frontier updated', { color: 'warning' }), T(' · nothing compacts, the context is still small', DIM)], [
+      line('orders', EMPTY), line('decisions', EMPTY), line('done', T('57')), line('remaining', EMPTY), line('blocked', EMPTY), line('findings', EMPTY),
+      line('objective', SAME), line('next', SAME), line('storage', NONE), line('load_files', NONE),
+      line('wrote', T('12 chars of arguments')),
+      line('frontier', T('63,704 chars · 57 items')),
+      line('done split', T('11 newest in the wake · 46 earlier in done-earlier.md')),
+    ])],
+    ['a done split with one item left in the wake is read from its singular line', call({ output: SPLIT.replace('11 newest items stay', '1 newest item stays') }), undefined, drawn([...DONE, T('  frontier updated', { color: 'warning' }), T(' · nothing compacts, the context is still small', DIM)], [
+      line('orders', EMPTY), line('decisions', EMPTY), line('done', T('57')), line('remaining', EMPTY), line('blocked', EMPTY), line('findings', EMPTY),
+      line('objective', SAME), line('next', SAME), line('storage', NONE), line('load_files', NONE),
+      line('wrote', T('12 chars of arguments')),
+      line('frontier', T('63,704 chars · 57 items')),
+      line('done split', T('1 newest in the wake · 46 earlier in done-earlier.md')),
     ])],
     ['a call still running draws its name alone', call({ isRunning: true }), undefined, drawn([T('● ', DIM), T('forward_compaction', { bold: true }), T('  writing the frontier', DIM)])],
     ['a failed call stays whole', call({ output: FAILED }), undefined, undefined],

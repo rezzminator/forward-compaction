@@ -42,6 +42,8 @@ export type Script = {
   models?: Record<string, number | { status: number; text: string } | Error | Promise<{ status: number; text: string }>>;
   /** What `$.session.authorize()` answers: null is a session with no first-party credential. A bearer handle by default. */
   credential?: { handle: string; kind: 'bearer' | 'api-key' } | null;
+  /** What `$.model.fork` answers each request (a ModelForkResult), or throws; unscripted, a call fails the test. */
+  fork?: (request: { prompt: string; effort?: string }) => unknown;
 };
 
 /** The Models API's `max_input_tokens` per model id as it answered live on 2026-11-12; `claude-sonnet-4-5`, the suite's stand-in model, is scripted at 200k. */
@@ -65,6 +67,7 @@ export function fakeEngine(script: Script = {}) {
   const unscripted: string[] = [];
   const invalidated: string[] = [];
   const compactCalls: unknown[][] = [];
+  const forkCalls: { prompt: string; effort?: string }[] = [];
   const fetches: { url: string; init?: unknown }[] = [];
   const credential = script.credential === undefined ? { handle: 'handle-1', kind: 'bearer' as const } : script.credential;
   const registerFailure = (): string | undefined => (typeof script.registerError === 'function' ? script.registerError() : script.registerError);
@@ -148,6 +151,13 @@ export function fakeEngine(script: Script = {}) {
         return { isSet: true, version };
       },
     },
+    model: {
+      fork: async (request: { prompt: string; effort?: string }) => {
+        forkCalls.push(request);
+        if (script.fork === undefined) { unscripted.push('model.fork'); throw new Error('unscripted $ call model.fork'); }
+        return script.fork(request);
+      },
+    },
     tool: { register: (spec: { name: string }) => (hangs('tool.register') ? never : registerFailure() !== undefined ? Promise.reject(new Error(registerFailure())) : Promise.resolve({ tool: `mcp__forward-compaction__${spec.name}` })) },
   };
 
@@ -191,7 +201,7 @@ export function fakeEngine(script: Script = {}) {
   }
 
   return {
-    $, home, vars, screen, unscripted, invalidated, compactCalls, fetches, hooks, dispatch,
+    $, home, vars, screen, unscripted, invalidated, compactCalls, forkCalls, fetches, hooks, dispatch,
     advance: (ms: number) => void (now += ms),
     texts: () => screen.map((c) => c.text),
     cleanup: () => rmSync(home, { recursive: true, force: true }),

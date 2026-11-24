@@ -55,7 +55,7 @@ describe('resolveOptions', () => {
     expect(resolveOptions()).toEqual({
       main: { ceiling: { percent: 60 }, nudgeStart: { percent: 15 }, nudgeEvery: { percent: 5 }, finishStart: { tokens: 100_000 } },
       subagent: { ceiling: { percent: 80 }, nudgeStart: { tokens: 165_000 }, nudgeEvery: { tokens: 65_000 } },
-      ceilingNative: false, ignoreModels: ['haiku'], keepSkills: [], subagentCallCompacts: [], frontierWarnChars: 12_000, debug: true, errors: [],
+      ceilingNative: false, ignoreModels: ['haiku'], keepSkills: [], subagentCallCompacts: [], frontierWarnChars: 12_000, doneMaxChars: 12_000, debug: true, mainFork: false, errors: [],
     });
   });
 
@@ -77,7 +77,10 @@ describe('resolveOptions', () => {
       keepSkills: 'FORWARD_COMPACTION_KEEP_SKILLS',
       subagentCallCompacts: 'FORWARD_COMPACTION_SUBAGENT_CALL_COMPACTS',
       frontierWarnChars: 'FORWARD_COMPACTION_FRONTIER_WARN_CHARS',
+      doneMaxChars: 'FORWARD_COMPACTION_DONE_MAX_CHARS',
       debug: 'FORWARD_COMPACTION_DEBUG',
+      mainFork: 'FORWARD_COMPACTION_MAIN_FORK',
+      mainForkEffort: 'FORWARD_COMPACTION_MAIN_FORK_EFFORT',
     });
   });
 
@@ -88,6 +91,18 @@ describe('resolveOptions', () => {
     expect(resolveOptions({ vars: { FORWARD_COMPACTION_IGNORE_MODELS: ' , ' } }).ignoreModels).toEqual([]);
     expect(resolveOptions({ vars: { FORWARD_COMPACTION_KEEP_SKILLS: ' god-speed, deploy:Release ,,' } }).keepSkills).toEqual(['god-speed', 'deploy:Release']);
     expect(resolveOptions({ vars: { FORWARD_COMPACTION_SUBAGENT_CALL_COMPACTS: ' flights:lander, Explore ,,' } }).subagentCallCompacts).toEqual(['flights:lander', 'Explore']);
+  });
+
+  it('reads the main fork flag, off by default, and its effort, unset by default; names a bad value by its variable', () => {
+    const fork = (vars: Record<string, string>) => { const o = resolveOptions({ vars }); return [o.mainFork, o.mainForkEffort, o.errors]; };
+    expect(fork({})).toEqual([false, undefined, []]);
+    expect(fork({ FORWARD_COMPACTION_MAIN_FORK: '1', FORWARD_COMPACTION_MAIN_FORK_EFFORT: ' Low ' })).toEqual([true, 'low', []]);
+    expect(fork({ FORWARD_COMPACTION_MAIN_FORK: 'true', FORWARD_COMPACTION_MAIN_FORK_EFFORT: 'max' })).toEqual([true, 'max', []]);
+    expect(fork({ FORWARD_COMPACTION_MAIN_FORK_EFFORT: '  ' })).toEqual([false, undefined, []]);
+    expect(fork({ FORWARD_COMPACTION_MAIN_FORK: 'yes', FORWARD_COMPACTION_MAIN_FORK_EFFORT: 'turbo' })).toEqual([false, undefined, [
+      'forward-compaction: env FORWARD_COMPACTION_MAIN_FORK is invalid (not 1, 0, true or false: "yes"); using the default false',
+      'forward-compaction: env FORWARD_COMPACTION_MAIN_FORK_EFFORT is invalid (not one of low, medium, high, xhigh, max: "turbo"); using the default none: the session\'s level',
+    ]]);
   });
 
   it('reads the debug flag, on by default, and names a bad value by its variable', () => {
@@ -123,13 +138,17 @@ describe('resolveOptions', () => {
   });
 
   it.each([
-    ['20000', 20_000, []],
-    ['15k', 15_000, []],
-    ['10%', 12_000, ['forward-compaction: env FORWARD_COMPACTION_FRONTIER_WARN_CHARS is invalid (a character count, not a percentage: "10%"); using the default 12000']],
-    ['lots', 12_000, ['forward-compaction: env FORWARD_COMPACTION_FRONTIER_WARN_CHARS is invalid (not an integer, a k/m value or a percentage: "lots"); using the default 12000']],
-  ])('reads the frontier warning threshold %j as %j characters', (raw, want, errors) => {
-    const options = resolveOptions({ vars: { FORWARD_COMPACTION_FRONTIER_WARN_CHARS: raw } });
-    expect([options.frontierWarnChars, options.errors]).toEqual([want, errors]);
+    ['frontierWarnChars', 'FORWARD_COMPACTION_FRONTIER_WARN_CHARS', '20000', 20_000, []],
+    ['frontierWarnChars', 'FORWARD_COMPACTION_FRONTIER_WARN_CHARS', '15k', 15_000, []],
+    ['frontierWarnChars', 'FORWARD_COMPACTION_FRONTIER_WARN_CHARS', '10%', 12_000, ['forward-compaction: env FORWARD_COMPACTION_FRONTIER_WARN_CHARS is invalid (a character count, not a percentage: "10%"); using the default 12000']],
+    ['frontierWarnChars', 'FORWARD_COMPACTION_FRONTIER_WARN_CHARS', 'lots', 12_000, ['forward-compaction: env FORWARD_COMPACTION_FRONTIER_WARN_CHARS is invalid (not an integer, a k/m value or a percentage: "lots"); using the default 12000']],
+    ['doneMaxChars', 'FORWARD_COMPACTION_DONE_MAX_CHARS', '8000', 8_000, []],
+    ['doneMaxChars', 'FORWARD_COMPACTION_DONE_MAX_CHARS', '20k', 20_000, []],
+    ['doneMaxChars', 'FORWARD_COMPACTION_DONE_MAX_CHARS', '10%', 12_000, ['forward-compaction: env FORWARD_COMPACTION_DONE_MAX_CHARS is invalid (a character count, not a percentage: "10%"); using the default 12000']],
+    ['doneMaxChars', 'FORWARD_COMPACTION_DONE_MAX_CHARS', '-5', 12_000, ['forward-compaction: env FORWARD_COMPACTION_DONE_MAX_CHARS is invalid (not an integer, a k/m value or a percentage: "-5"); using the default 12000']],
+  ] as const)('reads %s from %s %j as %j characters', (option, name, raw, want, errors) => {
+    const options = resolveOptions({ vars: { [name]: raw } });
+    expect([options[option], options.errors]).toEqual([want, errors]);
   });
 
   it('reads the native flag, and treats a blank value as unset with no error (R4)', () => {

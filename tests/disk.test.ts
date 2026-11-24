@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { notSaved, PartyFiles, partyRoot, projectName } from '../plugins/forward-compaction/src/disk.ts';
+import { DONE_EARLIER_FILE, DONE_EARLIER_RECORD, notSaved, PartyFiles, partyRoot, projectName, unreadMeans } from '../plugins/forward-compaction/src/disk.ts';
 import { memFs } from './fakes/fs.ts';
-import { emptyHeld, listApply } from '../plugins/forward-compaction/src/lists.ts';
+import { emptyHeld, listApply, type Held } from '../plugins/forward-compaction/src/lists.ts';
 
 const R = '/h/.local/state/forward-compaction/proj/s1';
 
@@ -72,6 +72,19 @@ describe('PartyFiles: write, history and load', () => {
     expect([unread.held.floor, unread.problems]).toEqual([undefined, [{ file: 'floor.json', error: 'not a {floor}' }]]);
   });
 
+  it('keeps each item\'s added time in its file and its history line, loads it back, loads an item stored without one as before, and drops one that is no ISO time', async () => {
+    const fs = memFs(), files = new PartyFiles(R), held = emptyHeld(), at = '2026-10-27T14:53:00.000Z';
+    held.lists.findings = listApply('findings', held.lists.findings, { add: ['a', 'b'] }, 0, at).list;
+    files.changed('findings');
+    expect(await files.flush(fs, held)).toEqual([]);
+    const out = listApply('findings', held.lists.findings, { remove: [1] }, 0, '2026-10-28T00:00:00.000Z');
+    held.lists.findings = out.list, files.changed('findings', out.left);
+    expect(await files.flush(fs, held)).toEqual([]);
+    expect([fs.files[`${R}/data/findings.json`], fs.files[`${R}/history/findings.jsonl`]]).toEqual(['{\n  "next_id": 3,\n  "items": [\n    {\n      "id": 2,\n      "text": "b",\n      "added": "2026-10-27T14:53:00.000Z"\n    }\n  ]\n}\n', '{"id":1,"text":"a","left":"removed","added":"2026-10-27T14:53:00.000Z"}\n']);
+    const loaded = await new PartyFiles(R).load(memFs({ ...fs.files, [`${R}/data/done.json`]: '{"next_id":4,"items":[{"id":1,"text":"old"},{"id":2,"text":"x","added":"yesterday"},{"id":3,"text":"y","added":"2026-10-27T14:53:00Z"}]}' }));
+    expect([loaded.held.lists.findings.items, loaded.held.lists.done.items, loaded.problems]).toEqual([[{ id: 2, text: 'b', added: at }], [{ id: 1, text: 'old' }, { id: 2, text: 'x' }, { id: 3, text: 'y', added: '2026-10-27T14:53:00Z' }], []]);
+  });
+
   it('keeps a change it could not write due, and writes it at the next flush', async () => {
     const fs = memFs({}, { write: { [`${R}/orders.json`]: 'EACCES: permission denied' } });
     const files = new PartyFiles(R);
@@ -94,18 +107,19 @@ describe('PartyFiles: write, history and load', () => {
     expect(fs.files[`${R}/history/done.jsonl`]).toBe('{"id":1,"text":"x","left":"removed"}\n{"id":2,"text":"y","left":"removed"}\n');
   });
 
-  it('loads an unreadable file as empty, names it, leaves it until a change, then copies its text to history/unreadable first', async () => {
-    const fs = memFs({ [`${R}/data/done.json`]: '{broken', [`${R}/history/done.jsonl`]: '{"id":7,"text":"x","left":"removed"}\n', [`${R}/data/next.json`]: '[1]' });
+  it('loads an unreadable file as empty, names it, leaves it until a change, then copies its text to history/unreadable first; done-earlier.md of an unreadable done list is left and copied with it', async () => {
+    const fs = memFs({ [`${R}/data/done.json`]: '{broken', [`${R}/history/done.jsonl`]: '{"id":7,"text":"x","left":"removed"}\n', [`${R}/data/next.json`]: '[1]', [`${R}/${DONE_EARLIER_FILE}`]: '[1] the first round\n' });
     const files = new PartyFiles(R);
     const { held, problems } = await files.load(fs);
     expect(problems.map((p) => p.file)).toEqual(['data/done.json', 'data/next.json']);
     expect([held.lists.done, held.next, [...files.unreadable]]).toEqual([{ next_id: 8, items: [] }, undefined, ['done', 'next']]);
-    expect(await files.flush(fs, held)).toEqual([]);
-    expect(fs.files[`${R}/data/done.json`]).toBe('{broken');
+    expect(await files.flush(fs, held, 100)).toEqual([]);
+    expect([fs.files[`${R}/data/done.json`], fs.files[`${R}/${DONE_EARLIER_FILE}`]]).toEqual(['{broken', '[1] the first round\n']);
     held.lists.done = listApply('done', held.lists.done, { add: ['z'] }).list;
     files.changed('done');
-    expect(await files.flush(fs, held)).toEqual([]);
+    expect(await files.flush(fs, held, 100)).toEqual([]);
     expect([fs.files[`${R}/history/unreadable/done.json`], JSON.parse(fs.files[`${R}/data/done.json`]!)]).toEqual(['{broken', { next_id: 9, items: [{ id: 8, text: 'z' }] }]);
+    expect([fs.files[`${R}/history/unreadable/${DONE_EARLIER_FILE}`], fs.files[`${R}/${DONE_EARLIER_FILE}`]]).toEqual(['[1] the first round\n', 'No earlier done items: every live done item is in the wake.\n']);
   });
 
   it('starts every list past the numbers its history holds, and past those an unparsable live file still names', async () => {
@@ -171,5 +185,118 @@ describe('PartyFiles: write, history and load', () => {
     files.queueStorage('a.md', 'new', 'old');
     expect(await files.flush(fs, emptyHeld())).toEqual([{ file: 'history/storage/a.md', error: 'ENOSPC' }]);
     expect([fs.files[`${R}/storage/a.md`], files.storage.length]).toEqual([undefined, 2]);
+  });
+});
+
+describe('done-earlier.md: the done items a wake names instead of showing', () => {
+  const PATH = `${R}/${DONE_EARLIER_FILE}`, RECORD = `${R}/${DONE_EARLIER_RECORD}`, A = 'a'.repeat(14), B = 'b'.repeat(14), C = 'c'.repeat(14);
+  const through = (n: number): string => `{\n  "through": ${n}\n}\n`;
+  const changed = (held: Held, change: Parameters<typeof listApply>[2]): Held => ({ ...held, lists: { ...held.lists, done: listApply('done', held.lists.done, change).list } });
+  const doneOf = (...texts: string[]) => {
+    const held = emptyHeld();
+    held.lists.done = listApply('done', held.lists.done, { add: texts }).list;
+    return held;
+  };
+  const ids = (items: readonly { id: number }[] | undefined): number[] | undefined => items?.map((item) => item.id);
+
+  it('holds the earlier items whole, oldest first; the wake shows the rest and names it once written; together they are every live item, none in both', async () => {
+    const fs = memFs(), files = new PartyFiles(R), held = doneOf('first\nof two lines', 'second', 'third', 'fourth');
+    expect(files.doneWake(held, 11)).toBe(undefined);
+    expect(await files.flush(fs, held, 11)).toEqual([]);
+    const wake = files.doneWake(held, 11);
+    expect([fs.files[PATH], fs.files[RECORD], ids(wake?.shown), ids(wake?.earlier), wake?.path]).toEqual(['[1] first\nof two lines\n[2] second\n', through(2), [3, 4], [1, 2], PATH]);
+    const inFile = [...fs.files[PATH]!.matchAll(/^\[(\d+)\] /gm)].map((m) => Number(m[1]));
+    expect([...inFile, ...ids(wake?.shown)!].sort()).toEqual(held.lists.done.items.map((item) => item.id));
+  });
+
+  it('follows a remove of an earlier item, says it holds none once the party has read a wake showing the whole list, and is never created for a list that fits', async () => {
+    const fs = memFs(), files = new PartyFiles(R);
+    let held = doneOf('first', 'second', 'third');
+    expect(await files.flush(fs, held, 10)).toEqual([]);
+    held = changed(held, { remove: [1] });
+    expect(await files.flush(fs, held, 10)).toEqual([]);
+    expect([fs.files[PATH], ids(files.doneWake(held, 10)?.shown)]).toEqual(['[2] second\n', [3]]);
+    files.wakeRendered('the whole list', files.doneWake(held, 11));
+    files.doneReached(() => true);
+    expect(await files.flush(fs, held, 11)).toEqual([]);
+    expect([fs.files[PATH], fs.files[RECORD], files.doneWake(held, 11)]).toEqual(['No earlier done items: every live done item is in the wake.\n', through(0), undefined]);
+    const fresh = memFs(), fits = new PartyFiles(R);
+    fits.changed('done');
+    expect(await fits.flush(fresh, held, 11)).toEqual([]);
+    expect([JSON.parse(fresh.files[`${R}/data/done.json`]!).items.length, PATH in fresh.files, RECORD in fresh.files]).toEqual([2, false, false]);
+  });
+
+  it.each<[string, Parameters<typeof listApply>[2], number, number[] | undefined]>([
+    ['a remove of the newest item', { remove: [3] }, 20, [2]],
+    ['an edit that shortens the newest item', { edit: [{ id: 3, text: 'cc' }] }, 20, [2, 3]],
+    ['a raised cap that shows the whole list', {}, 100, undefined],
+  ])('still holds every live item it held after %s, in the same run and in a new one over the same folder', async (_name, change, cap, shown) => {
+    const fs = memFs(), before = new PartyFiles(R);
+    let held = doneOf(A, B, C);
+    expect(await before.flush(fs, held, 20)).toEqual([]);
+    expect([fs.files[PATH], fs.files[RECORD], ids(before.doneWake(held, 20)?.shown)]).toEqual([`[1] ${A}\n[2] ${B}\n`, through(2), [3]]);
+    held = changed(held, change);
+    const restarted = new PartyFiles(R);
+    expect((await restarted.load(fs)).problems).toEqual([]);
+    for (const files of [before, restarted]) {
+      expect(await files.flush(fs, held, cap)).toEqual([]);
+      expect([fs.files[PATH], fs.files[RECORD], ids(files.doneWake(held, cap)?.shown)]).toEqual([`[1] ${A}\n[2] ${B}\n`, through(2), shown]);
+    }
+  });
+
+  it('gives up the items a wake showed only once the party\'s transcript holds that wake, and is the earlier items alone again', async () => {
+    const fs = memFs(), files = new PartyFiles(R), held = changed(doneOf(A, B, C), { remove: [3] }), asked: string[] = [];
+    files.wakeRendered('an earlier wake', undefined);
+    expect(await files.flush(fs, doneOf(A, B, C), 20)).toEqual([]);
+    expect(await files.flush(fs, held, 20)).toEqual([]);
+    files.wakeRendered('the frontier', files.doneWake(held, 20)); // rendered, not yet read: [2] is in the wake and still in the file
+    files.doneReached((frontier) => (asked.push(frontier), false));
+    expect(await files.flush(fs, held, 20)).toEqual([]);
+    expect([asked, fs.files[PATH], fs.files[RECORD]]).toEqual([['the frontier'], `[1] ${A}\n[2] ${B}\n`, through(2)]);
+    files.doneReached(() => true);
+    expect(await files.flush(fs, held, 20)).toEqual([]);
+    expect([fs.files[PATH], fs.files[RECORD], ids(files.doneWake(held, 20)?.earlier), ids(files.doneWake(held, 20)?.shown)]).toEqual([`[1] ${A}\n`, through(1), [1], [2]]);
+    files.doneReached(() => { throw new Error('no wake waits: a transcript is asked once per wake read'); });
+  });
+
+  it('writes the file and its record for two flushes at once one after the other, the later flush\'s items standing', async () => {
+    const fs = memFs(), files = new PartyFiles(R);
+    let release = (): void => undefined, held = false;
+    const slow = { ...fs, write: async (path: string, text: string) => { if (path === RECORD && !held) (held = true), await new Promise<void>((resolve) => { release = resolve; }); return fs.write(path, text); } };
+    const first = files.flush(slow, doneOf(A, B, C), 20), second = files.flush(fs, doneOf(A, B, C, 'd'.repeat(14)), 20);
+    await Promise.resolve().then(() => release());
+    expect([await first, await second, fs.files[PATH], fs.files[RECORD]]).toEqual([[], [], `[1] ${A}\n[2] ${B}\n[3] ${C}\n`, through(3)]);
+  });
+
+  it('with a record it cannot read, names it, holds every live done item, keeps the record\'s text in history/unreadable, and is the earlier items alone again after a wake the party read', async () => {
+    const fs = memFs({ [RECORD]: '{"through":"x"}', [PATH]: `[1] ${A}\n` }), files = new PartyFiles(R), held = doneOf(A, B, C);
+    expect((await files.load(fs)).problems).toEqual([{ file: 'done-earlier.json', error: 'not a {through}' }]);
+    expect([unreadMeans('done-earlier.json'), unreadMeans('data/done.json')]).toEqual(['what done-earlier.md held is unknown, so it holds every live done item until the party has read a wake that shows them', 'it is shown empty and left as it is until a call changes it']);
+    expect(files.doneWake(held, 20)).toBe(undefined);
+    expect(await files.flush(fs, held, 20)).toEqual([]);
+    expect([fs.files[PATH], fs.files[RECORD], fs.files[`${R}/history/unreadable/done-earlier.json`], ids(files.doneWake(held, 20)?.shown)]).toEqual([`[1] ${A}\n[2] ${B}\n[3] ${C}\n`, through(3), '{"through":"x"}', [3]]);
+    files.wakeRendered('the frontier', files.doneWake(held, 20));
+    files.doneReached(() => true);
+    expect(await files.flush(fs, held, 20)).toEqual([]);
+    expect([fs.files[PATH], fs.files[RECORD]]).toEqual([`[1] ${A}\n[2] ${B}\n`, through(2)]);
+  });
+
+  it('with the file not written, the wake shows the whole done list, the failure is returned, and the next flush writes it', async () => {
+    const files = new PartyFiles(R), ok = memFs();
+    let held = doneOf('aaaa', 'bbbb', 'cccc');
+    expect(await files.flush(ok, held, 8)).toEqual([]);
+    expect(ids(files.doneWake(held, 8)?.shown)).toEqual([2, 3]);
+    held = { ...held, lists: { ...held.lists, done: listApply('done', held.lists.done, { add: ['dddd'] }).list } };
+    const failing = memFs(ok.files, { write: { [PATH]: 'ENOSPC: no space left on device' } });
+    expect(await files.flush(failing, held, 8)).toEqual([{ file: 'done-earlier.md', error: 'ENOSPC: no space left on device' }]);
+    expect([files.doneWake(held, 8), ok.files[PATH]]).toEqual([undefined, '[1] aaaa\n']);
+    expect(await files.flush(ok, held, 8)).toEqual([]);
+    expect([ok.files[PATH], ids(files.doneWake(held, 8)?.shown)]).toEqual(['[1] aaaa\n[2] bbbb\n', [3, 4]]);
+    held = changed(held, { add: ['eeee'] });
+    const noRecord = memFs(ok.files, { write: { [RECORD]: 'EROFS: read-only file system' } }); // the record is written before the file gains an item: without it the file stays as it is
+    expect(await files.flush(noRecord, held, 8)).toEqual([{ file: 'done-earlier.json', error: 'EROFS: read-only file system' }]);
+    expect([files.doneWake(held, 8), ok.files[PATH], ok.files[RECORD]]).toEqual([undefined, '[1] aaaa\n[2] bbbb\n', through(2)]);
+    expect(await files.flush(ok, held, 8)).toEqual([]);
+    expect([ok.files[PATH], ok.files[RECORD], ids(files.doneWake(held, 8)?.shown)]).toEqual(['[1] aaaa\n[2] bbbb\n[3] cccc\n', through(3), [4, 5]]);
   });
 });

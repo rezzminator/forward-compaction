@@ -9,12 +9,12 @@ export type ListName = (typeof LISTS)[number];
 export const TEXTS = ['objective', 'next'] as const;
 export type TextName = (typeof TEXTS)[number];
 
-/** `round`: the party's count of installed compactions (`Held.rounds`) when the item was added or last edited; absent is 0. */
-export type Item = { id: number; text: string; round?: number };
+/** `round`: the party's count of installed compactions (`Held.rounds`) when the item was added or last edited; absent is 0. `added`: when the item was added, ISO 8601 UTC from the adapter's clock, kept through an edit; absent on an item stored before it was kept, and none is invented. It lives only in the files on disk: no text the plugin hands a model or draws on the user's card carries it. */
+export type Item = { id: number; text: string; round?: number; added?: string };
 /** A list as it is held and kept on disk: its live items in shown order, and the next free number. */
 export type List = { next_id: number; items: Item[] };
 /** A value that left a list: removed, or replaced by an edit. */
-export type Left = { id: number; text: string; left: 'removed' | 'edited' };
+export type Left = { id: number; text: string; left: 'removed' | 'edited'; added?: string };
 /** One storage entry as the wake lists it (storage.ts). */
 export type StorageEntry = { name: string; description: string };
 
@@ -36,7 +36,7 @@ const untagged = (text: string): string => text.replace(new RegExp(`${TAG.source
 const unnumbered = (text: string, id?: number): string => text.replace(/^\s*\[(\d+)\]\s+(?=\S)/, (whole, n: string) => (id === undefined || Number(n) === id ? '' : whole));
 /** What a wake says once, after lists that show a tag; '' when none of `shown` does. */
 export const unchangedNote = (...shown: (string | undefined)[]): string =>
-  shown.some((text) => text !== undefined && TAG.test(text)) ? ' An item tagged [N rounds unchanged] has passed N compactions with no change: keep it only while it is still true and still needed, and a standing order until the user lifts it.' : '';
+  shown.some((text) => text !== undefined && TAG.test(text)) ? ' An item tagged [N rounds unchanged] has passed N compactions with no change: keep it only while it is still true and still needed, and a standing order while it binds.' : '';
 
 export const kind = (v: unknown): string => (v === null ? 'null' : Array.isArray(v) ? 'array' : typeof v);
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
@@ -52,6 +52,8 @@ function idOf(v: unknown): number | undefined {
 export const LEFT_SHOWN_CHARS = 80;
 /** An item that left, as a result line shows it: whole up to LEFT_SHOWN_CHARS, else its first LEFT_SHOWN_CHARS on one line and `…`, so a wake that repeats the result carries no text the call replaced. */
 const leftShown = (text: string): string => (text.length <= LEFT_SHOWN_CHARS ? text : `${text.slice(0, LEFT_SHOWN_CHARS).replace(/\s+/g, ' ')}…`);
+/** An item's value as it leaves, its `added` carried into its history line. */
+const leaving = (item: Item, left: Left['left']): Left => ({ id: item.id, text: item.text, left, ...(item.added !== undefined ? { added: item.added } : {}) });
 
 export type ListCount = { added: number; removed: number; edited: number; skipped: number };
 export type ListOutcome = { list: List; lines: string[]; notes: string[]; left: Left[]; count: ListCount };
@@ -121,9 +123,10 @@ function readChange(name: ListName, change: unknown): { adds: Add[]; removes: { 
  * numbers. A number both removed and edited is removed; a number that is not live, a blank text or a malformed entry is
  * skipped; an added text equal to a live item (`plain`) is skipped as `already [n]`; each with one note or line. In
  * `remaining` an add may name a live step to stand `before`; one that is not live puts it last. An item added or edited
- * takes `round`, the party's count of installed compactions, from which its rounds unchanged are counted. Never throws.
+ * takes `round`, the party's count of installed compactions, from which its rounds unchanged are counted; an added one
+ * takes `addedAt`, the call's time, as its `added`, which an edit keeps. Never throws.
  */
-export function listApply(name: ListName, list: List, change: unknown, round = 0): ListOutcome {
+export function listApply(name: ListName, list: List, change: unknown, round = 0, addedAt?: string): ListOutcome {
   const stamp = (item: Item): Item => (round > 0 ? Object.assign(item, { round }) : item);
   const read = readChange(name, change);
   const notes = [...read.notes];
@@ -142,12 +145,12 @@ export function listApply(name: ListName, list: List, change: unknown, round = 0
     if (item === undefined) notes.push(`${e.at}: [${e.id}] is not a live item: skipped.`);
     else if (removed.has(e.id)) notes.push(`${e.at}: [${e.id}] is also removed: removed.`);
     else if (item.text === e.text) notes.push(`${e.at}: [${e.id}] already reads so: unchanged.`);
-    else (left.push({ id: item.id, text: item.text, left: 'edited' }), edited.push(`Edited in ${name}: [${item.id}], was: ${leftShown(item.text)}`), (item.text = e.text), stamp(item));
+    else (left.push(leaving(item, 'edited')), edited.push(`Edited in ${name}: [${item.id}], was: ${leftShown(item.text)}`), (item.text = e.text), stamp(item));
   }
   const removedLines: string[] = [];
   const kept = items.filter((item) => {
     if (!removed.has(item.id)) return true;
-    left.push({ id: item.id, text: item.text, left: 'removed' }), removedLines.push(`Removed from ${name}: [${item.id}] ${leftShown(item.text)}`);
+    left.push(leaving(item, 'removed')), removedLines.push(`Removed from ${name}: [${item.id}] ${leftShown(item.text)}`);
     return false;
   });
   let next = list.next_id;
@@ -160,6 +163,7 @@ export function listApply(name: ListName, list: List, change: unknown, round = 0
       continue;
     }
     const item = stamp({ id: next++, text: a.text });
+    if (addedAt !== undefined) item.added = addedAt;
     const at = a.before === undefined ? -1 : kept.findIndex((it) => it.id === a.before);
     if (a.before !== undefined && at < 0) notes.push(`${a.at}.before: [${a.before}] is not a live step: added last.`);
     if (at < 0) kept.push(item);
@@ -198,11 +202,56 @@ export const SECTIONS: readonly { key: TextName | Exclude<ListName, 'orders'>; h
 /** A list's live items as the wake shows them, each ending with the rounds it has passed unchanged of the party's `rounds` (`unchangedTag`). */
 export const itemLines = (list: List, rounds = 0): string[] => list.items.map((item) => `[${item.id}] ${item.text}${unchangedTag(rounds - (item.round ?? 0))}`);
 
-/** The frontier rendered from what is held: each section with content under its heading, an empty one left out; '' when nothing is held. */
-export function renderFrontier(held: Held): string {
+/**
+ * A done list split for a wake: walking from the newest item (highest number) to the oldest, an item is shown while
+ * the shown items' texts sum to at most `maxChars`, the newest always, even alone over it; every older item is earlier.
+ * Shown keeps the list's order, earlier is oldest first. Nothing moves in the store: the split is made at each rendering.
+ */
+export function doneSplit(items: readonly Item[], maxChars: number): { shown: Item[]; earlier: Item[] } {
+  const newest = [...items].sort((a, b) => b.id - a.id), shown = new Set<number>();
+  let chars = 0;
+  for (const item of newest) {
+    if (shown.size > 0 && chars + item.text.length > maxChars) break;
+    chars += item.text.length, shown.add(item.id);
+  }
+  return { shown: items.filter((item) => shown.has(item.id)), earlier: newest.filter((item) => !shown.has(item.id)).reverse() };
+}
+
+/**
+ * The done items done-earlier.md holds, oldest first: the earlier ones at `maxChars` (`doneSplit`) and every live item
+ * numbered up to `through`, the highest number the file already held (Infinity: every one). A rewrite so drops no live
+ * item the file held: one the party's wake did not show stays readable there until a wake that shows it has reached the
+ * party (disk.ts `doneReached`). One number says it all: the split is by number, so the file's items are always the lowest.
+ */
+export function doneFiled(items: readonly Item[], maxChars: number, through: number): Item[] {
+  const top = Math.max(through, doneSplit(items, maxChars).earlier.at(-1)?.id ?? 0);
+  return items.filter((item) => item.id <= top).sort((a, b) => a.id - b.id);
+}
+
+/** A wake's done list with earlier items (`doneSplit`) and the file that holds them whole (disk.ts `DONE_EARLIER_FILE`), its absolute path. */
+export type DoneWake = { shown: Item[]; earlier: Item[]; path: string };
+
+/** The line a wake shows under done, before its shown items, naming the file the earlier ones are in. */
+export function doneEarlierLine(earlier: readonly Item[], path: string): string {
+  const ids = earlier.map((item) => item.id), rest = 'finished work like the items below, edited or removed by number like them. Read the file when a step or the final report may rest on one.';
+  return ids.length === 1 ? `1 earlier done item, [${ids[0]}], is in ${path}, whole under its number: ${rest}` : `${ids.length} earlier done items, [${Math.min(...ids)}] to [${Math.max(...ids)}], are in ${path}, each whole under its number: ${rest}`;
+}
+
+/** The result's line for a done list with earlier items: how many stay in the wake and where the rest are; none without. */
+export const doneLines = (done: DoneWake | undefined): string[] => (done === undefined || done.earlier.length === 0 ? [] : [`Done: ${done.shown.length} newest ${done.shown.length === 1 ? 'item stays' : 'items stay'} in your wake, ${done.earlier.length} earlier in ${done.path}`]);
+
+/** The done items a wake shows and those in the file, each counted with its characters: the whole list shown when there is no split. */
+export function doneSizes(done: List, split: DoneWake | undefined): { shown: number; shownChars: number; earlier: number; earlierChars: number } {
+  const chars = (items: readonly Item[]): number => items.reduce((sum, item) => sum + item.text.length, 0), shown = split?.shown ?? done.items, earlier = split?.earlier ?? [];
+  return { shown: shown.length, shownChars: chars(shown), earlier: earlier.length, earlierChars: chars(earlier) };
+}
+
+/** The frontier rendered from what is held: each section with content under its heading, an empty one left out; '' when nothing is held. With `done` holding earlier items, done shows its file's line and then only its shown items. */
+export function renderFrontier(held: Held, done?: DoneWake): string {
   return SECTIONS.flatMap(({ key, heading }) => {
     if (key === 'objective' || key === 'next') return held[key] === undefined ? [] : [`## ${heading}\n${held[key]}`];
     const list = held.lists[key];
+    if (key === 'done' && done !== undefined && done.earlier.length > 0) return [`## ${heading}\n${[doneEarlierLine(done.earlier, done.path), ...itemLines({ ...list, items: done.shown }, held.rounds)].join('\n')}`];
     return list.items.length === 0 ? [] : [`## ${heading}\n${itemLines(list, held.rounds).join('\n')}`];
   }).join('\n\n');
 }

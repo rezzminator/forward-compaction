@@ -126,6 +126,10 @@ describe('turnEndDoor (P1)', () => {
     expect(turnEndDoor({ ...door, main: false })).toEqual({ compact: false, why: 'not-main' });
     for (const reason of ['aborted', 'refusal', 'error'] as const) expect(turnEndDoor({ ...door, reason })).toEqual({ compact: false, why: 'not-answered' });
     expect(turnEndDoor({ ...door, stored: false })).toEqual({ compact: false, why: 'nothing-stored' });
+    expect(turnEndDoor({ ...door, stored: false, forkDue: false })).toEqual({ compact: false, why: 'nothing-stored' });
+    expect(turnEndDoor({ ...door, stored: false, forkDue: true })).toEqual({ compact: true });
+    expect(turnEndDoor({ ...door, stored: false, forkDue: true, installedThisTurn: true })).toEqual({ compact: false, why: 'installed-this-turn' });
+    expect(turnEndDoor({ ...door, stored: false, forkDue: true, reason: 'aborted' })).toEqual({ compact: false, why: 'not-answered' });
     expect(turnEndDoor({ ...door, installedThisTurn: true })).toEqual({ compact: false, why: 'installed-this-turn' });
   });
 });

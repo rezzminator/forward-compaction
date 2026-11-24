@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { fakeEngine } from './fakes/engine.ts';
-import { wakeHead, wakeRow, type RowNode, type RowProps } from '../plugins/forward-compaction/src/wake-row.ts';
+import { frontierBlock, wakeHead, wakeHeld, wakeRow, type RowNode, type RowProps } from '../plugins/forward-compaction/src/wake-row.ts';
 
 const FACTS = '[forward-compaction: facts] Your context was compacted by forward-compaction 2.2.5.\n\n## Files you touched\n/work/a.ts';
 const FRONTIER = '[forward-compaction: frontier] Below is the frontier you wrote with forward_compaction: continue from its ## Next.\n\n=== frontier ===\n## Next\nship\n=== end of frontier ===';
@@ -44,6 +44,26 @@ describe("wakeHead: the message a wake's folded line stands for", () => {
     ['nothing from messages that carry no text', ['a string', null, { text: 7 }, {}], undefined],
   ])('%s', (_name, messages, head) => {
     expect(wakeHead(messages)).toBe(head);
+  });
+});
+
+describe('wakeHeld: whether a transcript holds a wake rendered with a frontier', () => {
+  const DONE = '## Done\n[1] round 1', OF_FRONTIER = '[forward-compaction: frontier]', OF_MECHANICAL = '[forward-compaction: no frontier written by the model]';
+  const opens = (opening: string, frontier: string) => `${opening} and its note\n\n${frontierBlock(frontier)}\n\nwhat follows it`;
+  it('writes the frontier between its two marker lines', () => {
+    expect(frontierBlock(DONE)).toBe('=== frontier ===\n## Done\n[1] round 1\n=== end of frontier ===');
+  });
+  it.each<[string, unknown[], string, boolean]>([
+    ['a frontier wake carrying it whole', [{ text: FACTS }, { text: opens(OF_FRONTIER, DONE) }, { text: 'the kept tail' }], DONE, true],
+    ['a mechanical wake carrying it whole', [{ text: opens(OF_MECHANICAL, DONE) }], DONE, true],
+    ['no wake at all', [{ text: 'the kept tail' }], DONE, false],
+    ['a wake carrying a longer frontier this one only starts', [{ text: opens(OF_FRONTIER, `${DONE}\n[2] round 2`) }], DONE, false],
+    ['a wake carrying a longer frontier this one only ends', [{ text: opens(OF_FRONTIER, `## Objective\nship\n\n${DONE}`) }], DONE, false],
+    ['a message that quotes the frontier without opening as a wake', [{ text: `the model wrote: ${frontierBlock(DONE)}` }], DONE, false],
+    ['an empty frontier, which no wake holds', [{ text: opens(OF_MECHANICAL, '') }], '', false],
+    ['messages that carry no text', ['a string', null, { text: 7 }, {}], DONE, false],
+  ])('%s', (_name, messages, frontier, held) => {
+    expect(wakeHeld(messages, frontier)).toBe(held);
   });
 });
 

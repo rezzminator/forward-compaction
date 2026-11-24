@@ -7,6 +7,7 @@ import type { PartyFiles } from './disk';
 import { storageDir } from './storage';
 import type { SubagentWindow } from './options';
 import { roomAbove, type NudgeMarks } from './nudge';
+import type { ForkDue, ForkNotice } from './fork';
 
 /** A `forward_compaction` call since the party's last wake, held until a door installs the frontier: the frontier itself is the party's held lists (`PartyState.held`), rendered at the wake. */
 export type StoredFrontier = {
@@ -90,6 +91,10 @@ export type PartyState = {
   windowed?: string;
   /** Plan mode and the plan file, as the party's last plan-mode attachment named them (plan.ts `planFrom`). */
   plan?: PlanSeen;
+  /** FORWARD_COMPACTION_MAIN_FORK: the fork due since main's last install, in place of the notice it holds (fork.ts `forkDueOf`). */
+  forkDue?: ForkDue;
+  /** The notice a failed fork leaves main to read with its next tool result (fork.ts `forkFailure`). */
+  forkNotice?: ForkNotice;
 };
 
 /**
@@ -348,6 +353,8 @@ export class Parties {
     const earlier = this.get(key).landing;
     Object.assign(this.get(key), {
       stored: undefined,
+      forkDue: undefined,
+      forkNotice: undefined,
       lastDecision: 'install',
       answeredSinceSkip: true,
       nudgeLevel: 0,
@@ -378,8 +385,9 @@ export class Parties {
   }
 }
 
-/** What a wake shows of a party's held frontier: its live orders, its storage listing (with no files, none) and its lists rendered. */
-export function heldShown(party: { held?: Held; files?: PartyFiles }): { orders: Item[]; rounds: number; storage?: { dir: string; entries: StorageEntry[] }; frontier: string } {
-  const held = party.held ?? emptyHeld();
-  return { orders: held.lists.orders.items, rounds: held.rounds ?? 0, ...(party.files !== undefined ? { storage: { dir: storageDir(party.files), entries: held.storage } } : {}), frontier: renderFrontier(held) };
+/** What a wake shows of a party's held frontier: its live orders, its storage listing (with no files, none) and its lists rendered, done split at `doneMaxChars` when done-earlier.md holds its earlier items (disk.ts `doneWake`), else whole. The rendering is noted in the party's files (disk.ts `wakeRendered`): done-earlier.md gives up an item only once the party has read a wake that shows it. */
+export function heldShown(party: { held?: Held; files?: PartyFiles }, doneMaxChars: number): { orders: Item[]; rounds: number; storage?: { dir: string; entries: StorageEntry[] }; frontier: string } {
+  const held = party.held ?? emptyHeld(), done = party.files?.doneWake(held, doneMaxChars), frontier = renderFrontier(held, done);
+  party.files?.wakeRendered(frontier, done);
+  return { orders: held.lists.orders.items, rounds: held.rounds ?? 0, ...(party.files !== undefined ? { storage: { dir: storageDir(party.files), entries: held.storage } } : {}), frontier };
 }

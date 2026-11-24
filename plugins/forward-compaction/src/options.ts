@@ -46,8 +46,15 @@ export const DEFAULT_KEEP_SKILLS: readonly string[] = [];
 export const DEFAULT_SUBAGENT_CALL_COMPACTS: readonly string[] = [];
 /** The frontier's size, in characters of every live item, the objective and next, past which the result of a call whose lists hold no item asks for a shorter objective and next (lists.ts `sizeLines`): 1.5 times the 8,000 a whole-rewrite frontier stayed near, a design budget to tune, never a measured size. */
 export const DEFAULT_FRONTIER_WARN_CHARS = 12_000;
+/** The characters of done item texts a wake shows, newest first, before the earlier ones go to done-earlier.md (lists.ts `doneSplit`): replayed on 117 stored done lists it split 4, the long chats only, and keeps about 11 newest items of the average 1,100 characters. */
+export const DEFAULT_DONE_MAX_CHARS = 12_000;
 /** The debug log (`debug.jsonl`): a row at every step. */
 export const DEFAULT_DEBUG = true;
+/** Main's frontier written by the plugin's own fork at each notice point (fork.ts): off, the model writes it when a notice asks. */
+export const DEFAULT_MAIN_FORK = false;
+/** The effort levels a fork may name (`$.model.fork`'s ModelEffort); unset, the fork names none and runs at the session's level. */
+export const FORK_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
+export type ForkEffort = (typeof FORK_EFFORTS)[number];
 
 export type Parse<T> = { ok: true; value: T } | { ok: false; error: string };
 
@@ -108,7 +115,10 @@ export const OPTION_ENV = {
   keepSkills: 'FORWARD_COMPACTION_KEEP_SKILLS',
   subagentCallCompacts: 'FORWARD_COMPACTION_SUBAGENT_CALL_COMPACTS',
   frontierWarnChars: 'FORWARD_COMPACTION_FRONTIER_WARN_CHARS',
+  doneMaxChars: 'FORWARD_COMPACTION_DONE_MAX_CHARS',
   debug: 'FORWARD_COMPACTION_DEBUG',
+  mainFork: 'FORWARD_COMPACTION_MAIN_FORK',
+  mainForkEffort: 'FORWARD_COMPACTION_MAIN_FORK_EFFORT',
 } as const;
 
 export type OptionName = keyof typeof OPTION_ENV;
@@ -138,7 +148,13 @@ export type ResolvedOptions = {
   subagentCallCompacts: string[];
   /** The frontier's size in characters past which a call's result warns (lists.ts `sizeLines`). */
   frontierWarnChars: number;
+  /** The characters of done item texts a wake shows before the earlier items go to done-earlier.md (lists.ts `doneSplit`). */
+  doneMaxChars: number;
   debug: boolean;
+  /** FORWARD_COMPACTION_MAIN_FORK: main's frontier written by a fork at each notice point. */
+  mainFork: boolean;
+  /** The effort the fork names; absent, none, and it runs at the session's level. */
+  mainForkEffort?: ForkEffort;
   /** One line per option that was invalid and fell back; empty when all were valid. */
   errors: string[];
 };
@@ -227,10 +243,16 @@ export function resolveOptions(env: OptionEnvironment = {}): ResolvedOptions {
   const subagentMax = maxContext('subagentMaxContext', "each sub-agent's model's max context");
   const subagent = { ...sizes('subagent', DEFAULT_SUBAGENT), ...(subagentMax !== undefined ? { maxContext: subagentMax } : {}) };
   const ceilingNative = flag('ceilingNative', DEFAULT_CEILING_NATIVE);
-  const debug = flag('debug', DEFAULT_DEBUG);
+  const debug = flag('debug', DEFAULT_DEBUG), mainFork = flag('mainFork', DEFAULT_MAIN_FORK);
+  const rawEffort = fromEnv('mainForkEffort')?.toLowerCase(), mainForkEffort = FORK_EFFORTS.find((level) => level === rawEffort);
+  if (rawEffort !== undefined && mainForkEffort === undefined) badEnv('mainForkEffort', `not one of ${FORK_EFFORTS.join(', ')}: ${JSON.stringify(fromEnv('mainForkEffort'))}`, "none: the session's level");
   // A count of characters: a percentage has nothing to be of.
-  const rawWarn = fromEnv('frontierWarnChars'), warn = rawWarn === undefined ? undefined : parseSize(rawWarn);
-  const frontierWarnChars = warn === undefined ? DEFAULT_FRONTIER_WARN_CHARS : warn.ok && 'tokens' in warn.value ? warn.value.tokens : (badEnv('frontierWarnChars', warn.ok ? `a character count, not a percentage: ${JSON.stringify(rawWarn)}` : warn.error, String(DEFAULT_FRONTIER_WARN_CHARS)), DEFAULT_FRONTIER_WARN_CHARS);
+  const chars = (option: OptionName, fallback: number): number => {
+    const raw = fromEnv(option), parsed = raw === undefined ? undefined : parseSize(raw);
+    if (parsed === undefined) return fallback;
+    return parsed.ok && 'tokens' in parsed.value ? parsed.value.tokens : (badEnv(option, parsed.ok ? `a character count, not a percentage: ${JSON.stringify(raw)}` : parsed.error, String(fallback)), fallback);
+  };
+  const frontierWarnChars = chars('frontierWarnChars', DEFAULT_FRONTIER_WARN_CHARS), doneMaxChars = chars('doneMaxChars', DEFAULT_DONE_MAX_CHARS);
   /** A comma list's entries as given, trimmed, the empty ones dropped. */
   const list = (raw: string): string[] => raw.split(',').map((entry) => entry.trim()).filter((entry) => entry !== '');
   // Unset is the default; set empty (or only commas) is a list of none: the one option whose empty value is a value.
@@ -242,5 +264,5 @@ export function resolveOptions(env: OptionEnvironment = {}): ResolvedOptions {
   // The decision log lives in the plugin's log directory (PLUGIN_LOG_DIR, else under HOME); with neither, there is none.
   const base = pluginLogDir(env.pluginLogDir, env.home, 'forward-compaction');
   const logFile = base === undefined ? undefined : `${base}/decisions/.jsonl`;
-  return { main, subagent, ceilingNative, ...(logFile ? { logFile } : {}), ignoreModels, keepSkills, subagentCallCompacts, frontierWarnChars, debug, errors };
+  return { main, subagent, ceilingNative, ...(logFile ? { logFile } : {}), ignoreModels, keepSkills, subagentCallCompacts, frontierWarnChars, doneMaxChars, debug, mainFork, ...(mainForkEffort !== undefined ? { mainForkEffort } : {}), errors };
 }

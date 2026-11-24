@@ -31,10 +31,10 @@ describe('the forward_compaction tool as registered', () => {
     expect(FORWARD_INPUT_SCHEMA).toMatchObject({ type: 'object', additionalProperties: false });
     expect(FORWARD_INPUT_SCHEMA).not.toHaveProperty('required');
     expect(Object.keys(FORWARD_INPUT_SCHEMA.properties)).toEqual(['objective', 'next', 'decisions', 'done', 'remaining', 'blocked', 'findings', 'orders', 'storage', 'load_files']);
-    expect(FORWARD_INPUT_SCHEMA.properties.objective.description).toBe('What the work is for and what done means. Send it on your first call, then only when it changes.');
+    expect(FORWARD_INPUT_SCHEMA.properties.objective.description).toBe('What the work is for and what done means. Send it on your first call, then only when it changes. Once it is reached, the call that sends the next one reviews every order.');
     expect(FORWARD_INPUT_SCHEMA.properties.next.description).toBe('Every call: the first concrete action after the wake.');
     expect(Object.fromEntries(LISTS.map((name) => [name, FORWARD_INPUT_SCHEMA.properties[name].description]))).toEqual({
-      orders: `Every rule of the user's that binds the rest of the work (a prohibition, a limit, a rule), in the user's words; several may share one item. An instruction for one part of the work is no order: it goes to remaining. A rule the user changes is edited. A rule the user lifts leaves entirely, never kept as a LIFTED note: remove its item, or edit the item down to its other rules. Example: [2] reads 'Never push. Tests go in tests/. One CHANGELOG line per fix.' and the user drops the CHANGELOG rule. Wrong: {"edit": [{"id": 2, "text": "Never push. Tests go in tests/. LIFTED: one CHANGELOG line per fix."}]}. Right: {"edit": [{"id": 2, "text": "Never push. Tests go in tests/."}]}.`,
+      orders: `Every rule of the user's that binds the rest of the work (a prohibition, a limit, a rule), in the user's words; several may share one item. An instruction for one part of the work is no order: it goes to remaining. A rule the user changes is edited. You lift a rule given only for an objective now reached; every other rule only the user lifts. A lifted rule leaves entirely, never kept as a LIFTED note: remove its item, or edit the item down to its other rules. Example: [2] reads 'Never push. Tests go in tests/. One CHANGELOG line per fix.' and the user drops the CHANGELOG rule. Wrong: {"edit": [{"id": 2, "text": "Never push. Tests go in tests/. LIFTED: one CHANGELOG line per fix."}]}. Right: {"edit": [{"id": 2, "text": "Never push. Tests go in tests/."}]}.`,
       decisions: "Every ruling the user gave on how something gets done, in the user's words, each with its undo when one exists. A question the user put on hold goes to blocked.",
       done: 'Finished pieces, each with how it was verified; every figure with the command that produced it.',
       remaining: 'Every step left, in order. An added step lands last, or before a step it names: {"before": 4, "text": "..."}.',
@@ -178,6 +178,12 @@ describe('applyCall changes the held frontier by item number', () => {
     expect(second.held.lists.remaining).toEqual({ next_id: 4, items: [{ id: 2, text: 'docs and README' }, { id: 3, text: 'gate' }] });
     expect(second.held.lists.done).toBe(first.held.lists.done);
     expect(second.changed).toEqual([{ key: 'remaining', left: [{ id: 2, text: 'docs', left: 'edited' }, { id: 1, text: 'adapter', left: 'removed' }] }]);
+  });
+
+  it('gives every item a call adds, in every list and joined from outside its list, the call\'s time in ISO 8601 UTC, and an edit keeps it', () => {
+    const at = Date.UTC(2026, 9, 27, 14, 53), stamped = applyCall(emptyHeld(), parseCall({ orders: { add: ['never push'] }, done: { add: ['parser'] }, extra: 'a note' }), at);
+    expect([stamped.held.lists.orders.items, stamped.held.lists.done.items, stamped.held.lists.findings.items.map((item) => item.added)]).toEqual([[{ id: 1, text: 'never push', added: '2026-10-27T14:53:00.000Z' }], [{ id: 1, text: 'parser', added: '2026-10-27T14:53:00.000Z' }], ['2026-10-27T14:53:00.000Z']]);
+    expect(applyCall(stamped.held, parseCall({ done: { edit: [{ id: 1, text: 'parser merged' }] } }), at + 60_000).held.lists.done.items).toEqual([{ id: 1, text: 'parser merged', added: '2026-10-27T14:53:00.000Z' }]);
   });
 
   it('names each text still missing, and a replaced one leaves its old value', () => {

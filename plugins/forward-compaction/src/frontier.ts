@@ -20,7 +20,7 @@ const LIST_DESCRIPTION: Record<ListName, string> = {
   blocked: "Every question or choice on hold until the user answers, in the user's words; removed once answered.",
   findings: 'Your own choices with why, errors verbatim, the commands and recipes you will need again.',
   orders:
-    "Every rule of the user's that binds the rest of the work (a prohibition, a limit, a rule), in the user's words; several may share one item. An instruction for one part of the work is no order: it goes to remaining. A rule the user changes is edited. A rule the user lifts leaves entirely, never kept as a LIFTED note: remove its item, or edit the item down to its other rules. Example: [2] reads 'Never push. Tests go in tests/. One CHANGELOG line per fix.' and the user drops the CHANGELOG rule. Wrong: {\"edit\": [{\"id\": 2, \"text\": \"Never push. Tests go in tests/. LIFTED: one CHANGELOG line per fix.\"}]}. Right: {\"edit\": [{\"id\": 2, \"text\": \"Never push. Tests go in tests/.\"}]}.",
+    "Every rule of the user's that binds the rest of the work (a prohibition, a limit, a rule), in the user's words; several may share one item. An instruction for one part of the work is no order: it goes to remaining. A rule the user changes is edited. You lift a rule given only for an objective now reached; every other rule only the user lifts. A lifted rule leaves entirely, never kept as a LIFTED note: remove its item, or edit the item down to its other rules. Example: [2] reads 'Never push. Tests go in tests/. One CHANGELOG line per fix.' and the user drops the CHANGELOG rule. Wrong: {\"edit\": [{\"id\": 2, \"text\": \"Never push. Tests go in tests/. LIFTED: one CHANGELOG line per fix.\"}]}. Right: {\"edit\": [{\"id\": 2, \"text\": \"Never push. Tests go in tests/.\"}]}.",
 };
 
 /** One list field: its three operations, each optional. */
@@ -43,7 +43,7 @@ export const FORWARD_INPUT_SCHEMA = {
   type: 'object',
   additionalProperties: false,
   properties: {
-    objective: { type: 'string', description: 'What the work is for and what done means. Send it on your first call, then only when it changes.' },
+    objective: { type: 'string', description: 'What the work is for and what done means. Send it on your first call, then only when it changes. Once it is reached, the call that sends the next one reviews every order.' },
     next: { type: 'string', description: 'Every call: the first concrete action after the wake.' },
     decisions: listSchema('decisions'),
     done: listSchema('done'),
@@ -289,15 +289,16 @@ export function parseCall(input: unknown, cwd?: string): ParsedCall {
 /** What one call did to the held frontier: the frontier after it, the result's lines and notes, each list and text changed with the values that left (for disk.ts), each list's counts, and the texts still missing. */
 export type Applied = { held: Held; lines: string[]; notes: string[]; changed: { key: ListName | TextName; left: Left[] | string[] }[]; counts: Partial<Record<ListName, ListCount>>; missing: TextName[] };
 
-/** Applies a call's texts and list changes to `held`, objective first, each list in LISTS order, an item joined from outside its list (`extra`) after the list's own change. Storage is storage.ts's. */
-export function applyCall(held: Held, call: ParsedCall): Applied {
+/** Applies a call's texts and list changes to `held`, objective first, each list in LISTS order, an item joined from outside its list (`extra`) after the list's own change; each item added takes `now`, the adapter's clock, as its `added` (ISO 8601 UTC). Storage is storage.ts's. */
+export function applyCall(held: Held, call: ParsedCall, now?: number): Applied {
+  const addedAt = now === undefined ? undefined : new Date(now).toISOString();
   const out: Applied = { held: { ...held, lists: { ...held.lists } }, lines: [], notes: [...call.notes], changed: [], counts: {}, missing: [] };
   const objective = textApply('objective', held.objective, call.texts.objective);
   for (const name of LISTS) {
     const changes = [call.lists[name], ...(call.extra[name] !== undefined ? [{ add: call.extra[name] }] : [])].filter((c) => c !== undefined);
     if (name === 'orders') out.lines.push(...objective.lines), out.notes.push(...objective.notes);
     for (const change of changes) {
-      const r = listApply(name, out.held.lists[name], change, held.rounds);
+      const r = listApply(name, out.held.lists[name], change, held.rounds, addedAt);
       out.held.lists[name] = r.list;
       out.lines.push(...r.lines), out.notes.push(...r.notes);
       const c = out.counts[name] ?? { added: 0, removed: 0, edited: 0, skipped: 0 };
