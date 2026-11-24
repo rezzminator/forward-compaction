@@ -7,6 +7,8 @@ Every release of forward-compaction, named sub-agent-compact before 1.0.0. Versi
 ### Changed
 
 - **The README benchmark compares at the same compaction point.** At one 100k window Claude Code's own compaction started at about 77k tokens and forward-compaction at about 120k, so the native column compacted eight times a run against three. The native column now ran with a 143k window, which starts its compactions at about 114k, three a run: the whole-run cost gap is 17% ($1.80 against $1.50) where the table showed 37%, and the 100k-window runs stay in the results file. A benchmark arm takes its window from `window` in `scripts/bench/arms.json`, and `native-matched` is a new arm.
+- **The README benchmark shows seven rows.** The table had 19 rows with p90 figures and four long notes. It now shows the seven a reader decides on: final answers right, items recalled, the wait, the tokens written and the cost of each compaction, and the time and cost of the whole chat, each with its difference from native. The full table, the method, the notes and the commands to run it moved to `docs/benchmark.md`.
+- **The README shows a real call.** The `forward_compaction` row under The tools was a typed sample; it is now a screenshot of a real call's row, `docs/assets/forward-compaction-call.png`.
 
 ## [2.6.0] — 2026-11-24
 
