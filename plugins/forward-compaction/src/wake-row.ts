@@ -27,9 +27,18 @@ export type RowNode = { type: 'Box' | 'Text'; props: Record<string, string | num
  */
 const WAKE_ORIGINS: ReadonlySet<string> = new Set(['unclassified', 'coordinator']);
 
-/** The text of the message a wake's folded line stands for, its frontier message or a mechanical wake's note: what the adapter finds the row again by. */
-export const wakeHead = (messages: readonly unknown[]): string | undefined =>
-  messages.map((m) => (typeof m === 'object' && m !== null && 'text' in m ? m.text : undefined)).find((t): t is string => typeof t === 'string' && (t.startsWith(WAKE_OPENING.frontier) || t.startsWith(WAKE_OPENING.mechanical)));
+/** The texts of the messages a wake's folded line stands for, its frontier message or a mechanical wake's note, in the transcript's order. */
+const wakeHeads = (messages: readonly unknown[]): string[] =>
+  messages.map((m) => (typeof m === 'object' && m !== null && 'text' in m ? m.text : undefined)).filter((t): t is string => typeof t === 'string' && (t.startsWith(WAKE_OPENING.frontier) || t.startsWith(WAKE_OPENING.mechanical)));
+
+/** The text of the message a wake's folded line stands for: what the adapter finds the row again by. */
+export const wakeHead = (messages: readonly unknown[]): string | undefined => wakeHeads(messages)[0];
+
+/** The frontier as both wakes carry it, between its two marker lines. */
+export const frontierBlock = (frontier: string): string => `=== frontier ===\n${frontier}\n=== end of frontier ===`;
+
+/** Whether a transcript holds a wake rendered with `frontier`: one of its wake messages carries that frontier whole between its markers. The party has then read it; an empty frontier is held by none. */
+export const wakeHeld = (messages: readonly unknown[], frontier: string): boolean => frontier !== '' && wakeHeads(messages).some((text) => text.includes(frontierBlock(frontier)));
 
 /**
  * What a user-role row draws in the engine's place, or undefined where the engine draws it: only a message the wake

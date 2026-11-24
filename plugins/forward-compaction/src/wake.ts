@@ -10,7 +10,7 @@ import { ordersSection } from './orders';
 import { num, unchangedNote, type Item, type StorageEntry } from './lists';
 import { storageSection } from './storage';
 import type { WakePlan } from './plan';
-import { WAKE_OPENING } from './wake-row';
+import { frontierBlock, WAKE_OPENING } from './wake-row';
 
 // Tokens to characters, only ever at the party's measured ratio (`charsPerToken` in window.ts; `tokensOf` in kept.ts the other way): unmeasured, no limit.
 const charsIn = (tokens: number, ratio: number | undefined): number => (ratio === undefined ? Number.POSITIVE_INFINITY : Math.floor(tokens * ratio));
@@ -25,7 +25,7 @@ const iso = (at: number): string => new Date(at).toISOString();
  */
 const SHARE = { arrived: 0.25, notices: 0.05, siblings: 0.1, commands: 0.05 } as const;
 /** The plugin version that builds a wake, named in its facts header so a chat on an old build is visible; tests/layout.test.ts pins it to plugin.json. */
-export const PLUGIN_VERSION = '2.5.0';
+export const PLUGIN_VERSION = '2.6.0-dev.1';
 /** An image the user attached: a built wake message holds only text (`session.compact`'s messages), so each is named, never silently gone. */
 const IMAGE = /\[Image #\d+\]/g;
 const IMAGE_NOTE = '$& (image not carried: the wake cannot hold images)';
@@ -413,7 +413,7 @@ export function buildWake<M extends WakeMessage>(input: BuildWakeInput<M>): Wake
   const split = splitAtCall(input.messages, input.toolUseId);
   const missing = input.missing ?? [];
   return assemble(input, split?.tail ?? input.messages, { siblings: split?.siblings ?? [], files: input.files ?? [] }, ({ kept, dropped }) => {
-    const lines = [`${WAKE_OPENING.frontier} Below is your frontier as forward-compaction holds it: continue from its ## Next${within(input.orders)}. ${CHANGES_ONLY}${unchangedNote(input.frontier, ordersSection(input.orders ?? [], input.rounds))}`, `=== frontier ===\n${input.frontier}\n=== end of frontier ===`];
+    const lines = [`${WAKE_OPENING.frontier} Below is your frontier as forward-compaction holds it: continue from its ## Next${within(input.orders)}. ${CHANGES_ONLY}${unchangedNote(input.frontier, ordersSection(input.orders ?? [], input.rounds))}`, frontierBlock(input.frontier)];
     if (missing.length > 0) lines.push(`Your frontier has no ${andList(missing)}: re-establish ${missing.length === 1 ? 'it' : 'them'} from ${sourceOf(input.party)} and the messages below, and send ${missing.length === 1 ? 'it' : 'them'} in your next forward_compaction call.`);
     // The receipt's own experimental line moves to the wake's end, where it is read last.
     if (split?.own !== undefined) lines.push(`Your forward_compaction call returned:\n${split.own.split(`\n${EXPERIMENTAL_OPENING}`)[0]}`);
@@ -434,7 +434,7 @@ export function mechanicalWake<M extends WakeMessage>(input: MechanicalWakeInput
   return assemble(input, input.messages, { siblings: [], files: [], recent: input.recent ?? [], mechanical: true }, ({ kept, dropped }) => experimental(
     frontier === ''
       ? `${reached}: the facts above and your newest ${kept} messages below, kept verbatim; ${dropped} older messages are gone (look_back finds an exact detail). No objective or next step was written. Re-establish them from ${source} and the messages below, then continue${within(input.orders)}; call ${input.tool ?? DEFAULT_TOOL} at your next milestone.`
-      : `${reached}: the facts above, your frontier below as forward-compaction holds it, and your newest ${kept} messages after this one, kept verbatim; ${dropped} older messages are gone (look_back finds an exact detail). The frontier is as your last call left it: what you did after that call is missing from its ## Done, ## Remaining and ## Next, and the facts above show it (files touched, shell commands run, messages). Continue from where the messages leave off, or from its ## Next less every step the facts show done${within(input.orders)}; at your next milestone bring the frontier up to date with one ${input.tool ?? DEFAULT_TOOL} call: ${BY_NUMBER}${unchangedNote(frontier, ordersSection(input.orders ?? [], input.rounds))}\n\n=== frontier ===\n${frontier}\n=== end of frontier ===`,
+      : `${reached}: the facts above, your frontier below as forward-compaction holds it, and your newest ${kept} messages after this one, kept verbatim; ${dropped} older messages are gone (look_back finds an exact detail). The frontier is as your last call left it: what you did after that call is missing from its ## Done, ## Remaining and ## Next, and the facts above show it (files touched, shell commands run, messages). Continue from where the messages leave off, or from its ## Next less every step the facts show done${within(input.orders)}; at your next milestone bring the frontier up to date with one ${input.tool ?? DEFAULT_TOOL} call: ${BY_NUMBER}${unchangedNote(frontier, ordersSection(input.orders ?? [], input.rounds))}\n\n${frontierBlock(frontier)}`,
     input.logDir),
   'none');
 }

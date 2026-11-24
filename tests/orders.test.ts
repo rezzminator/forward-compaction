@@ -79,8 +79,10 @@ afterEach(() => {
 
 const FORWARD = 'mcp__forward-compaction__forward_compaction';
 const FIRST = { objective: 'finish the round', next: 'wait for the chats', done: { add: ['round 1'] }, remaining: { add: ['round 2'] } };
+/** The fake clock's time at every call (`begin`), as an item's `added` stores it. */
+const ADDED = '2026-10-27T14:53:00.000Z';
 async function begin(script: Script = {}): Promise<Fake> {
-  const env = { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '100000', FORWARD_COMPACTION_MAIN_CEILING: '120000', FORWARD_COMPACTION_MAIN_NUDGE_START: '30000', FORWARD_COMPACTION_MAIN_NUDGE_EVERY: '10000' };
+  const env = { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '100000', FORWARD_COMPACTION_MAIN_CEILING: '120000', FORWARD_COMPACTION_MAIN_NUDGE_START: '30000', FORWARD_COMPACTION_MAIN_NUDGE_EVERY: '10000', ...script.env };
   const f = fakeEngine({ window: 1_000_000, now: Date.UTC(2026, 9, 27, 14, 53), ...script, env });
   fakes.push(f);
   await f.dispatch('session.start', { reason: 'startup' }, async () => ({}));
@@ -159,8 +161,8 @@ describe('the standing orders and the other lists, through the hooks and their f
     expect([files[`${root}/storage/gate.md`]?.content, files[`${root}/history/storage/api-survey.md`]?.content, files[`${root}/storage/api-survey.md`]?.content]).toEqual(['x', '# s', '# s']);
     expect(wake.messages[1].text).toContain(`=== frontier ===\n## Objective\nfinish both rounds\n\n## Done\n[1] round 1 [1 round unchanged]\n[2] round 2 [1 round unchanged]\n\n## Remaining\n[2] round 3, twice [1 round unchanged]\n[3] round 4 [1 round unchanged]\n[4] round 5 [1 round unchanged]\n[5] round 6\n\n## Next\n${FIRST.next}\n=== end of frontier ===`);
     expect(files[`${root}/rounds.json`]?.content).toBe('{\n  "rounds": 2\n}\n');
-    expect([files[`${root}/history/remaining.jsonl`]?.content, files[`${root}/history/objective.jsonl`]?.content]).toEqual(['{"id":2,"text":"round 3","left":"edited"}\n{"id":1,"text":"round 2","left":"removed"}\n', '{"text":"finish the round"}\n']);
-    expect(JSON.parse(files[`${root}/data/remaining.json`]?.content ?? 'null')).toEqual({ next_id: 6, items: [{ id: 2, text: 'round 3, twice' }, { id: 3, text: 'round 4' }, { id: 4, text: 'round 5' }, { id: 5, text: 'round 6', round: 1 }] });
+    expect([files[`${root}/history/remaining.jsonl`]?.content, files[`${root}/history/objective.jsonl`]?.content]).toEqual([`{"id":2,"text":"round 3","left":"edited","added":"${ADDED}"}\n{"id":1,"text":"round 2","left":"removed","added":"${ADDED}"}\n`, '{"text":"finish the round"}\n']);
+    expect(JSON.parse(files[`${root}/data/remaining.json`]?.content ?? 'null')).toEqual({ next_id: 6, items: [{ id: 2, text: 'round 3, twice', added: ADDED }, { id: 3, text: 'round 4', added: ADDED }, { id: 4, text: 'round 5', added: ADDED }, { id: 5, text: 'round 6', round: 1, added: ADDED }] });
     expect((await call(after, 'tu-d', { done: '{"add":["round 3"],"remaining":{"remove":[2]}}' })).slice(0, 4)).toEqual(['Added to done: [3]', 'Removed from remaining: [2] round 3, twice', `next kept: ${FIRST.next}`, 'done arrived as the text of its JSON: read as JSON, and remaining inside it taken out as its own field.']);
   });
 
@@ -170,11 +172,11 @@ describe('the standing orders and the other lists, through the hooks and their f
     const f = await begin({ files, writeError: (path) => (failing && path.endsWith('/data/remaining.json') ? `EACCES: permission denied, open '${path}'` : undefined) });
     const root = join(f.home, '.local/state/forward-compaction', basename(f.home), 'session-1');
     expect((await call(f, 'tu-a', FIRST)).slice(4, 5)).toEqual(["Not saved to disk yet: remaining (EACCES: permission denied, open '…'); it is held and saved again at your next call."]);
-    expect([files[`${root}/data/done.json`]?.content, files[`${root}/data/remaining.json`]]).toEqual([`${JSON.stringify({ next_id: 2, items: [{ id: 1, text: 'round 1' }] }, null, 2)}\n`, undefined]);
+    expect([files[`${root}/data/done.json`]?.content, files[`${root}/data/remaining.json`]]).toEqual([`${JSON.stringify({ next_id: 2, items: [{ id: 1, text: 'round 1', added: ADDED }] }, null, 2)}\n`, undefined]);
     expect(f.texts()).toEqual([`writing ${root}/data/remaining.json failed: EACCES: permission denied, open '${root}/data/remaining.json'; the change is held in memory and written again at the next call`]);
     failing = false;
     expect((await call(f, 'tu-b', { next: 'merge round 2' })).slice(0, 2)).toEqual(['next replaced', 'Frontier: 43 characters in 2 items (done 1, remaining 1)']);
-    expect(JSON.parse(files[`${root}/data/remaining.json`]?.content ?? 'null')).toEqual({ next_id: 2, items: [{ id: 1, text: 'round 2' }] });
+    expect(JSON.parse(files[`${root}/data/remaining.json`]?.content ?? 'null')).toEqual({ next_id: 2, items: [{ id: 1, text: 'round 2', added: ADDED }] });
     expect((await rows(f)).filter((row) => row.event === 'stored').map((row) => row.writeFailed ?? null)).toEqual([['data/remaining.json'], null]);
   });
 
@@ -184,7 +186,65 @@ describe('the standing orders and the other lists, through the hooks and their f
     const root = join(f.home, '.local/state/forward-compaction', basename(f.home), 'session-1');
     const [a, b] = await Promise.all([call(f, 'tu-a', { ...FIRST, storage: { add: [{ name: 'survey', description: 'the survey', value: 'v' }] } }), call(f, 'tu-b', { done: { add: ['round 2'] } })]);
     expect([a.slice(0, 5), b.slice(0, 2)]).toEqual([['objective set', 'Added to done: [1]', 'Added to remaining: [1]', 'next set', 'Stored survey.md (1 characters)'], ['Added to done: [2]', `next kept: ${FIRST.next}`]]);
-    expect(JSON.parse(files[`${root}/data/done.json`]?.content ?? 'null')).toEqual({ next_id: 3, items: [{ id: 1, text: 'round 1' }, { id: 2, text: 'round 2' }] });
+    expect(JSON.parse(files[`${root}/data/done.json`]?.content ?? 'null')).toEqual({ next_id: 3, items: [{ id: 1, text: 'round 1', added: ADDED }, { id: 2, text: 'round 2', added: ADDED }] });
+  });
+
+  it('splits done past its cap: the newest items in the wake, the earlier ones whole in done-earlier.md named there and in the result, each edited or removed by number, none leaving the file before the party has read a wake that shows it, and every added time on disk alone', async () => {
+    const files: Record<string, FileEntry> = {};
+    const f = await begin({ files, env: { FORWARD_COMPACTION_DONE_MAX_CHARS: '20' } });
+    const root = join(f.home, '.local/state/forward-compaction', basename(f.home), 'session-1'), path = `${root}/done-earlier.md`, record = `${root}/done-earlier.json`;
+    const rest = 'finished work like the items below, edited or removed by number like them. Read the file when a step or the final report may rest on one.';
+    f.advance(90_000); // the items' time, apart from the session's start a wake's facts name
+    const at = '2026-10-27T14:54:30.000Z';
+    const first = await call(f, 'tu-a', { ...FIRST, done: { add: ['round 1 merged', 'round 2 merged', 'round 3 merged'] } });
+    expect(first.slice(0, -2)).toEqual(['objective set', 'Added to done: [1], [2], [3]', 'Added to remaining: [1]', 'next set', 'Frontier: 83 characters in 4 items (done 3, remaining 1)', `Done: 1 newest item stays in your wake, 2 earlier in ${path}`, 'Storage: none']);
+    expect(files[path]?.content).toBe('[1] round 1 merged\n[2] round 2 merged\n');
+    const wake = await ask(f, transcript('tu-a'));
+    const done = sectionOf(wake.messages[1].text, '## Done');
+    expect(done).toBe(`## Done\n2 earlier done items, [1] to [2], are in ${path}, each whole under its number: ${rest}\n[3] round 3 merged`);
+    const ids = (text: string): number[] => [...text.matchAll(/^\[(\d+)\] /gm)].map((m) => Number(m[1]));
+    expect([...ids(files[path]!.content), ...ids(done!)]).toEqual(JSON.parse(files[`${root}/data/done.json`]!.content).items.map((item: { id: number }) => item.id));
+
+    await grown(f);
+    const second = await call(f, 'tu-b', { done: { edit: [{ id: 1, text: 'round 1 merged and tagged' }], remove: [2] } });
+    expect([second.slice(0, 2), second.find((line) => line.startsWith('Done: '))]).toEqual([['Removed from done: [2] round 2 merged', 'Edited in done: [1], was: round 1 merged'], `Done: 1 newest item stays in your wake, 1 earlier in ${path}`]);
+    expect(files[path]?.content).toBe('[1] round 1 merged and tagged\n');
+    const later = await ask(f, transcript('tu-b'));
+    expect(sectionOf(later.messages[1].text, '## Done')).toBe(`## Done\n1 earlier done item, [1], is in ${path}, whole under its number: ${rest}\n[3] round 3 merged [1 round unchanged]`);
+
+    await grown(f);
+    const third = await call(f, 'tu-c', { done: { remove: [3] } }); // [1] is now the newest, which the next wake shows: the wake the party has read names it and does not show it, so it stays in the file
+    expect([third[0], third.find((line) => line.startsWith('Done: ')) ?? null, files[path]?.content, files[record]?.content]).toEqual(['Removed from done: [3] round 3 merged', null, '[1] round 1 merged and tagged\n', '{\n  "through": 1\n}\n']);
+    const whole = await ask(f, [...later.messages, ...transcript('tu-c')]);
+    expect([sectionOf(whole.messages[1].text, '## Done'), files[path]?.content]).toEqual(['## Done\n[1] round 1 merged and tagged [1 round unchanged]', '[1] round 1 merged and tagged\n']); // rendered, not yet read
+    await ask(f, whole.messages); // a later ask's transcript holds that wake: the party has read [1]
+    await grown(f);
+    const fourth = await call(f, 'tu-d', { next: 'merge round 4' });
+    expect([files[path]?.content, files[record]?.content]).toEqual(['No earlier done items: every live done item is in the wake.\n', '{\n  "through": 0\n}\n']);
+
+    expect([JSON.parse(files[`${root}/data/done.json`]!.content), files[`${root}/history/done.jsonl`]?.content]).toEqual([
+      { next_id: 4, items: [{ id: 1, text: 'round 1 merged and tagged', round: 1, added: at }] },
+      `{"id":1,"text":"round 1 merged","left":"edited","added":"${at}"}\n{"id":2,"text":"round 2 merged","left":"removed","added":"${at}"}\n{"id":3,"text":"round 3 merged","left":"removed","added":"${at}"}\n`,
+    ]);
+    const shown = [...first, ...second, ...third, ...fourth, ...[wake, later, whole].flatMap((w) => w.messages.map((m: { text: string }) => m.text)), files[path]!.content, ...f.texts()];
+    expect(shown.filter((text) => text.includes(at) || text.includes('added'))).toEqual([]);
+    expect((await rows(f)).filter((row) => row.event === 'stored').map((row) => row.done)).toEqual([{ shown: 1, shownChars: 14, earlier: 2, earlierChars: 28 }, { shown: 1, shownChars: 14, earlier: 1, earlierChars: 25 }, ...Array(2).fill({ shown: 1, shownChars: 25, earlier: 0, earlierChars: 0 })]);
+  });
+
+  it('shows the whole done list, says nothing to the model and logs the failure when done-earlier.md cannot be written, and writes it at the next call', async () => {
+    let failing = true;
+    const files: Record<string, FileEntry> = {};
+    const f = await begin({ files, env: { FORWARD_COMPACTION_DONE_MAX_CHARS: '20' }, writeError: (path) => (failing && path.endsWith('/done-earlier.md') ? `ENOSPC: no space left on device, open '${path}'` : undefined) });
+    const root = join(f.home, '.local/state/forward-compaction', basename(f.home), 'session-1'), path = `${root}/done-earlier.md`;
+    const first = await call(f, 'tu-a', { ...FIRST, done: { add: ['round 1 merged', 'round 2 merged', 'round 3 merged'] } });
+    expect(first.slice(0, -2)).toEqual(['objective set', 'Added to done: [1], [2], [3]', 'Added to remaining: [1]', 'next set', 'Frontier: 83 characters in 4 items (done 3, remaining 1)', 'Storage: none']);
+    expect(sectionOf((await ask(f, transcript('tu-a'))).messages[1].text, '## Done')).toBe('## Done\n[1] round 1 merged\n[2] round 2 merged\n[3] round 3 merged');
+    expect([files[path], f.texts()]).toEqual([undefined, Array(3).fill(`writing ${path} failed: ENOSPC: no space left on device, open '${path}'; the change is held in memory and written again at the next call`)]); // at the call, and at the ask before the wake and after its install
+    failing = false;
+    await grown(f);
+    expect((await call(f, 'tu-b', { next: 'merge round 4' })).find((line) => line.startsWith('Done: '))).toBe(`Done: 1 newest item stays in your wake, 2 earlier in ${path}`);
+    expect(files[path]?.content).toBe('[1] round 1 merged\n[2] round 2 merged\n');
+    expect((await rows(f)).filter((row) => row.event === 'stored').map((row) => [row.done, row.writeFailed ?? null])).toEqual([[{ shown: 3, shownChars: 42, earlier: 0, earlierChars: 0 }, ['done-earlier.md']], [{ shown: 1, shownChars: 14, earlier: 2, earlierChars: 28 }, null]]);
   });
 
   it("loads the frontier from its files and applies the call though the session state cannot be read", async () => {

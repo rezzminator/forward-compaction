@@ -180,6 +180,12 @@ describe('applyCall changes the held frontier by item number', () => {
     expect(second.changed).toEqual([{ key: 'remaining', left: [{ id: 2, text: 'docs', left: 'edited' }, { id: 1, text: 'adapter', left: 'removed' }] }]);
   });
 
+  it('gives every item a call adds, in every list and joined from outside its list, the call\'s time in ISO 8601 UTC, and an edit keeps it', () => {
+    const at = Date.UTC(2026, 9, 27, 14, 53), stamped = applyCall(emptyHeld(), parseCall({ orders: { add: ['never push'] }, done: { add: ['parser'] }, extra: 'a note' }), at);
+    expect([stamped.held.lists.orders.items, stamped.held.lists.done.items, stamped.held.lists.findings.items.map((item) => item.added)]).toEqual([[{ id: 1, text: 'never push', added: '2026-10-27T14:53:00.000Z' }], [{ id: 1, text: 'parser', added: '2026-10-27T14:53:00.000Z' }], ['2026-10-27T14:53:00.000Z']]);
+    expect(applyCall(stamped.held, parseCall({ done: { edit: [{ id: 1, text: 'parser merged' }] } }), at + 60_000).held.lists.done.items).toEqual([{ id: 1, text: 'parser merged', added: '2026-10-27T14:53:00.000Z' }]);
+  });
+
   it('names each text still missing, and a replaced one leaves its old value', () => {
     expect(applyCall(emptyHeld(), parseCall({ done: { add: ['x'] } })).missing).toEqual(['objective', 'next']);
     expect(applyCall(first.held, parseCall({ objective: 'ship v2' })).changed).toEqual([{ key: 'objective', left: ['ship it'] }]);

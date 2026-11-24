@@ -2,6 +2,13 @@
 
 Every release of forward-compaction, named sub-agent-compact before 1.0.0. Versions follow [semantic versioning](https://semver.org); each release is the `main` commit tagged `forward-compaction--v<version>` (`sub-agent-compact--v<version>` before 1.0.0), with a GitHub release carrying the section below.
 
+## [Unreleased]
+
+### Added
+
+- **A long done list no longer fills the compaction.** The done items a compaction shows are the newest whose texts fit `FORWARD_COMPACTION_DONE_MAX_CHARS` (default `12000` characters), the newest always; the earlier ones are written whole, each under its number, to `done-earlier.md` in the session's folder, and the done list opens with one line naming that file and the earlier items' numbers. Nothing moves in the store: an earlier item is edited or removed by its number like a shown one, and when the file cannot be written the compaction shows the whole list. A call takes no live item out of the file: one the compaction named and did not show stays there when a later call leaves it no longer earlier, until the model has read a compaction that shows it, across a restart too (`done-earlier.json` beside it keeps the highest number the file holds). A call's reply gains `Done: {S} newest items stay in your wake, {N} earlier in {path}`, its row in the transcript a `done split` line, and the decision log's `stored` row a `done` field with both counts and their characters.
+- **Every list item keeps when it was added.** An item added to any of the six lists stores an `added` time (ISO 8601, UTC) in its list's file, kept through an edit and carried into its history line when it leaves. Items stored before this version have none. The time lives only in those files: no compaction, reply, notice, `done-earlier.md` or transcript row shows it.
+
 ## [2.5.0] — 2026-11-23
 
 ### Changed

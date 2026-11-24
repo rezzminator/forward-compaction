@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { emptyHeld, emptyList, frontierSize, listApply, renderFrontier, roundPassed, sizeLines, textApply, unchangedNote, type List } from '../plugins/forward-compaction/src/lists.ts';
+import { doneFiled, doneLines, doneSizes, doneSplit, emptyHeld, emptyList, frontierSize, listApply, renderFrontier, roundPassed, sizeLines, textApply, unchangedNote, type Item, type List } from '../plugins/forward-compaction/src/lists.ts';
 
 const list = (...texts: string[]): List => ({ next_id: texts.length + 1, items: texts.map((text, i) => ({ id: i + 1, text })) });
 const shown = (l: List): string[] => l.items.map((item) => `[${item.id}] ${item.text}`);
@@ -48,6 +48,17 @@ describe('listApply: one call\'s change to one list, by item number', () => {
     expect(listApply('done', emptyList(), { add: ['a'] }).list).toEqual({ next_id: 2, items: [{ id: 1, text: 'a' }] });
   });
 
+  it('stamps an added item with the call\'s time, keeps it through an edit, carries it into each value that leaves, and invents none for an item stored without one', () => {
+    const at = '2026-10-27T14:53:00.000Z', later = '2026-10-28T09:00:00.000Z';
+    const first = listApply('done', { next_id: 2, items: [{ id: 1, text: 'old' }] }, { add: ['a', 'b'] }, 0, at);
+    expect(first.list).toEqual({ next_id: 4, items: [{ id: 1, text: 'old' }, { id: 2, text: 'a', added: at }, { id: 3, text: 'b', added: at }] });
+    const second = listApply('done', first.list, { edit: [{ id: 1, text: 'OLD' }, { id: 2, text: 'A' }], remove: [3], add: ['c'] }, 2, later);
+    expect([second.list, second.left]).toEqual([
+      { next_id: 5, items: [{ id: 1, text: 'OLD', round: 2 }, { id: 2, text: 'A', added: at, round: 2 }, { id: 4, text: 'c', round: 2, added: later }] },
+      [{ id: 1, text: 'old', left: 'edited' }, { id: 2, text: 'a', left: 'edited', added: at }, { id: 3, text: 'b', left: 'removed', added: at }],
+    ]);
+  });
+
   it('drops a tag the model copied back from a wake, in an add and in an edit', () => {
     expect(shown(listApply('done', list('a'), { add: ['b [2 rounds unchanged]'], edit: [{ id: 1, text: 'A [1 round unchanged] ' }] }).list)).toEqual(['[1] A', '[2] b']);
   });
@@ -55,6 +66,58 @@ describe('listApply: one call\'s change to one list, by item number', () => {
   it('in remaining, places a step before a live one, and last before a number not live', () => {
     const out = listApply('remaining', list('one', 'three'), { remove: [1], add: [{ before: 2, text: 'two' }, { before: 1, text: 'four' }, { before: 'x', text: 'five' }] });
     expect([shown(out.list), out.notes]).toEqual([['[3] two', '[2] three', '[4] four', '[5] five'], ['remaining.add[2].before must be a step number; got string: added last.', 'remaining.add[1].before: [1] is not a live step: added last.']]);
+  });
+});
+
+describe('doneSplit: the done items a wake shows, newest first while their texts fit the cap', () => {
+  const done = (...lengths: number[]): Item[] => lengths.map((n, i) => ({ id: i + 1, text: String.fromCharCode(97 + i).repeat(n) }));
+  it.each([
+    { name: 'the newest items whose texts sum to the cap are shown, every older one earlier', items: done(4, 4, 4), max: 8, shown: [2, 3], earlier: [1] },
+    { name: 'one character under that sum shows one item fewer', items: done(4, 4, 4), max: 7, shown: [3], earlier: [1, 2] },
+    { name: 'one character over it shows no item more', items: done(4, 4, 4), max: 9, shown: [2, 3], earlier: [1] },
+    { name: 'a list that fits whole is all shown', items: done(4, 4, 4), max: 12, shown: [1, 2, 3], earlier: [] },
+    { name: 'the newest is shown even alone over the cap', items: done(4, 20), max: 10, shown: [2], earlier: [1] },
+    { name: 'a lone item over the cap is shown', items: done(20), max: 10, shown: [1], earlier: [] },
+    { name: 'the walk stops at the first item over the cap: an older one that would fit is earlier too', items: done(2, 20, 4), max: 10, shown: [3], earlier: [1, 2] },
+    { name: 'an empty list has none either side', items: [], max: 10, shown: [], earlier: [] },
+    { name: 'a list stored out of number order is walked by number: shown keeps the list\'s order, earlier is oldest first', items: [{ id: 5, text: 'eeee' }, { id: 2, text: 'bbbb' }, { id: 9, text: 'iiii' }, { id: 1, text: 'aaaa' }], max: 8, shown: [5, 9], earlier: [1, 2] },
+  ])('$name', ({ items, max, shown, earlier }) => {
+    const split = doneSplit(items, max);
+    expect([split.shown.map((item) => item.id), split.earlier.map((item) => item.id)]).toEqual([shown, earlier]);
+  });
+
+  it.each([
+    { name: 'the earlier items alone while the file held none', items: done(14, 14, 14), max: 20, through: 0, filed: [1, 2] },
+    { name: 'an item it held that the cap now shows, after the newest was removed', items: done(14, 14), max: 20, through: 2, filed: [1, 2] },
+    { name: 'an item it held that fits again, after an edit shortened the newest', items: done(14, 14, 2), max: 20, through: 2, filed: [1, 2] },
+    { name: 'the items it held under a raised cap that shows the whole list', items: done(14, 14, 14), max: 100, through: 2, filed: [1, 2] },
+    { name: 'the earlier items past what it held, once more became earlier', items: done(14, 14, 14, 14), max: 20, through: 1, filed: [1, 2, 3] },
+    { name: 'every live item while what it held is unknown', items: done(14, 14, 14), max: 20, through: Infinity, filed: [1, 2, 3] },
+    { name: 'no item for a list that fits, the file having held none', items: done(14, 14, 14), max: 100, through: 0, filed: [] },
+    { name: 'a list stored out of number order by number, oldest first', items: [{ id: 5, text: 'eeee' }, { id: 2, text: 'bbbb' }, { id: 9, text: 'iiii' }, { id: 1, text: 'aaaa' }], max: 8, through: 5, filed: [1, 2, 5] },
+  ])('doneFiled, what done-earlier.md holds: $name', ({ items, max, through, filed }) => {
+    expect(doneFiled(items, max, through).map((item) => item.id)).toEqual(filed);
+  });
+
+  const held = { ...emptyHeld(), rounds: 2, objective: 'ship it' };
+  held.lists.done = { next_id: 10, items: [{ id: 2, text: 'old' }, { id: 5, text: 'mid', round: 1 }, { id: 9, text: 'new', round: 2 }] };
+  const PATH = '/h/.local/state/forward-compaction/proj/s1/done-earlier.md';
+  const rest = 'finished work like the items below, edited or removed by number like them. Read the file when a step or the final report may rest on one.';
+
+  it('renders done with the line naming the file, then the shown items with their numbers and rounds tags; one earlier item in the singular', () => {
+    expect(renderFrontier(held, { ...doneSplit(held.lists.done.items, 3), path: PATH })).toBe(`## Objective\nship it\n\n## Done\n2 earlier done items, [2] to [5], are in ${PATH}, each whole under its number: ${rest}\n[9] new`);
+    expect(renderFrontier(held, { ...doneSplit(held.lists.done.items, 6), path: PATH })).toBe(`## Objective\nship it\n\n## Done\n1 earlier done item, [2], is in ${PATH}, whole under its number: ${rest}\n[5] mid [1 round unchanged]\n[9] new`);
+  });
+
+  it('renders the whole done list with no line when nothing is earlier or no split is given', () => {
+    const whole = '## Objective\nship it\n\n## Done\n[2] old [2 rounds unchanged]\n[5] mid [1 round unchanged]\n[9] new';
+    expect([renderFrontier(held, { ...doneSplit(held.lists.done.items, 9), path: PATH }), renderFrontier(held)]).toEqual([whole, whole]);
+  });
+
+  it('gives the result its done line and the stored row its counts only for a split with earlier items', () => {
+    const split = { ...doneSplit(held.lists.done.items, 3), path: PATH };
+    expect([doneLines(split), doneLines({ ...doneSplit(held.lists.done.items, 6), path: PATH }), doneLines(undefined), doneLines({ ...doneSplit(held.lists.done.items, 9), path: PATH })]).toEqual([[`Done: 1 newest item stays in your wake, 2 earlier in ${PATH}`], [`Done: 2 newest items stay in your wake, 1 earlier in ${PATH}`], [], []]);
+    expect([doneSizes(held.lists.done, split), doneSizes(held.lists.done, undefined)]).toEqual([{ shown: 1, shownChars: 3, earlier: 2, earlierChars: 6 }, { shown: 3, shownChars: 9, earlier: 0, earlierChars: 0 }]);
   });
 });
 

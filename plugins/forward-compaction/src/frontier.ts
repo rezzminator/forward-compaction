@@ -289,15 +289,16 @@ export function parseCall(input: unknown, cwd?: string): ParsedCall {
 /** What one call did to the held frontier: the frontier after it, the result's lines and notes, each list and text changed with the values that left (for disk.ts), each list's counts, and the texts still missing. */
 export type Applied = { held: Held; lines: string[]; notes: string[]; changed: { key: ListName | TextName; left: Left[] | string[] }[]; counts: Partial<Record<ListName, ListCount>>; missing: TextName[] };
 
-/** Applies a call's texts and list changes to `held`, objective first, each list in LISTS order, an item joined from outside its list (`extra`) after the list's own change. Storage is storage.ts's. */
-export function applyCall(held: Held, call: ParsedCall): Applied {
+/** Applies a call's texts and list changes to `held`, objective first, each list in LISTS order, an item joined from outside its list (`extra`) after the list's own change; each item added takes `now`, the adapter's clock, as its `added` (ISO 8601 UTC). Storage is storage.ts's. */
+export function applyCall(held: Held, call: ParsedCall, now?: number): Applied {
+  const addedAt = now === undefined ? undefined : new Date(now).toISOString();
   const out: Applied = { held: { ...held, lists: { ...held.lists } }, lines: [], notes: [...call.notes], changed: [], counts: {}, missing: [] };
   const objective = textApply('objective', held.objective, call.texts.objective);
   for (const name of LISTS) {
     const changes = [call.lists[name], ...(call.extra[name] !== undefined ? [{ add: call.extra[name] }] : [])].filter((c) => c !== undefined);
     if (name === 'orders') out.lines.push(...objective.lines), out.notes.push(...objective.notes);
     for (const change of changes) {
-      const r = listApply(name, out.held.lists[name], change, held.rounds);
+      const r = listApply(name, out.held.lists[name], change, held.rounds, addedAt);
       out.held.lists[name] = r.list;
       out.lines.push(...r.lines), out.notes.push(...r.notes);
       const c = out.counts[name] ?? { added: 0, removed: 0, edited: 0, skipped: 0 };

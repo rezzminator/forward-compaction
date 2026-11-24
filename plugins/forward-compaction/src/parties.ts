@@ -378,8 +378,9 @@ export class Parties {
   }
 }
 
-/** What a wake shows of a party's held frontier: its live orders, its storage listing (with no files, none) and its lists rendered. */
-export function heldShown(party: { held?: Held; files?: PartyFiles }): { orders: Item[]; rounds: number; storage?: { dir: string; entries: StorageEntry[] }; frontier: string } {
-  const held = party.held ?? emptyHeld();
-  return { orders: held.lists.orders.items, rounds: held.rounds ?? 0, ...(party.files !== undefined ? { storage: { dir: storageDir(party.files), entries: held.storage } } : {}), frontier: renderFrontier(held) };
+/** What a wake shows of a party's held frontier: its live orders, its storage listing (with no files, none) and its lists rendered, done split at `doneMaxChars` when done-earlier.md holds its earlier items (disk.ts `doneWake`), else whole. The rendering is noted in the party's files (disk.ts `wakeRendered`): done-earlier.md gives up an item only once the party has read a wake that shows it. */
+export function heldShown(party: { held?: Held; files?: PartyFiles }, doneMaxChars: number): { orders: Item[]; rounds: number; storage?: { dir: string; entries: StorageEntry[] }; frontier: string } {
+  const held = party.held ?? emptyHeld(), done = party.files?.doneWake(held, doneMaxChars), frontier = renderFrontier(held, done);
+  party.files?.wakeRendered(frontier, done);
+  return { orders: held.lists.orders.items, rounds: held.rounds ?? 0, ...(party.files !== undefined ? { storage: { dir: storageDir(party.files), entries: held.storage } } : {}), frontier };
 }

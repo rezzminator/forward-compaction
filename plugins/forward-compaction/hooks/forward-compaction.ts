@@ -2,8 +2,8 @@ import type { EngineInterface, On, PluginOptions, Register, SessionCompactInput,
 import { bounded, unlessAborted } from '../src/bounded';
 import { applyCall, experimental, isAbsolutePath, parseCall, loadFileNote, readLoadFiles, callWaits, receipt, LOAD_FILE_MAX_CHARS, toolInput, type FileCheck, type LoadFile } from '../src/frontier';
 import { descriptionOf, pinnedBy } from '../src/carry';
-import { emptyHeld, frontierSize, sizeLines, TEXTS } from '../src/lists';
-import { absent, loadParty, partyRoot, notSaved, NO_FOLDER, type FileProblem, type Fs } from '../src/disk';
+import { doneLines, doneSizes, emptyHeld, frontierSize, sizeLines, TEXTS } from '../src/lists';
+import { absent, DONE_EARLIER_FILES, loadParty, partyRoot, notSaved, NO_FOLDER, unreadMeans, type FileProblem, type Fs } from '../src/disk';
 import { storageApply, storageHeld } from '../src/storage';
 import { keptOrders } from '../src/orders';
 import { answersOf, workOf, type CallAnswer } from '../src/work';
@@ -11,7 +11,7 @@ import { newLedger, markStart, addEntry, deliveryOf, runStartOf, resolveSpawn, a
 import { splitAtCall } from '../src/kept';
 import { buildWake, mechanicalWake, landedLine, landedShort, recentFiles, type AgentRow, type Landing } from '../src/wake';
 import { briefFiles, readBriefFiles } from '../src/brief-files';
-import { wakeHead, wakeRow } from '../src/wake-row';
+import { wakeHead, wakeHeld, wakeRow } from '../src/wake-row';
 import { callKey, callResultRow, callRow, type CallMeasure } from '../src/call-row';
 import { planFrom, planRead, PLAN_ROWS, type WakePlan } from '../src/plan';
 import { decide, installWarnings, turnEndDoor, readingTokens, knownTrigger } from '../src/decide';
@@ -270,6 +270,7 @@ async function readOptionEnv($: EngineInterface): Promise<Pick<OptionEnvironment
     readOptionVar('FORWARD_COMPACTION_KEEP_SKILLS', () => $.env.get('FORWARD_COMPACTION_KEEP_SKILLS')),
     readOptionVar('FORWARD_COMPACTION_SUBAGENT_CALL_COMPACTS', () => $.env.get('FORWARD_COMPACTION_SUBAGENT_CALL_COMPACTS')),
     readOptionVar('FORWARD_COMPACTION_FRONTIER_WARN_CHARS', () => $.env.get('FORWARD_COMPACTION_FRONTIER_WARN_CHARS')),
+    readOptionVar('FORWARD_COMPACTION_DONE_MAX_CHARS', () => $.env.get('FORWARD_COMPACTION_DONE_MAX_CHARS')),
     readOptionVar('FORWARD_COMPACTION_DEBUG', () => $.env.get('FORWARD_COMPACTION_DEBUG')),
   ]);
   return env;
@@ -490,11 +491,11 @@ function answerForward(st: State, $: EngineInterface, e: Record<string, unknown>
   const key = keyOf(e.agentId), party = st.parties.get(key), answer = (party.calling ?? Promise.resolve()).then(() => applyForward(st, $, e, key));
   party.calling = answer.catch(() => undefined); return answer;
 }
-/** A party's files written with everything they still owe; each failure is said and returned, never thrown. */
+/** A party's files written with everything they still owe, done-earlier.md brought to the done items its wake names; each failure is said and returned, never thrown. */
 async function writeDue(st: State, $: EngineInterface, key: PartyKey, where: string): Promise<FileProblem[]> {
   const party = st.parties.get(key), files = party.files;
   if (files === undefined || party.held === undefined) return [];
-  const problems = await files.flush(fsOf($), party.held);
+  const problems = await files.flush(fsOf($), party.held, st.config.doneMaxChars);
   for (const p of problems) say(st, $, `forward-compaction: writing ${files.root}/${p.file} failed: ${p.error}; the change is held in memory and written again at the next call`, 'error', { event: 'frontier-write-failed', where, party: key, file: p.file, error: p.error });
   return problems;
 }
@@ -508,7 +509,7 @@ async function applyForward(st: State, $: EngineInterface, e: Record<string, unk
     if ((call.loadFiles ?? []).some((file) => !isAbsolutePath(file.path))) call = parseCall(input, await Promise.resolve().then(() => $.session.cwd()).catch((error: unknown) => (dbg(st, $, 'session.cwd-failed', { error: message(error) }), undefined))); // the session's directory, read only for a relative load file; unknown when the read fails
     const checked: string[] = [], carried: LoadFile[] = [];
     const toolUseId = typeof e.tool_use_id === 'string' ? e.tool_use_id : ''; if (toolUseId === '') checked.push('the call has no tool_use_id, so the wake cannot place it: at the install your frontier is carried with the newest messages that fit, not every message after this call.');
-    const applied = applyCall(party.held ?? emptyHeld(), call), files = party.files;
+    const now = await $.clock.now(), applied = applyCall(party.held ?? emptyHeld(), call, now), files = party.files; // the clock awaited before the held frontier is read: a floor a reading sets meanwhile is not written over
     const storage = files !== undefined ? await storageApply(fs, files, applied.held.storage, call.storage) : { entries: applied.held.storage, lines: [], notes: call.storage === undefined ? [] : ['storage: this run has no folder for your frontier, so there is no storage folder: nothing stored.'], count: { added: 0, removed: 0 } };
     party.held = { ...applied.held, storage: storage.entries }; for (const c of applied.changed) files?.changed(c.key, c.left);
     const problems = await writeDue(st, $, key, 'answerForward');
@@ -519,10 +520,10 @@ async function applyForward(st: State, $: EngineInterface, e: Record<string, unk
     const compacts = callCompacts(st.parties, key, tokens, m, st.config.ignoreModels, st.config.subagentCallCompacts); // below where its notice goes a call changes the held frontier and compacts nothing
     const waits = compacts && callWaits(applied.missing, call.broken ?? []); // a call a broken field may have ended early, or one without its objective or next, installs one request later, so the rest can still arrive
     const replaced = st.parties.store(key, { loadFiles, toolUseId, storedAtTokens: tokens, since: st.ledger.nextSeq, compacts, ...(waits ? { waits } : {}) });
-    const size = frontierSize(party.held), sizes = sizeLines(size, st.config.frontierWarnChars), missing = applied.missing;
-    record(st, $, { event: 'stored', party: key, compacts, ...(waits ? { waits } : {}), argChars: JSON.stringify(input).length, lists: applied.counts, frontier: { chars: size.chars, items: size.items }, storage: storage.count, warned: sizes.length > 1, files: loadFiles.length, notes: applied.notes.length + storage.notes.length + checked.length, tokens: tokens ?? null, ...(problems.length > 0 ? { writeFailed: problems.map((p) => p.file) } : {}), ...(replaced !== undefined ? { replaced: replaced.storedAtTokens ?? null } : {}), ...(missing.length > 0 ? { incomplete: missing } : {}) });
+    const size = frontierSize(party.held), sizes = sizeLines(size, st.config.frontierWarnChars), missing = applied.missing, done = files?.doneWake(party.held, st.config.doneMaxChars); // done split only once done-earlier.md holds its earlier items: else the wake shows the whole list
+    record(st, $, { event: 'stored', party: key, compacts, ...(waits ? { waits } : {}), argChars: JSON.stringify(input).length, lists: applied.counts, frontier: { chars: size.chars, items: size.items }, done: doneSizes(party.held.lists.done, done), storage: storage.count, warned: sizes.length > 1, files: loadFiles.length, notes: applied.notes.length + storage.notes.length + checked.length, tokens: tokens ?? null, ...(problems.length > 0 ? { writeFailed: problems.map((p) => p.file) } : {}), ...(replaced !== undefined ? { replaced: replaced.storedAtTokens ?? null } : {}), ...(missing.length > 0 ? { incomplete: missing } : {}) });
     const door = key === 'main' ? receipt({ party: 'main', files: loadFiles.length, tokens, askPoint: m?.askPoint, replaced: replaced !== undefined, missing, broken: call.broken ?? [], compacts }) : receipt({ party: 'subagent', files: loadFiles.length, tokens, askPoint: m!.askPoint, replaced: replaced !== undefined, missing, broken: call.broken ?? [], compacts });
-    return [...applied.lines, ...storage.lines, ...applied.notes, ...storage.notes, ...checked, ...problems.map((p) => notSaved(p, files!.root)), ...sizes, storageHeld(storage.entries), door].join('\n');
+    return [...applied.lines, ...storage.lines, ...applied.notes, ...storage.notes, ...checked, ...problems.filter((p) => !DONE_EARLIER_FILES.includes(p.file)).map((p) => notSaved(p, files!.root)), ...sizes, ...doneLines(done), storageHeld(storage.entries), door].join('\n'); // done-earlier.md or its record not written loses nothing: the wake shows the whole done list
   } catch (error) {
     say(st, $, `forward-compaction: storing ${key}'s frontier failed: ${message(error)}`, 'error', { event: 'store-error', where: 'answerForward', party: key, error: message(error) });
     return `forward_compaction failed, nothing stored: ${message(error)}`;
@@ -598,7 +599,7 @@ async function compactAsk(st: State, $: EngineInterface, e: SessionCompactInput,
     trigger = 'auto';
   }
   const kind = key === 'main' ? 'main' : await partyKind(st, $, e.agentId!);
-  await judge(st, $, key); const party = st.parties.get(key);
+  await judge(st, $, key); const party = st.parties.get(key); party.files?.doneReached((frontier) => wakeHeld(e.messages, frontier)); // a transcript holding the last wake rendered: its party has read the done items it showed
   const { label, stored: held } = party;
   const tokens = party.reading; // measured only; none since an install, or yet, is unknown
   const m = marks(st, key);
@@ -619,9 +620,9 @@ async function compactAsk(st: State, $: EngineInterface, e: SessionCompactInput,
     record(st, $, { ...row, reason: action.reason });
     return { skip: action.reason };
   }
-  await party.calling; if (party.files?.due) await writeDue(st, $, key, 'compactAsk'); // a write that failed at its call is tried again before the wake lists what it holds
+  await party.calling; await writeDue(st, $, key, 'compactAsk'); // a write that failed at its call is tried again, and done-earlier.md brought to the done items, before the wake lists what it holds
   const missing = TEXTS.filter((t) => party.held?.[t] === undefined), size = frontierSize(party.held ?? emptyHeld());
-  const shared = { messages: e.messages, party: kind === 'main' ? ('main' as const) : ('subagent' as const), tokens, askPoint: m?.askPoint ?? 0, charsPerToken: ratioOf(st, $, key, 'compact', await partyChars(st, $, key, e.agentId), m), now: await $.clock.now(), facts: (kept: readonly string[]) => factsFor(st.ledger, key, { keptTexts: kept, ...(action.action === 'install' ? { since: held!.since } : {}) }), agents: await agentRows($), logDir: st.pluginLogDir, ...heldShown(party), plan: await readPlan(st, $, key), pins: st.config.keepSkills, ...(e.agentId !== undefined ? { self: e.agentId } : {}) };
+  const shared = { messages: e.messages, party: kind === 'main' ? ('main' as const) : ('subagent' as const), tokens, askPoint: m?.askPoint ?? 0, charsPerToken: ratioOf(st, $, key, 'compact', await partyChars(st, $, key, e.agentId), m), now: await $.clock.now(), facts: (kept: readonly string[]) => factsFor(st.ledger, key, { keptTexts: kept, ...(action.action === 'install' ? { since: held!.since } : {}) }), agents: await agentRows($), logDir: st.pluginLogDir, ...heldShown(party, st.config.doneMaxChars), plan: await readPlan(st, $, key), pins: st.config.keepSkills, ...(e.agentId !== undefined ? { self: e.agentId } : {}) };
   const own = factsFor(st.ledger, key, { keptTexts: [] }), named = kind === 'main' ? [] : briefFiles({ brief: own.brief?.text ?? '', ...(st.home !== undefined ? { home: st.home } : {}), files: own.work.files, commands: own.work.commands, asked: action.action === 'install' ? held!.loadFiles.map((file) => file.path) : [] }), briefDocs = await readBriefFiles(fsOf($).read, named); // the documents a sub-agent's brief names and its calls opened, read in at every wake (brief-files.ts)
   const wake = action.action === 'install'
     ? buildWake({ ...shared, briefFiles: briefDocs, toolUseId: held!.toolUseId, frontier: shared.frontier, tool: st.toolNames.forward_compaction, files: await readLoadFiles(fsOf($).read, held!.loadFiles), missing })
@@ -653,7 +654,7 @@ async function compactFailed(st: State, $: EngineInterface, e: SessionCompactInp
   try {
     const tokens = party.reading;
     const m = marks(st, key);
-    const wake = mechanicalWake({ messages: e.messages, party: key === 'main' ? 'main' : 'subagent', tokens, askPoint: m?.askPoint ?? 0, charsPerToken: ratioOf(st, $, key, 'compact', await partyChars(st, $, key, e.agentId), m), now: Date.now(), facts: (kept) => factsFor(st.ledger, key, { keptTexts: kept }), ...heldShown(party), pins: st.config.keepSkills, tool: st.toolNames.forward_compaction, logDir: st.pluginLogDir, reason: m === undefined ? { kind: 'reactive' } : { kind: 'ceiling', ceiling: m.ceiling } });
+    const wake = mechanicalWake({ messages: e.messages, party: key === 'main' ? 'main' : 'subagent', tokens, askPoint: m?.askPoint ?? 0, charsPerToken: ratioOf(st, $, key, 'compact', await partyChars(st, $, key, e.agentId), m), now: Date.now(), facts: (kept) => factsFor(st.ledger, key, { keptTexts: kept }), ...heldShown(party, st.config.doneMaxChars), pins: st.config.keepSkills, tool: st.toolNames.forward_compaction, logDir: st.pluginLogDir, reason: m === undefined ? { kind: 'reactive' } : { kind: 'ceiling', ceiling: m.ceiling } });
     installed(st, $, key, undefined, signal); // the error line below is said now; no landing waits
     say(st, $, `${said}; a mechanical wake was installed.`, 'error', { event: 'compact', where: 'compactFailed', party: key, decision: 'error', error: message(error), kept: wake.kept, dropped: wake.dropped, skills: wake.skills, storage: wake.storage });
     return { messages: wake.messages, ...(tokens !== undefined ? { tokensBefore: tokens } : {}) };
@@ -776,7 +777,7 @@ async function restoreHeld(st: State, $: EngineInterface, party: PartyKey, id: s
   if (st.home === undefined) return warnOnce(st, $, 'restoreHeld', 'frontier-no-home', 'forward-compaction: HOME is unknown, so no frontier is kept on disk: it is held in memory only, and a restart begins it again');
   const dir = await Promise.resolve().then(() => $.session.root()).catch((error: unknown) => (dbg(st, $, 'session.root-failed', { error: message(error) }), ''));
   const { files, held, problems } = await loadParty(fsOf($), partyRoot(st.home, dir, await st.sessionId!, party), async () => keptOrders((await $.state.get({ plugin: 'forward-compaction', key: 'orders', id }).catch((error: unknown) => (say(st, $, `forward-compaction: reading the orders an earlier build kept for ${party} failed: ${message(error)}; none is numbered from them in this run`, 'error', { event: 'kept-orders-read-failed', where: 'restoreHeld', party, error: message(error) }), { value: undefined }))).value) ?? []);
-  for (const p of problems) say(st, $, `forward-compaction: ${files.root}/${p.file} could not be read: ${p.error}; it is shown empty and left as it is until a call changes it`, 'warning', { event: 'frontier-read-failed', where: 'restoreHeld', party, file: p.file, error: p.error });
+  for (const p of problems) say(st, $, `forward-compaction: ${files.root}/${p.file} could not be read: ${p.error}; ${unreadMeans(p.file)}`, 'warning', { event: 'frontier-read-failed', where: 'restoreHeld', party, file: p.file, error: p.error });
   Object.assign(state, { files, held });
 }
 

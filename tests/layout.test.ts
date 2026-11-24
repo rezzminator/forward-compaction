@@ -2,7 +2,7 @@ import { readdirSync, readFileSync, existsSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { PLUGIN_VERSION } from '../plugins/forward-compaction/src/wake.ts';
-import { DEFAULT_CEILING_NATIVE, DEFAULT_DEBUG, DEFAULT_FRONTIER_WARN_CHARS, DEFAULT_IGNORE_MODELS, DEFAULT_KEEP_SKILLS, DEFAULT_MAIN, DEFAULT_MAIN_FINISH_START, DEFAULT_SUBAGENT, DEFAULT_SUBAGENT_CALL_COMPACTS, OPTION_ENV, parseEnvFlag, parseSize, type OptionName } from '../plugins/forward-compaction/src/options.ts';
+import { DEFAULT_CEILING_NATIVE, DEFAULT_DEBUG, DEFAULT_DONE_MAX_CHARS, DEFAULT_FRONTIER_WARN_CHARS, DEFAULT_IGNORE_MODELS, DEFAULT_KEEP_SKILLS, DEFAULT_MAIN, DEFAULT_MAIN_FINISH_START, DEFAULT_SUBAGENT, DEFAULT_SUBAGENT_CALL_COMPACTS, OPTION_ENV, parseEnvFlag, parseSize, type OptionName } from '../plugins/forward-compaction/src/options.ts';
 
 const ROOT = join(import.meta.dirname, '..');
 const PLUGIN = 'plugins/forward-compaction';
@@ -56,7 +56,7 @@ function sameSet(a: ReadonlySet<string>, b: ReadonlySet<string>): string[] {
 const CODE_DEFAULT: Record<OptionName, unknown> = {
   mainMaxContext: 'window', mainCeiling: DEFAULT_MAIN.ceiling, mainNudgeRoom: 'unset', mainNudgeStart: DEFAULT_MAIN.nudgeStart, mainNudgeEvery: DEFAULT_MAIN.nudgeEvery, mainFinishStart: DEFAULT_MAIN_FINISH_START,
   subagentMaxContext: 'model', subagentCeiling: DEFAULT_SUBAGENT.ceiling, subagentNudgeRoom: 'unset', subagentNudgeStart: DEFAULT_SUBAGENT.nudgeStart, subagentNudgeEvery: DEFAULT_SUBAGENT.nudgeEvery,
-  ceilingNative: DEFAULT_CEILING_NATIVE, ignoreModels: DEFAULT_IGNORE_MODELS.join(','), keepSkills: DEFAULT_KEEP_SKILLS.join(',') || 'none', subagentCallCompacts: DEFAULT_SUBAGENT_CALL_COMPACTS.join(',') || 'none', frontierWarnChars: { tokens: DEFAULT_FRONTIER_WARN_CHARS }, debug: DEFAULT_DEBUG,
+  ceilingNative: DEFAULT_CEILING_NATIVE, ignoreModels: DEFAULT_IGNORE_MODELS.join(','), keepSkills: DEFAULT_KEEP_SKILLS.join(',') || 'none', subagentCallCompacts: DEFAULT_SUBAGENT_CALL_COMPACTS.join(',') || 'none', frontierWarnChars: { tokens: DEFAULT_FRONTIER_WARN_CHARS }, doneMaxChars: { tokens: DEFAULT_DONE_MAX_CHARS }, debug: DEFAULT_DEBUG,
 };
 function optionTableFaults(readme: string): string[] {
   const rows = [...readme.matchAll(/^\|\s*`(FORWARD_COMPACTION_[A-Z_]+)`\s*\|[^|\n]*\|\s*`([^`\n]*)`[^|\n]*\|/gm)].map((m) => ({ name: m[1]!, cell: m[2]! }));
@@ -131,7 +131,7 @@ describe('layout gates (D22)', () => {
     const cells: [string, string][] = [
       ['MAIN_MAX_CONTEXT', 'window'], ['MAIN_CEILING', '70%'], ['MAIN_NUDGE_ROOM', 'unset'], ['MAIN_NUDGE_START', '15%'], ['MAIN_FINISH_START', '100k'],
       ['SUBAGENT_MAX_CONTEXT', 'model'], ['SUBAGENT_CEILING', '80%'], ['SUBAGENT_NUDGE_ROOM', '60k'], ['SUBAGENT_NUDGE_START', '165k'], ['SUBAGENT_NUDGE_EVERY', '20%'],
-      ['CEILING_NATIVE', '0'], ['IGNORE_MODELS', 'haiku'], ['KEEP_SKILLS', 'none'], ['SUBAGENT_CALL_COMPACTS', 'none'], ['FRONTIER_WARN_CHARS', '12000'], ['DEBUG', '1'], ['EXTRA', '1'],
+      ['CEILING_NATIVE', '0'], ['IGNORE_MODELS', 'haiku'], ['KEEP_SKILLS', 'none'], ['SUBAGENT_CALL_COMPACTS', 'none'], ['FRONTIER_WARN_CHARS', '12000'], ['DONE_MAX_CHARS', '12000'], ['DEBUG', '1'], ['EXTRA', '1'],
     ];
     const table = cells.map(([name, def]) => row(`FORWARD_COMPACTION_${name}`, def)).join('\n');
     expect(optionTableFaults(table)).toEqual(['+FORWARD_COMPACTION_EXTRA', '-FORWARD_COMPACTION_MAIN_NUDGE_EVERY', 'FORWARD_COMPACTION_MAIN_CEILING default 70%', 'FORWARD_COMPACTION_SUBAGENT_NUDGE_ROOM default 60k', 'FORWARD_COMPACTION_SUBAGENT_NUDGE_EVERY default 20%']);
