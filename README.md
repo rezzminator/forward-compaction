@@ -5,9 +5,9 @@
 **Claude Code compaction without the wait. The model writes its own handoff while it still remembers everything, so your exact words carry through.**
 
 [![Claude Code plugin](https://img.shields.io/badge/Claude%20Code-plugin-D97757)](https://docs.claude.com/en/docs/claude-code/plugins)
-[![Version](https://img.shields.io/badge/version-2.6.0--dev.1-blue)](./CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-2.6.0-blue)](./CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
-[![Tests](https://img.shields.io/badge/tests-970%20passing-brightgreen)](#development)
+[![Tests](https://img.shields.io/badge/tests-1031%20passing-brightgreen)](#development)
 [![Built with Professor](https://img.shields.io/badge/built%20with-Professor-8A2BE2)](https://github.com/rezzminator/professor)
 
 </div>
@@ -19,7 +19,7 @@
   </picture>
 </p>
 
-<p align="center"><sub>Main chats, medians of 2,939 real compactions over 30 days to 2026-10-29; the full numbers are in the <a href="#benchmark">benchmark</a>. For sub-agents native is faster (21.5 s vs 28.7 s).</sub></p>
+<p align="center"><sub>Main chats, medians of 2,939 real compactions over 30 days to 2026-10-29; the full numbers are in <a href="docs/field-medians.md">docs/field-medians.md</a>. For sub-agents native is faster (21.5 s vs 28.7 s).</sub></p>
 
 ## Why
 
@@ -42,27 +42,36 @@ forward-compaction turns this around. As the context grows, the model is told ho
 
 ## Benchmark
 
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/compaction-dark.gif">
-    <img src="docs/assets/compaction-light.gif" width="830" alt="One main-chat compaction on two lanes, one clock, both starting at the same moment. Claude Code's native compaction forks the chat: a second run re-reads all 214k tokens and paraphrases them while the chat waits, 54.9 s median. With forward-compaction the model that did the work writes its own frontier, 24.2 s median, then the plugin installs it in 0.085 s with no summarizer run, leaving 8.0k tokens of context instead of 18.6k at $0.16 instead of $0.25.">
-  </picture>
-</p>
+One scripted ten-turn chat, run five times each on Claude Code's native compaction, on forward-compaction, and on forward-compaction with the fork option (`FORWARD_COMPACTION_MAIN_FORK=1`), on 2026-11-24: Sonnet 5.5 (`claude-sonnet-5-5`) at medium effort, Claude Code 2.1.331, `CLAUDE_CODE_AUTO_COMPACT_WINDOW=100000`, no other plugin loaded. The first turn states four rules and the second a note to keep word for word; nine turns each read two record files and summarize every crate in them; the fifth turn changes one rule; the last turn forbids opening any file and asks for every crate's item and shelf and the total weight. Every figure comes from the runs' own records: each API request's usage and duration, each compaction's boundary record, and the files the chat wrote, scored against the scenario's truth.
 
-<p align="center"><sub>Main chats, medians of 2,939 real compactions over 30 days to 2026-10-29; the clocks run 7.5× faster than real seconds.</sub></p>
+| Median (p90) of 5 runs | Native compaction | forward-compaction | forward-compaction, fork option |
+| --- | --- | --- | --- |
+| Compactions in the run | 8 | **3** | **3** |
+| Time one compaction stalls the chat | 15.5 s (17.5 s) | **5.6 s** (7.3 s) | 6.6 s (8.9 s) |
+| Context when it started | 77.4k tokens (77.8k) | 120.2k (120.8k) | 119.2k (120.1k) |
+| Context of the first request after | 61.8k tokens (62.3k) | **28.8k** (29.5k) | 39.5k (40.4k) ¹ |
+| Tokens written per compaction | 2.7k (3.2k) | **768** (941) | 843 (1.2k) |
+| Cost of one compaction | $0.249 ($0.256) | **$0.035** ($0.037) | $0.083 ($0.087) ¹ |
+| Whole run: wall time | 5.1 min (5.5 min) | 3.5 min (3.6 min) | **3.4 min** (3.5 min) |
+| Whole run: requests | 38 | **33** | **33** |
+| Whole run: input · cache read · cache write · output tokens | 228.7k · 1901.2k · 364.2k · 29.2k | 1.4k · 2095.1k · 295.8k · 10.8k | 10.6k · 2370.5k · 296.7k · 10.3k |
+| Whole run: cost | $2.39 ($2.42) | **$1.50** ($1.51) | $1.55 ($1.56) |
+| Crate items recalled at the end | 132 of 180 | **180 of 180** | **180 of 180** |
+| Crate shelves recalled at the end | **20 of 180** | 0 of 180 | 0 of 180 |
+| User's rules obeyed after a compaction | 150 of 150 | 110 of 110 | 105 of 105 |
+| Changed rule obeyed after a compaction | 25 of 25 | 15 of 15 | 15 of 15 |
+| User's note quoted back word for word | 5 of 5 runs | 5 of 5 runs | 5 of 5 runs |
+| Files re-read after a compaction | 0 | 0 | 0 |
+| Final answers complete, total weight right | 1 of 5 runs | **5 of 5 runs** | **5 of 5 runs** |
 
-Measured on 2,939 real compactions in one heavy user's Claude Code transcripts over 30 days (2026-09-29 → 2026-10-29): 1,357 by Claude Code's native summarizer and 804 by forward-compaction, in main chats and sub-agents. Every figure comes from the compaction's own boundary record (duration, tokens before and after) or the handoff call's API usage, except where marked as estimated.
+Cost is every API request at Anthropic's list prices for the model, USD per million tokens: input 2, output 10, cache read 0.1, cache write 2.5 (5 minutes) and 4 (1 hour). One compaction's cost is the requests that wrote it plus the uncached input and cache write of the first request after it.
 
-| Median (p90) | Native compaction | forward-compaction |
-| --- | --- | --- |
-| Main chat: time to compact | 54.9 s (94.6 s) | **24.2 s** (36.0 s), then a 0.085 s install |
-| Sub-agent: time to compact | **21.5 s** (59.9 s) | 28.7 s (43.8 s), then a 0.12 s install |
-| Main chat: context left after | 18.6k tokens (32.8k) | **8.0k tokens** (17.5k) |
-| Sub-agent: context left after | 12.1k tokens (18.3k) | **8.8k tokens** (13.1k) |
-| Text written per compaction | ~3.0k tokens of summary (estimated from its length) | 3.2k tokens of handoff (4.5k) in a main chat, 3.7k (6.1k) in a sub-agent |
-| Cost of one main-chat compaction, Opus 5.5 | $0.25 | **$0.16** (−36%) |
+- **Fewer, later compactions.** Claude Code's own compaction ran at 77k tokens, eight times a run. forward-compaction holds that ask until a frontier is stored, so it compacted at about 120k, three times a run, and left less than half as much behind.
+- **Items against shelves.** Every record line names a crate's item, weight and shelf. Each turn's summary asks for the item, so the work has needed it; the shelf sits in the files and is asked for only in the last turn. forward-compaction kept every item and no shelf: a frontier carries what the work has needed so far, and a detail nobody has asked for yet is not in it. The native summary kept 132 of 180 items, and the shelves of the files read since its last compaction (20 of 20) and none older.
+- **¹ The fork option's first request after.** With the fork option a compaction lands at the end of a turn, so the first request after it opens the next turn and also carries about 10k tokens of tool, agent and skill listings Claude Code sends again at the first turn after a compaction. Without the option the compaction lands mid-turn and the same listings arrive one request later (27.8k, then 37.8k, in the run inspected), so the two rows marked ¹ charge the fork option for them and the plain column not; the whole-run rows compare the two directly.
+- **Limits.** One scenario, one model, five runs a column, a 100k window. `scripts/bench/bench.sh run --arm {native|fc|fc-fork} --runs 5 --claude {binary} --out {dir}` runs a column on your own account and `scripts/bench/bench.sh report {dir}` prints the table; each run's numbers are in [`scripts/bench/results/sonnet-2026-11-24.json`](scripts/bench/results/sonnet-2026-11-24.json).
 
-Cost is one read of the context being compacted ($0.20/M cached), the text written ($20/M output) and the cache write of what is left after ($8/M, 1-hour cache), at the medians above. The native summarizer re-reads a larger context (214k vs 167k, because forward-compaction compacts at the model's own milestone) and leaves more than twice as much behind, which every later request then carries.
+The figures in the picture at the top of this page, in [Why](#why) and in [What you get](#what-you-get) are another measurement: medians of 2,939 real compactions in long chats over 30 days, in [docs/field-medians.md](docs/field-medians.md).
 
 ## Install
 
