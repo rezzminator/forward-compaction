@@ -39,13 +39,13 @@ describe('the wake renders the standing orders above everything', () => {
     const wake = buildWake({ ...shared, toolUseId: 't9', frontier: '## Next\nround 2', orders });
     const f = (wake.messages[0] as BuiltMessage).text;
     const sections = f.split('\n\n').filter((s) => s.startsWith('## '));
-    expect(sections[0]).toBe(`${ORDERS_HEADING}\n[1] ${ORDER}\n[3] never force-push`);
+    expect(sections[0]).toBe(`## Standing orders — each binds until the user lifts it or the objective it was given for is reached\n[1] ${ORDER}\n[3] never force-push`);
     expect(f.indexOf(ORDERS_HEADING)).toBeLessThan(f.indexOf("## The user's messages"));
     expect((wake.messages[1] as BuiltMessage).text.split('\n')[0]).toBe('[forward-compaction: frontier] Below is your frontier as forward-compaction holds it: continue from its ## Next, within the standing orders above. When a notice next asks for a forward_compaction call, send only changes, by item number; whatever you leave out stays.');
     expect(wake.sizes[0]).toEqual({ section: ORDERS_HEADING, chars: sections[0]!.length });
     const aged = buildWake({ ...shared, toolUseId: 't9', frontier: '## Next\nround 2', rounds: 2, orders: [orders[0]!, { ...orders[1]!, round: 2 }] });
     expect(sectionOf((aged.messages[0] as BuiltMessage).text, ORDERS_HEADING)).toBe(`${ORDERS_HEADING}\n[1] ${ORDER} [2 rounds unchanged]\n[3] never force-push`);
-    expect((aged.messages[1] as BuiltMessage).text.split('\n')[0]).toBe('[forward-compaction: frontier] Below is your frontier as forward-compaction holds it: continue from its ## Next, within the standing orders above. When a notice next asks for a forward_compaction call, send only changes, by item number; whatever you leave out stays. An item tagged [N rounds unchanged] has passed N compactions with no change: keep it only while it is still true and still needed, and a standing order until the user lifts it.');
+    expect((aged.messages[1] as BuiltMessage).text.split('\n')[0]).toBe('[forward-compaction: frontier] Below is your frontier as forward-compaction holds it: continue from its ## Next, within the standing orders above. When a notice next asks for a forward_compaction call, send only changes, by item number; whatever you leave out stays. An item tagged [N rounds unchanged] has passed N compactions with no change: keep it only while it is still true and still needed, and a standing order while it binds.');
   });
 
   it('carries them whole whatever the budget, and the mechanical wake carries them the same way', () => {

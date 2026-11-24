@@ -3,7 +3,7 @@
 // order from the user's wording: the model names it, the plugin holds it.
 import { itemLines, type Item } from './lists';
 
-export const ORDERS_HEADING = '## Standing orders — binding until the user lifts them';
+export const ORDERS_HEADING = '## Standing orders — each binds until the user lifts it or the objective it was given for is reached';
 
 /** The previous build's remembered orders `$.state` kept for a party, each entry whose `order` is a non-blank string; undefined when nothing usable was kept. They become the party's first numbered orders when it has no orders file yet. */
 export function keptOrders(kept: unknown): string[] | undefined {

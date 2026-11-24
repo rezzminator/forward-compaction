@@ -163,7 +163,7 @@ forward_compaction({
 | Argument | What goes in it |
 | --- | --- |
 | `objective`, `next` | What the work is for and what done means; the first concrete action after the compaction. A text sent replaces the one stored. |
-| `orders` | Your orders that bind the rest of the work, in your exact words. They open every compaction until the model removes one by its number. |
+| `orders` | Your orders that bind the rest of the work, in your exact words. They open every compaction until the model removes one by its number: one you lifted, or by itself one given only for an objective now reached, reviewed in the call that sends the next objective. |
 | `decisions`, `done`, `remaining`, `blocked`, `findings` | Your rulings on how something gets done; the finished pieces, each with how it was verified; every step left, in order; what waits on whom; the model's own notes, errors and commands it will need again. |
 | `storage` | Markdown files the model keeps for a later step, each with a description; every compaction lists them, and the model reads or edits them with Read and Edit. |
 | `load_files` | Files to read back in after the compaction, up to 250 lines each; a binary file is named, never carried. |

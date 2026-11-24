@@ -153,7 +153,7 @@ describe('the frontier rendered from the lists, and its size', () => {
   it('ends each item with the rounds it has passed unchanged, none before its first, and says what the tag means only where one shows', () => {
     const aged = { ...held, rounds: 3, lists: { ...held.lists, decisions: { next_id: 5, items: [{ id: 1, text: 'one' }, { id: 4, text: 'four', round: 2 }] }, findings: { next_id: 2, items: [{ id: 1, text: 'f', round: 3 }] } } };
     expect(renderFrontier(aged)).toBe('## Objective\nship it\n\n## Decisions\n[1] one [3 rounds unchanged]\n[4] four [1 round unchanged]\n\n## Next\nwire the hook\n\n## Findings\n[1] f');
-    expect([unchangedNote(undefined, renderFrontier(aged)), unchangedNote(renderFrontier(held), undefined)]).toEqual([' An item tagged [N rounds unchanged] has passed N compactions with no change: keep it only while it is still true and still needed, and a standing order until the user lifts it.', '']);
+    expect([unchangedNote(undefined, renderFrontier(aged)), unchangedNote(renderFrontier(held), undefined)]).toEqual([' An item tagged [N rounds unchanged] has passed N compactions with no change: keep it only while it is still true and still needed, and a standing order while it binds.', '']);
   });
 
   it('counts a round for a frontier holding an item, and none for one holding no item', () => {

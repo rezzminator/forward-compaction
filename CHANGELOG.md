@@ -4,6 +4,10 @@ Every release of forward-compaction, named sub-agent-compact before 1.0.0. Versi
 
 ## [Unreleased]
 
+### Changed
+
+- **A standing order given for one objective ends with it.** Orders bound until you lifted them, so an order given for one piece of work stayed in every compaction of the work that followed. Once an objective is reached, the call that sends the next one reviews every order: the model lifts a rule given only for the objective reached and leaves every other rule to you. The orders' heading in a compaction reads `## Standing orders — each binds until the user lifts it or the objective it was given for is reached`. The review is the model's, asked by the `objective` and `orders` descriptions; the plugin removes no order itself.
+
 ### Added
 
 - **A long done list no longer fills the compaction.** The done items a compaction shows are the newest whose texts fit `FORWARD_COMPACTION_DONE_MAX_CHARS` (default `12000` characters), the newest always; the earlier ones are written whole, each under its number, to `done-earlier.md` in the session's folder, and the done list opens with one line naming that file and the earlier items' numbers. Nothing moves in the store: an earlier item is edited or removed by its number like a shown one, and when the file cannot be written the compaction shows the whole list. A call takes no live item out of the file: one the compaction named and did not show stays there when a later call leaves it no longer earlier, until the model has read a compaction that shows it, across a restart too (`done-earlier.json` beside it keeps the highest number the file holds). A call's reply gains `Done: {S} newest items stay in your wake, {N} earlier in {path}`, its row in the transcript a `done split` line, and the decision log's `stored` row a `done` field with both counts and their characters.

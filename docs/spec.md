@@ -223,7 +223,12 @@ stays.
   An added text equal to a live item of the same list, compared with its
   spacing collapsed and in lower case, is skipped as `already [n]`.
 - An order is removed by its number in `orders.remove`, with no proof asked.
-  The live orders open every wake ([The wake](#the-wake)).
+  The live orders open every wake ([The wake](#the-wake)). The model removes
+  one the user lifted and, by itself, one given only for an objective now
+  reached: the `objective` field's description has the call that sends the
+  next objective review every order, and the `orders` field's leaves every
+  other order to the user. The plugin ties no order to an objective and
+  removes none itself.
 - The call is never refused. A plain text sent to a list is one added item (a text that is only an
   operation's name excepted, below), and an array sent straight to a list its adds; a single number or `{id,
   text}` where an array was due is read as one; a number that is not live, a
@@ -486,8 +491,9 @@ The facts message opens with the plugin version that built the wake
 it; a sub-agent's with a kept start adds `Your brief is the first message
 above, kept verbatim.` It holds, each section only when it has content:
 
-- the standing orders, first, under `## Standing orders — binding until the
-  user lifts them`: each live order on its own line as `[n] text`, with the
+- the standing orders, first, under `## Standing orders — each binds until
+  the user lifts it or the objective it was given for is reached`: each live
+  order on its own line as `[n] text`, with the
   unchanged tag the frontier message describes, carried whole, outside the
   budget. A mechanical wake carries them the same way,
   and the frontier message and the mechanical wake's message both say to
@@ -684,8 +690,8 @@ edited, and with nothing before its first. The plugin counts the rounds, the mod
 none, and a tag sent back at the end of an add or edit text is stripped.
 Where a tag shows, the opening line adds `An item tagged [N
 rounds unchanged] has passed N compactions with no change: keep it only
-while it is still true and still needed, and a standing order until the user
-lifts it.` The objective, the next and the storage entries carry no tag. A
+while it is still true and still needed, and a standing order while it
+binds.` The objective, the next and the storage entries carry no tag. A
 frontier with no objective or next names what it lacks; then the message says how
 many later messages follow. No model-facing text names the path of a list's
 file or of the history; `done-earlier.md` and the storage folder are the

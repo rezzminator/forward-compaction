@@ -20,7 +20,7 @@ const LIST_DESCRIPTION: Record<ListName, string> = {
   blocked: "Every question or choice on hold until the user answers, in the user's words; removed once answered.",
   findings: 'Your own choices with why, errors verbatim, the commands and recipes you will need again.',
   orders:
-    "Every rule of the user's that binds the rest of the work (a prohibition, a limit, a rule), in the user's words; several may share one item. An instruction for one part of the work is no order: it goes to remaining. A rule the user changes is edited. A rule the user lifts leaves entirely, never kept as a LIFTED note: remove its item, or edit the item down to its other rules. Example: [2] reads 'Never push. Tests go in tests/. One CHANGELOG line per fix.' and the user drops the CHANGELOG rule. Wrong: {\"edit\": [{\"id\": 2, \"text\": \"Never push. Tests go in tests/. LIFTED: one CHANGELOG line per fix.\"}]}. Right: {\"edit\": [{\"id\": 2, \"text\": \"Never push. Tests go in tests/.\"}]}.",
+    "Every rule of the user's that binds the rest of the work (a prohibition, a limit, a rule), in the user's words; several may share one item. An instruction for one part of the work is no order: it goes to remaining. A rule the user changes is edited. You lift a rule given only for an objective now reached; every other rule only the user lifts. A lifted rule leaves entirely, never kept as a LIFTED note: remove its item, or edit the item down to its other rules. Example: [2] reads 'Never push. Tests go in tests/. One CHANGELOG line per fix.' and the user drops the CHANGELOG rule. Wrong: {\"edit\": [{\"id\": 2, \"text\": \"Never push. Tests go in tests/. LIFTED: one CHANGELOG line per fix.\"}]}. Right: {\"edit\": [{\"id\": 2, \"text\": \"Never push. Tests go in tests/.\"}]}.",
 };
 
 /** One list field: its three operations, each optional. */
@@ -43,7 +43,7 @@ export const FORWARD_INPUT_SCHEMA = {
   type: 'object',
   additionalProperties: false,
   properties: {
-    objective: { type: 'string', description: 'What the work is for and what done means. Send it on your first call, then only when it changes.' },
+    objective: { type: 'string', description: 'What the work is for and what done means. Send it on your first call, then only when it changes. Once it is reached, the call that sends the next one reviews every order.' },
     next: { type: 'string', description: 'Every call: the first concrete action after the wake.' },
     decisions: listSchema('decisions'),
     done: listSchema('done'),

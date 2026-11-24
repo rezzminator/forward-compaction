@@ -36,7 +36,7 @@ const untagged = (text: string): string => text.replace(new RegExp(`${TAG.source
 const unnumbered = (text: string, id?: number): string => text.replace(/^\s*\[(\d+)\]\s+(?=\S)/, (whole, n: string) => (id === undefined || Number(n) === id ? '' : whole));
 /** What a wake says once, after lists that show a tag; '' when none of `shown` does. */
 export const unchangedNote = (...shown: (string | undefined)[]): string =>
-  shown.some((text) => text !== undefined && TAG.test(text)) ? ' An item tagged [N rounds unchanged] has passed N compactions with no change: keep it only while it is still true and still needed, and a standing order until the user lifts it.' : '';
+  shown.some((text) => text !== undefined && TAG.test(text)) ? ' An item tagged [N rounds unchanged] has passed N compactions with no change: keep it only while it is still true and still needed, and a standing order while it binds.' : '';
 
 export const kind = (v: unknown): string => (v === null ? 'null' : Array.isArray(v) ? 'array' : typeof v);
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
