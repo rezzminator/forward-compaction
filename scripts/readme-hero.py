@@ -1,7 +1,7 @@
 """Render the README hero, docs/assets/flow-{dark,light}.svg: one main-chat compaction, native vs ours.
 
 Usage: python3 scripts/readme-hero.py [outdir]   (default docs/assets)
-Figures are the README benchmark's main-chat medians.
+Figures are the main-chat medians of docs/field-medians.md.
 """
 import random
 import sys
