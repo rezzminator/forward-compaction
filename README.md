@@ -42,24 +42,22 @@ forward-compaction turns this around. As the context grows, the model is told ho
 
 ## Benchmark
 
-The same ten-turn chat, run five times on Claude Code's own compaction and five times on forward-compaction, with and without the fork option (`FORWARD_COMPACTION_MAIN_FORK=1`), on Sonnet 5.5. The chat reads 180 crate records, compacts three times in every column, and is asked at the end for every crate with no file open.
+The same ten-turn chat, run five times on Claude Code's own compaction and five times on forward-compaction, on Sonnet 5.5. The chat reads 180 crate records, compacts three times on both, and is asked at the end for every crate with no file open.
 
-| Median of 5 chats | Claude Code's own compaction | forward-compaction | forward-compaction, fork option |
-| --- | --- | --- | --- |
-| Chats that got the final answers right | 1 of 5 | **5 of 5** | **5 of 5** |
-| Crate items recalled at the end | 133 of 180 | **180 of 180** | **180 of 180** |
-| Wait at each compaction | 17.4 s | **5.6 s** (68% less) | 6.6 s (62% less) |
-| Tokens written per compaction | 3.0k | **768** (74% less) | 843 (72% less) |
-| Cost of each compaction | $0.153 | **$0.035** (77% less) | $0.083 (46% less) ¹ |
-| Time of the whole chat | 4.0 min | 3.5 min (13% less) | **3.4 min** (15% less) |
-| Cost of the whole chat | $1.80 | **$1.50** (17% less) | $1.55 (14% less) |
+| Median of 5 chats | Claude Code's own compaction | forward-compaction |
+| --- | --- | --- |
+| Chats that got the final answers right | 1 of 5 | **5 of 5** |
+| Crate items recalled at the end | 133 of 180 | **180 of 180** |
+| Cost of each compaction | $0.153 | **$0.035** (77% less) |
+| Wait at each compaction | 17.4 s | **5.6 s** (68% less) |
+| Tokens written per compaction | 3.0k | **768** (74% less) |
+| Context of the first request after a compaction | 36.1k tokens | **28.8k** (20% less) |
 
-- **A fair start.** All three columns compact at about the same context size, 114k to 120k tokens, so none pays for compacting more often. Cost is every API request at Anthropic's list prices.
+- **A fair start.** Both compact at about the same context size, 114k to 120k tokens, three times a chat. Cost is at Anthropic's list prices.
 - **Where native wins.** Each record also names a shelf, which the chat is asked for only in the last turn. Native recalled 24 of 180 shelves and forward-compaction none: a frontier carries what the work has needed so far.
-- **¹** The fork option compacts at the end of a turn, so this row also counts the listings Claude Code sends again at the next turn; the cost of the whole chat compares the two directly.
 - **Limits.** One scenario, one model, five chats a column.
 
-The full table of 19 rows with its p90 figures, the method, the notes and the commands to run it on your own account are in [docs/benchmark.md](docs/benchmark.md).
+The full table with its p90 figures, the method, the notes and the commands to run it on your own account are in [docs/benchmark.md](docs/benchmark.md).
 
 The figures in the picture at the top of this page, in [Why](#why) and in [What you get](#what-you-get) are another measurement: medians of 2,939 real compactions in long chats over 30 days, in [docs/field-medians.md](docs/field-medians.md).
 
