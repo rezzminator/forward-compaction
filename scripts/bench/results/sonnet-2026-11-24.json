@@ -206,202 +206,6 @@
         }
       ]
     },
-    "fc-fork": {
-      "runs": 5,
-      "compactionKinds": {
-        "frontier": 15
-      },
-      "compaction": {
-        "stallSeconds": {
-          "median": 6.58,
-          "p90": 8.95,
-          "n": 15
-        },
-        "contextRead": {
-          "median": 122467,
-          "p90": 123913,
-          "n": 15
-        },
-        "contextAfter": {
-          "median": 39472,
-          "p90": 40423,
-          "n": 15
-        },
-        "boundaryPreTokens": {
-          "median": 119200,
-          "p90": 120144,
-          "n": 15
-        },
-        "boundaryPostTokens": {
-          "median": 2197,
-          "p90": 2639,
-          "n": 15
-        },
-        "tokensWritten": {
-          "median": 843,
-          "p90": 1210,
-          "n": 15
-        },
-        "costUsd": {
-          "median": 0.0825989,
-          "p90": 0.0872293,
-          "n": 15
-        }
-      },
-      "run": {
-        "wallMinutes": {
-          "median": 3.41335,
-          "p90": 3.4823,
-          "n": 5
-        },
-        "requests": {
-          "median": 33,
-          "p90": 33,
-          "n": 5
-        },
-        "compactions": {
-          "median": 3,
-          "p90": 3,
-          "n": 5
-        },
-        "inputTokens": {
-          "median": 10571,
-          "p90": 10690,
-          "n": 5
-        },
-        "cacheReadTokens": {
-          "median": 2370527,
-          "p90": 2375384,
-          "n": 5
-        },
-        "cacheWriteTokens": {
-          "median": 296744,
-          "p90": 298022,
-          "n": 5
-        },
-        "outputTokens": {
-          "median": 10264,
-          "p90": 11063,
-          "n": 5
-        },
-        "costUsd": {
-          "median": 1.5454351000000002,
-          "p90": 1.5578527000000002,
-          "n": 5
-        }
-      },
-      "survived": {
-        "items": {
-          "k": 180,
-          "n": 180
-        },
-        "shelves": {
-          "k": 0,
-          "n": 180
-        },
-        "facts": {
-          "k": 0,
-          "n": 180
-        },
-        "factsByCompactionsAgo": {
-          "1": {
-            "k": 0,
-            "n": 60
-          },
-          "2": {
-            "k": 0,
-            "n": 60
-          },
-          "3": {
-            "k": 0,
-            "n": 60
-          }
-        },
-        "rulesAfterCompaction": {
-          "k": 105,
-          "m": 105
-        },
-        "changedRuleAfterCompaction": {
-          "k": 15,
-          "m": 15
-        },
-        "quoteVerbatim": {
-          "k": 5,
-          "n": 5
-        },
-        "rework": {
-          "median": 0,
-          "p90": 0,
-          "n": 5
-        },
-        "finalCorrect": {
-          "k": 5,
-          "n": 5
-        }
-      },
-      "perRun": [
-        {
-          "seed": 1,
-          "compactions": 3,
-          "costUsd": 1.5376855999999997,
-          "items": 36,
-          "shelves": 0,
-          "facts": 0,
-          "factsN": 36,
-          "quote": true,
-          "final": true,
-          "rework": 0
-        },
-        {
-          "seed": 2,
-          "compactions": 3,
-          "costUsd": 1.5578527000000002,
-          "items": 36,
-          "shelves": 0,
-          "facts": 0,
-          "factsN": 36,
-          "quote": true,
-          "final": true,
-          "rework": 0
-        },
-        {
-          "seed": 3,
-          "compactions": 3,
-          "costUsd": 1.5460395,
-          "items": 36,
-          "shelves": 0,
-          "facts": 0,
-          "factsN": 36,
-          "quote": true,
-          "final": true,
-          "rework": 0
-        },
-        {
-          "seed": 4,
-          "compactions": 3,
-          "costUsd": 1.5454351000000002,
-          "items": 36,
-          "shelves": 0,
-          "facts": 0,
-          "factsN": 36,
-          "quote": true,
-          "final": true,
-          "rework": 0
-        },
-        {
-          "seed": 5,
-          "compactions": 3,
-          "costUsd": 1.5429271,
-          "items": 36,
-          "shelves": 0,
-          "facts": 0,
-          "factsN": 36,
-          "quote": true,
-          "final": true,
-          "rework": 0
-        }
-      ]
-    },
     "native": {
       "runs": 5,
       "compactionKinds": {
@@ -608,6 +412,206 @@
           "seed": 5,
           "compactions": 8,
           "costUsd": 2.3771610000000005,
+          "items": 24,
+          "shelves": 4,
+          "facts": 4,
+          "factsN": 36,
+          "quote": true,
+          "final": false,
+          "rework": 0
+        }
+      ]
+    },
+    "native-matched": {
+      "runs": 5,
+      "compactionKinds": {
+        "native": 15
+      },
+      "compaction": {
+        "stallSeconds": {
+          "median": 17.379,
+          "p90": 20.266,
+          "n": 15
+        },
+        "contextRead": {
+          "median": 118278,
+          "p90": 119339,
+          "n": 15
+        },
+        "contextAfter": {
+          "median": 36064,
+          "p90": 62543,
+          "n": 15
+        },
+        "boundaryPreTokens": {
+          "median": 113608,
+          "p90": 116592,
+          "n": 15
+        },
+        "boundaryPostTokens": {
+          "median": 8315,
+          "p90": 23149,
+          "n": 15
+        },
+        "tokensWritten": {
+          "median": 3049,
+          "p90": 3582,
+          "n": 15
+        },
+        "costUsd": {
+          "median": 0.15280950000000001,
+          "p90": 0.2625151,
+          "n": 15
+        }
+      },
+      "run": {
+        "wallMinutes": {
+          "median": 4.0278833333333335,
+          "p90": 4.0720833333333335,
+          "n": 5
+        },
+        "requests": {
+          "median": 33,
+          "p90": 33,
+          "n": 5
+        },
+        "compactions": {
+          "median": 3,
+          "p90": 3,
+          "n": 5
+        },
+        "inputTokens": {
+          "median": 86290,
+          "p90": 86369,
+          "n": 5
+        },
+        "cacheReadTokens": {
+          "median": 1964662,
+          "p90": 1973470,
+          "n": 5
+        },
+        "cacheWriteTokens": {
+          "median": 316333,
+          "p90": 318451,
+          "n": 5
+        },
+        "outputTokens": {
+          "median": 16973,
+          "p90": 18571,
+          "n": 5
+        },
+        "costUsd": {
+          "median": 1.8004075000000002,
+          "p90": 1.8234263000000004,
+          "n": 5
+        }
+      },
+      "survived": {
+        "items": {
+          "k": 133,
+          "n": 180
+        },
+        "shelves": {
+          "k": 24,
+          "n": 180
+        },
+        "facts": {
+          "k": 24,
+          "n": 180
+        },
+        "factsByCompactionsAgo": {
+          "0": {
+            "k": 4,
+            "n": 4
+          },
+          "1": {
+            "k": 20,
+            "n": 56
+          },
+          "2": {
+            "k": 0,
+            "n": 60
+          },
+          "3": {
+            "k": 0,
+            "n": 60
+          }
+        },
+        "rulesAfterCompaction": {
+          "k": 110,
+          "m": 110
+        },
+        "changedRuleAfterCompaction": {
+          "k": 16,
+          "m": 16
+        },
+        "quoteVerbatim": {
+          "k": 5,
+          "n": 5
+        },
+        "rework": {
+          "median": 0,
+          "p90": 0,
+          "n": 5
+        },
+        "finalCorrect": {
+          "k": 1,
+          "n": 5
+        }
+      },
+      "perRun": [
+        {
+          "seed": 1,
+          "compactions": 3,
+          "costUsd": 1.8134309,
+          "items": 24,
+          "shelves": 4,
+          "facts": 4,
+          "factsN": 36,
+          "quote": true,
+          "final": false,
+          "rework": 0
+        },
+        {
+          "seed": 2,
+          "compactions": 3,
+          "costUsd": 1.8004075000000002,
+          "items": 25,
+          "shelves": 8,
+          "facts": 8,
+          "factsN": 36,
+          "quote": true,
+          "final": false,
+          "rework": 0
+        },
+        {
+          "seed": 3,
+          "compactions": 3,
+          "costUsd": 1.8234263000000004,
+          "items": 36,
+          "shelves": 4,
+          "facts": 4,
+          "factsN": 36,
+          "quote": true,
+          "final": true,
+          "rework": 0
+        },
+        {
+          "seed": 4,
+          "compactions": 3,
+          "costUsd": 1.7935064999999997,
+          "items": 24,
+          "shelves": 4,
+          "facts": 4,
+          "factsN": 36,
+          "quote": true,
+          "final": false,
+          "rework": 0
+        },
+        {
+          "seed": 5,
+          "compactions": 3,
+          "costUsd": 1.7889172999999998,
           "items": 24,
           "shelves": 4,
           "facts": 4,

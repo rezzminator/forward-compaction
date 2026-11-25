@@ -152,14 +152,6 @@ describe('the first reading after an install (no re-nudge)', () => {
     expect(parties.nudgeDue('agent:a1', 5)).toBe(true); // 70k
   });
 
-  it('an install clears the fork due and the notice a failed fork left', () => {
-    const parties = new Parties(), main = parties.get('main');
-    main.forkDue = { point: 1, notice: { row: { event: 'nudge' }, text: 'n' } };
-    main.forkNotice = { row: { event: 'nudge' }, text: 'n' };
-    parties.installed('main');
-    expect([parties.get('main').forkDue, parties.get('main').forkNotice, parties.get('main').installs]).toEqual([undefined, undefined, 1]);
-  });
-
   it('absorbs a first reading below the start as level 0: the start still nudges', () => {
     const parties = new Parties();
     parties.installed('main');

@@ -42,8 +42,8 @@ export type Script = {
   models?: Record<string, number | { status: number; text: string } | Error | Promise<{ status: number; text: string }>>;
   /** What `$.session.authorize()` answers: null is a session with no first-party credential. A bearer handle by default. */
   credential?: { handle: string; kind: 'bearer' | 'api-key' } | null;
-  /** What `$.model.fork` answers each request (a ModelForkResult), or throws; unscripted, a call fails the test. */
-  fork?: (request: { prompt: string; effort?: string }) => unknown;
+  /** What `$.model.fork` answers each request (a ModelForkResult), or throws; null, a Claude Code without `$.model.fork`; unscripted, a call fails the test. */
+  fork?: ((request: { prompt: string; effort?: string }) => unknown) | null;
 };
 
 /** The Models API's `max_input_tokens` per model id as it answered live on 2026-11-12; `claude-sonnet-4-5`, the suite's stand-in model, is scripted at 200k. */
@@ -151,10 +151,10 @@ export function fakeEngine(script: Script = {}) {
         return { isSet: true, version };
       },
     },
-    model: {
+    model: script.fork === null ? { fork: undefined } : { // a member set to undefined is one this Claude Code lacks
       fork: async (request: { prompt: string; effort?: string }) => {
         forkCalls.push(request);
-        if (script.fork === undefined) { unscripted.push('model.fork'); throw new Error('unscripted $ call model.fork'); }
+        if (script.fork == null) { unscripted.push('model.fork'); throw new Error('unscripted $ call model.fork'); }
         return script.fork(request);
       },
     },
@@ -167,7 +167,7 @@ export function fakeEngine(script: Script = {}) {
         if (typeof prop === 'symbol' || prop === 'then') return (obj as any)[prop];
         const at = path ? `${path}.${prop}` : prop;
         const value = (obj as any)[prop];
-        if (value === undefined) return (...args: unknown[]) => { unscripted.push(at); throw new Error(`unscripted $ call ${at}`); };
+        if (value === undefined && !(prop in obj)) return (...args: unknown[]) => { unscripted.push(at); throw new Error(`unscripted $ call ${at}`); };
         return value !== null && typeof value === 'object' ? proxy(value, at) : value;
       },
     });

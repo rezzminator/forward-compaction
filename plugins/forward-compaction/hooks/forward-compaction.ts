@@ -16,7 +16,7 @@ import { callKey, callResultRow, callRow, type CallMeasure } from '../src/call-r
 import { planFrom, planRead, PLAN_ROWS, type WakePlan } from '../src/plan';
 import { decide, installWarnings, turnEndDoor, readingTokens, knownTrigger } from '../src/decide';
 import { callCompacts, DEFAULT_TOOL, k, noticeFor, nudgeLevel, nudgeStart } from '../src/nudge';
-import { forkDueOf, forkEndLine, forkFailure, forkPoint, forkPrompt, forkReply, forkRow, forkStartLine, forkTrailing, type ForkFailure, type ForkNotice, type ForkPoint, type ForkRowInput } from '../src/fork';
+import { forkEndLine, forkIdle, forkPrompt, forkReply, forkRow, forkStartLine, forkTrailing, type ForkFailure, type ForkRowInput } from '../src/fork';
 import { heldShown, Parties, type Judging } from '../src/parties';
 import { askPointOf, charsPerToken, partyMarks, startWarnings, apiChars, type AskPoint, type Marks, type UsageBreakdown } from '../src/window';
 import { unseenCompaction } from '../src/unseen';
@@ -71,8 +71,6 @@ type State = {
   apiAsk?: AskPoint; breakdown?: UsageBreakdown; // Claude Code's ask point and the breakdown it was read from, at session start and each main-window read.
   calls: Map<string, CallMeasure>; landed: Map<string, string>; // What Claude Code measured of each forward_compaction call's request, by `callKey`, and each installed wake's measured sizes, by its row's text: what their rows draw.
   installedSince: Set<string>; // Parties this plugin compacted since their last reading: a fall in that reading is no unseen compaction.
-  forkMissing?: boolean; // `$.model.fork` threw that it is no function: this Claude Code has none, so FORWARD_COMPACTION_MAIN_FORK reads as off for the session.
-  headless?: boolean; // A -p or SDK session (its prompts' origin), whose own `$.session.compact()` is refused: main's turn end does what it does with the fork off.
 };
 
 /** A line on the user's screen: Claude Code already names the plugin in front of it, so the line never names it again. */
@@ -544,48 +542,33 @@ async function nudged(st: State, $: EngineInterface, key: PartyKey, result: Tool
     const tokens = st.parties.get(key).reading, m = marks(st, key); // measured only: a step late at worst, never an estimate
     const { level, withheld, sent } = noticeFor(st.parties, key, tokens, m, st.config.ignoreModels, st.toolNames.forward_compaction);
     if (withheld !== undefined) dbg(st, $, 'nudge-withheld', { party: key, why: withheld, tokens: tokens ?? null, level, start: m?.start ?? null, room: m?.room ?? null, floor: st.parties.get(key).held?.floor ?? null, every: m?.every ?? null, finish: sent !== undefined });
-    const party = st.parties.get(key), failed = party.forkNotice, forked = sent !== undefined && forkDue(st, $, key, sent, tokens); // a notice a failed fork left is read now
-    party.forkNotice = undefined;
-    const read: [ForkNotice, Row][] = [...(failed !== undefined ? [[failed, { ...failed.row, fallback: 'fork-failed' }] as [ForkNotice, Row]] : []), ...(sent !== undefined && !forked ? [[sent, sent.row] as [ForkNotice, Row]] : [])];
-    if (read.length === 0) return result;
-    for (const [, row] of read) record(st, $, row);
-    return { ...result, context: [...(result.context ?? []), ...read.map(([notice]) => notice.text)] };
+    if (sent === undefined) return result;
+    record(st, $, sent.row);
+    return { ...result, context: [...(result.context ?? []), sent.text] };
   } catch (error) {
     say(st, $, `forward-compaction: nudging ${key} failed: ${message(error)}`, 'error', { event: 'nudge-error', where: 'nudged', party: key, error: message(error) });
     return result;
   }
 }
 
-/** FORWARD_COMPACTION_MAIN_FORK in force for `key`: main only, while this Claude Code has `$.model.fork`. */
-const forkOn = (st: State, key: PartyKey): boolean => key === 'main' && st.config.mainFork && st.forkMissing !== true;
-
-/** A notice due for main under the fork (fork.ts `forkDueOf`): held as the fork due, and true, in place of being sent; false sends it as today, as for the finish notice of a headless chat, whose turn end cannot compact. */
-function forkDue(st: State, $: EngineInterface, key: PartyKey, sent: ForkNotice, tokens: number | undefined): boolean {
-  if (!forkOn(st, key) || (st.headless === true && sent.row.event === 'finish-notice')) return false;
-  const due = forkDueOf(sent); st.parties.get(key).forkDue = due;
-  record(st, $, { event: 'fork-due', party: key, point: due.point, notice: sent.row.event, tokens: tokens ?? null });
-  return true;
-}
-
-/** Main's frontier written by a fork at `point` (fork.ts): the stored lists and the tool results main has not sent asked of `$.model.fork`, its reply stored through the forward_compaction door (`answerForward`), one `fork` row. */
-async function forkFrontier(st: State, $: EngineInterface, e: SessionCompactInput, point: ForkPoint, turnEnded: boolean, tokens: number | undefined): Promise<{ outcome: 'applied'; trailing: number } | { outcome: ForkFailure }> {
+/** Main's frontier written by a fork at a /compact the user typed in an idle main chat (fork.ts): the stored lists and the text typed after /compact asked of `$.model.fork`, its reply stored through the forward_compaction door (`answerForward`), one `fork` row; a failure is said on screen and in errors.jsonl. */
+async function forkFrontier(st: State, $: EngineInterface, e: SessionCompactInput, tokens: number | undefined): Promise<{ outcome: 'applied'; trailing: number } | { outcome: ForkFailure }> {
   const party = st.parties.get('main'); await party.calling;
   const held = party.held ?? emptyHeld(), done = party.files?.doneWake(held, st.config.doneMaxChars), trailing = forkTrailing(e.messages), effort = st.config.mainForkEffort;
-  const prompt = forkPrompt({ held, ...(done !== undefined ? { done } : {}), storage: held.storage, results: trailing.results, tool: st.toolNames.forward_compaction ?? DEFAULT_TOOL, ended: turnEnded });
-  dbg(st, $, 'fork-prompt', { party: 'main', point, sizes: prompt.sizes, results: trailing.results.length });
-  say(st, $, forkStartLine(point, tokens), 'info', { event: 'fork-start', where: 'forkFrontier', party: 'main', point, tokens: tokens ?? null });
-  const at = await $.clock.now(), base = { point, promptChars: prompt.text.length, trailing: e.messages.length - trailing.from, ...(effort !== undefined ? { effort } : {}) };
+  const prompt = forkPrompt({ held, ...(done !== undefined ? { done } : {}), storage: held.storage, tool: st.toolNames.forward_compaction ?? DEFAULT_TOOL, ...(e.instructions !== undefined ? { instructions: e.instructions } : {}) });
+  dbg(st, $, 'fork-prompt', { party: 'main', sizes: prompt.sizes, trailing });
+  say(st, $, forkStartLine(tokens), 'info', { event: 'fork-start', where: 'forkFrontier', party: 'main', tokens: tokens ?? null });
+  const at = await $.clock.now(), base = { promptChars: prompt.text.length, trailing, ...(effort !== undefined ? { effort } : {}) };
   const ended = async (row: Omit<ForkRowInput, 'ms' | keyof typeof base>): Promise<{ outcome: ForkFailure }> => {
-    const then = row.outcome === 'applied' ? undefined : forkFailure(point, row.outcome), ms = (await $.clock.now()) - at;
-    say(st, $, forkEndLine(point, row.outcome, ms, then), then === 'retry' ? 'warning' : 'error', { ...forkRow({ ...base, ...row, ms }), where: 'forkFrontier', ...(then !== undefined ? { then } : {}) });
+    const ms = (await $.clock.now()) - at;
+    say(st, $, forkEndLine(row.outcome, ms, party.stored?.compacts === true), 'error', { ...forkRow({ ...base, ...row, ms }), where: 'forkFrontier' });
     return { outcome: row.outcome as ForkFailure };
   };
   let reply: Awaited<ReturnType<EngineInterface['model']['fork']>>;
   try {
     reply = await $.model.fork({ prompt: prompt.text, ...(effort !== undefined ? { effort } : {}) });
-  } catch (error) {
-    if (error instanceof TypeError && /is not a function|reading 'fork'/.test(error.message)) st.forkMissing = true; // a Claude Code without `$.model.fork` (or without `$.model`): the option reads as off from here on
-    return ended({ outcome: 'threw', error: message(error) });
+  } catch (error) { // a Claude Code without `$.model.fork` (or `$.model`) throws a TypeError: `typeof $.model.fork` reads $.model as a value, which the plugin loader refuses
+    return ended({ outcome: error instanceof TypeError && /is not a function|reading 'fork'|evaluating '[^']*\.fork'/.test(error.message) ? 'no-fork' : 'threw', error: message(error) });
   }
   if (!reply.isAnswered) return ended({ outcome: reply.reason, ...('usage' in reply ? { usage: reply.usage } : {}), ...('status' in reply ? { status: reply.status ?? null } : {}), ...('error' in reply && reply.error !== undefined ? { error: String(reply.error) } : {}) });
   const read = forkReply(reply.text), answer = { usage: reply.usage, replyChars: reply.text.length };
@@ -593,8 +576,8 @@ async function forkFrontier(st: State, $: EngineInterface, e: SessionCompactInpu
   const before = party.stored, receipt = await answerForward(st, $, { input: read.args }, 'fork');
   if (party.stored === undefined || party.stored === before) return ended({ outcome: 'store-failed', ...answer, error: receipt.split('\n', 1)[0]! });
   const ms = (await $.clock.now()) - at;
-  say(st, $, forkEndLine(point, 'applied', ms), 'info', { ...forkRow({ ...base, ...answer, outcome: 'applied', ms, notes: read.notes }), where: 'forkFrontier' });
-  return { outcome: 'applied', trailing: e.messages.length - trailing.from };
+  say(st, $, forkEndLine('applied', ms), 'info', { ...forkRow({ ...base, ...answer, outcome: 'applied', ms, notes: read.notes }), where: 'forkFrontier' });
+  return { outcome: 'applied', trailing };
 }
 
 /** A sub-agent spawned here is ours; any other agent id the engine's own run, unless `$.agent.list` knows it. */
@@ -653,26 +636,19 @@ async function compactAsk(st: State, $: EngineInterface, e: SessionCompactInput,
   const tokens = party.reading; // measured only; none since an install, or yet, is unknown
   const m = marks(st, key);
   const matched = st.parties.ignored(key, st.config.ignoreModels);
-  const action = decide({ trigger, party: kind, stored: held?.compacts === true, waits: held?.waits === true, tokens, ceiling: m?.ceiling, reactive: st.parties.reactive(key), ceilingNative: st.config.ceilingNative, label, ignored: matched !== undefined, windowUnknown: st.parties.windowUnknown(key, judging(st).mainKnown) });
+  let action = decide({ trigger, party: kind, mainFork: kind === 'main' && st.config.mainFork, idle: trigger === 'manual' && forkIdle(e.messages), stored: held?.compacts === true, waits: held?.waits === true, tokens, ceiling: m?.ceiling, reactive: st.parties.reactive(key), ceilingNative: st.config.ceilingNative, label, ignored: matched !== undefined, windowUnknown: st.parties.windowUnknown(key, judging(st).mainKnown) });
   const row: Row = { event: 'compact', party: key, trigger, decision: action.decision, why: action.why, tokens: tokens ?? null, ceiling: m?.ceiling ?? null, askPoint: m?.askPoint ?? null, ...(matched !== undefined ? { matched } : {}) };
-  const point = kind === 'main' && forkOn(st, key) ? forkPoint({ trigger, action, ...(party.forkDue !== undefined ? { due: party.forkDue } : {}) }) : undefined;
-  const fork = point === undefined ? undefined : await forkFrontier(st, $, e, point, trigger === 'plugin', tokens), forked = fork?.outcome === 'applied' ? fork : undefined;
-  if (point !== undefined && fork !== undefined && forked === undefined && forkFailure(point, fork.outcome as ForkFailure) !== 'mechanical') { // a failed fork never holds the compaction for long, and never runs Claude Code's own summary
-    const then = forkFailure(point, fork.outcome as ForkFailure);
-    if (then === 'notice' && party.forkDue !== undefined) (party.forkNotice = party.forkDue.notice, party.forkDue = undefined); // main reads the notice it would have read; the next level forks again
-    if (trigger === 'auto') st.parties.asked(key, 'skip'); // the plugin's own ask is no held one: the next ask is no request too long
-    record(st, $, { ...row, decision: 'skip', why: then === 'retry' ? 'fork-retry' : 'fork-failed', outcome: fork.outcome });
-    return { skip: `forward-compaction: the fork wrote no frontier (${fork.outcome})` };
-  }
-  if ('dropStored' in action && action.dropStored && held !== undefined) (st.parties.takeStored(key), held.compacts && say(st, $, `forward-compaction: /compact ran Claude Code's own summary; ${label}'s stored frontier was dropped.`, 'error', { event: 'dropped', where: 'compactAsk', party: key, why: action.why })); // a call that compacts nothing had no install to lose
-  if (action.action === 'next' && forked === undefined) {
+  const fork = action.action === 'fork' ? await forkFrontier(st, $, e, tokens) : undefined, forked = fork?.outcome === 'applied' ? fork : undefined;
+  if (fork !== undefined && forked === undefined) (action = decide({ trigger, party: kind, label }), row.decision = action.decision, row.why = action.why, row.fork = fork.outcome); // a failed fork never holds the user's /compact: Claude Code's own summary runs, the stored frontier dropped as with the option off
+  if ('dropStored' in action && action.dropStored && held !== undefined) (st.parties.takeStored(key), held.compacts && say(st, $, `forward-compaction: /compact ran Claude Code's own summary; ${label}'s stored frontier was dropped.`, fork === undefined ? 'error' : 'warning', { event: 'dropped', where: 'compactAsk', party: key, why: action.why })); // a call that compacts nothing had no install to lose; after a failed fork its end line says the drop, the one screen line
+  if (action.action === 'next') {
     if (kind === 'foreign') st.parties.forget(key);
     else (st.parties.asked(key, action.decision), st.installedSince.add(key)); // Claude Code's own summary: its fall is seen
     record(st, $, row);
     if (action.decision === 'native' && action.why !== 'manual') say(st, $, `forward-compaction: ${label} ${action.why === 'ceiling' ? `reached its ceiling ${k(m!.ceiling)}` : 'was too long for its request'} with no frontier; Claude Code's own summary ran (FORWARD_COMPACTION_CEILING_NATIVE=1).`, 'info', { event: 'native', where: 'compactAsk', party: key, why: action.why });
     return pass();
   }
-  if (action.action === 'skip' && forked === undefined) {
+  if (action.action === 'skip') {
     // A precompute is no ask for a frontier: only a held one makes the next ask reactive (D8).
     if (action.why !== 'precompute') st.parties.asked(key, 'skip'); if (action.why === 'unfinished') st.parties.waited(key); // the one ask a call that waits is given has passed: the next installs it
     record(st, $, { ...row, reason: action.reason });
@@ -680,7 +656,7 @@ async function compactAsk(st: State, $: EngineInterface, e: SessionCompactInput,
   }
   await party.calling; await writeDue(st, $, key, 'compactAsk'); // a write that failed at its call is tried again, and done-earlier.md brought to the done items, before the wake lists what it holds
   const missing = TEXTS.filter((t) => party.held?.[t] === undefined), size = frontierSize(party.held ?? emptyHeld()), stored = forked !== undefined ? party.stored : held, install = forked !== undefined || action.action === 'install';
-  const shared = { messages: e.messages, party: kind === 'main' ? ('main' as const) : ('subagent' as const), tokens, askPoint: m?.askPoint ?? 0, charsPerToken: ratioOf(st, $, key, 'compact', await partyChars(st, $, key, e.agentId), m), now: await $.clock.now(), facts: (kept: readonly string[]) => factsFor(st.ledger, key, { keptTexts: kept, ...(install ? { since: stored!.since } : {}) }), ...(forkOn(st, key) ? { forkUpkeep: true } : {}), agents: await agentRows($), logDir: st.pluginLogDir, ...heldShown(party, st.config.doneMaxChars), plan: await readPlan(st, $, key), pins: st.config.keepSkills, ...(e.agentId !== undefined ? { self: e.agentId } : {}) };
+  const shared = { messages: e.messages, party: kind === 'main' ? ('main' as const) : ('subagent' as const), tokens, askPoint: m?.askPoint ?? 0, charsPerToken: ratioOf(st, $, key, 'compact', await partyChars(st, $, key, e.agentId), m), now: await $.clock.now(), facts: (kept: readonly string[]) => factsFor(st.ledger, key, { keptTexts: kept, ...(install ? { since: stored!.since } : {}) }), agents: await agentRows($), logDir: st.pluginLogDir, ...heldShown(party, st.config.doneMaxChars), plan: await readPlan(st, $, key), pins: st.config.keepSkills, ...(e.agentId !== undefined ? { self: e.agentId } : {}) };
   const own = factsFor(st.ledger, key, { keptTexts: [] }), named = kind === 'main' ? [] : briefFiles({ brief: own.brief?.text ?? '', ...(st.home !== undefined ? { home: st.home } : {}), files: own.work.files, commands: own.work.commands, asked: install ? stored!.loadFiles.map((file) => file.path) : [] }), briefDocs = await readBriefFiles(fsOf($).read, named); // the documents a sub-agent's brief names and its calls opened, read in at every wake (brief-files.ts)
   const wake = forked !== undefined
     ? forkWake({ ...shared, briefFiles: briefDocs, frontier: shared.frontier, files: await readLoadFiles(fsOf($).read, stored!.loadFiles), missing, trailing: forked.trailing })
@@ -774,18 +750,15 @@ async function readStep(st: State, $: EngineInterface, e: TurnStepInput, r: Turn
 async function turnEnds(st: State, $: EngineInterface, e: TurnCompleteInput): Promise<void> {
   const key = keyOf(e.agentId);
   if (key !== 'main') return land(st, $, key, st.parties.takeLanding(key));
-  const party = st.parties.get('main'), stored = party.stored?.compacts === true, forking = forkOn(st, 'main') && st.headless !== true;
-  if (forking && e.reason === 'answer' && !stored && party.forkDue === undefined) { const { sent } = noticeFor(st.parties, 'main', party.reading, marks(st, 'main'), st.config.ignoreModels, st.toolNames.forward_compaction); if (sent !== undefined) forkDue(st, $, 'main', sent, party.reading); } // main's finish point, or a level no tool result carried, reached by the turn's last request
-  const door = turnEndDoor({ main: true, reason: e.reason, stored, installedThisTurn: party.installedThisTurn, forkDue: forking && party.forkDue !== undefined });
+  const party = st.parties.get('main');
+  const door = turnEndDoor({ main: true, reason: e.reason, stored: party.stored?.compacts === true, installedThisTurn: party.installedThisTurn });
   dbg(st, $, 'turn-end', { party: 'main', reason: e.reason, ...door });
   if (door.compact) {
     try {
       const out = await $.session.compact();
-      if (out.skip !== undefined && !stored) dbg(st, $, 'turn-end-skipped', { party: 'main', skip: out.skip }); // a fork that wrote nothing: its own row says why
-      else if (out.skip !== undefined) say(st, $, `forward-compaction: main's frontier did not install at turn end: ${out.skip}. It stays stored for the next turn end or ask.`, 'warning', { event: 'turn-end-skipped', where: 'turnEnds', party: 'main', skip: out.skip });
+      if (out.skip !== undefined) say(st, $, `forward-compaction: main's frontier did not install at turn end: ${out.skip}. It stays stored for the next turn end or ask.`, 'warning', { event: 'turn-end-skipped', where: 'turnEnds', party: 'main', skip: out.skip });
     } catch (error) {
-      if (!stored && /headless/.test(message(error))) { st.headless = true; dbg(st, $, 'turn-end-headless', { party: 'main', error: message(error) }); if (party.forkDue?.point === 'finish') (party.forkNotice = party.forkDue.notice, party.forkDue = undefined); } // a -p or SDK session no prompt origin named: from here its turn end does what it does with the fork off
-      else say(st, $, `forward-compaction: main's frontier did not install at turn end: ${message(error)}. It stays stored for the next turn end or ask.`, 'error', { event: 'turn-end-rejected', where: 'turnEnds', party: 'main', error: message(error) });
+      say(st, $, `forward-compaction: main's frontier did not install at turn end: ${message(error)}. It stays stored for the next turn end or ask.`, 'error', { event: 'turn-end-rejected', where: 'turnEnds', party: 'main', error: message(error) });
     }
   }
   st.parties.turnEnded('main'); // after the turn-end install, which marks this turn: the next turn's end stays free to install
@@ -796,7 +769,6 @@ async function noteSubmit(st: State, $: EngineInterface, e: PromptSubmitInput): 
   if (e.isMeta) return;
   const at = await $.clock.now();
   const origin = originKind(e.origin);
-  if (origin === 'sdk') st.headless = true; // a -p or SDK session, whose own `$.session.compact()` is refused
   st.pendingCommand = e.command?.name;
   st.ledger = isUserOrigin(origin)
     ? addEntry(st.ledger, { kind: 'user', party: 'main', at, text: e.text, ...(e.command ? { command: e.command.name } : {}) })

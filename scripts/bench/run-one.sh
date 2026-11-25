@@ -26,9 +26,11 @@ mapfile -t arm_lines < <(node -e '
   const arm = JSON.parse(require("fs").readFileSync(file, "utf8")).arms.find((a) => a.name === name);
   if (!arm) { console.error(`run-one: no arm named ${name} in ${file}`); process.exit(2); }
   console.log(arm.plugin ? "plugin" : "none");
+  console.log(String(arm.window ?? 100000));
   for (const [k, v] of Object.entries(arm.env ?? {})) console.log(`${k}=${v}`);
 ' "$here/arms.json" "$arm")
 plugin_args=()
+window=${arm_lines[1]}
 if [ "${arm_lines[0]}" = plugin ]; then
   plugin=${BENCH_PLUGIN_DIR:?arm $arm loads the plugin: set BENCH_PLUGIN_DIR}
   [ -f "$plugin/.claude-plugin/plugin.json" ] || { echo "run-one: $plugin/.claude-plugin/plugin.json missing" >&2; exit 1; }
@@ -44,15 +46,15 @@ sid=$(node -e 'console.log(require("crypto").randomUUID())')
 # Settings: only these apply (--setting-sources project, and the workspace has no project settings): no seat plugin,
 # hook, env, effort or window setting reaches the chat. The Stop hook marks each turn end for the driver.
 node -e '
-  const [out, stops, logs] = process.argv.slice(1);
+  const [out, stops, logs, window] = process.argv.slice(1);
   const settings = {
     autoCompactEnabled: true, autoMemoryEnabled: false, autoContinueAtUsageLimit: false,
-    env: { DISABLE_AUTOUPDATER: "1", CLAUDE_CODE_ENABLE_FUNCTION_HOOKS: "1", CLAUDE_CODE_AUTO_COMPACT_WINDOW: "100000", PLUGIN_LOG_DIR: logs },
+    env: { DISABLE_AUTOUPDATER: "1", CLAUDE_CODE_ENABLE_FUNCTION_HOOKS: "1", CLAUDE_CODE_AUTO_COMPACT_WINDOW: window, PLUGIN_LOG_DIR: logs },
     permissions: { allow: ["Read", "Write", "Edit", "Glob", "Grep", "Bash", "mcp__forward-compaction__*"], defaultMode: "dontAsk" },
     hooks: { Stop: [{ hooks: [{ type: "command", command: `date +%s%3N >> ${JSON.stringify(stops)}` }] }] },
   };
   require("fs").writeFileSync(out, JSON.stringify(settings, null, 2) + "\n");
-' "$dir/settings.json" "$dir/stops.txt" "$dir/logs"
+' "$dir/settings.json" "$dir/stops.txt" "$dir/logs" "$window"
 sock=fcb-$arm-$seed-$$
 # Every API request's usage and duration reach otel.jsonl through a local OTLP receiver (the transcript loses a
 # request whose response a compaction overtakes, and never holds the summarizer's).
@@ -69,9 +71,9 @@ trap kill_chat EXIT
   printf 'cd %q\n' "$ws"
   printf 'exec env -i HOME=%q PATH=%q USER=%q SHELL=/bin/bash TERM=tmux-256color LANG=C.UTF-8' "$HOME" "$PATH" "${USER:-bench}"
   [ -z "${CLAUDE_CONFIG_DIR:-}" ] || printf ' CLAUDE_CONFIG_DIR=%q' "$CLAUDE_CONFIG_DIR"
-  printf ' CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 CLAUDE_CODE_AUTO_COMPACT_WINDOW=100000 DISABLE_AUTOUPDATER=1 PLUGIN_LOG_DIR=%q' "$dir/logs"
+  printf ' CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 CLAUDE_CODE_AUTO_COMPACT_WINDOW=%q DISABLE_AUTOUPDATER=1 PLUGIN_LOG_DIR=%q' "$window" "$dir/logs"
   printf ' CLAUDE_CODE_ENABLE_TELEMETRY=1 OTEL_LOGS_EXPORTER=otlp OTEL_METRICS_EXPORTER=none OTEL_EXPORTER_OTLP_PROTOCOL=http/json OTEL_LOGS_EXPORT_INTERVAL=1000 OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:%s' "$(cat "$dir/otel.port")"
-  for pair in "${arm_lines[@]:1}"; do printf ' %q' "$pair"; done
+  for pair in "${arm_lines[@]:2}"; do printf ' %q' "$pair"; done
   printf ' %q' "$bin" --model sonnet --session-id "$sid" --setting-sources project --settings "$dir/settings.json" --permission-mode dontAsk --debug-file "$dir/debug.log" "${plugin_args[@]}"
   echo
 } > "$dir/launch.sh"

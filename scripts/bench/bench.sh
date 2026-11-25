@@ -4,7 +4,7 @@
 #
 # Files:
 #   bench.sh        this front door: run, score, report, arms
-#   arms.json       the arms, by data: name, whether the plugin loads, extra environment pairs
+#   arms.json       the arms, by data: name, whether the plugin loads, its compaction window (default 100000), extra environment pairs
 #   scenario.mjs    the scenario for one seed: records with planted facts, truth.json, turns.json (filler from ../replay/filler.mjs)
 #   run-one.sh      one run: an interactive chat in its own tmux server, driven turn by turn, then metered and scored
 #   transcript.mjs  reads a run folder's records (transcript, turns.log, stops.txt)

@@ -50,7 +50,7 @@ export const DEFAULT_FRONTIER_WARN_CHARS = 12_000;
 export const DEFAULT_DONE_MAX_CHARS = 12_000;
 /** The debug log (`debug.jsonl`): a row at every step. */
 export const DEFAULT_DEBUG = true;
-/** Main's frontier written by the plugin's own fork at each notice point (fork.ts): off, the model writes it when a notice asks. */
+/** A /compact the user types in an idle main chat gets a frontier written by a fork of main (fork.ts): off, Claude Code's own summary runs, as for every other /compact. */
 export const DEFAULT_MAIN_FORK = false;
 /** The effort levels a fork may name (`$.model.fork`'s ModelEffort); unset, the fork names none and runs at the session's level. */
 export const FORK_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
@@ -151,7 +151,7 @@ export type ResolvedOptions = {
   /** The characters of done item texts a wake shows before the earlier items go to done-earlier.md (lists.ts `doneSplit`). */
   doneMaxChars: number;
   debug: boolean;
-  /** FORWARD_COMPACTION_MAIN_FORK: main's frontier written by a fork at each notice point. */
+  /** FORWARD_COMPACTION_MAIN_FORK: a /compact the user types in an idle main chat gets a frontier written by a fork. */
   mainFork: boolean;
   /** The effort the fork names; absent, none, and it runs at the session's level. */
   mainForkEffort?: ForkEffort;

@@ -5,9 +5,9 @@
 **Claude Code compaction without the wait. The model writes its own handoff while it still remembers everything, so your exact words carry through.**
 
 [![Claude Code plugin](https://img.shields.io/badge/Claude%20Code-plugin-D97757)](https://docs.claude.com/en/docs/claude-code/plugins)
-[![Version](https://img.shields.io/badge/version-2.6.0-blue)](./CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-2.7.0-blue)](./CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
-[![Tests](https://img.shields.io/badge/tests-1031%20passing-brightgreen)](#development)
+[![Tests](https://img.shields.io/badge/tests-1026%20passing-brightgreen)](#development)
 [![Built with Professor](https://img.shields.io/badge/built%20with-Professor-8A2BE2)](https://github.com/rezzminator/professor)
 
 </div>
@@ -42,34 +42,22 @@ forward-compaction turns this around. As the context grows, the model is told ho
 
 ## Benchmark
 
-One scripted ten-turn chat, run five times each on Claude Code's native compaction, on forward-compaction, and on forward-compaction with the fork option (`FORWARD_COMPACTION_MAIN_FORK=1`), on 2026-11-24: Sonnet 5.5 (`claude-sonnet-5-5`) at medium effort, Claude Code 2.1.331, `CLAUDE_CODE_AUTO_COMPACT_WINDOW=100000`, no other plugin loaded. The first turn states four rules and the second a note to keep word for word; nine turns each read two record files and summarize every crate in them; the fifth turn changes one rule; the last turn forbids opening any file and asks for every crate's item and shelf and the total weight. Every figure comes from the runs' own records: each API request's usage and duration, each compaction's boundary record, and the files the chat wrote, scored against the scenario's truth.
+The same ten-turn chat, run five times on Claude Code's own compaction and five times on forward-compaction, on Sonnet 5.5. The chat reads 180 crate records, compacts three times on both, and is asked at the end for every crate with no file open.
 
-| Median (p90) of 5 runs | Native compaction | forward-compaction | forward-compaction, fork option |
-| --- | --- | --- | --- |
-| Compactions in the run | 8 | **3** | **3** |
-| Time one compaction stalls the chat | 15.5 s (17.5 s) | **5.6 s** (7.3 s) | 6.6 s (8.9 s) |
-| Context when it started | 77.4k tokens (77.8k) | 120.2k (120.8k) | 119.2k (120.1k) |
-| Context of the first request after | 61.8k tokens (62.3k) | **28.8k** (29.5k) | 39.5k (40.4k) ¹ |
-| Tokens written per compaction | 2.7k (3.2k) | **768** (941) | 843 (1.2k) |
-| Cost of one compaction | $0.249 ($0.256) | **$0.035** ($0.037) | $0.083 ($0.087) ¹ |
-| Whole run: wall time | 5.1 min (5.5 min) | 3.5 min (3.6 min) | **3.4 min** (3.5 min) |
-| Whole run: requests | 38 | **33** | **33** |
-| Whole run: input · cache read · cache write · output tokens | 228.7k · 1901.2k · 364.2k · 29.2k | 1.4k · 2095.1k · 295.8k · 10.8k | 10.6k · 2370.5k · 296.7k · 10.3k |
-| Whole run: cost | $2.39 ($2.42) | **$1.50** ($1.51) | $1.55 ($1.56) |
-| Crate items recalled at the end | 132 of 180 | **180 of 180** | **180 of 180** |
-| Crate shelves recalled at the end | **20 of 180** | 0 of 180 | 0 of 180 |
-| User's rules obeyed after a compaction | 150 of 150 | 110 of 110 | 105 of 105 |
-| Changed rule obeyed after a compaction | 25 of 25 | 15 of 15 | 15 of 15 |
-| User's note quoted back word for word | 5 of 5 runs | 5 of 5 runs | 5 of 5 runs |
-| Files re-read after a compaction | 0 | 0 | 0 |
-| Final answers complete, total weight right | 1 of 5 runs | **5 of 5 runs** | **5 of 5 runs** |
+| Median of 5 chats | Claude Code's own compaction | forward-compaction |
+| --- | --- | --- |
+| Chats that got the final answers right | 1 of 5 | **5 of 5** |
+| Crate items recalled at the end | 133 of 180 | **180 of 180** |
+| Cost of each compaction | $0.153 | **$0.035** (77% less) |
+| Wait at each compaction | 17.4 s | **5.6 s** (68% less) |
+| Tokens written per compaction | 3.0k | **768** (74% less) |
+| Context of the first request after a compaction | 36.1k tokens | **28.8k** (20% less) |
 
-Cost is every API request at Anthropic's list prices for the model, USD per million tokens: input 2, output 10, cache read 0.1, cache write 2.5 (5 minutes) and 4 (1 hour). One compaction's cost is the requests that wrote it plus the uncached input and cache write of the first request after it.
+- **A fair start.** Both compact at about the same context size, 114k to 120k tokens, three times a chat. Cost is at Anthropic's list prices.
+- **Where native wins.** Each record also names a shelf, which the chat is asked for only in the last turn. Native recalled 24 of 180 shelves and forward-compaction none: a frontier carries what the work has needed so far.
+- **Limits.** One scenario, one model, five chats a column.
 
-- **Fewer, later compactions.** Claude Code's own compaction ran at 77k tokens, eight times a run. forward-compaction holds that ask until a frontier is stored, so it compacted at about 120k, three times a run, and left less than half as much behind.
-- **Items against shelves.** Every record line names a crate's item, weight and shelf. Each turn's summary asks for the item, so the work has needed it; the shelf sits in the files and is asked for only in the last turn. forward-compaction kept every item and no shelf: a frontier carries what the work has needed so far, and a detail nobody has asked for yet is not in it. The native summary kept 132 of 180 items, and the shelves of the files read since its last compaction (20 of 20) and none older.
-- **¹ The fork option's first request after.** With the fork option a compaction lands at the end of a turn, so the first request after it opens the next turn and also carries about 10k tokens of tool, agent and skill listings Claude Code sends again at the first turn after a compaction. Without the option the compaction lands mid-turn and the same listings arrive one request later (27.8k, then 37.8k, in the run inspected), so the two rows marked ¹ charge the fork option for them and the plain column not; the whole-run rows compare the two directly.
-- **Limits.** One scenario, one model, five runs a column, a 100k window. `scripts/bench/bench.sh run --arm {native|fc|fc-fork} --runs 5 --claude {binary} --out {dir}` runs a column on your own account and `scripts/bench/bench.sh report {dir}` prints the table; each run's numbers are in [`scripts/bench/results/sonnet-2026-11-24.json`](scripts/bench/results/sonnet-2026-11-24.json).
+The full table with its p90 figures, the method, the notes and the commands to run it on your own account are in [docs/benchmark.md](docs/benchmark.md).
 
 The figures in the picture at the top of this page, in [Why](#why) and in [What you get](#what-you-get) are another measurement: medians of 2,939 real compactions in long chats over 30 days, in [docs/field-medians.md](docs/field-medians.md).
 
@@ -179,22 +167,7 @@ forward_compaction({
 
 Outside the expanded view (ctrl+o, `--verbose`, an export) the call's row in the transcript draws what the call did in place of its raw arguments, and the result block under it draws nothing. Every part of the frontier is drawn on every call, changed or not: the six lists with the number of items each holds and their `+` added, `~` edited and `-` removed item numbers, whether `objective` and `next` were set, replaced or left unchanged, the storage files, the files to load, the characters written and the output tokens of the request that made the call, the handoff's size and the context at the call. Both token figures are Claude Code's own readings, absent until the request reports them. A failed or interrupted call keeps Claude Code's drawing, and the stored result the model reads is unchanged.
 
-```text
-● forward_compaction  frontier updated · nothing compacts, the context is still small
-  ⎿  orders     0
-     decisions  0
-     done       1    +1 [1]
-     remaining  0
-     blocked    0
-     findings   1    +1 [1]
-     objective  set
-     next       set
-     storage    1 file: notes.md  +notes.md
-     load_files none
-     wrote      221 chars of arguments · its request wrote 208 tokens
-     frontier   70 chars · 2 items
-     context    73k at the call
-```
+<img src="docs/assets/forward-compaction-call.png" width="640" alt="A forward_compaction call's row in the transcript: frontier stored, compacts before the next request. orders 6; decisions 7; done 33, two added; remaining 1, one added and one removed; blocked 0; findings 10; objective unchanged; next replaced; storage none; load_files none; wrote 2,975 chars of arguments; frontier 44,233 chars in 57 items; done split, 14 newest in the wake and 19 earlier in done-earlier.md.">
 
 Each list takes `{add, remove, edit}`: texts to add, item numbers to remove, `{id, text}` to replace an item's text. An item's number never changes and is never reused. At a compaction each list item shows how many compactions it has passed unchanged (`[3 rounds unchanged]`), counted by the plugin, so the model sees what has gone stale and removes it. The done list shows its newest items while their texts fit `FORWARD_COMPACTION_DONE_MAX_CHARS`; the earlier ones stand whole in `done-earlier.md` beside the handoff's files, which the compaction names by its path, and are still edited or removed by their numbers. An item leaves that file only when it is removed, or once the model has read a compaction that shows it. The call is never refused: the reply gives the new numbers and one line per change, names anything it skipped, gives the handoff's size, and says when the handoff will install; past `FORWARD_COMPACTION_FRONTIER_WARN_CHARS` a handoff with no list item is also asked for a shorter objective and next. An item that left (removed, or the text an edit replaced) is shown by its first 80 characters, its whole text staying in the list's history file. A list, `storage` or `load_files` value sent as the text of its own JSON is read as that JSON, and one whose JSON does not parse is repaired, each with a note in the reply, and a repaired field makes the call wait one request before it installs; the reply says so and names when the frontier installs. Old call shapes are never refused: `standing_orders` entries are taken as `orders.add`, and `lifted`, `keep_skills`, `drop_files`, `drop_skills` and a `load_files` entry's `later` are answered by a note. Everything is written to disk as it arrives, and what leaves a list, a text or the storage goes to a history folder beside it, so a restarted chat keeps every number; [State on disk](./docs/spec.md#state-on-disk) has the layout.
 
@@ -230,7 +203,7 @@ A **size** is a token count (`100000`), a number with a k or m suffix (`100k`, `
 | `FORWARD_COMPACTION_FRONTIER_WARN_CHARS` | character count | `12000` | The size of the frontier the plugin holds (every live item, the objective and next) past which a forward_compaction result asks for a shorter objective and next, when the frontier holds no list item; a frontier whose lists hold items is asked nothing. Nothing is cut and no call is refused. |
 | `FORWARD_COMPACTION_DONE_MAX_CHARS` | character count | `12000` | The characters of done item texts a compaction shows, newest item first and the newest always; the earlier done items are listed whole in `done-earlier.md` in the session's folder, which the compaction names, and a call's reply says how many stay and how many are in the file. |
 | `FORWARD_COMPACTION_DEBUG` | flag | `1` | `0`: no `debug.jsonl`, the row the plugin writes at every step. |
-| `FORWARD_COMPACTION_MAIN_FORK` | flag | `0` | `1`: the plugin writes the main chat's frontier itself. Where a nudge or the finish notice would go out, main reads nothing; at the next compaction ask (a nudge level) or main's turn end (any due point) the plugin forks the conversation through `$.model.fork` with a fixed prompt and the stored lists, numbered, stores the fork's reply as one `forward_compaction` call and installs it in that same ask; at the ceiling a fork is tried before the mechanical wake. A failed fork falls back to the notice main would have read, never to Claude Code's own summary; nothing forked yet, or a fork the turn's abort cut, is tried again at the next ask. The wake asks main for no call. Sub-agents, a manual `/compact` and a model's own call are unchanged. |
+| `FORWARD_COMPACTION_MAIN_FORK` | flag | `0` | `1`: a `/compact` you type in an idle main chat gets a frontier a fork writes, in place of Claude Code's own summary: the plugin forks the conversation through `$.model.fork` with a fixed prompt and the stored lists, numbered, stores the fork's reply as one `forward_compaction` call and installs it in that same ask. Text typed after `/compact` goes into the fork's prompt. A `/compact` typed while a turn runs, or a fork that fails, gets Claude Code's own summary, as with the option off. Everywhere else the model writes its own frontier: nudges, the finish notice and every automatic compaction are unchanged, and sub-agents never fork. |
 | `FORWARD_COMPACTION_MAIN_FORK_EFFORT` | `low`, `medium`, `high`, `xhigh` or `max` | `unset` | The effort the fork names; unset, it names none and thinks at the session's level. A level other than the session's can cost a cache write of the whole conversation on a model that takes effort per request only. |
 
 An example `settings.json`:
