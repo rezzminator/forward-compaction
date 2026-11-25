@@ -13,8 +13,6 @@ const here = dirname(fileURLToPath(import.meta.url));
 export const MAIN_SOURCE = 'repl_main_thread';
 /** How far a frontier call's record may sit after the end of the request that wrote it (the tool runs after the stream ends). */
 const CALL_SLACK_MS = 30_000;
-/** How far a stored row may sit after the boundary it belongs to: a fork's store is logged inside the compaction ask, tens of ms either side of the boundary's own timestamp. */
-const STORE_SLACK_MS = 2_000;
 
 export function pricesFor(model, table) {
   const key = Object.keys(table.models).filter((k) => model?.startsWith(k)).sort((a, b) => b.length - a.length)[0];
@@ -41,22 +39,19 @@ export function meter(dir, table) {
   const p = pricesFor(model, table);
   const isFrontier = (t) => /(^|__)forward_compaction$/.test(t.name);
   // Each forward_compaction call: the plugin's stored row, else the transcript's tool_use (one call seen by both counts once).
-  const calls = stored.map((s) => ({ ts: s.ts, writer: s.writer }));
-  for (const t of tools.filter(isFrontier)) if (!calls.some((c) => Math.abs(c.ts - t.ts) < 3000)) calls.push({ ts: t.ts, writer: 'model' });
+  const calls = stored.map((s) => ({ ts: s.ts }));
+  for (const t of tools.filter(isFrontier)) if (!calls.some((c) => Math.abs(c.ts - t.ts) < 3000)) calls.push({ ts: t.ts });
   calls.sort((a, b) => a.ts - b.ts);
-  // The request that wrote a call: main's own request for the model's call; for a fork's (`$.model.fork`, whose request runs
-  // under a source of its own), the last request outside main's thread and any summarizer that ended before the store.
-  const writerOf = (c) => (c.writer === 'fork' ? requests.filter((r) => r.source !== MAIN_SOURCE && !/compact/i.test(r.source ?? '')) : main).filter((r) => r.end <= c.ts + 1000 && r.end > c.ts - CALL_SLACK_MS).at(-1);
+  // The request that wrote a call: main's own last request that ended before the call's record.
+  const writerOf = (c) => main.filter((r) => r.end <= c.ts + 1000 && r.end > c.ts - CALL_SLACK_MS).at(-1);
   // A request whose model the prices table lacks is left out of every cost and named, never a reason to meter nothing.
   const unpriced = new Set();
   const priced = (r) => { try { return cost(r, pricesFor(r.model, table)); } catch { unpriced.add(r.model ?? 'unknown'); return 0; } };
   const compactions = boundaries.map((b, i) => {
-    const since = i === 0 ? 0 : boundaries[i - 1].ts + STORE_SLACK_MS;
+    const since = i === 0 ? 0 : boundaries[i - 1].ts;
     const after = main.find((r) => r.start > b.ts);
-    const mine = calls.filter((c) => c.ts > since && c.ts <= b.ts + STORE_SLACK_MS);
+    const mine = calls.filter((c) => c.ts > since && c.ts <= b.ts);
     const frontier = [...new Set(mine.map(writerOf).filter(Boolean))];
-    // A fork's request is awaited inside the compaction ask, so the boundary's own duration already holds it.
-    const inside = mine.some((c) => c.writer === 'fork');
     const summarizer = requests.filter((r) => /compact/i.test(r.source ?? '') && r.end >= b.ts - (b.durationMs ?? 0) - 5000 && r.end <= b.ts + 5000);
     const kind = frontier.length > 0 ? 'frontier' : summarizer.length > 0 ? 'native' : 'mechanical';
     const row = {
@@ -67,8 +62,8 @@ export function meter(dir, table) {
     };
     const made = kind === 'frontier' ? frontier : summarizer;
     row.requests = made.length;
-    row.stallMs = kind === 'frontier' && !inside ? made.reduce((s, r) => s + (r.durationMs ?? 0), 0) + (b.durationMs ?? 0) : b.durationMs ?? null;
-    row.stallSource = kind === 'frontier' && !inside ? 'duration_ms of the requests that wrote the frontier + compact_boundary durationMs (the install)' : inside ? 'compact_boundary durationMs (the fork request runs inside it)' : 'compact_boundary durationMs';
+    row.stallMs = kind === 'frontier' ? made.reduce((s, r) => s + (r.durationMs ?? 0), 0) + (b.durationMs ?? 0) : b.durationMs ?? null;
+    row.stallSource = kind === 'frontier' ? 'duration_ms of the requests that wrote the frontier + compact_boundary durationMs (the install)' : 'compact_boundary durationMs';
     row.contextRead = made.reduce((s, r) => s + context(r), 0);
     row.written = made.reduce((s, r) => s + r.output, 0);
     row.writtenSource = kind === 'mechanical' ? 'mechanical wake: no request writes it' : `output_tokens of the ${kind === 'frontier' ? 'frontier' : 'summarizer'} requests`;

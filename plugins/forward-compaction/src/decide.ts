@@ -48,18 +48,24 @@ export type DecideInput = {
   ignored?: boolean;
   /** `Parties.windowUnknown`: the party's ceiling is not known, so it is never reached; a reactive ask stays mechanical. */
   windowUnknown?: boolean;
+  /** FORWARD_COMPACTION_MAIN_FORK: a /compact the user types in an idle main chat is written by a fork (fork.ts). */
+  mainFork?: boolean;
+  /** Main's turn has ended (fork.ts `forkIdle`). */
+  idle?: boolean;
 };
 
 /** The decision row's `decision` for the action. */
 export type Action =
   | { action: 'next'; decision: 'native' | 'pass' | 'foreign'; why: 'manual' | 'plugin' | 'foreign' | 'ceiling' | 'reactive'; dropStored?: true }
+  | { action: 'fork'; decision: 'fork'; why: 'manual' }
   | { action: 'skip'; decision: 'skip'; why: 'precompute' | 'waiting' | 'no-reading' | 'ignored-model' | 'unfinished'; reason: string }
   | { action: 'install'; decision: 'install'; why: 'stored' }
   | { action: 'mechanical'; decision: 'mechanical'; why: 'ceiling' | 'reactive' };
 
 /**
  * One `session.compact` ask (rows C1-C10 of the decision table). A manual ask runs Claude Code's own summary and
- * drops the stored frontier; a precompute is skipped; a frontier stored for main installs at a plugin request
+ * drops the stored frontier, except under FORWARD_COMPACTION_MAIN_FORK in an idle main chat on a model not ignored, where
+ * a fork brings the stored frontier up to date and it installs; a precompute is skipped; a frontier stored for main installs at a plugin request
  * (the turn-end door) and for any party at an automatic ask. With nothing stored an automatic ask is held until
  * the ceiling, or at once when it follows a held ask unanswered (the request was too long), and then the party
  * gets a mechanical wake, or Claude Code's own summary when the ceiling is native. A foreign party (the engine's own
@@ -69,7 +75,8 @@ export type Action =
  * ask held as `unfinished`, so the party's next request can send the rest; an ask that reports the request too long
  * installs it at once.
  */
-export function decide({ trigger, party, stored = false, waits = false, tokens, ceiling = Number.POSITIVE_INFINITY, reactive = false, ceilingNative = false, label = 'main', ignored = false, windowUnknown = false }: DecideInput): Action {
+export function decide({ trigger, party, stored = false, waits = false, tokens, ceiling = Number.POSITIVE_INFINITY, reactive = false, ceilingNative = false, label = 'main', ignored = false, windowUnknown = false, mainFork = false, idle = false }: DecideInput): Action {
+  if (trigger === 'manual' && mainFork && idle && party === 'main' && !ignored) return { action: 'fork', decision: 'fork', why: 'manual' };
   if (trigger === 'manual') return { action: 'next', decision: 'native', why: 'manual', dropStored: true };
   if (trigger === 'precompute') return { action: 'skip', decision: 'skip', why: 'precompute', reason: 'forward-compaction: precompute is never used' };
   if (trigger === 'plugin') {
@@ -98,17 +105,15 @@ export type TurnEndInput = {
   stored: boolean;
   /** `parties.get(key).installedThisTurn`. */
   installedThisTurn: boolean;
-  /** FORWARD_COMPACTION_MAIN_FORK: a fork is due (`PartyState.forkDue`), which the turn end's own ask writes. */
-  forkDue?: boolean;
 };
 
 export type TurnEnd = { compact: true } | { compact: false; why: 'not-main' | 'not-answered' | 'nothing-stored' | 'installed-this-turn' };
 
-/** Row P1: whether main's turn end calls `$.session.compact()`: a frontier stored, or a fork due to write one. Everything else keeps the frontier stored for the next door. */
-export function turnEndDoor({ main, reason, stored, installedThisTurn, forkDue = false }: TurnEndInput): TurnEnd {
+/** Row P1: whether main's turn end calls `$.session.compact()`: a frontier stored. Everything else keeps the frontier stored for the next door. */
+export function turnEndDoor({ main, reason, stored, installedThisTurn }: TurnEndInput): TurnEnd {
   if (!main) return { compact: false, why: 'not-main' };
   if (reason !== 'answer') return { compact: false, why: 'not-answered' };
-  if (!stored && !forkDue) return { compact: false, why: 'nothing-stored' };
+  if (!stored) return { compact: false, why: 'nothing-stored' };
   if (installedThisTurn) return { compact: false, why: 'installed-this-turn' };
   return { compact: true };
 }

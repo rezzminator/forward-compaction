@@ -8,9 +8,28 @@ describe('decide: manual and precompute (C1, C2, R25)', () => {
   it('C1 leaves a manual /compact to Claude Code and drops the stored frontier, for every party and state', () => {
     for (const party of ['main', 'subagent', 'foreign'] as const) {
       for (const stored of [true, false]) {
-        expect(ask({ trigger: 'manual', party, stored })).toMatchObject({ action: 'next', decision: 'native', why: 'manual', dropStored: true });
+        expect(ask({ trigger: 'manual', party, stored })).toEqual({ action: 'next', decision: 'native', why: 'manual', dropStored: true });
       }
     }
+  });
+
+  const native = { action: 'next', decision: 'native', why: 'manual', dropStored: true };
+  const fork = { action: 'fork', decision: 'fork', why: 'manual' };
+  it.each([
+    ['option on, main idle, a frontier stored: the fork brings it up to date', { mainFork: true, idle: true, stored: true }, fork],
+    ['option on, main idle, nothing stored: the fork writes the first', { mainFork: true, idle: true, stored: false }, fork],
+    ['option on, main mid-turn, a frontier stored', { mainFork: true, idle: false, stored: true }, native],
+    ['option on, main mid-turn, nothing stored', { mainFork: true, idle: false, stored: false }, native],
+    ['option off, main idle, a frontier stored', { mainFork: false, idle: true, stored: true }, native],
+    ['option off, main idle, nothing stored', { mainFork: false, idle: true, stored: false }, native],
+    ['option on, idle, a sub-agent', { mainFork: true, idle: true, party: 'subagent' as const }, native],
+    ['option on, idle, main on an ignored model', { mainFork: true, idle: true, ignored: true }, native],
+  ])('C1 under FORWARD_COMPACTION_MAIN_FORK: %s', (_name, patch, want) => {
+    expect(ask({ trigger: 'manual', ...patch })).toEqual(want);
+  });
+
+  it.each(['auto', 'plugin', 'precompute'] as const)('only a manual ask forks: %s', (trigger) => {
+    expect(ask({ trigger, mainFork: true, idle: true }).action).not.toBe('fork');
   });
 
   it('C2 skips a precompute for every party', () => {
@@ -126,10 +145,6 @@ describe('turnEndDoor (P1)', () => {
     expect(turnEndDoor({ ...door, main: false })).toEqual({ compact: false, why: 'not-main' });
     for (const reason of ['aborted', 'refusal', 'error'] as const) expect(turnEndDoor({ ...door, reason })).toEqual({ compact: false, why: 'not-answered' });
     expect(turnEndDoor({ ...door, stored: false })).toEqual({ compact: false, why: 'nothing-stored' });
-    expect(turnEndDoor({ ...door, stored: false, forkDue: false })).toEqual({ compact: false, why: 'nothing-stored' });
-    expect(turnEndDoor({ ...door, stored: false, forkDue: true })).toEqual({ compact: true });
-    expect(turnEndDoor({ ...door, stored: false, forkDue: true, installedThisTurn: true })).toEqual({ compact: false, why: 'installed-this-turn' });
-    expect(turnEndDoor({ ...door, stored: false, forkDue: true, reason: 'aborted' })).toEqual({ compact: false, why: 'not-answered' });
     expect(turnEndDoor({ ...door, installedThisTurn: true })).toEqual({ compact: false, why: 'installed-this-turn' });
   });
 });

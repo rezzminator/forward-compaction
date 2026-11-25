@@ -95,8 +95,6 @@ type Shared<M> = {
   /** The party's current `e.messages`. */
   messages: readonly M[];
   party: 'main' | 'subagent';
-  /** FORWARD_COMPACTION_MAIN_FORK on for main: the plugin brings the frontier up to date itself at each compaction, so the head asks for no call (`FORK_UPKEEP`). */
-  forkUpkeep?: boolean;
   /** The party's context reading, for the wake's own wording; undefined when it has none. */
   tokens?: number;
   askPoint: number;
@@ -129,7 +127,7 @@ type Shared<M> = {
 };
 /** `missing`: the texts the held frontier lacks (frontier.ts `Applied.missing`), each named in the head. */
 export type BuildWakeInput<M> = Shared<M> & { toolUseId: string; frontier: string; files?: readonly WakeFile[]; missing?: readonly string[] };
-/** `trailing`: main's last assistant message and every message after it (fork.ts `forkTrailing`): what a model-written frontier keeps after its call, with the fork's call placed just before that message. */
+/** `trailing`: main's last assistant run and every message after it (fork.ts `forkTrailing`): what a model-written frontier keeps after its call, with the fork's call placed just before that run. */
 export type ForkWakeInput<M> = Shared<M> & { frontier: string; files?: readonly WakeFile[]; missing?: readonly string[]; trailing: number };
 export type MechanicalWakeInput<M> = Shared<M> & {
   reason: { kind: 'ceiling'; ceiling: number } | { kind: 'reactive' };
@@ -407,10 +405,6 @@ function assemble<M extends WakeMessage>(
 const BY_NUMBER = 'send only changes, by item number; whatever you leave out stays.';
 /** The head's line on how the next call changes the frontier, and when it is made: once a notice asks. */
 export const CHANGES_ONLY = `When a notice next asks for a forward_compaction call, ${BY_NUMBER}`;
-/** The head's line for main under FORWARD_COMPACTION_MAIN_FORK, in place of any ask for a call. */
-export const FORK_UPKEEP = 'forward-compaction brings this frontier up to date itself at each compaction: nothing is asked of you for it.';
-/** How the head says the next frontier comes: a call once a notice asks, or the plugin's own fork. */
-const upkeep = (input: { forkUpkeep?: boolean }): string => (input.forkUpkeep === true ? FORK_UPKEEP : CHANGES_ONLY);
 /** The head's clause when standing orders bind: the next step is taken within them. */
 const within = (orders: Shared<never>['orders']): string => ((orders?.length ?? 0) > 0 ? ', within the standing orders above' : '');
 /** Where a woken party finds what its frontier did not say: the user's messages (main) or its brief. */
@@ -421,14 +415,14 @@ export function buildWake<M extends WakeMessage>(input: BuildWakeInput<M>): Wake
   const split = splitAtCall(input.messages, input.toolUseId);
   const missing = input.missing ?? [];
   return assemble(input, split?.tail ?? input.messages, { siblings: split?.siblings ?? [], files: input.files ?? [] }, ({ kept, dropped }) => {
-    const lines = [`${WAKE_OPENING.frontier} Below is your frontier as forward-compaction holds it: continue from its ## Next${within(input.orders)}. ${upkeep(input)}${unchangedNote(input.frontier, ordersSection(input.orders ?? [], input.rounds))}`, frontierBlock(input.frontier)];
-    if (missing.length > 0) lines.push(`Your frontier has no ${andList(missing)}: re-establish ${missing.length === 1 ? 'it' : 'them'} from ${sourceOf(input.party)} and the messages below${input.forkUpkeep === true ? '.' : `, and send ${missing.length === 1 ? 'it' : 'them'} in your next forward_compaction call.`}`);
+    const lines = [`${WAKE_OPENING.frontier} Below is your frontier as forward-compaction holds it: continue from its ## Next${within(input.orders)}. ${CHANGES_ONLY}${unchangedNote(input.frontier, ordersSection(input.orders ?? [], input.rounds))}`, frontierBlock(input.frontier)];
+    if (missing.length > 0) lines.push(`Your frontier has no ${andList(missing)}: re-establish ${missing.length === 1 ? 'it' : 'them'} from ${sourceOf(input.party)} and the messages below, and send ${missing.length === 1 ? 'it' : 'them'} in your next forward_compaction call.`);
     // The receipt's own experimental line moves to the wake's end, where it is read last.
     if (split?.own !== undefined) lines.push(`Your forward_compaction call returned:\n${split.own.split(`\n${EXPERIMENTAL_OPENING}`)[0]}`);
     if (split === undefined) lines.push(`Your forward_compaction call is not in the transcript, so which messages came after it is unknown: ${kept > 0 ? `the newest ${kept} are kept verbatim after this one, some perhaps from before your frontier` : 'none is kept'}${dropped > 0 ? `; ${dropped} older did not fit and are gone (look_back finds an exact detail)` : ''}. Continue from ## Next.`);
     else {
       if (kept > 0) lines.push(`The ${kept} messages after this one are what happened after you wrote it, kept verbatim. Continue from where they leave off.`);
-      if (dropped > 0) lines.push(`${dropped} older messages after your frontier did not fit and are gone (look_back finds an exact detail)${input.forkUpkeep === true ? '.' : `; call ${input.tool ?? DEFAULT_TOOL} again at your next milestone.`}`);
+      if (dropped > 0) lines.push(`${dropped} older messages after your frontier did not fit and are gone (look_back finds an exact detail); call ${input.tool ?? DEFAULT_TOOL} again at your next milestone.`);
       if (kept === 0) lines.push('Nothing happened after you wrote it. Continue from ## Next.');
     }
     return experimental(lines.join('\n\n'), input.logDir);
@@ -441,18 +435,18 @@ export function mechanicalWake<M extends WakeMessage>(input: MechanicalWakeInput
   const frontier = input.frontier ?? '', reached = `${WAKE_OPENING.mechanical} Your context reached ${input.tokens === undefined ? 'a size not measured yet' : `${kilo(input.tokens)} tokens`}${why}, ${frontier === '' ? 'and you had not called forward_compaction' : 'before a forward_compaction call compacted it'}, so the plugin compacted it mechanically`; // a call made below its notice point changes the frontier and compacts nothing, so a held frontier does not say no call was made
   return assemble(input, input.messages, { siblings: [], files: [], recent: input.recent ?? [], mechanical: true }, ({ kept, dropped }) => experimental(
     frontier === ''
-      ? `${reached}: the facts above and your newest ${kept} messages below, kept verbatim; ${dropped} older messages are gone (look_back finds an exact detail). No objective or next step was written. Re-establish them from ${source} and the messages below, then continue${within(input.orders)}${input.forkUpkeep === true ? `. ${FORK_UPKEEP}` : `; call ${input.tool ?? DEFAULT_TOOL} at your next milestone.`}`
-      : `${reached}: the facts above, your frontier below as forward-compaction holds it, and your newest ${kept} messages after this one, kept verbatim; ${dropped} older messages are gone (look_back finds an exact detail). The frontier is as your last call left it: what you did after that call is missing from its ## Done, ## Remaining and ## Next, and the facts above show it (files touched, shell commands run, messages). Continue from where the messages leave off, or from its ## Next less every step the facts show done${within(input.orders)}${input.forkUpkeep === true ? `. ${FORK_UPKEEP}` : `; at your next milestone bring the frontier up to date with one ${input.tool ?? DEFAULT_TOOL} call: ${BY_NUMBER}`}${unchangedNote(frontier, ordersSection(input.orders ?? [], input.rounds))}\n\n${frontierBlock(frontier)}`,
+      ? `${reached}: the facts above and your newest ${kept} messages below, kept verbatim; ${dropped} older messages are gone (look_back finds an exact detail). No objective or next step was written. Re-establish them from ${source} and the messages below, then continue${within(input.orders)}; call ${input.tool ?? DEFAULT_TOOL} at your next milestone.`
+      : `${reached}: the facts above, your frontier below as forward-compaction holds it, and your newest ${kept} messages after this one, kept verbatim; ${dropped} older messages are gone (look_back finds an exact detail). The frontier is as your last call left it: what you did after that call is missing from its ## Done, ## Remaining and ## Next, and the facts above show it (files touched, shell commands run, messages). Continue from where the messages leave off, or from its ## Next less every step the facts show done${within(input.orders)}; at your next milestone bring the frontier up to date with one ${input.tool ?? DEFAULT_TOOL} call: ${BY_NUMBER}${unchangedNote(frontier, ordersSection(input.orders ?? [], input.rounds))}\n\n${frontierBlock(frontier)}`,
     input.logDir),
   'none');
 }
 
-/** The wake for a frontier a fork wrote at this compaction (fork.ts): the facts, the frontier, then what a model-written frontier keeps after its call, the fork's call placed just before main's last assistant message: that message and every one after it, fitted as `buildWake` fits the messages after a call; every older message is named as not carried. */
+/** The wake for a frontier a fork wrote at a typed /compact (fork.ts): the facts, the frontier, then what a model-written frontier keeps after its call, the fork's call placed just before main's last assistant run: that run and every message after it, fitted as `buildWake` fits the messages after a call; every older message is named as not carried. */
 export function forkWake<M extends WakeMessage>(input: ForkWakeInput<M>): Wake<M> {
   const missing = input.missing ?? [], older = input.messages.length - Math.min(input.trailing, input.messages.length);
   const wake = assemble(input, input.messages.slice(older), { siblings: [], files: input.files ?? [] }, ({ kept, dropped }) => {
-    const lines = [`${WAKE_OPENING.frontier} Below is your frontier, brought up to date by forward-compaction from the conversation at this compaction: continue from its ## Next${within(input.orders)}. ${FORK_UPKEEP}${unchangedNote(input.frontier, ordersSection(input.orders ?? [], input.rounds))}`, frontierBlock(input.frontier)];
-    if (missing.length > 0) lines.push(`Your frontier has no ${andList(missing)}: re-establish ${missing.length === 1 ? 'it' : 'them'} from ${sourceOf(input.party)} and the messages below.`);
+    const lines = [`${WAKE_OPENING.frontier} Below is your frontier, brought up to date by forward-compaction from the conversation at this compaction: continue from its ## Next${within(input.orders)}. ${CHANGES_ONLY}${unchangedNote(input.frontier, ordersSection(input.orders ?? [], input.rounds))}`, frontierBlock(input.frontier)];
+    if (missing.length > 0) lines.push(`Your frontier has no ${andList(missing)}: re-establish ${missing.length === 1 ? 'it' : 'them'} from ${sourceOf(input.party)} and the messages below, and send ${missing.length === 1 ? 'it' : 'them'} in your next forward_compaction call.`);
     const gone = older + dropped, notCarried = `${gone} older messages are not carried (look_back finds an exact detail).`;
     if (kept > 0) lines.push(`${kept === 1 ? 'Your last message follows' : `Your last ${kept} messages follow`}, kept verbatim: continue from where they leave off.${gone > 0 ? ` ${notCarried}` : ''}`);
     else lines.push(...(gone > 0 ? [notCarried] : []), 'Continue from ## Next.');
