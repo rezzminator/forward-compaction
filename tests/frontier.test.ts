@@ -27,12 +27,13 @@ describe('the forward_compaction tool as registered', () => {
     expect(FORWARD_TOOL_DESCRIPTION).toBe('Compacts your context — call it when a forward-compaction notice asks; a call on a small context only updates your frontier. A compaction drops what you have read; the frontier stays: numbered lists, so send only changes: add texts, remove or edit by number; what you leave out stays. One fact or step per item. MANDATORY: keep it clean: each call removes what is finished, lifted or wrong, edits what changed. Always stores. Example: forward_compaction({"next": "Run the gate", "done": {"add": ["Parser merged, 41 tests pass"]}, "remaining": {"remove": [3]}}). Exact old detail later → look_back.');
   });
 
-  it('closes the schema: two texts, six lists each with add, remove and edit, storage and load_files, none required', () => {
+  it('closes the schema: two texts, six lists each with add, remove and edit, storage, load_files and model, none required', () => {
     expect(FORWARD_INPUT_SCHEMA).toMatchObject({ type: 'object', additionalProperties: false });
     expect(FORWARD_INPUT_SCHEMA).not.toHaveProperty('required');
-    expect(Object.keys(FORWARD_INPUT_SCHEMA.properties)).toEqual(['objective', 'next', 'decisions', 'done', 'remaining', 'blocked', 'findings', 'orders', 'storage', 'load_files']);
+    expect(Object.keys(FORWARD_INPUT_SCHEMA.properties)).toEqual(['objective', 'next', 'decisions', 'done', 'remaining', 'blocked', 'findings', 'orders', 'storage', 'load_files', 'model']);
     expect(FORWARD_INPUT_SCHEMA.properties.objective.description).toBe('What the work is for and what done means. Send it on your first call, then only when it changes. Once it is reached, the call that sends the next one reviews every order.');
     expect(FORWARD_INPUT_SCHEMA.properties.next.description).toBe('Every call: the first concrete action after the wake.');
+    expect(FORWARD_INPUT_SCHEMA.properties.model).toEqual({ type: 'string', description: 'The model the main chat continues on; only when the user asked for it in their own words, never on your own judgment.' });
     expect(Object.fromEntries(LISTS.map((name) => [name, FORWARD_INPUT_SCHEMA.properties[name].description]))).toEqual({
       orders: `Every rule of the user's that binds the rest of the work (a prohibition, a limit, a rule), in the user's words; several may share one item. An instruction for one part of the work is no order: it goes to remaining. A rule the user changes is edited. You lift a rule given only for an objective now reached; every other rule only the user lifts. A lifted rule leaves entirely, never kept as a LIFTED note: remove its item, or edit the item down to its other rules. Example: [2] reads 'Never push. Tests go in tests/. One CHANGELOG line per fix.' and the user drops the CHANGELOG rule. Wrong: {"edit": [{"id": 2, "text": "Never push. Tests go in tests/. LIFTED: one CHANGELOG line per fix."}]}. Right: {"edit": [{"id": 2, "text": "Never push. Tests go in tests/."}]}.`,
       decisions: "Every ruling the user gave on how something gets done, in the user's words, each with its undo when one exists. A question the user put on hold goes to blocked.",
@@ -53,10 +54,11 @@ describe('the forward_compaction tool as registered', () => {
 });
 
 describe('parseCall passes each change on as sent and names every argument it reads another way', () => {
-  it('passes texts, lists and storage on untouched, and has no load files when the call sends none', () => {
+  it('passes texts, lists, storage and model on untouched, and has no load files when the call sends none', () => {
     const input = { objective: 'ship it', next: 'wire the hook', done: { add: ['parser'] }, remaining: 'not an object', storage: { add: [{ name: 'a.md' }] } };
     expect(parseCall(input)).toEqual({ texts: { objective: 'ship it', next: 'wire the hook' }, lists: { done: { add: ['parser'] }, remaining: 'not an object' }, extra: {}, storage: { add: [{ name: 'a.md' }] }, loadAt: [], notes: [] });
     expect(parseCall({ load_files: [] })).toMatchObject({ loadFiles: [], notes: [] });
+    expect(parseCall({ next: 'go', model: 'opus' })).toEqual({ texts: { next: 'go' }, lists: {}, extra: {}, loadAt: [], notes: [], model: 'opus' });
     for (const input of ['## Objective', undefined, null]) expect(parseCall(input)).toEqual({ texts: {}, lists: {}, extra: {}, loadAt: [], notes: [] });
   });
 

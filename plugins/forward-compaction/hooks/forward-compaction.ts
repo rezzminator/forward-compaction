@@ -25,6 +25,7 @@ import { DecisionWriteError, hookRow, sessionLogPath, runCwd, decisionAppendArgv
 import { levelRow, onScreen, pluginLogDir, PluginLogQueue, requeueRows, type PluginLogLevel, type PluginLogFields } from '../src/plugin-log';
 import { resolveOptions, subagentWindow, type OptionEnvironment, type ResolvedOptions, type SubagentWindow, readOptionVarInto } from '../src/options';
 import { ModelWindows } from '../src/model-window';
+import { switchAnswered, switchAsk, switchCompacted, switchStep, SWITCH_TRIAL, type SwitchOutcome, type SwitchTrial } from '../src/model-switch';
 import { TOOLS, toolsToRegister, ENSURE_TOOLS_TIMEOUT_MS, END_CORE_RESERVE_MS, PENDING_BEFORE_CONFIG, nextTry, holdPending, type ToolKind } from '../src/register';
 
 // Thin adapter: every decision lives in src/. Each hook catches its own failures, logs them with context and lets the compaction through.
@@ -78,9 +79,8 @@ function show($: EngineInterface, line: string): void { $.ui.log(screenLine(line
 
 const screenLine = (line: string): string => line.replace(/^forward-compaction: /, '');
 
-/** Every line said lands in the decision log as a `said` row; only an error reaches the screen. A line said with its diagnostic row is one level-log entry: the row's, at the level said. */
-function say(st: State, $: EngineInterface, line: string, level: PluginLogLevel = 'error', row?: Row): void {
-  const shown = onScreen(level); // warning, info and debug rows go to their files, or nowhere when no log can hold them
+/** Every line said lands in the decision log as a `said` row; only an error reaches the screen, or a line said `shown` (a model switch's begin and end). A line said with its diagnostic row is one level-log entry: the row's, at the level said. */
+function say(st: State, $: EngineInterface, line: string, level: PluginLogLevel = 'error', row?: Row, shown = onScreen(level)): void { // warning, info and debug rows go to their files, or nowhere when no log can hold them
   const diagnostic = row === undefined ? undefined : pluginLogEvent({ line: screenLine(line), ...row });
   plog(st, $, diagnostic !== undefined ? { ...diagnostic, level } : { level, event: 'said', msg: screenLine(line), where: 'hooks/forward-compaction.ts#say' });
   if (shown) show($, line);
@@ -502,6 +502,38 @@ async function writeDue(st: State, $: EngineInterface, key: PartyKey, where: str
   for (const p of problems) say(st, $, `forward-compaction: writing ${files.root}/${p.file} failed: ${p.error}; the change is held in memory and written again at the next call`, 'error', { event: 'frontier-write-failed', where, party: key, file: p.file, error: p.error });
   return problems;
 }
+
+/** A model-switch.ts outcome: each row as a `model-switch` debug row, its one line on screen, and main's switch held and written when it moved. */
+async function switchApply(st: State, $: EngineInterface, out: SwitchOutcome, where: string): Promise<void> {
+  for (const row of [...out.rows, ...(out.line !== undefined ? [out.line.row] : [])]) dbg(st, $, 'model-switch', { ...row, where });
+  if (out.line !== undefined) say(st, $, `forward-compaction: ${out.line.text}`, out.line.level, { ...out.line.row, where }, true);
+  if (!out.changed) return;
+  st.parties.switched('main', out.modelSwitch);
+  await writeDue(st, $, 'main', where);
+}
+/** Main compacted, by any door: a switch waiting for the compaction begins from main's next request (model-switch.ts `switchCompacted`). */
+function switchAfterCompaction(st: State, $: EngineInterface, where: string): Promise<void> {
+  const out = switchCompacted(st.parties.get('main').held?.modelSwitch);
+  return out.changed ? guard(st, $, 'model switch', () => switchApply(st, $, out, where)) : Promise.resolve();
+}
+/** Main's request as it goes out: given the model main's switch names (model-switch.ts `switchStep`), else as Claude Code named it; a sub-agent's is never touched. */
+async function switchStepOf(st: State, $: EngineInterface, e: TurnStepInput): Promise<TurnStepInput> {
+  if (keyOf(e.agentId) !== 'main' || typeof e.model !== 'string') return e;
+  try { // never waits: a switch kept across a restart applies once main's restore has settled, its file written beside the request
+    if (st.restored.get('main') !== RESTORED) { void restoreKept(st, $, 'main').catch((error: unknown) => say(st, $, `forward-compaction: restoring what main kept failed: ${message(error)}; its request goes out without it`, 'error', { event: 'restore-error', where: 'turn.step', party: 'main', error: message(error) })); return e; }
+    const out = switchStep(st.parties.get('main').held?.modelSwitch, e.model);
+    void guard(st, $, 'model switch', () => switchApply(st, $, out, 'turn.step'));
+    return out.model === e.model ? e : { ...e, model: out.model };
+  } catch (error) {
+    say(st, $, `forward-compaction: main's model switch failed: ${message(error)}; its request goes out on ${e.model}`, 'error', { event: 'model-switch-error', where: 'turn.step', party: 'main', error: message(error) });
+    return e;
+  }
+}
+/** Main's trial request naming `model` (model-switch.ts `SWITCH_TRIAL`): Claude Code's result, or the message it rejected with (a blocked model, or a Claude Code without `$.model.complete`), and its milliseconds. */
+async function switchTry($: EngineInterface, model: string): Promise<SwitchTrial> {
+  const t0 = await $.clock.now(), r = await Promise.resolve().then(() => $.model.complete({ model, ...SWITCH_TRIAL })).then((result) => ({ result }), (error: unknown) => ({ rejected: message(error) }));
+  return { ...r, ms: (await $.clock.now()) - t0 };
+}
 /** One forward_compaction call: its changes are applied to the party's held frontier and written to its files, the call is stored for the next door, and the result echoes each change. A fork's reply (`writer` `fork`) is no tool call: it compacts at the ask that awaited it, and never waits. */
 async function applyForward(st: State, $: EngineInterface, e: Record<string, unknown>, key: PartyKey, writer: 'model' | 'fork'): Promise<string> {
   try {
@@ -525,8 +557,11 @@ async function applyForward(st: State, $: EngineInterface, e: Record<string, unk
     const replaced = st.parties.store(key, { loadFiles, toolUseId, storedAtTokens: tokens, since: st.ledger.nextSeq, compacts, ...(waits ? { waits } : {}) });
     const size = frontierSize(party.held), sizes = sizeLines(size, st.config.frontierWarnChars), missing = applied.missing, done = files?.doneWake(party.held, st.config.doneMaxChars); // done split only once done-earlier.md holds its earlier items: else the wake shows the whole list
     record(st, $, { event: 'stored', party: key, ...(writer === 'fork' ? { writer } : {}), compacts, ...(waits ? { waits } : {}), argChars: JSON.stringify(input).length, lists: applied.counts, frontier: { chars: size.chars, items: size.items }, done: doneSizes(party.held.lists.done, done), storage: storage.count, warned: sizes.length > 1, files: loadFiles.length, notes: applied.notes.length + storage.notes.length + checked.length, tokens: tokens ?? null, ...(problems.length > 0 ? { writeFailed: problems.map((p) => p.file) } : {}), ...(replaced !== undefined ? { replaced: replaced.storedAtTokens ?? null } : {}), ...(missing.length > 0 ? { incomplete: missing } : {}) });
+    const ask = { party: key === 'main' ? 'main' : 'subagent', asked: call.model, compacts: writer === 'fork' || compacts, ...(st.mainModel !== undefined ? { given: st.mainModel } : {}) } as const, first = call.model === undefined ? undefined : switchAsk(st.parties.get('main').held?.modelSwitch, ask); // the call's model: main's switch, from its next request or after this compaction
+    const asked = first !== undefined && 'trial' in first ? switchAsk(st.parties.get('main').held?.modelSwitch, { ...ask, tried: await switchTry($, first.trial) }) : first; // after the frontier is stored: a name is set only once Claude Code answered a trial request naming it
+    if (asked !== undefined) await switchApply(st, $, asked, 'applyForward');
     const door = key === 'main' ? receipt({ party: 'main', files: loadFiles.length, tokens, askPoint: m?.askPoint, replaced: replaced !== undefined, missing, broken: call.broken ?? [], compacts }) : receipt({ party: 'subagent', files: loadFiles.length, tokens, askPoint: m!.askPoint, replaced: replaced !== undefined, missing, broken: call.broken ?? [], compacts });
-    return [...applied.lines, ...storage.lines, ...applied.notes, ...storage.notes, ...checked, ...problems.filter((p) => !DONE_EARLIER_FILES.includes(p.file)).map((p) => notSaved(p, files!.root)), ...sizes, ...doneLines(done), storageHeld(storage.entries), door].join('\n'); // done-earlier.md or its record not written loses nothing: the wake shows the whole done list
+    return [...applied.lines, ...storage.lines, ...applied.notes, ...storage.notes, ...checked, ...problems.filter((p) => !DONE_EARLIER_FILES.includes(p.file)).map((p) => notSaved(p, files!.root)), ...sizes, ...doneLines(done), storageHeld(storage.entries), door, ...(asked !== undefined ? [asked.result] : [])].join('\n'); // done-earlier.md or its record not written loses nothing: the wake shows the whole done list
   } catch (error) {
     say(st, $, `forward-compaction: storing ${key}'s frontier failed: ${message(error)}`, 'error', { event: 'store-error', where: 'answerForward', party: key, error: message(error) });
     return `forward_compaction failed, nothing stored: ${message(error)}`;
@@ -614,6 +649,7 @@ function installed(st: State, $: EngineInterface, key: string, landing: Landing 
   if (signal?.aborted) return;
   land(st, $, key, st.parties.installed(key, landing));
   st.installedSince.add(key);
+  if (key === 'main') void switchAfterCompaction(st, $, 'installed'); // a switch waiting for this compaction begins from main's next request
 }
 
 /** M2: an installed wake's landed line and `landed` row, at the party's first reading after it (`after`), or at its end with `after` unknown; `usage`, that first request's, puts in the row what it read from the prompt cache and what it wrote (a kept start is read, kept.ts `keptStart`). The wake's folded row draws the sizes once measured (wake-row.ts `wakeRow`). A chosen frontier's line is a routine info row in the logs; a mechanical wake lost the model's frontier, so the user sees it. */
@@ -646,6 +682,7 @@ async function compactAsk(st: State, $: EngineInterface, e: SessionCompactInput,
     else (st.parties.asked(key, action.decision), st.installedSince.add(key)); // Claude Code's own summary: its fall is seen
     record(st, $, row);
     if (action.decision === 'native' && action.why !== 'manual') say(st, $, `forward-compaction: ${label} ${action.why === 'ceiling' ? `reached its ceiling ${k(m!.ceiling)}` : 'was too long for its request'} with no frontier; Claude Code's own summary ran (FORWARD_COMPACTION_CEILING_NATIVE=1).`, 'info', { event: 'native', where: 'compactAsk', party: key, why: action.why });
+    if (kind === 'main') await switchAfterCompaction(st, $, 'compactAsk'); // Claude Code's own summary compacts main too
     return pass();
   }
   if (action.action === 'skip') {
@@ -696,6 +733,7 @@ async function compactFailed(st: State, $: EngineInterface, e: SessionCompactInp
     return { messages: wake.messages, ...(tokens !== undefined ? { tokensBefore: tokens } : {}) };
   } catch (again) {
     say(st, $, `${said}; Claude Code's own summary ran.`, 'error', { event: 'compact', where: 'compactFailed', party: key, decision: 'error', error: message(error), fallback: message(again) });
+    if (key === 'main') await switchAfterCompaction(st, $, 'compactFailed');
     return pass();
   }
 }
@@ -733,6 +771,7 @@ async function readStep(st: State, $: EngineInterface, e: TurnStepInput, r: Turn
   if (unseenCompaction(party.reading, tokens, st.installedSince.has(key))) {
     say(st, $, `forward-compaction: ${party.label}'s context fell from ${k(party.reading!)} to ${k(tokens)} with no compaction this plugin handled (another plugin or Claude Code compacted it).`, 'warning', { event: 'unseen-compaction', where: 'readStep', party: key, before: party.reading, after: tokens });
     st.parties.rebase(key, undefined);
+    if (key === 'main') await switchAfterCompaction(st, $, 'readStep'); // seen one request late, so a switch waiting for it begins one request late
   }
   const m = marks(st, key), from = party.reading ?? null, absorb = party.absorbNext, floorBefore = party.held?.floor, settlingBefore = party.held?.settling;
   land(st, $, key, st.parties.read(key, tokens, m?.start === undefined ? 0 : nudgeLevel(tokens, m.start, m.every)), tokens, u); // with no absolute start a wake's first reading is the new floor: it has no level to absorb
@@ -794,8 +833,10 @@ async function keepKept(st: State, $: EngineInterface, party: PartyKey): Promise
 }
 
 /** What a party kept before a restart, put back once per process (the first caller's promise, which every other awaits): its prompts and skills from `$.state`, its held frontier from its files; before its first write, so a write never drops it, before its next call is applied, and before its wake. */
+const RESTORED = Promise.resolve(); // a party's settled restore in `st.restored`: switchStepOf switches main only once it is
 function restoreKept(st: State, $: EngineInterface, party: PartyKey): Promise<void> {
-  let restoring = st.restored.get(party); if (restoring === undefined) st.restored.set(party, (restoring = restoreParty(st, $, party).catch((error: unknown) => { st.restored.set(party, Promise.resolve()); throw error; }))); // a failure is said once, by its caller; later calls go on without it
+  let restoring = st.restored.get(party); const settled = (): void => void (st.restored.get(party) === restoring && st.restored.set(party, RESTORED)); // a restore cleared by a new conversation marks nothing
+  if (restoring === undefined) st.restored.set(party, (restoring = restoreParty(st, $, party).then(settled, (error: unknown) => { settled(); throw error; }))); // a failure is said once, by its caller; later calls go on without it
   return restoring;
 }
 async function restoreParty(st: State, $: EngineInterface, party: PartyKey): Promise<void> {
@@ -912,8 +953,10 @@ export const register: Register = (on: On, options: PluginOptions) => {
 
   on('turn.step', async function* ($, e, next) {
     lookUpWindow(st, $, e);
-    const r = yield* next(e);
+    const sent = await switchStepOf(st, $, e); // main's request given the model its switch names; a sub-agent's never
+    const r = yield* next(sent);
     await guard(st, $, 'turn.step', () => readStep(st, $, e, r, next.signal), e);
+    if (sent !== e) await guard(st, $, 'model switch', () => switchApply(st, $, switchAnswered(st.parties.get('main').held?.modelSwitch, e.model, r?.usage?.model ?? undefined), 'turn.step'));
     return r;
   });
 

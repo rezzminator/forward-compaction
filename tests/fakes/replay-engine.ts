@@ -56,6 +56,8 @@ export const ANSWERS: Record<(typeof PATHS)[number], { from: 'recorded'; subject
   'session.compact': { from: 'recorded' },
   // the fork's reply is the model's answer: its shape (isAnswered, text, usage, reason) is engine format
   'model.fork': { from: 'recorded' },
+  // a trial request's result is engine format, as the fork's
+  'model.complete': { from: 'recorded' },
   // the session's directory, read for a relative load file: world state
   'session.cwd': { from: 'recorded' },
   // the session's credential as a handle: the recorder writes CREDENTIAL_HANDLE in its place, so the request that spends it finds its recorded answer

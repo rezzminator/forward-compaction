@@ -4,6 +4,7 @@ import type { PlanSeen } from './plan';
 import type { LoadFile } from './frontier';
 import { emptyHeld, renderFrontier, roundPassed, type Held, type Item, type StorageEntry } from './lists';
 import type { PartyFiles } from './disk';
+import type { ModelSwitch } from './model-switch';
 import { storageDir } from './storage';
 import type { SubagentWindow } from './options';
 import { roomAbove, type NudgeMarks } from './nudge';
@@ -365,6 +366,15 @@ export class Parties {
     state.installs += 1;
     if (passed !== state.held) (state.held = passed), state.files?.changed('rounds');
     return earlier;
+  }
+
+  /** Main's model switch moved (model-switch.ts): held, and due in its file; none left is no switch. */
+  switched(key: string, modelSwitch: ModelSwitch | undefined): void {
+    const state = this.get(key), held: Held = { ...(state.held ?? emptyHeld()) };
+    if (modelSwitch === undefined) delete held.modelSwitch;
+    else held.modelSwitch = modelSwitch;
+    state.held = held;
+    state.files?.changed('modelSwitch');
   }
 
   /** The party's turn ended. */

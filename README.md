@@ -7,7 +7,7 @@
 [![Claude Code plugin](https://img.shields.io/badge/Claude%20Code-plugin-D97757)](https://docs.claude.com/en/docs/claude-code/plugins)
 [![Version](https://img.shields.io/badge/version-2.7.0-blue)](./CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
-[![Tests](https://img.shields.io/badge/tests-1026%20passing-brightgreen)](#development)
+[![Tests](https://img.shields.io/badge/tests-1072%20passing-brightgreen)](#development)
 [![Built with Professor](https://img.shields.io/badge/built%20with-Professor-8A2BE2)](https://github.com/rezzminator/professor)
 
 </div>
@@ -164,6 +164,9 @@ forward_compaction({
 | `decisions`, `done`, `remaining`, `blocked`, `findings` | Your rulings on how something gets done; the finished pieces, each with how it was verified; every step left, in order; what waits on whom; the model's own notes, errors and commands it will need again. |
 | `storage` | Markdown files the model keeps for a later step, each with a description; every compaction lists them, and the model reads or edits them with Read and Edit. |
 | `load_files` | Files to read back in after the compaction, up to 250 lines each; a binary file is named, never carried. |
+| `model` | The model the main chat continues on, set only when you ask for it in your own words. A call that compacts nothing applies it from main's next request, one that compacts from the first request after the compaction. A sub-agent's call ignores it. |
+
+`model` changes the model of each of main's requests as it goes out, and nothing else: Claude Code's own header and `/model` keep showing the earlier model, and your saved default model is never touched. The name is tried first with one small request, a one-word reply that counts toward the session's cost; a name Claude Code does not answer changes nothing, and the call's reply and one warning line say why. One screen line names the model that answers. The switch survives `/reload-plugins` and a resumed chat, and ends when Claude Code gives main another model (`/model`, a relaunch, or Claude Code's own fallback); a name the trial passes that Claude Code still does not take for main (an alias of the model main is on) is answered by the earlier model and ends the switch with a warning line.
 
 Outside the expanded view (ctrl+o, `--verbose`, an export) the call's row in the transcript draws what the call did in place of its raw arguments, and the result block under it draws nothing. Every part of the frontier is drawn on every call, changed or not: the six lists with the number of items each holds and their `+` added, `~` edited and `-` removed item numbers, whether `objective` and `next` were set, replaced or left unchanged, the storage files, the files to load, the characters written and the output tokens of the request that made the call, the handoff's size and the context at the call. Both token figures are Claude Code's own readings, absent until the request reports them. A failed or interrupted call keeps Claude Code's drawing, and the stored result the model reads is unchanged.
 
@@ -227,7 +230,7 @@ The plugin writes its logs to `~/.local/state/forward-compaction/logs/`, or to `
 - `errors.jsonl`, `warnings.jsonl`, `info.jsonl`, and `debug.jsonl` while `FORWARD_COMPACTION_DEBUG` is on.
 - `issues.md`: notes a model appends when the plugin gave it trouble.
 
-Only errors reach the screen. Logs never hold handoff or transcript text, and the log files rotate on their own; [State on disk](./docs/spec.md#state-on-disk) has the sizes and retention.
+Only errors reach the screen, besides the one line a model switch says when it begins, ends or refuses a name. Logs never hold handoff or transcript text, and the log files rotate on their own; [State on disk](./docs/spec.md#state-on-disk) has the sizes and retention.
 
 ## Limits
 

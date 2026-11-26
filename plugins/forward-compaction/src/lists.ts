@@ -1,6 +1,7 @@
 // The frontier as the plugin holds it: numbered lists the model changes by item number, and two texts. An item's
 // number is per list, starts at 1, never shifts and is never reused; the model sends only changes, and a list or text
 // it leaves out stays as it is. Pure: the files that keep a party's lists are disk.ts's.
+import type { ModelSwitch } from './model-switch';
 
 /** The lists, in the order a call's changes are applied and its result lines read. */
 export const LISTS = ['orders', 'decisions', 'done', 'remaining', 'blocked', 'findings'] as const;
@@ -19,7 +20,7 @@ export type Left = { id: number; text: string; left: 'removed' | 'edited'; added
 export type StorageEntry = { name: string; description: string };
 
 /** Everything the plugin holds of one party's frontier. `rounds`: the compactions installed for the party while it held an item, absent is 0; each item's rounds unchanged are counted against it. `floor`: the party's context, in tokens as Claude Code reported it, at its first reading ever, or after its last compaction the larger of its first two readings, `settling` while only the first is in; a compaction that frees next to nothing is told by it (parties.ts `finishReached`), and with a working room set the party's nudges start that room above it (nudge.ts `nudgeStart`). */
-export type Held = { objective?: string; next?: string; lists: Record<ListName, List>; storage: StorageEntry[]; rounds?: number; floor?: number; settling?: true };
+export type Held = { objective?: string; next?: string; lists: Record<ListName, List>; storage: StorageEntry[]; rounds?: number; floor?: number; settling?: true; modelSwitch?: ModelSwitch };
 
 export const emptyList = (): List => ({ next_id: 1, items: [] });
 export const emptyHeld = (): Held => ({ lists: Object.fromEntries(LISTS.map((name) => [name, emptyList()])) as Record<ListName, List>, storage: [] });

@@ -78,6 +78,7 @@ export const FORWARD_INPUT_SCHEMA = {
         },
       },
     },
+    model: { type: 'string', description: 'The model the main chat continues on; only when the user asked for it in their own words, never on your own judgment.' },
   },
 } as const;
 
@@ -106,6 +107,8 @@ export type ParsedCall = {
   notes: string[];
   /** The fields that arrived as text whose JSON was broken and was repaired; absent when none. A broken field can end its call early (`callWaits`). */
   broken?: string[];
+  /** The call's `model` as sent, read by the adapter's model switch (model-switch.ts `switchAsk`); absent when the call sent none. */
+  model?: unknown;
 };
 
 /** Fields an older call shape held: each read one way or ignored, with a note. */
@@ -242,7 +245,8 @@ export function parseCall(input: unknown, cwd?: string): ParsedCall {
   for (const key of Object.keys(fields)) {
     if (FIELDS.includes(key)) continue;
     const value = fields[key];
-    if (key === 'standing_orders') {
+    if (key === 'model') call.model = value; // main's model switch (model-switch.ts): a schema field FIELDS_ARE never names, so no note invites it
+    else if (key === 'standing_orders') {
       const entries = Array.isArray(value) ? value : [value];
       const orders = entries.map((o) => (typeof o === 'string' ? o : isObject(o) && typeof o.order === 'string' ? o.order : '')).filter((o) => o.trim() !== '');
       for (const order of orders) join('orders', order);
