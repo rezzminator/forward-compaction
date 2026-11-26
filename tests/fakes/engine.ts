@@ -41,6 +41,8 @@ export type Script = {
   registerError?: string | (() => string | undefined);
   /** The host's session state (`$.state`); pass one map to two fakes to model a plugin reload in one session. */
   state?: Map<string, { value: unknown; version: number }>;
+  /** Answers a `$.state.get` in place of the host's map (one that never settles, or rejects); undefined reads the map. */
+  stateGet?: (ref: { key: string; id?: string }) => Promise<unknown> | undefined;
   /** What the Models API answers per model id, read at each request: its `max_input_tokens` (a listed model), a whole `{ status, text }`, or an Error the request rejects with; an id not here gets the API's 404. MODELS by default. */
   models?: Record<string, number | { status: number; text: string } | Error | Promise<{ status: number; text: string }>>;
   /** What `$.session.authorize()` answers: null is a session with no first-party credential. A bearer handle by default. */
@@ -150,7 +152,7 @@ export function fakeEngine(script: Script = {}) {
     ui: { log: (text: string, opts?: unknown) => void screen.push(opts === undefined ? { text } : { text, opts }), invalidate: (event: string) => void invalidated.push(event) },
     agent: { list: async () => (script.agents ? script.agents() : []) },
     state: {
-      get: async (ref: unknown) => state.get(JSON.stringify(ref)) ?? { value: undefined, version: 0 },
+      get: async (ref: { key: string; id?: string }) => (await script.stateGet?.(ref)) ?? state.get(JSON.stringify(ref)) ?? { value: undefined, version: 0 },
       set: async (ref: unknown, value: unknown) => {
         const version = (state.get(JSON.stringify(ref))?.version ?? 0) + 1;
         state.set(JSON.stringify(ref), { value: JSON.parse(JSON.stringify(value)), version });

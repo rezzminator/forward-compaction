@@ -794,15 +794,24 @@ the option off, and sub-agents and ignored models never fork.
 ### A model switch
 
 - A main chat call carrying `model`, a model name or alias, asks that main
-  continue on that model. A call below its notice point compacts nothing, and
-  the switch begins at main's next request; a call that leads to a compaction
-  (a fork's always does) begins it at the first request after main's next
-  compaction, whatever writes it: this plugin's wake, a mechanical wake,
-  Claude Code's own summary, or a compaction no hook of this plugin handled,
-  seen one request late by its fall (`unseen-compaction`). The result's line
-  after the install line says which: `model {name}: you continue on it from
-  your next request.` or `model {name}: you continue on it from the first
-  request after this compaction.`
+  continue on that model. The switch never costs a prompt cache: it begins at
+  main's first request after main's next compaction that the plugin knows of
+  before that request leaves, whose new context has no cache yet; it never
+  forces a compaction. A call below its notice point compacts nothing, and the
+  switch waits; a call that leads to a compaction (a fork's always does) waits
+  for that one. The doors that arm it: this plugin's wake or mechanical wake,
+  and Claude Code's own summary, each once the `session.compact` result
+  handed back holds the compacted `messages` and its hook was not aborted (a
+  skip compacted nothing, and an aborted dispatch went on without the hook's
+  result). A compaction no hook of this plugin handled, seen only by the
+  fall of the request after it (`unseen-compaction`), starts nothing: that
+  request already went out on the model main is on and cached the new context
+  there, and a rewind falls the same with its old cache alive; the switch
+  waits for a later compaction. The result's line after the install line says
+  when: `model {name}: taken; you continue on it from the first request after
+  your next compaction, and stay on {model} until then.` for a call that
+  compacts nothing, `model {name}: you continue on it from the first request
+  after this compaction.` for one that compacts.
 - A name main is not on is set only once Claude Code answered one trial
   request naming it: a request rewritten to a name Claude Code does not serve
   is dropped and run again on its fallback model. After the frontier is
@@ -821,8 +830,34 @@ the option off, and sub-agents and ignored models never fork.
   request goes out naming the asked model in place of the one Claude Code
   named. Claude Code's own model is untouched, so its header and `/model` keep
   showing the earlier model; no setting is written, and the saved default of
-  new chats stays. A sub-agent's request is never rewritten, and a sub-agent
-  that inherits its model still gets Claude Code's.
+  new chats stays. A fork of main (`agent.spawn`'s `fork`) spawned while the
+  switch is active shares main's cached prefix: each of its requests named
+  the switch's `from` goes out on the switched model for the fork's whole
+  life, and so does each of a fork spawned by such a fork
+  (`parentAgentId`). A fork spawned while the switch only waits, or with no
+  switch, had its context cached on Claude Code's model and is never
+  rewritten, also once main switches later. Each follow is kept in main's
+  `model-switch.json` (`forks`, by agent id), so it holds across
+  `/reload-plugins` and a restart, a resumed fork keeping the follow it had
+  (a resume starts none), and it outlives main's switch: a fork that followed
+  keeps its model after main's switch ends. A spawn can be the first hook
+  after a plugin reload, what main kept not restored yet: the fork's follow
+  is then taken as that restore lands (failed too), the spawn not waiting for
+  it, before any request that waited for the restore goes on; a fork whose
+  parent's request went out unswitched meanwhile follows nothing. A fork's
+  answers never begin or end main's switch. Any other
+  sub-agent's request is never rewritten, and a sub-agent that inherits its
+  model still gets Claude Code's.
+- Out of the switch's reach, as no hook is handed their request: Claude
+  Code's prompt suggestion after each turn (`prompt.suggest` fires once its
+  text exists, and `turn.step` never sees its request), its own summary at a
+  typed `/compact` (`session.compact` carries no model) and `$.model.fork`
+  (no `model` field). Each names Claude Code's own model, so in a switched
+  chat it sends main's context there. Measured on Claude Code 2.1.331: after
+  a turn of a switched chat the suggestion request had written main's whole
+  context to that model's prompt cache, beside main's own on the switched
+  model. `"promptSuggestionEnabled": false` in Claude Code's settings stops
+  the suggestion.
 - The switch records the model Claude Code named main's requests when it was
   asked, or at its begin when main made no request yet in this process
   (`from`), and holds while Claude Code keeps naming it. A request named
@@ -841,24 +876,53 @@ the option off, and sub-agents and ignored models never fork.
 - A call naming the model main is on (Claude Code's, or the switch's) changes
   nothing and drops a switch still pending: `model {name}: you are already on
   it; nothing changes.` Naming Claude Code's own model during a switch asks
-  main back: from the due request on, main's requests go out as Claude Code
-  names them, said once: `main is back on {given}: the switch to {model}
+  main back, also from the first request after main's next compaction: from
+  it on, main's requests go out as Claude Code names them, said once: `main is back on {given}: the switch to {model}
   ended.`
 - A `model` that is no text, or blank, is ignored: `model must be a model
   name; got {kind}: ignored.` A sub-agent's call changes no switch: `model is
   the main chat's alone: ignored.`
 - The switch lives in main's folder as `model-switch.json` ([State on
   disk](#state-on-disk)), so it survives `/reload-plugins` and a restarted or
-  resumed chat; it is read beside main's first request in the new process,
-  which goes out as Claude Code named it and waits on no read, applies from
-  the request after it, and still ends at the first request named another
-  model than its `from`.
+  resumed chat, and still ends at the first request named another model than
+  its `from`. A switch armed by a compaction is read back armed: main's next
+  request, in the new process too, is still the first after that compaction,
+  as any request since would have begun the switch. A request in the new
+  process, main's or a sub-agent's (whose follow main's switch holds), waits
+  for the restore of what main kept, so a kept switch or follow applies to it;
+  the wait is bounded by `SWITCH_RESTORE_WAIT_MS` (`src/model-switch.ts`,
+  2 s), and past it the request goes out as Claude Code named it with one
+  warning row naming its party: `main's request goes out on {given},
+  unswitched: restoring what main kept did not finish within 2 s.` (or
+  `agent {id}'s request …`). The wait happens at most once: after a request
+  ran past the bound, every later one goes out as named at once, said by
+  none. Once the restore lands, each party that went out unswitched stays on
+  the model its context is now cached on (`switchMissed`): an arm is spent
+  (that request was the first after the compaction) and the switch waits for
+  main's next compaction; an active switch becomes pending again, `model` and
+  `from` kept, and begins again after main's next compaction, said once at
+  warning level: `the switch to {model} waits for main's next compaction: a
+  request went out on {from} while restoring what main kept ran past 2 s.`
+  (a newer ask still pending takes its place); a fork's follow ends for good.
+  A restore
+  that fails has still loaded main's files, so that request and every later
+  one are given the switch they hold, and the failure is said once as an
+  error: `restoring what main kept failed: {error}; its request goes on with
+  what its files restored`. No request waits on a switch file write.
 - Each step writes a `model-switch` debug row with its `phase`: `tried`
   (`asked`, `outcome`: `answered`, Claude Code's `reason` or `rejected`;
-  `why` when not answered; `ms`), `pending` (`asked`, `at`, `from`), `ignored`, `already-on`, `armed` (the compaction a
-  switch waited for), `begin`, `step` (each rewritten request: `given`,
-  `sent`, `answered`), `took`, and `ended` with its `reason`
-  (`model-changed`, `not-taken`, `asked-back`). The line a switch's begin or
+  `why` when not answered; `ms`), `pending` (`asked`, `from`), `ignored`,
+  `already-on`, `armed` (the compaction a switch waited for, known before
+  main's next request), `passed` (a compaction or a summary that started
+  nothing, `why` `seen-late`, `skipped` or `aborted`, or an arm spent by a
+  request that went out unswitched, `why` `unrestored`), `begin`, `step` (each
+  rewritten request of main's: `given`, `sent`, `answered`), `took`, `follow`
+  (a fork that follows, its `party`, `asked`, `from` and `parent`),
+  `unrestored` (the warning above: its `party`, `given`, `why` `timed-out`,
+  `waitMs`), `suspended` (an active switch pending again: `asked`, `from`,
+  `why` `unrestored`), `unfollow` (a fork's follow ended, its `party`, `asked`,
+  `from`, `why` `unrestored`), and `ended` with its `reason` (`model-changed`,
+  `not-taken`, `asked-back`). The line a switch's begin or
   end says is on screen at its level, info or warning.
 
 ### Look back
@@ -977,7 +1041,7 @@ With the defaults, on a 200k sub-agent max context (on 1M the ceiling is
 | `~/.local/state/forward-compaction/logs/{errors,warnings,info}.jsonl` (`$PLUGIN_LOG_DIR/forward-compaction/` when set) | the plugin's errors, warnings and info: every decision event lands at its level — errors and warnings in their files, every other operational event (nudge, stored, each compaction decision, party, skill, tool-registered, look-back, the lines said) in `info.jsonl`, a held-ask streak folded into its first row and one `skips` row. Each row's `event` names what happened (never a bare `error` or `warning`), and an error or warning row's `where` names the function that raised it. One failure is one row: a tool that fails to register writes one error row and one screen line, and is tried again at each `turn.start`: at once for its first three tries, then after a wait of 30 seconds that doubles with each failure, up to 15 minutes, for the rest of the session. Rows a write could not append (the lock held past its 10-second wait, the writer killed at its 15-second bound, any failure) stay queued, order kept, and are retried with the next write: a row may be written twice, never lost or torn. Only past 2,000 held rows are the oldest dropped, and their count goes to `errors.jsonl` (`plugin-log-rows-dropped`) once a write succeeds. A lock stage or broken lock whose writer died is cleared | a level file over 20 MiB moves to `.1`, the older ones to `.2` … `.5`, the oldest of five deleted |
 | `debug.jsonl` in the same directory (with `FORWARD_COMPACTION_DEBUG` on) | a row at every step: each hook entry (hook, party, trigger, model), each `$` answer the plugin decides on (`session.usage` figures, the `agent.list` count, each `turn.step` reading with its four counts and model, `fs.stat` results), the options and variables resolved, each ratio base and each ratio, measured or not and why, with the base's characters and tokens and the characters and reading now, each wake's section sizes and files (`briefFiles` the picked brief documents, which also stand in `carried` or `notCarried`), its `start` (how many messages stand before the facts: a sub-agent's kept start and its end line, 0 without one), `kept`, `dropped`, `skills` and `storage` counts, each nudge sent or withheld and why, and every decision row whole; numbers as the API gave them | as the level files: `.1` … `.5` |
 | `issues.md` in the same directory | notes a model appends when the plugin gave it trouble, as each tool answer asks | not managed by the plugin |
-| `~/.local/state/forward-compaction/{project}/{session}/`, each sub-agent's under `agents/{agent id}/` in it; `{project}` the name of the session's project directory without a leading dot | the party's frontier, written by the plugin alone when a call changes it: `orders.json` and `data/{decisions,done,remaining,blocked,findings}.json`, each `{next_id, items: [{id, text, round, added}]}` in shown order, `round` the party's count of installed compactions when the item was added or last edited, left out at 0, `added` when the item was added, an ISO 8601 UTC time from Claude Code's clock (`$.clock.now()`), kept through an edit and left out on an item stored before it was kept (none is invented, and one that is no such time is dropped at load); `data/{objective,next}.json`, `{text}`; `storage.json`, the listed `[{name, description}]`; `storage/{name}.md`, each value; `rounds.json`, `{rounds}`, that count, written right after each install of a party that holds a list item; `floor.json`, `{"floor": N, "settled": true|false}`, the party's floor (its first reading ever, after an install the larger of its first two readings, or any lower reading than a settled one), which its nudges and the main chat's finish notice are timed from; `model-switch.json`, main's alone, `{pending?: {model, at, from?}, active?: {model, from, took?}}`, main's model switch ([A model switch](#a-model-switch)), `{}` once none is left, written over with no history; `done-earlier.md` (`doneFiled`), the done items a wake names instead of showing and every live one it held that the party has not yet read in a wake ([The wake](#the-wake)), beside `storage.json` and no storage entry; `done-earlier.json`, `{"through": N}`, the highest done number that file holds, 0 with none. What leaves goes to `history/`, which no model reads: `history/{list}.jsonl`, one line `{id, text, left, added}` (`removed` or `edited`; `added` the item's, when it has one) per value that left; `history/{objective,next}.jsonl`, one `{text}` per text replaced; `history/storage/{name}`, a storage value replaced or removed, numbered before `.md` when the name is taken; `history/unreadable/{file}`, the content of a live file that could not be parsed at start, copied there before the first write over it. An item's `added` is the only date or time a file holds: no text the plugin hands a model (a wake, a call's result or notes, a nudge or notice, `done-earlier.md`, a `look_back` result) and nothing the user's card draws shows it. At the start of a chat process or a sub-agent the party's frontier is loaded from them; every list's next number is past every number its history holds; an unreadable live file is logged and read as an empty list, its next number also past every number its own text names, and left as it is until a call changes that list; `done-earlier.md` of a done list that could not be read is left as it is with it, and its content is copied to `history/unreadable/` before the first write over it; a `done-earlier.json` that cannot be read is logged and copied there the same way, and `done-earlier.md` then holds every live done item ([The wake](#the-wake)). What left is appended to the history before the live file that no longer holds it is written. A party with no `orders.json` takes the standing orders the previous build kept in Claude Code's session state as its first numbered orders | nothing is ever deleted |
+| `~/.local/state/forward-compaction/{project}/{session}/`, each sub-agent's under `agents/{agent id}/` in it; `{project}` the name of the session's project directory without a leading dot | the party's frontier, written by the plugin alone when a call changes it: `orders.json` and `data/{decisions,done,remaining,blocked,findings}.json`, each `{next_id, items: [{id, text, round, added}]}` in shown order, `round` the party's count of installed compactions when the item was added or last edited, left out at 0, `added` when the item was added, an ISO 8601 UTC time from Claude Code's clock (`$.clock.now()`), kept through an edit and left out on an item stored before it was kept (none is invented, and one that is no such time is dropped at load); `data/{objective,next}.json`, `{text}`; `storage.json`, the listed `[{name, description}]`; `storage/{name}.md`, each value; `rounds.json`, `{rounds}`, that count, written right after each install of a party that holds a list item; `floor.json`, `{"floor": N, "settled": true|false}`, the party's floor (its first reading ever, after an install the larger of its first two readings, or any lower reading than a settled one), which its nudges and the main chat's finish notice are timed from; `model-switch.json`, main's alone, `{pending?: {model, from?, armed?}, active?: {model, from, took?}, forks?: {"{agent id}": {model, from}}}`, main's model switch and the forks that follow it ([A model switch](#a-model-switch)), `{}` once none is left, written over with no history; `done-earlier.md` (`doneFiled`), the done items a wake names instead of showing and every live one it held that the party has not yet read in a wake ([The wake](#the-wake)), beside `storage.json` and no storage entry; `done-earlier.json`, `{"through": N}`, the highest done number that file holds, 0 with none. What leaves goes to `history/`, which no model reads: `history/{list}.jsonl`, one line `{id, text, left, added}` (`removed` or `edited`; `added` the item's, when it has one) per value that left; `history/{objective,next}.jsonl`, one `{text}` per text replaced; `history/storage/{name}`, a storage value replaced or removed, numbered before `.md` when the name is taken; `history/unreadable/{file}`, the content of a live file that could not be parsed at start, copied there before the first write over it. An item's `added` is the only date or time a file holds: no text the plugin hands a model (a wake, a call's result or notes, a nudge or notice, `done-earlier.md`, a `look_back` result) and nothing the user's card draws shows it. At the start of a chat process or a sub-agent the party's frontier is loaded from them; every list's next number is past every number its history holds; an unreadable live file is logged and read as an empty list, its next number also past every number its own text names, and left as it is until a call changes that list; `done-earlier.md` of a done list that could not be read is left as it is with it, and its content is copied to `history/unreadable/` before the first write over it; a `done-earlier.json` that cannot be read is logged and copied there the same way, and `done-earlier.md` then holds every live done item ([The wake](#the-wake)). What left is appended to the history before the live file that no longer holds it is written. A party with no `orders.json` takes the standing orders the previous build kept in Claude Code's session state as its first numbered orders | nothing is ever deleted |
 | anything else | none: the recorded facts live in memory only | — |
 
 Only errors reach the screen, and the log too, besides the one line a

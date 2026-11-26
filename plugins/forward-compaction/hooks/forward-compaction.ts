@@ -25,7 +25,7 @@ import { DecisionWriteError, hookRow, sessionLogPath, runCwd, decisionAppendArgv
 import { levelRow, onScreen, pluginLogDir, PluginLogQueue, requeueRows, type PluginLogLevel, type PluginLogFields } from '../src/plugin-log';
 import { resolveOptions, subagentWindow, type OptionEnvironment, type ResolvedOptions, type SubagentWindow, readOptionVarInto } from '../src/options';
 import { ModelWindows } from '../src/model-window';
-import { switchAnswered, switchAsk, switchCompacted, switchStep, SWITCH_TRIAL, type SwitchOutcome, type SwitchTrial } from '../src/model-switch';
+import { switchAnswered, switchAsk, switchCompacted, switchFollow, switchFollowed, switchMissed, switchPassed, switchStep, switchUnrestored, SWITCH_RESTORE_WAIT_MS, SWITCH_TRIAL, type ModelSwitch, type SwitchFollow, type SwitchOutcome, type SwitchTrial } from '../src/model-switch';
 import { TOOLS, toolsToRegister, ENSURE_TOOLS_TIMEOUT_MS, END_CORE_RESERVE_MS, PENDING_BEFORE_CONFIG, nextTry, holdPending, type ToolKind } from '../src/register';
 
 // Thin adapter: every decision lives in src/. Each hook catches its own failures, logs them with context and lets the compaction through.
@@ -66,7 +66,7 @@ type State = {
   inFlight: Map<string, { party: PartyKey; tool: string }>; // Skill and Agent calls running now, by tool_use_id: the party that made each, for skill attribution and a spawn's parent.
   pendingCommand?: string; // The command main typed, until its first step: a skill it expands is main's.
   pendingSpawns: Set<string>; // agent.spawn calls running now: a skill loaded meanwhile is a preload of the one spawn.
-  knownAgents: Map<string, string>; // Sub-agents spawned here, id to type: an ask for any other agent id is the engine's own (C6).
+  knownAgents: Map<string, string>; unswitched: Set<PartyKey>; // Sub-agents spawned here, id to type: an ask for any other agent id is the engine's own (C6); parties whose request went out unswitched past main's restore's bound, until it lands (switchUnswitched).
   mainModel?: string; mainWindow?: number; // Main's model as its last step named it (a sub-agent on that model id is measured against main's window), and its window as `$.session.usage()` last reported it: main's max context unless FORWARD_COMPACTION_MAIN_MAX_CONTEXT is set.
   windows: ModelWindows; // Every other sub-agent model's window, as the Models API stated it this session.
   apiAsk?: AskPoint; breakdown?: UsageBreakdown; // Claude Code's ask point and the breakdown it was read from, at session start and each main-window read.
@@ -470,7 +470,7 @@ function lookUpWindow(st: State, $: EngineInterface, e: TurnStepInput): void {
 async function conversationStartsOver(st: State, $: EngineInterface, reason: string): Promise<void> {
   st.parties = new Parties();
   st.ledger = markStart(newLedger(), await $.clock.now(), reason);
-  for (const held of [st.inFlight, st.pendingSpawns, st.installedSince, st.restored]) held.clear();
+  for (const held of [st.inFlight, st.pendingSpawns, st.installedSince, st.restored, st.unswitched]) held.clear();
   st.pendingCommand = undefined;
 }
 
@@ -507,29 +507,33 @@ async function writeDue(st: State, $: EngineInterface, key: PartyKey, where: str
 async function switchApply(st: State, $: EngineInterface, out: SwitchOutcome, where: string): Promise<void> {
   for (const row of [...out.rows, ...(out.line !== undefined ? [out.line.row] : [])]) dbg(st, $, 'model-switch', { ...row, where });
   if (out.line !== undefined) say(st, $, `forward-compaction: ${out.line.text}`, out.line.level, { ...out.line.row, where }, true);
-  if (!out.changed) return;
-  st.parties.switched('main', out.modelSwitch);
-  await writeDue(st, $, 'main', where);
+  if (out.changed) (st.parties.switched('main', out.modelSwitch), await writeDue(st, $, 'main', where));
 }
-/** Main compacted, by any door: a switch waiting for the compaction begins from main's next request (model-switch.ts `switchCompacted`). */
-function switchAfterCompaction(st: State, $: EngineInterface, where: string): Promise<void> {
-  const out = switchCompacted(st.parties.get('main').held?.modelSwitch);
-  return out.changed ? guard(st, $, 'model switch', () => switchApply(st, $, out, where)) : Promise.resolve();
+/** Main's held switch moved at a door by a model-switch.ts decision: a compaction (`switchCompacted`, `switchPassed`) arms a waiting switch only when known before main's next request, a request gone out unswitched keeps its party on that model (`switchMissed`), a spawned fork follows (`switchFollowed`); held at once, its file write not waited on by the caller. */
+function switchDecide(st: State, $: EngineInterface, where: string, decide: (held: ModelSwitch | undefined) => SwitchOutcome): Promise<void> {
+  const out = decide(st.parties.get('main').held?.modelSwitch); return out.changed || out.rows.length > 0 ? guard(st, $, 'model switch', () => switchApply(st, $, out, where)) : Promise.resolve();
 }
-/** Main's request as it goes out: given the model main's switch names (model-switch.ts `switchStep`), else as Claude Code named it; a sub-agent's is never touched. */
-async function switchStepOf(st: State, $: EngineInterface, e: TurnStepInput): Promise<TurnStepInput> {
-  if (keyOf(e.agentId) !== 'main' || typeof e.model !== 'string') return e;
-  try { // never waits: a switch kept across a restart applies once main's restore has settled, its file written beside the request
-    if (st.restored.get('main') !== RESTORED) { void restoreKept(st, $, 'main').catch((error: unknown) => say(st, $, `forward-compaction: restoring what main kept failed: ${message(error)}; its request goes out without it`, 'error', { event: 'restore-error', where: 'turn.step', party: 'main', error: message(error) })); return e; }
-    const out = switchStep(st.parties.get('main').held?.modelSwitch, e.model);
-    void guard(st, $, 'model switch', () => switchApply(st, $, out, 'turn.step'));
+/** A compaction handed back at `session.compact`, Claude Code's own summary or the plugin's wake: main's waiting switch is armed once the result holds the compacted messages and the hook was not aborted, as an aborted dispatch went on without it (model-switch.ts `switchPassed`); its file write is not waited on. */
+async function passCompaction(st: State, $: EngineInterface, key: PartyKey, where: string, pass: () => Promise<SessionCompactResult>, signal?: AbortSignal): Promise<SessionCompactResult> {
+  const out = await pass(); if (key === 'main') void switchDecide(st, $, where, (held) => switchPassed(held, out, signal?.aborted === true)); return out;
+}
+/** A request as it goes out: main's given the model its switch names, a following fork's the model its follow in main's switch names (model-switch.ts `switchStep`), else as Claude Code named it. */
+async function switchStepOf(st: State, $: EngineInterface, e: TurnStepInput, signal: AbortSignal): Promise<TurnStepInput> {
+  const key = keyOf(e.agentId); if (typeof e.model !== 'string') return e;
+  try { // a switch or follow kept across a restart applies from the party's first request, which waits for main's restore, bounded, until one request ran past the bound; a switch file write is never waited on
+    if (st.unswitched.size > 0 && st.restored.get('main') !== RESTORED) return (switchUnswitched(st, $, key), e); // past the bound once: no later request waits, each noted, nothing said
+    const unrestored = st.restored.get('main') === RESTORED ? undefined : switchUnrestored(key, e.model, await bounded(restoreKept(st, $, 'main').catch((error: unknown) => say(st, $, `forward-compaction: restoring what main kept failed: ${message(error)}; its request goes on with what its files restored`, 'error', { event: 'restore-error', where: 'turn.step', party: 'main', error: message(error) })), SWITCH_RESTORE_WAIT_MS, (ms, fn) => afterOrNever(st, $, ms, fn, "main's restore"), signal));
+    if (unrestored !== undefined) return (unrestored.line !== undefined && (say(st, $, `forward-compaction: ${unrestored.line.text}`, 'warning', { ...unrestored.line.row, where: 'turn.step' }), switchUnswitched(st, $, key)), e);
+    const out = switchStep(st.parties.get('main').held?.modelSwitch, e.model, key === 'main' ? undefined : e.agentId); void guard(st, $, 'model switch', () => switchApply(st, $, out, 'turn.step'));
     return out.model === e.model ? e : { ...e, model: out.model };
   } catch (error) {
-    say(st, $, `forward-compaction: main's model switch failed: ${message(error)}; its request goes out on ${e.model}`, 'error', { event: 'model-switch-error', where: 'turn.step', party: 'main', error: message(error) });
+    say(st, $, `forward-compaction: ${key}'s model switch failed: ${message(error)}; its request goes out on ${e.model}`, 'error', { event: 'model-switch-error', where: 'turn.step', party: key, error: message(error) });
     return e;
   }
 }
-/** Main's trial request naming `model` (model-switch.ts `SWITCH_TRIAL`): Claude Code's result, or the message it rejected with (a blocked model, or a Claude Code without `$.model.complete`), and its milliseconds. */
+/** A party's request went out unswitched past main's restore's bound: noted; the first note waits for that restore to land (failed too, its error said by the wait's own catch), then model-switch.ts `switchMissed` keeps every noted party on the model it went out on. A restore a new conversation cleared marks nothing: main's is not RESTORED then, or the set is empty. */
+const switchUnswitched = (st: State, $: EngineInterface, key: PartyKey): void => void (st.unswitched.size === 0 && restoreKept(st, $, 'main').catch(() => undefined).then(() => { if (st.restored.get('main') !== RESTORED || st.unswitched.size === 0) return; const parties = [...st.unswitched]; st.unswitched.clear(); return switchDecide(st, $, 'turn.step', (held) => switchMissed(held, parties)); }), st.unswitched.add(key));
+
 async function switchTry($: EngineInterface, model: string): Promise<SwitchTrial> {
   const t0 = await $.clock.now(), r = await Promise.resolve().then(() => $.model.complete({ model, ...SWITCH_TRIAL })).then((result) => ({ result }), (error: unknown) => ({ rejected: message(error) }));
   return { ...r, ms: (await $.clock.now()) - t0 };
@@ -649,7 +653,6 @@ function installed(st: State, $: EngineInterface, key: string, landing: Landing 
   if (signal?.aborted) return;
   land(st, $, key, st.parties.installed(key, landing));
   st.installedSince.add(key);
-  if (key === 'main') void switchAfterCompaction(st, $, 'installed'); // a switch waiting for this compaction begins from main's next request
 }
 
 /** M2: an installed wake's landed line and `landed` row, at the party's first reading after it (`after`), or at its end with `after` unknown; `usage`, that first request's, puts in the row what it read from the prompt cache and what it wrote (a kept start is read, kept.ts `keptStart`). The wake's folded row draws the sizes once measured (wake-row.ts `wakeRow`). A chosen frontier's line is a routine info row in the logs; a mechanical wake lost the model's frontier, so the user sees it. */
@@ -682,8 +685,7 @@ async function compactAsk(st: State, $: EngineInterface, e: SessionCompactInput,
     else (st.parties.asked(key, action.decision), st.installedSince.add(key)); // Claude Code's own summary: its fall is seen
     record(st, $, row);
     if (action.decision === 'native' && action.why !== 'manual') say(st, $, `forward-compaction: ${label} ${action.why === 'ceiling' ? `reached its ceiling ${k(m!.ceiling)}` : 'was too long for its request'} with no frontier; Claude Code's own summary ran (FORWARD_COMPACTION_CEILING_NATIVE=1).`, 'info', { event: 'native', where: 'compactAsk', party: key, why: action.why });
-    if (kind === 'main') await switchAfterCompaction(st, $, 'compactAsk'); // Claude Code's own summary compacts main too
-    return pass();
+    return passCompaction(st, $, key, 'compactAsk', pass, signal); // Claude Code's own summary compacts main too, once it stands
   }
   if (action.action === 'skip') {
     // A precompute is no ask for a frontier: only a held one makes the next ask reactive (D8).
@@ -704,7 +706,7 @@ async function compactAsk(st: State, $: EngineInterface, e: SessionCompactInput,
   installed(st, $, key, install ? { kind: 'frontier', label, before: tokens, row: wakeHead(wake.messages), chars: shared.frontier.length, facts: wake.facts, kept: wake.kept, dropped: wake.dropped } : { kind: 'mechanical', label, before: tokens, row: wakeHead(wake.messages), tokens, ceiling: m?.ceiling ?? 0 }, signal); await writeDue(st, $, key, 'compactAsk'); // the round count the install moved
   if (install) for (const w of installWarnings(label, stored!.toolUseId, missing, forked !== undefined || splitAtCall(e.messages, stored!.toolUseId) !== undefined)) say(st, $, w.line, 'warning', { ...w.row, where: 'compactAsk', party: key });
   record(st, $, { ...row, ...(forked !== undefined ? { decision: 'install', why: 'fork' } : {}), facts: wake.facts, kept: wake.kept, dropped: wake.dropped, skills: wake.skills, frontier: { chars: size.chars, items: size.items }, storage: wake.storage, ...(install && missing.length > 0 ? { incomplete: missing } : {}) });
-  return { messages: wake.messages, ...(tokens !== undefined ? { tokensBefore: tokens } : {}) }; // tokensAfter: the next reading measures it (M2)
+  return passCompaction(st, $, key, 'compactAsk', async () => ({ messages: wake.messages, ...(tokens !== undefined ? { tokensBefore: tokens } : {}) }), signal); // tokensAfter: the next reading measures it (M2); a switch waiting for this compaction is armed as it is handed back
 }
 
 /** A party's live-window characters through `$.session.messages({ as: 'api' })` (main: no agentId), what its reading counts; a denied or failed read is said in its row and is no count. */
@@ -730,11 +732,10 @@ async function compactFailed(st: State, $: EngineInterface, e: SessionCompactInp
     const wake = mechanicalWake({ messages: e.messages, party: key === 'main' ? 'main' : 'subagent', tokens, askPoint: m?.askPoint ?? 0, charsPerToken: ratioOf(st, $, key, 'compact', await partyChars(st, $, key, e.agentId), m), now: Date.now(), facts: (kept) => factsFor(st.ledger, key, { keptTexts: kept }), ...heldShown(party, st.config.doneMaxChars), pins: st.config.keepSkills, tool: st.toolNames.forward_compaction, logDir: st.pluginLogDir, reason: m === undefined ? { kind: 'reactive' } : { kind: 'ceiling', ceiling: m.ceiling } });
     installed(st, $, key, undefined, signal); // the error line below is said now; no landing waits
     say(st, $, `${said}; a mechanical wake was installed.`, 'error', { event: 'compact', where: 'compactFailed', party: key, decision: 'error', error: message(error), kept: wake.kept, dropped: wake.dropped, skills: wake.skills, storage: wake.storage });
-    return { messages: wake.messages, ...(tokens !== undefined ? { tokensBefore: tokens } : {}) };
+    return passCompaction(st, $, key, 'compactFailed', async () => ({ messages: wake.messages, ...(tokens !== undefined ? { tokensBefore: tokens } : {}) }), signal);
   } catch (again) {
     say(st, $, `${said}; Claude Code's own summary ran.`, 'error', { event: 'compact', where: 'compactFailed', party: key, decision: 'error', error: message(error), fallback: message(again) });
-    if (key === 'main') await switchAfterCompaction(st, $, 'compactFailed');
-    return pass();
+    return passCompaction(st, $, key, 'compactFailed', pass, signal);
   }
 }
 
@@ -771,7 +772,7 @@ async function readStep(st: State, $: EngineInterface, e: TurnStepInput, r: Turn
   if (unseenCompaction(party.reading, tokens, st.installedSince.has(key))) {
     say(st, $, `forward-compaction: ${party.label}'s context fell from ${k(party.reading!)} to ${k(tokens)} with no compaction this plugin handled (another plugin or Claude Code compacted it).`, 'warning', { event: 'unseen-compaction', where: 'readStep', party: key, before: party.reading, after: tokens });
     st.parties.rebase(key, undefined);
-    if (key === 'main') await switchAfterCompaction(st, $, 'readStep'); // seen one request late, so a switch waiting for it begins one request late
+    if (key === 'main') await switchDecide(st, $, 'readStep', (held) => switchCompacted(held, 'late')); // seen one request late: a switch waiting for it starts nothing
   }
   const m = marks(st, key), from = party.reading ?? null, absorb = party.absorbNext, floorBefore = party.held?.floor, settlingBefore = party.held?.settling;
   land(st, $, key, st.parties.read(key, tokens, m?.start === undefined ? 0 : nudgeLevel(tokens, m.start, m.every)), tokens, u); // with no absolute start a wake's first reading is the new floor: it has no level to absorb
@@ -833,7 +834,7 @@ async function keepKept(st: State, $: EngineInterface, party: PartyKey): Promise
 }
 
 /** What a party kept before a restart, put back once per process (the first caller's promise, which every other awaits): its prompts and skills from `$.state`, its held frontier from its files; before its first write, so a write never drops it, before its next call is applied, and before its wake. */
-const RESTORED = Promise.resolve(); // a party's settled restore in `st.restored`: switchStepOf switches main only once it is
+const RESTORED = Promise.resolve(); // a party's settled restore in `st.restored`: main's request waits for main's until it is (switchStepOf)
 function restoreKept(st: State, $: EngineInterface, party: PartyKey): Promise<void> {
   let restoring = st.restored.get(party); const settled = (): void => void (st.restored.get(party) === restoring && st.restored.set(party, RESTORED)); // a restore cleared by a new conversation marks nothing
   if (restoring === undefined) st.restored.set(party, (restoring = restoreParty(st, $, party).then(settled, (error: unknown) => { settled(); throw error; }))); // a failure is said once, by its caller; later calls go on without it
@@ -887,9 +888,10 @@ async function noteSkill(st: State, $: EngineInterface, e: SkillPromptInput): Pr
 }
 
 /** A spawned agent's brief is its first fact, and the skills it preloaded become its own; a resume's prompt is a message delivered to it, never its brief. */
-async function noteSpawn(st: State, $: EngineInterface, e: AgentSpawnInput, r: AgentSpawnResult): Promise<void> {
+async function noteSpawn(st: State, $: EngineInterface, e: AgentSpawnInput, r: AgentSpawnResult, follow: SwitchFollow | undefined | Promise<SwitchFollow | undefined>): Promise<void> {
   const id = r?.agentId;
   if (typeof id !== 'string' || id === '') return;
+  const followed = (f: SwitchFollow | undefined): void => void (f !== undefined && switchDecide(st, $, 'agent.spawn', (held) => switchFollowed(held, id, f, e.parentAgentId))); if (follow instanceof Promise) void follow.then(followed); else followed(follow); // before its first request: the spawn resolves its model, so its loop starts after this hook; a follow taken as main's restore lands is held before a request that waited for that restore goes on
   const key: PartyKey = `agent:${id}`;
   const fact = e.resume !== undefined ? (e.prompt === '' ? undefined : { kind: 'received' as const, party: key, at: await $.clock.now(), origin: 'resume', text: e.prompt }) : { kind: 'brief' as const, party: key, at: await $.clock.now(), text: e.prompt, description: e.description, subagentType: e.subagentType, spawnedBy: st.inFlight.get(e.tool_use_id)?.party ?? 'unknown' };
   st.ledger = resolveSpawn(fact === undefined ? st.ledger : addEntry(st.ledger, fact), e.tool_use_id, id);
@@ -912,7 +914,7 @@ export const register: Register = (on: On, options: PluginOptions) => {
     warned: new Set(), logFailures: new Set(),
     pending: [], rowsWriting: 0, levelRowsWriting: 0, levelLinks: 0, levelBatched: 0, skips: new SkipFold(), levelSkips: new SkipFold(), writing: Promise.resolve(),
     parties: new Parties(), ledger: newLedger(), restored: new Map(),
-    inFlight: new Map(), pendingSpawns: new Set(), knownAgents: new Map(), installedSince: new Set(), calls: new Map(), landed: new Map(), windows: new ModelWindows(),
+    inFlight: new Map(), pendingSpawns: new Set(), knownAgents: new Map(), unswitched: new Set(), installedSince: new Set(), calls: new Map(), landed: new Map(), windows: new ModelWindows(),
   };
 
   on('session.start', async ($, e, next) => {
@@ -953,10 +955,10 @@ export const register: Register = (on: On, options: PluginOptions) => {
 
   on('turn.step', async function* ($, e, next) {
     lookUpWindow(st, $, e);
-    const sent = await switchStepOf(st, $, e); // main's request given the model its switch names; a sub-agent's never
+    const sent = await switchStepOf(st, $, e, next.signal); // main's request given the model its switch names, a following fork's the same; any other sub-agent's never
     const r = yield* next(sent);
     await guard(st, $, 'turn.step', () => readStep(st, $, e, r, next.signal), e);
-    if (sent !== e) await guard(st, $, 'model switch', () => switchApply(st, $, switchAnswered(st.parties.get('main').held?.modelSwitch, e.model, r?.usage?.model ?? undefined), 'turn.step'));
+    if (sent !== e && keyOf(e.agentId) === 'main') await guard(st, $, 'model switch', () => switchApply(st, $, switchAnswered(st.parties.get('main').held?.modelSwitch, e.model, r?.usage?.model ?? undefined), 'turn.step'));
     return r;
   });
 
@@ -989,14 +991,14 @@ export const register: Register = (on: On, options: PluginOptions) => {
   on('skill.prompt', async ($, e, next) => (await guard(st, $, 'skill.prompt', () => noteSkill(st, $, e), e), next(e)));
 
   on('agent.spawn', async ($, e, next) => {
-    st.pendingSpawns.add(e.tool_use_id);
+    st.pendingSpawns.add(e.tool_use_id); const followNow = (): SwitchFollow | undefined => (st.unswitched.has(keyOf(e.parentAgentId)) ? undefined : switchFollow(st.parties.get('main').held?.modelSwitch, e)), follow = st.restored.get('main') === RESTORED ? followNow() : restoreKept(st, $, 'main').then(followNow, (error: unknown) => (say(st, $, `forward-compaction: restoring what main kept failed: ${message(error)}; an agent spawned meanwhile follows what its files restored`, 'error', { event: 'restore-error', where: 'agent.spawn', party: 'main', error: message(error) }), followNow())); // taken as the spawn starts: a fork follows the switch its parent's context is cached on now. After a plugin reload a spawn can be the first hook, main's kept switch not restored yet: the follow is then taken as that restore lands (failed too), without the spawn waiting, and a parent whose request went out unswitched meanwhile is on Claude Code's model, so its fork follows nothing
     let r: AgentSpawnResult;
     try {
       r = await next(e);
     } finally {
       st.pendingSpawns.delete(e.tool_use_id);
     }
-    await guard(st, $, 'agent.spawn', () => noteSpawn(st, $, e, r), e);
+    await guard(st, $, 'agent.spawn', () => noteSpawn(st, $, e, r, follow), e);
     return r;
   });
 
