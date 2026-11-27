@@ -58,14 +58,21 @@ export const MODELS: Record<string, number> = { 'claude-fable-5-2': 1_000_000, '
 /** The Models API's error body, as recorded: a model it does not list (404), a request with no credential (401). */
 const apiError = (type: string, message: string): string => JSON.stringify({ type: 'error', error: { type, message }, request_id: 'req_fake' });
 
-/** The `on` a fake hands `register`. With a matcher the hook runs only for an event whose fields equal the matcher's, as the engine narrows; any other event passes beneath. */
+/** The `on` a fake hands `register`. With a matcher the hook runs only for an event whose fields equal the matcher's, an array any of its values, as the engine narrows; any other event passes beneath. */
 export function onInto(hooks: Map<string, Fn>): any {
   return (name: string, a: Fn | Record<string, unknown>, b?: Fn): void => {
     if (b === undefined) return void hooks.set(name, a as Fn);
     const matcher = Object.entries(a), beneath = hooks.get(name); // a second matched hook on one event leaves the first in place beneath it
-    hooks.set(name, ($: unknown, e: unknown, next: Fn) => (matcher.every(([key, value]) => (e as Record<string, unknown>)[key] === value) ? b($, e, next) : beneath !== undefined ? beneath($, e, next) : next(e)));
+    const hit = (value: unknown, want: unknown): boolean => (Array.isArray(want) ? want.includes(value) : value === want);
+    hooks.set(name, ($: unknown, e: unknown, next: Fn) => (matcher.every(([key, want]) => hit((e as Record<string, unknown>)[key], want)) ? b($, e, next) : beneath !== undefined ? beneath($, e, next) : next(e)));
   };
 }
+
+/** The user typing a prompt into idle main, as Claude Code runs it: `prompt.submit`, inside whose `next` the prompt enters the conversation (`session.append` door `prompt`). */
+export const typePrompt = (f: { dispatch: (event: string, e: unknown, impl?: Fn) => Promise<any> }, text: string): Promise<unknown> =>
+  f.dispatch('prompt.submit', { text, origin: { kind: 'composer' } }, async () => (
+    await f.dispatch('session.append', { door: 'prompt', origin: { kind: 'composer' }, uuid: `u-${text}`, message: { type: 'user', role: 'user', content: [{ type: 'text', text }] } }),
+    { text, origin: { kind: 'composer' } }));
 
 export function fakeEngine(script: Script = {}) {
   const home = script.home ?? mkdtempSync(join(tmpdir(), 'fc-engine-'));

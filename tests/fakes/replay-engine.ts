@@ -15,7 +15,7 @@ import type { PATHS, Row } from '../../scripts/replay/recorder.ts';
 import { STATE_DIR } from '../../plugins/forward-compaction/src/disk.ts';
 
 /** Options added after the live fixture was recorded: unset in a replay of a recording no row of which reads them. A name leaves the list when `npm run replay:record` records it. */
-export const OPTIONS_SINCE_RECORDING: readonly string[] = ['FORWARD_COMPACTION_FRONTIER_WARN_CHARS', 'FORWARD_COMPACTION_DONE_MAX_CHARS', 'FORWARD_COMPACTION_MAIN_NUDGE_ROOM', 'FORWARD_COMPACTION_SUBAGENT_NUDGE_ROOM', 'FORWARD_COMPACTION_SUBAGENT_CALL_COMPACTS', 'FORWARD_COMPACTION_MAIN_FORK', 'FORWARD_COMPACTION_MAIN_FORK_EFFORT'];
+export const OPTIONS_SINCE_RECORDING: readonly string[] = [];
 /** The session's directory a recording made before the plugin read it answers: the plugin only names its own folder after it. */
 export const REPLAY_ROOT = '/replay/project';
 

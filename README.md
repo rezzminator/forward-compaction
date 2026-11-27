@@ -7,7 +7,7 @@
 [![Claude Code plugin](https://img.shields.io/badge/Claude%20Code-plugin-D97757)](https://docs.claude.com/en/docs/claude-code/plugins)
 [![Version](https://img.shields.io/badge/version-2.7.0-blue)](./CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
-[![Tests](https://img.shields.io/badge/tests-1135%20passing-brightgreen)](#development)
+[![Tests](https://img.shields.io/badge/tests-1155%20passing-brightgreen)](#development)
 [![Built with Professor](https://img.shields.io/badge/built%20with-Professor-8A2BE2)](https://github.com/rezzminator/professor)
 
 </div>
@@ -131,7 +131,7 @@ The main chat also writes its handoff when its whole work is finished, before it
 After a compaction the model's context holds, oldest first:
 
 1. **A sub-agent's start, kept in place:** the messages its transcript opens with, its brief and what Claude Code attached to it, handed back untouched, then one fixed line saying its context was compacted. A compaction that follows another within the prompt cache's lifetime reads this start from the cache instead of writing it again. The main chat has none.
-2. **The facts the plugin recorded as they happened:** your standing orders; anything that arrived after the handoff call; the plan file when in plan mode; for a sub-agent, the documents its brief names (below); your ten newest messages and every answer you gave (a sub-agent's brief is the first message above, not repeated here); the skills in use, each listed by name and description, its text carried only when it is pinned; the agents and background shells; the shell commands it ran; the files it touched; the task list; any files the handoff asked to carry; and the model's storage, each file by name and description under the folder it reads them from.
+2. **The facts the plugin recorded as they happened:** your standing orders; anything that arrived after the handoff call; the plan file when in plan mode; for a sub-agent, the documents its brief names (below); your ten newest messages, each once it reached the model (one you pull back from the queue never does), and every answer you gave (a sub-agent's brief is the first message above, not repeated here); the skills in use, each listed by name and description, its text carried only when it is pinned; the agents and background shells; the shell commands it ran; the files it touched; the task list; any files the handoff asked to carry; and the model's storage, each file by name and description under the folder it reads them from.
 3. **The handoff as the plugin holds it**, each list item under its number, with an instruction to continue from its next action and to send only changes in the next call.
 4. **The messages after the call, word for word**, as many as fit. Any dropped are named as not carried.
 

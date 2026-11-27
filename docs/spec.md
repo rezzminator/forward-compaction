@@ -16,6 +16,16 @@ This is the full behaviour of the plugin: every rule, limit and edge case the co
   chat) or the brief (sub-agent), the messages delivered to it, the skills
   loaded, the agents and the background shells come from typed hook events as
   they happened. Nothing is grepped out of a transcript or re-read from disk.
+  A user's message is recorded once it enters main's conversation, from the
+  row Claude Code appends (`session.append`, door `prompt`, `delivery` or
+  `command`; ledger.ts `enteredOf`), never when Enter is pressed: a prompt
+  typed over a running turn only queues, so one pulled back from the queue is
+  never said, and one still queued when a compaction installs is not in that
+  wake and is recorded once Claude Code delivers it. Each is recorded at the
+  time its row entered, so the wake's oldest-first list is in the order the
+  model read them; a prompt or delivery the plugin holds no submission for (one
+  a plugin reload forgot) is recorded as the model read it, a delivery's
+  reminder whole.
   Each party's newest prompts (the user's ten newest typed messages and every
   answer they gave to an AskUserQuestion, or a sub-agent's brief and the ten
   newest delivered to it) and the skills it loaded

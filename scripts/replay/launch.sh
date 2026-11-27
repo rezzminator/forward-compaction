@@ -17,7 +17,9 @@ got=$("$bin" --version | sed -n 's/^\([0-9][0-9.]*\).*/\1/p')
 
 "$here/assemble.sh" "$root" >/dev/null
 node "$here/filler.mjs" "$root/filler" >/dev/null
-# Every plugin the seat enables is off for the recording, so only forward-compaction's hooks see the session (O4).
+# Every plugin the seat enables is off for the recording, so only forward-compaction's hooks see the session (O4), and
+# every FORWARD_COMPACTION_* option the seat's env sets is blank (absent) unless settings.json sets it: the recording runs
+# on the plugin's defaults and settings.json alone, whatever the seat.
 config=${CLAUDE_CONFIG_DIR:-$HOME/.claude}
 node -e '
   const [base, seat, out] = process.argv.slice(1);
@@ -25,6 +27,8 @@ node -e '
   const read = (p) => { try { return JSON.parse(fs.readFileSync(p, "utf8")); } catch (e) { if (e.code === "ENOENT") return {}; throw new Error(`${p}: ${e.message}`); } };
   const settings = read(base);
   settings.enabledPlugins = Object.fromEntries(Object.keys(read(seat).enabledPlugins ?? {}).map((id) => [id, false]));
+  const blank = Object.keys(read(seat).env ?? {}).filter((name) => name.startsWith("FORWARD_COMPACTION_"));
+  settings.env = { ...Object.fromEntries(blank.map((name) => [name, ""])), ...settings.env };
   fs.writeFileSync(out, JSON.stringify(settings, null, 2) + "\n");
 ' "$here/settings.json" "$config/settings.json" "$root/settings.json"
 

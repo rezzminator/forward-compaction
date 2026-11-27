@@ -7,7 +7,7 @@ import { absent, DONE_EARLIER_FILES, loadParty, partyRoot, notSaved, NO_FOLDER, 
 import { storageApply, storageHeld } from '../src/storage';
 import { keptOrders } from '../src/orders';
 import { answersOf, workOf, type CallAnswer } from '../src/work';
-import { newLedger, markStart, addEntry, deliveryOf, runStartOf, resolveSpawn, attributeSkill, shellsOf, factsFor, promptsKept, restorePrompts, skillsKept, restoreSkills, isUserOrigin, keyOf, originKind, type Ledger, type PartyKey } from '../src/ledger';
+import { newLedger, markStart, addEntry, deliveryOf, enteredOf, holdSubmitted, runStartOf, resolveSpawn, attributeSkill, shellsOf, factsFor, promptsKept, restorePrompts, skillsKept, restoreSkills, isUserOrigin, keyOf, originKind, type Ledger, type PartyKey, type Submitted } from '../src/ledger';
 import { splitAtCall } from '../src/kept';
 import { buildWake, forkWake, mechanicalWake, landedLine, landedShort, recentFiles, type AgentRow, type Landing } from '../src/wake';
 import { briefFiles, readBriefFiles } from '../src/brief-files';
@@ -64,7 +64,7 @@ type State = {
   writing: Promise<void>;
   parties: Parties; ledger: Ledger;
   inFlight: Map<string, { party: PartyKey; tool: string }>; // Skill and Agent calls running now, by tool_use_id: the party that made each, for skill attribution and a spawn's parent.
-  pendingCommand?: string; // The command main typed, until its first step: a skill it expands is main's.
+  pendingCommand?: string; submitted: Submitted[]; // The command main typed, until its first step: a skill it expands is main's; what the user submitted that has not entered main's conversation yet, oldest first (ledger.ts `enteredOf`), in memory alone.
   pendingSpawns: Set<string>; // agent.spawn calls running now: a skill loaded meanwhile is a preload of the one spawn.
   knownAgents: Map<string, string>; unswitched: Set<PartyKey>; // Sub-agents spawned here, id to type: an ask for any other agent id is the engine's own (C6); parties whose request went out unswitched past main's restore's bound, until it lands (switchUnswitched).
   mainModel?: string; mainWindow?: number; // Main's model as its last step named it (a sub-agent on that model id is measured against main's window), and its window as `$.session.usage()` last reported it: main's max context unless FORWARD_COMPACTION_MAIN_MAX_CONTEXT is set.
@@ -804,16 +804,14 @@ async function turnEnds(st: State, $: EngineInterface, e: TurnCompleteInput): Pr
   st.parties.turnEnded('main'); // after the turn-end install, which marks this turn: the next turn's end stays free to install
 }
 
-/** What the user typed is a fact of main's; a message from anywhere else is a notice. */
+/** What the user submits is held until it enters main's conversation (noteAppend), as Enter only queues a prompt typed over a running turn; anyone else's is a notice; the command typed is named at Enter. */
 async function noteSubmit(st: State, $: EngineInterface, e: PromptSubmitInput): Promise<void> {
   if (e.isMeta) return;
   const at = await $.clock.now();
   const origin = originKind(e.origin);
   st.pendingCommand = e.command?.name;
-  st.ledger = isUserOrigin(origin)
-    ? addEntry(st.ledger, { kind: 'user', party: 'main', at, text: e.text, ...(e.command ? { command: e.command.name } : {}) })
-    : addEntry(st.ledger, { kind: 'notice', party: 'main', at, origin, text: e.text });
-  if (isUserOrigin(origin)) await keepKept(st, $, 'main');
+  if (isUserOrigin(origin)) st.submitted = holdSubmitted(st.submitted, { text: e.text, ...(e.command ? { command: e.command.name } : {}) });
+  else st.ledger = addEntry(st.ledger, { kind: 'notice', party: 'main', at, origin, text: e.text });
 }
 
 /** The files a finished call touched and the task list it set, as the party's work (src/work.ts); main's answered AskUserQuestion, as the user's words. */
@@ -871,11 +869,13 @@ async function noteRun(st: State, $: EngineInterface, e: TurnStartInput): Promis
   if (fact !== undefined) (st.ledger = addEntry(st.ledger, fact), await keepKept(st, $, key));
 }
 
-/** A row delivered into a running sub-agent mid-turn (a child agent's return, a coordinator's note), recorded as the model reads it. */
-async function noteDelivery(st: State, $: EngineInterface, e: SessionAppendInput): Promise<void> {
-  const fact = deliveryOf(e, await $.clock.now());
-  dbg(st, $, 'delivery', { agentId: e.agentId ?? null, origin: originKind(e.origin), uuid: e.uuid, recorded: fact !== undefined });
-  if (fact !== undefined) (st.ledger = addEntry(st.ledger, fact), await keepKept(st, $, keyOf(e.agentId)));
+/** A row entering a conversation: main's, the user's prompt it is (ledger.ts `enteredOf`); one delivered into a running sub-agent mid-turn (a child's return, a coordinator's note), what it received; each recorded once, as it entered. */
+async function noteAppend(st: State, $: EngineInterface, e: SessionAppendInput): Promise<void> {
+  const now = await $.clock.now(), main = keyOf(e.agentId) === 'main';
+  const { entry, held } = main ? enteredOf(st.submitted, e, now) : { entry: e.door === 'delivery' ? deliveryOf(e, now) : undefined, held: st.submitted };
+  st.submitted = held;
+  dbg(st, $, main ? 'entry' : 'delivery', { door: e.door, agentId: e.agentId ?? null, origin: originKind(e.origin), uuid: e.uuid, recorded: entry !== undefined });
+  if (entry !== undefined) (st.ledger = addEntry(st.ledger, entry), await keepKept(st, $, keyOf(e.agentId)));
 }
 
 /** D5: the party a skill belongs to, from the calls in flight around it (the event names none). */
@@ -914,7 +914,7 @@ export const register: Register = (on: On, options: PluginOptions) => {
     warned: new Set(), logFailures: new Set(),
     pending: [], rowsWriting: 0, levelRowsWriting: 0, levelLinks: 0, levelBatched: 0, skips: new SkipFold(), levelSkips: new SkipFold(), writing: Promise.resolve(),
     parties: new Parties(), ledger: newLedger(), restored: new Map(),
-    inFlight: new Map(), pendingSpawns: new Set(), knownAgents: new Map(), unswitched: new Set(), installedSince: new Set(), calls: new Map(), landed: new Map(), windows: new ModelWindows(),
+    inFlight: new Map(), submitted: [], pendingSpawns: new Set(), knownAgents: new Map(), unswitched: new Set(), installedSince: new Set(), calls: new Map(), landed: new Map(), windows: new ModelWindows(),
   };
 
   on('session.start', async ($, e, next) => {
@@ -980,7 +980,7 @@ export const register: Register = (on: On, options: PluginOptions) => {
 
   on('prompt.submit', async ($, e, next) => (await guard(st, $, 'prompt.submit', () => noteSubmit(st, $, e), e), next(e)));
 
-  on('session.append', { door: 'delivery' }, async ($, e, next) => (await guard(st, $, 'session.append', () => noteDelivery(st, $, e), e), next(e)));
+  on('session.append', { door: ['delivery', 'prompt', 'command'] }, async ($, e, next) => (await guard(st, $, 'session.append', () => noteAppend(st, $, e), e), next(e)));
 
   // A plan-mode row names plan mode and the plan file for its party (plan.ts `planFrom`); every attachment passes on untouched.
   on('prompt.attachment', async ($, e, next) => {

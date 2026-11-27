@@ -261,7 +261,7 @@ async function* invokeSteps(hook: string, $: EngineInterface, e: unknown, next: 
 export const RECORDED = ['session.start', 'tool.call', 'session.compact', 'turn.step', 'turn.start', 'turn.complete', 'prompt.submit', 'prompt.attachment', 'session.append', 'skill.prompt', 'agent.spawn', 'classic.Stop', 'classic.SubagentStop', 'session.end'] as const;
 let unrecorded: string[] = [];
 /** The recorded events the plugin registers under a matcher, each recorded under that same matcher: what the engine narrows to is what the recording holds. */
-export const MATCHED: Partial<Record<(typeof RECORDED)[number], Record<string, string>>> = { 'session.append': { door: 'delivery' } };
+export const MATCHED: Partial<Record<(typeof RECORDED)[number], Record<string, string | readonly string[]>>> = { 'session.append': { door: ['delivery', 'prompt', 'command'] } };
 /** The plugin's draw hooks reach the engine as registered and are never recorded: a draw decides nothing a replay holds, and tests/wake-row.test.ts and tests/call-row.test.ts hold what they draw. */
 export const DRAWN = { event: 'ui.render', matchers: [{ component: 'UserMessage' }, { component: 'ToolUse' }, { component: 'ToolResult' }] } as const;
 const draws = new Map<string, (...args: any[]) => any>();
@@ -289,7 +289,7 @@ export const register: Register = (on: On, options) => {
   on('turn.complete', async ($, e, next) => invoke('turn.complete', $, e, next) as any);
   on('prompt.submit', async ($, e, next) => invoke('prompt.submit', $, e, next) as any);
   on('prompt.attachment', async ($, e, next) => invoke('prompt.attachment', $, e, next) as any);
-  on('session.append', { door: 'delivery' }, async ($, e, next) => invoke('session.append', $, e, next) as any);
+  on('session.append', { door: ['delivery', 'prompt', 'command'] }, async ($, e, next) => invoke('session.append', $, e, next) as any);
   on('skill.prompt', async ($, e, next) => invoke('skill.prompt', $, e, next) as any);
   on('agent.spawn', async ($, e, next) => invoke('agent.spawn', $, e, next) as any);
   on('classic.Stop', async ($, e, next) => invoke('classic.Stop', $, e, next) as any);
