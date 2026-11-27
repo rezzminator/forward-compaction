@@ -22,7 +22,7 @@ export type StoredFrontier = {
   seq: number;
   /** Whether a door installs it (`Parties.compacts`): a call made before the party's context reached where a notice goes only changes its held frontier, and nothing compacts. */
   compacts: boolean;
-  /** The call arrived broken or left the frontier without its objective or next (frontier.ts `callWaits`): one automatic ask is held before it installs (decide.ts `decide`), and `waited` ends the wait. */
+  /** The call ended at a broken field or left the frontier without its objective or next (frontier.ts `callWaits`): one automatic ask is held before it installs (decide.ts `decide`), and `waited` ends the wait. */
   waits?: boolean;
 };
 

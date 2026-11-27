@@ -4,7 +4,7 @@
 import { k, andList } from './nudge';
 import type { WakeFile } from './wake';
 import { LISTS, listApply, textApply, TEXTS, type Held, type Left, type ListCount, type ListName, type TextName } from './lists';
-import { repairJson } from './repair';
+import { repairJson, unparsedCall } from './repair';
 
 /** The tool's name as registered; the model sees `mcp__forward-compaction__forward_compaction`. */
 export const FORWARD_TOOL = 'forward_compaction';
@@ -105,8 +105,10 @@ export type ParsedCall = {
   /** The place in the call's `load_files` of each entry of `loadFiles`, so a note on one names the entry the model sent. */
   loadAt: number[];
   notes: string[];
-  /** The fields that arrived as text whose JSON was broken and was repaired; absent when none. A broken field can end its call early (`callWaits`). */
+  /** The fields that arrived as text whose JSON was broken and was repaired; absent when none. */
   broken?: string[];
+  /** The call's last argument is one of `broken`, or its whole input arrived unparsed and its text reads as cut (`parseCall`): the model's markup may have closed the call there, so what it meant to send after it never arrived (`callWaits`). A broken field with an argument after it ended nothing; absent then. */
+  endedBroken?: true;
   /** The call's `model` as sent, read by the adapter's model switch (model-switch.ts `switchAsk`); absent when the call sent none. */
   model?: unknown;
 };
@@ -132,10 +134,12 @@ const FOLD = /<\/(\w+)>\s*<parameter name="(\w+)">/g;
  * early and folded the parameters after it into its text. Each folded one is taken back out as its own field (a list,
  * storage or load_files one parsed as JSON, a list one that is no JSON kept as text), one note each. One that cannot be
  * (no field, one the call also sent, or a storage or load_files one that is not JSON) stays where it arrived, under its name.
+ * `last`: the parameter taken out of the end of the input's last argument, the one the model wrote last (`ParsedCall.endedBroken`).
  */
-function unfold(input: Record<string, unknown>): { fields: Record<string, unknown>; notes: string[] } {
-  const fields = { ...input };
+function unfold(input: Record<string, unknown>): { fields: Record<string, unknown>; notes: string[]; last?: string } {
+  const fields = { ...input }, end = Object.keys(input).at(-1);
   const notes: string[] = [];
+  let last: string | undefined; // the input's last argument, when its text ends on a parameter taken out: the one the model wrote last
   const known = [...FIELDS, ...OLD_FIELDS];
   for (const key of known) {
     const value = fields[key];
@@ -150,22 +154,22 @@ function unfold(input: Record<string, unknown>): { fields: Record<string, unknow
       const at = `${name} arrived inside ${key}, after "</${key}>"`;
       const taken = `${at}: your call's markup closed ${key} early; taken back out as its own field.`;
       const keep = (why: string): void => void (kept.push(`[${name}, as it arrived inside ${key}]\n${text}`), notes.push(`${at}, but ${why}: kept in ${key} as it arrived.`));
+      const take = (value: unknown): void => void ((fields[name] = value), notes.push(taken), key === end && (last = i + 3 < parts.length ? undefined : name));
       if (!known.includes(name)) keep(`${name} is no field`);
       else if (input[name] !== undefined) keep(`the call also sent ${name}`);
-      else if (!JSON_FIELDS.includes(name)) (fields[name] = text, notes.push(taken));
+      else if (!JSON_FIELDS.includes(name)) take(text);
       else {
         try {
-          fields[name] = JSON.parse(text);
-          notes.push(taken);
+          take(JSON.parse(text));
         } catch (err) {
-          if ((LISTS as readonly string[]).includes(name)) (fields[name] = text, notes.push(taken));
+          if ((LISTS as readonly string[]).includes(name)) take(text);
           else keep(`it is not JSON (${(err as Error).message})`);
         }
       }
     }
     fields[key] = kept.join('\n\n');
   }
-  return { fields, notes };
+  return { fields, notes, ...(last === undefined ? {} : { last }) };
 }
 
 const OPS = ['add', 'remove', 'edit'];
@@ -189,22 +193,26 @@ function jsonOf(key: string, text: string, list: boolean): { own: unknown; besid
  * A list, storage or load_files value that arrived as the text of its own JSON is read as that JSON, with one note; one
  * whose JSON is broken is repaired first (repair.ts). The text may also hold the fields the model wrote with it: inside a
  * list's object beside its operations (`{"add": [...], "remaining": {...}}`), or after a value closed early
- * (`{"add": [...]},"done": {...}}`); each is taken out as its own field. A list's text that is an empty array or object
- * changes nothing and is read as not sent. A text that is no JSON, or one holding a key that
- * is neither an operation nor a field the call left out, stays as it arrived, and lists.ts reads it as one added item.
+ * (`{"add": [...]},"done": {...}}`); each is taken out as its own field. A list sent as an object holding such fields
+ * beside its operations, as a call one closer short nests the arguments written after the list, gives them up the same
+ * way, and its name joins `hosts`. A list's text that is an empty array or object
+ * changes nothing and is read as not sent. A text that is no JSON, or a value holding a key that
+ * is neither an operation nor a field the call left out, stays as it arrived, for lists.ts to read.
  */
-function unstring(fields: Record<string, unknown>, notes: string[], broken: string[]): void {
+function unstring(fields: Record<string, unknown>, notes: string[], broken: string[], hosts: string[]): void {
   const pending: string[] = [...LISTS, 'storage', 'load_files'];
   for (let key = pending.shift(); key !== undefined; key = pending.shift()) {
     const value = fields[key];
-    if (typeof value !== 'string') continue;
     const list = (LISTS as readonly string[]).includes(key);
-    const found = jsonOf(key, value, list);
+    const text = typeof value === 'string';
+    if (!text && !(list && isObject(value))) continue;
+    const found = text ? jsonOf(key, value, list) : { own: value, beside: {}, repaired: false };
     if (found === undefined) continue; // no JSON: a plain text, read as one
     const read = found.own;
     const inside = list && isObject(read) ? Object.keys(read).filter((k) => !OPS.includes(k)) : [];
     const others: Record<string, unknown> = { ...found.beside, ...Object.fromEntries(inside.map((k) => [k, (read as Record<string, unknown>)[k]])) };
     const names = Object.keys(others);
+    if (!text && names.length === 0) continue; // a list's object holding its operations alone: as sent
     if (names.some((k) => k === key || !FIELDS.includes(k) || fields[k] !== undefined)) continue;
     let mine: unknown; // stays undefined when the text held only other fields
     if (!list) {
@@ -220,9 +228,11 @@ function unstring(fields: Record<string, unknown>, notes: string[], broken: stri
     if (mine === undefined) delete fields[key];
     else fields[key] = mine;
     for (const k of names) (fields[k] = others[k]), pending.push(k);
+    if (names.length > 0) hosts.push(key);
     if (found.repaired) broken.push(key);
+    const taken = `taken out as ${names.length === 1 ? 'its own field' : 'their own fields'}`;
     const whole = found.repaired ? `${key} arrived as text whose JSON was broken: repaired and read, this result's lines show what it changed` : `${key} arrived as the text of its JSON: read as JSON`;
-    notes.push(`${whole}${names.length === 0 ? '' : `, and ${andList(names)} inside it taken out as ${names.length === 1 ? 'its own field' : 'their own fields'}`}.`);
+    notes.push(text ? `${whole}${names.length === 0 ? '' : `, and ${andList(names)} inside it ${taken}`}.` : `${andList(names)} arrived inside ${key}, beside its operations: ${taken}.`);
   }
 }
 
@@ -231,17 +241,27 @@ function unstring(fields: Record<string, unknown>, notes: string[], broken: stri
  * leniently, after a value sent as the text of its JSON is read as JSON (`unstring`). An unknown field's text joins findings under its name, one that holds nothing is ignored; `standing_orders` entries join orders as adds;
  * `lifted` is answered with orders.remove; keep_skills, drop_files, drop_skills and a load file's `later` are ignored;
  * each with one note. A load file's relative path is resolved against `cwd`, the session's directory, when known.
- * `$.fs.stat` checks (V12-V15) are the adapter's, through `loadFileNote`.
+ * `$.fs.stat` checks (V12-V15) are the adapter's, through `loadFileNote`. A whole input that arrived unparsed
+ * (repair.ts `unparsedCall`) is read from its repaired text like any call, with one note; one no repair reads joins findings whole.
+ * Its text reads as cut, and the call waits (`endedBroken`), unless the text closed its own object or its end is one
+ * closer short and its last argument held a field written after its operations: there the model dropped that list's
+ * closer and wrote on, so nothing after it is missing.
  */
 export function parseCall(input: unknown, cwd?: string): ParsedCall {
-  const { fields, notes } = unfold(isObject(input) ? input : {}), broken: string[] = [];
-  unstring(fields, notes, broken);
+  const whole = unparsedCall(input), sent = whole === undefined ? (isObject(input) ? input : {}) : whole.read?.args ?? {};
+  const { fields, notes, last: folded } = unfold(sent), broken: string[] = [], hosts: string[] = [];
+  if (whole?.read !== undefined) notes.unshift(`This call's arguments arrived as JSON that did not parse: repaired and read, this result's lines show what they changed.`);
+  unstring(fields, notes, broken, hosts);
   const call: ParsedCall = { texts: {}, lists: {}, extra: {}, loadAt: [], notes };
   if (broken.length > 0) call.broken = broken;
+  const last = folded ?? Object.keys(sent).at(-1); // the arguments as the model wrote them, in its order: `fields` also holds what was taken out of a text
+  const cut = whole !== undefined && !(whole.read !== undefined && (whole.read.open === 0 || (whole.read.open === 1 && last !== undefined && hosts.includes(last))));
+  if (cut || (last !== undefined && broken.includes(last))) call.endedBroken = true;
   for (const name of TEXTS) if (fields[name] !== undefined) call.texts[name] = fields[name];
   for (const name of LISTS) if (fields[name] !== undefined) call.lists[name] = fields[name];
   if (fields.storage !== undefined) call.storage = fields.storage;
   const join = (name: ListName, text: string): void => void (call.extra[name] ??= []).push(text);
+  if (whole !== undefined && whole.read === undefined) (join('findings', `[this call's arguments, as they arrived]\n${whole.raw}`), notes.push(`This call's arguments arrived as JSON no repair could read: kept whole as one finding. Send them again.`));
   for (const key of Object.keys(fields)) {
     if (FIELDS.includes(key)) continue;
     const value = fields[key];
@@ -333,26 +353,30 @@ export function loadFileNote(index: number, path: string, check: FileCheck): str
   return undefined;
 }
 
-/** `tokens`: the party's last reading, absent when it has none; it picks the sentence and is never printed, being a step behind the call. `missing`: the texts the frontier still lacks, which its wake names. `broken`: the fields whose broken JSON was repaired (`ParsedCall.broken`). `compacts`: parties.ts `Parties.compacts` for the call; true when absent. */
+/** `tokens`: the party's last reading, absent when it has none; it picks the sentence and is never printed, being a step behind the call. `missing`: the texts the frontier still lacks, which its wake names. `endedBroken`: the call ended at a field whose broken JSON was repaired (`ParsedCall.endedBroken`). `compacts`: parties.ts `Parties.compacts` for the call; true when absent. */
 export type ReceiptInput =
-  | { party: 'main'; files: number; tokens?: number; askPoint?: number; replaced?: boolean; missing?: readonly string[]; broken?: readonly string[]; compacts?: boolean }
-  | { party: 'subagent'; files: number; tokens?: number; askPoint: number; replaced?: boolean; missing?: readonly string[]; broken?: readonly string[]; compacts?: boolean };
+  | { party: 'main'; files: number; tokens?: number; askPoint?: number; replaced?: boolean; missing?: readonly string[]; endedBroken?: boolean; compacts?: boolean }
+  | { party: 'subagent'; files: number; tokens?: number; askPoint: number; replaced?: boolean; missing?: readonly string[]; endedBroken?: boolean; compacts?: boolean };
 
 /**
  * Whether a stored call's install waits one request (decide.ts `decide`): a call a broken field may have ended early
- * (`ParsedCall.broken`: the model's markup closed the call at that field, and what it meant to send after it never
- * arrived) or one that left the frontier without its objective or next (`Applied.missing`). Installed at once, the
- * party wakes on a part of its frontier with everything it read gone; its next request can still send the rest.
+ * (`ParsedCall.endedBroken`: the model's markup closed the call at that field, its last argument, and what it meant to
+ * send after it never arrived; for a whole input that arrived unparsed, its text reads as cut) or one that left the
+ * frontier without its objective or next (`Applied.missing`).
+ * Installed at once, the party wakes on a part of its frontier with everything it read gone; its next request can still
+ * send the rest. A broken field with an argument after it ended nothing, and its call never waits: the request a wait
+ * holds the install for can be main's reply to the user, which the turn-end install then keeps behind the frontier,
+ * so the user reads it twice.
  */
-export const callWaits = (missing: readonly string[], broken: readonly string[]): boolean => missing.length > 0 || broken.length > 0;
+export const callWaits = (missing: readonly string[], endedBroken: boolean): boolean => missing.length > 0 || endedBroken;
 
 /** The result's last sentences: whether the call compacts, when the frontier then installs, true to the party's door (a sub-agent's only door is Claude Code's ask) and one request later for a call that waits (`callWaits`), and what it lacks. */
 export function receipt(input: ReceiptInput): string {
-  const missing = input.missing ?? [], broken = input.broken ?? [], waits = callWaits(missing, broken);
+  const missing = input.missing ?? [], endedBroken = input.endedBroken === true, waits = callWaits(missing, endedBroken);
   const replaced = input.replaced ? ' This call applied on top of your earlier one since the last wake.' : '';
   const held = `${input.files === 0 ? '' : ` with ${input.files} ${input.files === 1 ? 'file' : 'files'} to load`}${missing.length === 0 ? '' : `, without ${andList(missing)}: send ${missing.length === 1 ? 'it' : 'them'} before it installs, or the wake names ${missing.length === 1 ? 'it' : 'them'} missing`}.`;
   if (input.compacts === false) return `Frontier updated${held} Nothing compacts: your context is still too small for a compaction to pay, and stays as it is. Carry on; a forward-compaction notice asks for the call once it has grown enough.${replaced}`;
-  const stored = `Frontier stored${held}${broken.length === 0 ? '' : ' A broken field can end a call early: if the lines above lack something you meant to send, send it before it installs.'}`;
+  const stored = `Frontier stored${held}${endedBroken ? ' A broken field can end a call early: if the lines above lack something you meant to send, send it before it installs.' : ''}`;
   const behind = 'The newest messages after this call that fit are kept verbatim behind it, the rest named as not carried';
   if (input.party === 'main' && input.tokens !== undefined && input.askPoint !== undefined && input.tokens >= input.askPoint) return `${stored} It installs ${waits ? 'after' : 'before'} your next request, inside this turn: what you have read is gone then, and the rest of the turn, your reply to the user included, is written from the frontier. ${behind}.${replaced}`;
   if (input.party === 'main') return `${stored} It installs at the end of this turn, or at Claude Code's ${waits ? 'second compaction ask from here if that' : 'next compaction ask if one'} comes first. ${behind}, so finish the step in hand; you need not stop.${replaced}`;

@@ -9,8 +9,8 @@ This is the full behaviour of the plugin: every rule, limit and edge case the co
   `remaining`, `blocked` and `findings` as numbered lists the model changes
   by item number; whatever a call leaves out stays. The plugin holds the
   frontier in files on disk, never summarized, and renders the wake from it;
-  one with no objective or next, or one whose call had a field repaired from
-  broken JSON, waits one request before it installs, and installs as it
+  one with no objective or next, or one whose call ended at a field repaired
+  from broken JSON, waits one request before it installs, and installs as it
   stands, its wake naming what it lacks.
 - 🧾 **Facts are recorded, never reconstructed.** The user's messages (main
   chat) or the brief (sub-agent), the messages delivered to it, the skills
@@ -179,16 +179,16 @@ and no ceiling, and an automatic ask from it with nothing stored is held as
    decision row logs `compacts: true|false` (`true` at any `tokens` for such a
    party); a later call from the notice
    point on applies on top of the earlier one and compacts. A second call
-   before the install applies on top of the first. A frontier with no objective or next, or a call with a field repaired from
+   before the install applies on top of the first. A frontier with no objective or next, or a call that ended at a field repaired from
    broken JSON, waits one request (see Installing) and then installs as it
    stands, its wake naming what it lacks.
 3. **Installing.** A stored call that compacts installs at the next door Claude Code
    opens: for the main chat at the end of the turn (the plugin asks Claude
    Code to compact) or at an automatic ask if one comes first; for a
    sub-agent at Claude Code's next automatic ask. No summarizer request runs.
-   A call that waits (`callWaits(missing, broken)`: it leaves the frontier
-   without `objective` or `next`, or a field of it was repaired from broken
-   JSON) stores `StoredFrontier.waits`; the first automatic ask after it is
+   A call that waits (`callWaits(missing, endedBroken)`: it leaves the frontier
+   without `objective` or `next`, or its last argument was repaired from broken
+   JSON or its whole unparsed input reads as cut, `ParsedCall.endedBroken`) stores `StoredFrontier.waits`; the first automatic ask after it is
    skipped (`compact` row, decision `skip`, why `unfinished`, built in `decide`
    from `DecideInput.waits`), so the party's next request can send the rest of
    the frontier; each further waiting call renews the wait, and the ask after
@@ -260,10 +260,25 @@ stays.
   namespace prefix before `parameter` allowed, are read the same way, with the
   same note; a tag inside an item's string stays text), and a value closed early read together with the
   arguments written after it inside the same text; each repaired field gets
-  one note. A repaired field makes the call wait one request before it
-  installs (`callWaits`, `ParsedCall.broken`): a model's response can end
-  right after a leaked tool-call tag, so the call arrives carrying only its
-  first fields. An item's text loses a number the model typed before it
+  one note. A repaired field that is the call's last argument makes the call
+  wait one request before it installs (`callWaits`, `ParsedCall.endedBroken`): a
+  model's response can end right after a leaked tool-call tag, so the call
+  arrives carrying only its first fields. A repaired field with an argument
+  after it ended nothing, and its call installs like a whole one: held one
+  request, a main chat's reply to the user is written before the install and
+  kept behind it, where the user reads it twice. A list sent as an object
+  that holds other fields beside its operations
+  (`done: {add: […], findings: {…}}`) gives each up as its own field, with one
+  note; a key that is no field, or a field the call also sent, leaves the
+  object as it arrived. A call whose whole input did not parse reaches the
+  tool from Claude Code as `{__unparsedToolInput: {raw, len}}`, `raw` the text
+  the model wrote: `unparsedCall` balances its brackets and the call is read
+  from the result like any other, with one note; a text no repair reads joins
+  `findings` whole (`[this call's arguments, as they arrived]`), with a note
+  asking for the arguments again. Such a call waits unless its text closed
+  its own object, or its end is one closer short and its last argument held a
+  field written after its operations: there the model dropped that list's
+  closer and wrote on, so nothing after it is missing. An item's text loses a number the model typed before it
   (`[9] Parser merged`); an edit's text only its own number. A list's text
   that is an empty array or object changes nothing. A text that is no
   JSON stays one added item, except a text that is only an operation's name
@@ -363,7 +378,7 @@ installs:
   `, without {objective|next}: send it before it installs, or the wake names
   it missing` when the frontier holds no objective or next; `A broken field can
   end a call early: if the lines above lack something you meant to send, send
-  it before it installs.` when a field was repaired; then when it
+  it before it installs.` when the call ended at a repaired field; then when it
   installs — for the main chat at or past Claude Code's ask point, inside
   this turn, before its next request (`It installs before your next request,
   inside this turn: what you have read is gone then, and the rest of the turn,
