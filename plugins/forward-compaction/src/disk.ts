@@ -1,26 +1,30 @@
 // The files that keep one party's frontier across restarts, under
 // `$HOME/.local/state/forward-compaction/{project}/{session id}/` (a sub-agent's under `agents/{agent id}/`):
-// the live lists and texts, the storage listing and files, the count of compactions installed (`rounds.json`), the party's floor (`floor.json`), the
+// the live lists and texts, the storage listing and files, the count of compactions installed (`rounds.json`), the party's floor (`floor.json`), main's model switch (`model-switch.json`, model-switch.ts), the
 // history every value that left is appended to, and `done-earlier.md`, the done items a wake names instead of showing, with
 // `done-earlier.json`, the highest number that file holds.
 // The plugin alone writes them, and deletes nothing. A file that cannot be written loses no change: it stays dirty
 // in memory and the next call writes it again. Pure but for the file calls, which arrive as `Fs`.
 import { doneFiled, doneSplit, emptyHeld, listApply, LISTS, TEXTS, type DoneWake, type Held, type Item, type Left, type List, type ListName, type StorageEntry, type TextName } from './lists';
+import { switchRead } from './model-switch';
 
 /** The file calls the adapter hands in: `$.fs.read`, `$.fs.write` (which creates directories) and `$.fs.exists`. The API has no append, move or delete. */
 export type Fs = { read: (path: string) => Promise<string>; write: (path: string, text: string) => Promise<void>; exists: (path: string) => Promise<boolean> };
 
 /** Where every session's folder lives, under the home directory. */
 export const STATE_DIR = '.local/state/forward-compaction';
-export type FileKey = ListName | TextName | 'storage' | 'rounds' | 'floor';
+export type FileKey = ListName | TextName | 'storage' | 'rounds' | 'floor' | 'modelSwitch';
 /** Each live file, relative to the party's folder. */
 export const LIVE_FILE: Record<FileKey, string> = {
   orders: 'orders.json',
-  ...(Object.fromEntries([...LISTS.filter((l) => l !== 'orders'), ...TEXTS].map((k) => [k, `data/${k}.json`])) as Record<Exclude<FileKey, 'orders' | 'storage' | 'rounds' | 'floor'>, string>),
+  ...(Object.fromEntries([...LISTS.filter((l) => l !== 'orders'), ...TEXTS].map((k) => [k, `data/${k}.json`])) as Record<Exclude<FileKey, 'orders' | 'storage' | 'rounds' | 'floor' | 'modelSwitch'>, string>),
   storage: 'storage.json',
   rounds: 'rounds.json',
   floor: 'floor.json',
+  modelSwitch: 'model-switch.json',
 };
+/** A live file with a history, a list's or a text's: each value that left it is appended to `history/`; the others are written over. */
+const hasHistory = (key: FileKey): key is ListName | TextName => key !== 'storage' && key !== 'rounds' && key !== 'floor' && key !== 'modelSwitch';
 export const STORAGE_DIR = 'storage';
 /** The done items a wake names instead of showing (lists.ts `doneSplit`), relative to the party's folder: beside storage.json, not in storage/ and no storage entry. */
 export const DONE_EARLIER_FILE = 'done-earlier.md';
@@ -172,6 +176,9 @@ export class PartyFiles {
     const floored = await readJson('floor'), kept = typeof floored.value === 'object' && floored.value !== null ? (floored.value as Record<string, unknown>) : undefined;
     if (!isInt(kept?.floor)) { if (floored.value !== undefined) bad('floor', 'a {floor}'); }
     else if (kept?.settled === true) held.floor = kept.floor; // one not settled (an install's first reading alone, as an earlier version kept every floor) is below the party's context: its next reading is its floor
+    const switching = await readJson('modelSwitch'), switched = switching.value === undefined ? {} : switchRead(switching.value); // main's alone: no other party's folder holds one
+    if (switched === undefined) bad('modelSwitch', 'a model switch');
+    else if (switched.modelSwitch !== undefined) held.modelSwitch = switched.modelSwitch;
     const record = await this.doneRecordLoad(fs);
     if (record !== undefined) problems.push(record);
     return { held, problems };
@@ -214,7 +221,7 @@ export class PartyFiles {
   /** A list or text a call changed: its live file is due, and each value that left is due in its history. */
   changed(key: FileKey, left: readonly Left[] | readonly string[] = []): void {
     this.dirty.add(key);
-    if (key === 'storage' || key === 'rounds' || key === 'floor' || left.length === 0) return;
+    if (!hasHistory(key) || left.length === 0) return;
     const lines = left.map((l) => JSON.stringify(typeof l === 'string' ? { text: l } : l));
     const file = historyFile(key);
     this.history.set(file, [...(this.history.get(file) ?? []), ...lines]);
@@ -333,10 +340,10 @@ export class PartyFiles {
     }
     for (const key of [...this.dirty]) {
       const file = LIVE_FILE[key];
-      if (key !== 'storage' && key !== 'rounds' && key !== 'floor' && unsaved.has(historyFile(key))) continue; // its live file waits for its history: what left is never only in memory and gone from disk
+      if (hasHistory(key) && unsaved.has(historyFile(key))) continue; // its live file waits for its history: what left is never only in memory and gone from disk
       try {
         if (this.unreadable.has(key) && (await this.keepUnreadable(fs, file))) this.unreadable.delete(key); // copied once, whatever the write below does
-        const value = key === 'storage' ? held.storage : key === 'rounds' ? { rounds: held.rounds ?? 0 } : key === 'floor' ? { floor: held.floor ?? null, settled: held.settling !== true } : (TEXTS as readonly string[]).includes(key) ? { text: held[key as TextName] ?? '' } : held.lists[key as ListName];
+        const value = key === 'storage' ? held.storage : key === 'rounds' ? { rounds: held.rounds ?? 0 } : key === 'floor' ? { floor: held.floor ?? null, settled: held.settling !== true } : key === 'modelSwitch' ? held.modelSwitch ?? {} : (TEXTS as readonly string[]).includes(key) ? { text: held[key as TextName] ?? '' } : held.lists[key as ListName];
         await fs.write(`${this.root}/${file}`, `${JSON.stringify(value, null, 2)}\n`);
         this.dirty.delete(key), this.unreadable.delete(key);
       } catch (error) {

@@ -122,7 +122,7 @@ const given = (...args: unknown[]): unknown[] => {
  * this list to the adapter's. Each call is answered by the engine and written with its path, arguments and outcome;
  * a path missing here is written as an error row and throws, so the recording shows it.
  */
-export const PATHS = ['agent.list', 'clock.after', 'clock.now', 'env.get', 'fs.exists', 'fs.read', 'fs.stat', 'fs.write', 'http.fetch', 'model.fork', 'process.run', 'session.authorize', 'session.compact', 'session.cwd', 'session.id', 'session.messages', 'session.root', 'session.usage', 'state.get', 'state.set', 'tool.register', 'ui.invalidate', 'ui.log'] as const;
+export const PATHS = ['agent.list', 'clock.after', 'clock.now', 'env.get', 'fs.exists', 'fs.read', 'fs.stat', 'fs.write', 'http.fetch', 'model.complete', 'model.fork', 'process.run', 'session.authorize', 'session.compact', 'session.cwd', 'session.id', 'session.messages', 'session.root', 'session.usage', 'state.get', 'state.set', 'tool.register', 'ui.invalidate', 'ui.log'] as const;
 /** Written to a row in place of the handle `$.session.authorize()` answers, in that answer and in the request that spends it: the handle stands for the session's credential, so no row carries it, and a replayed lookup passes this word back as recorded. */
 export const CREDENTIAL_HANDLE = 'credential-handle';
 
@@ -162,7 +162,10 @@ function engineFor($: EngineInterface, id: number): any {
       write: (path: string, text: string) => call('fs.write', [path, text], () => $.fs.write(path, text)),
     },
     http: { fetch: (url: string, init?: any) => call('http.fetch', given(url, init?.auth === undefined ? init : { ...init, auth: CREDENTIAL_HANDLE }), () => (init === undefined ? $.http.fetch(url) : $.http.fetch(url, init))) },
-    model: { fork: (request: any) => call('model.fork', [request], () => $.model.fork(request)) },
+    model: {
+      complete: (request: any, options?: any) => call('model.complete', given(request, options), () => (options === undefined ? $.model.complete(request) : $.model.complete(request, options))),
+      fork: (request: any) => call('model.fork', [request], () => $.model.fork(request)),
+    },
     process: { run: (argv: string[], init?: any) => call('process.run', given(argv, init), () => $.process.run(argv, init)) },
     session: {
       authorize: () => call('session.authorize', [], () => $.session.authorize(), (auth: any) => (auth ? { ...auth, handle: CREDENTIAL_HANDLE } : auth)),
@@ -258,7 +261,7 @@ async function* invokeSteps(hook: string, $: EngineInterface, e: unknown, next: 
 export const RECORDED = ['session.start', 'tool.call', 'session.compact', 'turn.step', 'turn.start', 'turn.complete', 'prompt.submit', 'prompt.attachment', 'session.append', 'skill.prompt', 'agent.spawn', 'classic.Stop', 'classic.SubagentStop', 'session.end'] as const;
 let unrecorded: string[] = [];
 /** The recorded events the plugin registers under a matcher, each recorded under that same matcher: what the engine narrows to is what the recording holds. */
-export const MATCHED: Partial<Record<(typeof RECORDED)[number], Record<string, string>>> = { 'session.append': { door: 'delivery' } };
+export const MATCHED: Partial<Record<(typeof RECORDED)[number], Record<string, string | readonly string[]>>> = { 'session.append': { door: ['delivery', 'prompt', 'command'] } };
 /** The plugin's draw hooks reach the engine as registered and are never recorded: a draw decides nothing a replay holds, and tests/wake-row.test.ts and tests/call-row.test.ts hold what they draw. */
 export const DRAWN = { event: 'ui.render', matchers: [{ component: 'UserMessage' }, { component: 'ToolUse' }, { component: 'ToolResult' }] } as const;
 const draws = new Map<string, (...args: any[]) => any>();
@@ -286,7 +289,7 @@ export const register: Register = (on: On, options) => {
   on('turn.complete', async ($, e, next) => invoke('turn.complete', $, e, next) as any);
   on('prompt.submit', async ($, e, next) => invoke('prompt.submit', $, e, next) as any);
   on('prompt.attachment', async ($, e, next) => invoke('prompt.attachment', $, e, next) as any);
-  on('session.append', { door: 'delivery' }, async ($, e, next) => invoke('session.append', $, e, next) as any);
+  on('session.append', { door: ['delivery', 'prompt', 'command'] }, async ($, e, next) => invoke('session.append', $, e, next) as any);
   on('skill.prompt', async ($, e, next) => invoke('skill.prompt', $, e, next) as any);
   on('agent.spawn', async ($, e, next) => invoke('agent.spawn', $, e, next) as any);
   on('classic.Stop', async ($, e, next) => invoke('classic.Stop', $, e, next) as any);

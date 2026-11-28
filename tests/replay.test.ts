@@ -327,6 +327,31 @@ describe('replay gate (D19)', { timeout: 60_000 }, () => {
     expect(INVARIANTS.I5(view, true).subjects).toBeGreaterThan(0);
   });
 
+  it("records the user's prompts typed over a running turn only once they entered: one pulled back never, an edited one and one delivered once, one queued across main's turn-end install at its entry after it (S7-S12)", async () => {
+    const rows = LIVE();
+    const B = 'queued BRAVO pulled back, edited: reply with the word BRAVO', E = 'queued ECHO delivered: reply with the word ECHO', H = 'queued HOTEL waited across the install: reply with the word HOTEL';
+    // The queued prompts a main wake carries as the user's messages, oldest first.
+    const said = (wake: readonly any[]): string[] => {
+      const t = texts(wake), from = t.indexOf("## The user's messages"), end = t.indexOf('\n## ', from + 1);
+      return from < 0 ? [] : t.slice(from, end < 0 ? undefined : end).split('\n### ').slice(1).map((e) => e.slice(e.indexOf('\n') + 1).trimEnd()).filter((text) => text.startsWith('queued '));
+    };
+    for (const [label, view] of [['recorded', invocations(rows)], ['replayed', (await replay(rows)).replayed]] as const) {
+      const main = view.filter((i) => party(i.input) === 'main');
+      const submitted = (text: string): number => main.find((i) => i.hook === 'prompt.submit' && i.input.text === text)?.seq ?? -1;
+      const pulled = submitted('queued DELTA pulled back and never sent'), hotel = submitted(H);
+      const entry = main.find((i) => i.hook === 'session.append' && i.input.door === 'prompt' && delivered(i) === H)?.seq ?? -1;
+      expect([label, pulled > 0, submitted('queued BRAVO pulled back') > pulled, hotel > 0, entry > hotel]).toEqual([label, true, true, true, true]);
+      const wakes = main.filter((i) => i.seq > pulled && wakeOf(i) !== undefined);
+      // The one wake between HOTEL's Enter and its entry is main's turn-end install: HOTEL still waits in the queue.
+      expect([label, wakes.filter((w) => w.seq > hotel && w.seq < entry).map((w) => [w.input.trigger, said(wakeOf(w)!)])]).toEqual([label, [['plugin', [B, E]]]]);
+      expect([label, wakes.map((w) => said(wakeOf(w)!))]).toEqual([label, [[B, E], [B, E, H], [B, E, H], [B, E, H], [B, E, H], [B, E, H]]]);
+      expect([label, wakes.map((w) => count(texts(wakeOf(w)!), 'queued DELTA') + count(texts(wakeOf(w)!), 'queued BRAVO pulled back\n'))]).toEqual([label, [0, 0, 0, 0, 0, 0]]);
+      // What main keeps in $.state at each save from the pull-back on: the prompts that entered, each once, with their true text.
+      const saves = main.flatMap((i) => i.calls.filter((c) => c.path === 'state.set' && (c.args[0] as any)?.key === 'prompts' && String((c.args[0] as any)?.id).endsWith('/main') && i.seq > pulled).map((c) => (c.args[1] as { text: string }[]).map((p) => p.text).filter((text) => text.startsWith('queued '))));
+      expect([label, saves]).toEqual([label, [[B], [B, E], [B, E], [B, E, H], [B, E, H], [B, E, H]]]);
+    }
+  });
+
   it('removing every skill.prompt fails the run naming I5', async () => {
     const rows = LIVE();
     const skills = new Set(invocations(rows).filter((i) => i.hook === 'skill.prompt').map((i) => i.id));
@@ -413,12 +438,13 @@ describe('replay gate (D19)', { timeout: 60_000 }, () => {
 
   it('replays concurrent parties on the recorded timeline: a step that starts inside another party\'s open step runs after the steps recorded before it', async () => {
     // Party X's step 1 (30k) is open while party Y's step runs; X's step 2 (200k) starts inside Y's window, after X's step 1 ended.
+    // The model carries the [1m] marker, so each party's 1M window is known without a Models API lookup the recording never made.
     const live = LIVE();
     const start = live.filter((r) => r.id === invocations(live).find((i) => i.hook === 'session.start')!.id || r.phase === 'version');
     const base = Math.max(...start.map((r) => r.seq));
     const usage = (tokens: number) => ({ input_tokens: 2, output_tokens: 10, cache_read_input_tokens: tokens - 2, cache_creation_input_tokens: 0 });
     const step = (id: number, agentId: string, index: number, at: [number, number, number, number], tokens: number): Row[] => {
-      const input = { turnId: `t-${agentId}`, index, model: 'claude-sonnet-4-5', messageCount: 10 + index, agentId };
+      const input = { turnId: `t-${agentId}`, index, model: 'claude-sonnet-4-5[1m]', messageCount: 10 + index, agentId };
       const result = { turnId: input.turnId, index, answer: '', toolUses: [], stopReason: 'tool_use', usage: usage(tokens) };
       return [
         { seq: base + at[0], id, phase: 'start', hook: 'turn.step', input },
@@ -490,7 +516,7 @@ describe('the recorder', () => {
     const registered: { pattern: string; matcher?: unknown; hook: (...args: any[]) => any }[] = [];
     recorder(((pattern: string, ...rest: any[]) => void registered.push({ pattern, ...(rest.length === 2 ? { matcher: rest[0] } : {}), hook: rest.at(-1) })) as any, {} as any);
     expect(registered.map((r) => r.pattern)).toEqual([...RECORDED, 'ui.render', 'ui.render', 'ui.render']);
-    expect(registered.filter((r) => r.matcher !== undefined).map((r) => [r.pattern, r.matcher])).toEqual([['session.append', { door: 'delivery' }], ['ui.render', { component: 'UserMessage' }], ['ui.render', { component: 'ToolUse' }], ['ui.render', { component: 'ToolResult' }]]);
+    expect(registered.filter((r) => r.matcher !== undefined).map((r) => [r.pattern, r.matcher])).toEqual([['session.append', { door: ['delivery', 'prompt', 'command'] }], ['ui.render', { component: 'UserMessage' }], ['ui.render', { component: 'ToolUse' }], ['ui.render', { component: 'ToolResult' }]]);
     const draw = registered.at(-3)!, result = registered.at(-1)!;
     expect(await result.hook({}, { surface: 'terminal', component: 'ToolResult', requestId: 't1', props: { tool: 'mcp__forward-compaction__forward_compaction', output: 'Frontier updated. Nothing compacts', isErrored: false } }, async () => 'engine')).toEqual({ type: 'Box', props: { display: 'none' } });
     const row = (isExpanded: boolean) => ({ surface: 'terminal', component: 'UserMessage', requestId: 'm1', props: { text: '[forward-compaction: facts] Your context was compacted', origin: { kind: 'unclassified' }, isExpanded } });

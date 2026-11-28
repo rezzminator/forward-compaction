@@ -15,7 +15,7 @@ import type { PATHS, Row } from '../../scripts/replay/recorder.ts';
 import { STATE_DIR } from '../../plugins/forward-compaction/src/disk.ts';
 
 /** Options added after the live fixture was recorded: unset in a replay of a recording no row of which reads them. A name leaves the list when `npm run replay:record` records it. */
-export const OPTIONS_SINCE_RECORDING: readonly string[] = ['FORWARD_COMPACTION_FRONTIER_WARN_CHARS', 'FORWARD_COMPACTION_DONE_MAX_CHARS', 'FORWARD_COMPACTION_MAIN_NUDGE_ROOM', 'FORWARD_COMPACTION_SUBAGENT_NUDGE_ROOM', 'FORWARD_COMPACTION_SUBAGENT_CALL_COMPACTS', 'FORWARD_COMPACTION_MAIN_FORK', 'FORWARD_COMPACTION_MAIN_FORK_EFFORT'];
+export const OPTIONS_SINCE_RECORDING: readonly string[] = [];
 /** The session's directory a recording made before the plugin read it answers: the plugin only names its own folder after it. */
 export const REPLAY_ROOT = '/replay/project';
 
@@ -56,6 +56,8 @@ export const ANSWERS: Record<(typeof PATHS)[number], { from: 'recorded'; subject
   'session.compact': { from: 'recorded' },
   // the fork's reply is the model's answer: its shape (isAnswered, text, usage, reason) is engine format
   'model.fork': { from: 'recorded' },
+  // a trial request's result is engine format, as the fork's
+  'model.complete': { from: 'recorded' },
   // the session's directory, read for a relative load file: world state
   'session.cwd': { from: 'recorded' },
   // the session's credential as a handle: the recorder writes CREDENTIAL_HANDLE in its place, so the request that spends it finds its recorded answer

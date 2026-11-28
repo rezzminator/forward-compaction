@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { fakeEngine, usage, type Script } from './fakes/engine.ts';
+import { fakeEngine, typePrompt, usage, type Script } from './fakes/engine.ts';
 import { fromFacts } from './fakes/session.ts';
 
 // The adapter's wiring of session-lifetime facts: a new turn ends the request-too-long inference (D8), the user's
@@ -50,9 +50,9 @@ describe('the prompts across a plugin reload', () => {
   it('carries the messages typed before a reload into the wake after it', async () => {
     const state = new Map<string, { value: unknown; version: number }>();
     const before = await begin({ state });
-    await before.dispatch('prompt.submit', { text: 'typed before the reload', origin: { kind: 'composer' } }, async () => ({}));
+    await typePrompt(before, 'typed before the reload');
     const after = await begin({ state });
-    await after.dispatch('prompt.submit', { text: 'typed after the reload', origin: { kind: 'composer' } }, async () => ({}));
+    await typePrompt(after, 'typed after the reload');
     await step(after, 125_000);
     const r = await ask(after);
     expect(r.messages[0].text).toContain("## The user's messages, oldest first (2 of 2 recorded)\n### ");
@@ -146,7 +146,7 @@ describe("the user's answers to AskUserQuestion", () => {
     await f.dispatch('tool.call', { tool: 'AskUserQuestion', tool_use_id: 'tu-q1', questions }, async () => ({ result }));
     release!();
     await read;
-    for (let i = 0; i < 11; i++) await f.dispatch('prompt.submit', { text: `typed ${i}.`, origin: { kind: 'composer' } }, async () => ({}));
+    for (let i = 0; i < 11; i++) await typePrompt(f, `typed ${i}.`);
     await step(f, 125_000);
     const text = (await ask(f)).messages[0].text;
     expect(text).toContain("## The user's messages, oldest first (11 of 12 recorded, 1 of them answering your questions; the 1 oldest recorded are not carried: look_back finds them)");

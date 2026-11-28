@@ -2,7 +2,7 @@ import { mkdtempSync, readdirSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { fakeEngine, usage, type FileEntry, type Script } from './fakes/engine.ts';
+import { fakeEngine, typePrompt, usage, type FileEntry, type Script } from './fakes/engine.ts';
 import { keptOrders, ORDERS_HEADING, ordersSection } from '../plugins/forward-compaction/src/orders.ts';
 import type { BuiltMessage, WakeMessage } from '../plugins/forward-compaction/src/kept.ts';
 import { buildWake, mechanicalWake, type WakeFacts } from '../plugins/forward-compaction/src/wake.ts';
@@ -88,7 +88,7 @@ async function begin(script: Script = {}): Promise<Fake> {
   await f.dispatch('session.start', { reason: 'startup' }, async () => ({}));
   return f;
 }
-const say = (f: Fake, text: string) => f.dispatch('prompt.submit', { text, origin: { kind: 'composer' } }, async () => ({}));
+const say = (f: Fake, text: string) => typePrompt(f, text);
 const call = (f: Fake, id: string, args: Record<string, unknown>) =>
   f.dispatch('tool.call', { tool: FORWARD, tool_use_id: id, ...args }, async () => ({ result: 'not ours' })).then((r: { result: string }) => r.result.split('\n'));
 const step = (f: Fake, tokens: number) =>

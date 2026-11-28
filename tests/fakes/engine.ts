@@ -11,6 +11,9 @@ type Fn = (...args: any[]) => any;
 export type ScreenCall = { text: string; opts?: unknown };
 export type FileEntry = { content: string; kind?: 'file' | 'dir' | 'other' };
 
+/** A `$.model.complete` request as the plugin sends it. */
+type TrialRequest = { model: string; prompt: unknown; maxTokens?: number; timeoutMs?: number };
+
 export type Script = {
   env?: Record<string, string>;
   /** Awaited inside each `$.clock.now()` before it answers: a test holds one call's clock while another call runs. */
@@ -38,12 +41,16 @@ export type Script = {
   registerError?: string | (() => string | undefined);
   /** The host's session state (`$.state`); pass one map to two fakes to model a plugin reload in one session. */
   state?: Map<string, { value: unknown; version: number }>;
+  /** Answers a `$.state.get` in place of the host's map (one that never settles, or rejects); undefined reads the map. */
+  stateGet?: (ref: { key: string; id?: string }) => Promise<unknown> | undefined;
   /** What the Models API answers per model id, read at each request: its `max_input_tokens` (a listed model), a whole `{ status, text }`, or an Error the request rejects with; an id not here gets the API's 404. MODELS by default. */
   models?: Record<string, number | { status: number; text: string } | Error | Promise<{ status: number; text: string }>>;
   /** What `$.session.authorize()` answers: null is a session with no first-party credential. A bearer handle by default. */
   credential?: { handle: string; kind: 'bearer' | 'api-key' } | null;
   /** What `$.model.fork` answers each request (a ModelForkResult), or throws; null, a Claude Code without `$.model.fork`; unscripted, a call fails the test. */
   fork?: ((request: { prompt: string; effort?: string }) => unknown) | null;
+  /** What `$.model.complete` answers each request (a ModelCompleteResult), or throws, as Claude Code rejects a request it refuses to send; unscripted, a call fails the test. */
+  complete?: (request: TrialRequest) => unknown;
 };
 
 /** The Models API's `max_input_tokens` per model id as it answered live on 2026-11-12; `claude-sonnet-4-5`, the suite's stand-in model, is scripted at 200k. */
@@ -51,14 +58,21 @@ export const MODELS: Record<string, number> = { 'claude-fable-5-2': 1_000_000, '
 /** The Models API's error body, as recorded: a model it does not list (404), a request with no credential (401). */
 const apiError = (type: string, message: string): string => JSON.stringify({ type: 'error', error: { type, message }, request_id: 'req_fake' });
 
-/** The `on` a fake hands `register`. With a matcher the hook runs only for an event whose fields equal the matcher's, as the engine narrows; any other event passes beneath. */
+/** The `on` a fake hands `register`. With a matcher the hook runs only for an event whose fields equal the matcher's, an array any of its values, as the engine narrows; any other event passes beneath. */
 export function onInto(hooks: Map<string, Fn>): any {
   return (name: string, a: Fn | Record<string, unknown>, b?: Fn): void => {
     if (b === undefined) return void hooks.set(name, a as Fn);
     const matcher = Object.entries(a), beneath = hooks.get(name); // a second matched hook on one event leaves the first in place beneath it
-    hooks.set(name, ($: unknown, e: unknown, next: Fn) => (matcher.every(([key, value]) => (e as Record<string, unknown>)[key] === value) ? b($, e, next) : beneath !== undefined ? beneath($, e, next) : next(e)));
+    const hit = (value: unknown, want: unknown): boolean => (Array.isArray(want) ? want.includes(value) : value === want);
+    hooks.set(name, ($: unknown, e: unknown, next: Fn) => (matcher.every(([key, want]) => hit((e as Record<string, unknown>)[key], want)) ? b($, e, next) : beneath !== undefined ? beneath($, e, next) : next(e)));
   };
 }
+
+/** The user typing a prompt into idle main, as Claude Code runs it: `prompt.submit`, inside whose `next` the prompt enters the conversation (`session.append` door `prompt`). */
+export const typePrompt = (f: { dispatch: (event: string, e: unknown, impl?: Fn) => Promise<any> }, text: string): Promise<unknown> =>
+  f.dispatch('prompt.submit', { text, origin: { kind: 'composer' } }, async () => (
+    await f.dispatch('session.append', { door: 'prompt', origin: { kind: 'composer' }, uuid: `u-${text}`, message: { type: 'user', role: 'user', content: [{ type: 'text', text }] } }),
+    { text, origin: { kind: 'composer' } }));
 
 export function fakeEngine(script: Script = {}) {
   const home = script.home ?? mkdtempSync(join(tmpdir(), 'fc-engine-'));
@@ -68,6 +82,7 @@ export function fakeEngine(script: Script = {}) {
   const invalidated: string[] = [];
   const compactCalls: unknown[][] = [];
   const forkCalls: { prompt: string; effort?: string }[] = [];
+  const completeCalls: TrialRequest[] = [];
   const fetches: { url: string; init?: unknown }[] = [];
   const credential = script.credential === undefined ? { handle: 'handle-1', kind: 'bearer' as const } : script.credential;
   const registerFailure = (): string | undefined => (typeof script.registerError === 'function' ? script.registerError() : script.registerError);
@@ -144,18 +159,23 @@ export function fakeEngine(script: Script = {}) {
     ui: { log: (text: string, opts?: unknown) => void screen.push(opts === undefined ? { text } : { text, opts }), invalidate: (event: string) => void invalidated.push(event) },
     agent: { list: async () => (script.agents ? script.agents() : []) },
     state: {
-      get: async (ref: unknown) => state.get(JSON.stringify(ref)) ?? { value: undefined, version: 0 },
+      get: async (ref: { key: string; id?: string }) => (await script.stateGet?.(ref)) ?? state.get(JSON.stringify(ref)) ?? { value: undefined, version: 0 },
       set: async (ref: unknown, value: unknown) => {
         const version = (state.get(JSON.stringify(ref))?.version ?? 0) + 1;
         state.set(JSON.stringify(ref), { value: JSON.parse(JSON.stringify(value)), version });
         return { isSet: true, version };
       },
     },
-    model: script.fork === null ? { fork: undefined } : { // a member set to undefined is one this Claude Code lacks
-      fork: async (request: { prompt: string; effort?: string }) => {
+    model: {
+      fork: script.fork === null ? undefined : async (request: { prompt: string; effort?: string }) => { // a member set to undefined is one this Claude Code lacks
         forkCalls.push(request);
         if (script.fork == null) { unscripted.push('model.fork'); throw new Error('unscripted $ call model.fork'); }
         return script.fork(request);
+      },
+      complete: async (request: TrialRequest) => {
+        completeCalls.push(request);
+        if (script.complete === undefined) { unscripted.push('model.complete'); throw new Error('unscripted $ call model.complete'); }
+        return script.complete(request);
       },
     },
     tool: { register: (spec: { name: string }) => (hangs('tool.register') ? never : registerFailure() !== undefined ? Promise.reject(new Error(registerFailure())) : Promise.resolve({ tool: `mcp__forward-compaction__${spec.name}` })) },
@@ -201,7 +221,7 @@ export function fakeEngine(script: Script = {}) {
   }
 
   return {
-    $, home, vars, screen, unscripted, invalidated, compactCalls, forkCalls, fetches, hooks, dispatch,
+    $, home, vars, screen, unscripted, invalidated, compactCalls, forkCalls, completeCalls, fetches, hooks, dispatch,
     advance: (ms: number) => void (now += ms),
     texts: () => screen.map((c) => c.text),
     cleanup: () => rmSync(home, { recursive: true, force: true }),

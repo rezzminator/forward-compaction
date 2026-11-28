@@ -125,14 +125,16 @@ describe("a sub-agent's runs, and what arrives between a frontier and its instal
     await step(f, 30_000);
     await store(f);
     await f.dispatch('prompt.submit', { text: '<task-notification>gitter done: abc123</task-notification>', origin: { kind: 'task-notification' }, turnId: 't1' }, async () => ({}));
+    // Typed over the running turn, each only queues: the first is delivered into the turn, the second pulled back or still waiting.
     await f.dispatch('prompt.submit', { text: 'and also check the logs', origin: { kind: 'composer' }, turnId: 't1' }, async () => ({}));
+    await f.dispatch('prompt.submit', { text: 'and drop the logs', origin: { kind: 'composer' }, turnId: 't1' }, async () => ({}));
+    const reminder = '<system-reminder>\nThe user sent a new message while you were working:\nand also check the logs\n\nThis is how Claude Code surfaces messages the user sends mid-turn — within the running turn, often alongside the next tool result, rather than as a separate conversation turn. Address the message above as you continue this turn.\n</system-reminder>';
+    await f.dispatch('session.append', { door: 'delivery', origin: { kind: 'composer' }, uuid: 'u-2', message: { type: 'attachment', name: 'queued_command', role: 'user', content: [{ type: 'text', text: reminder }] } }, async (e) => e);
     const text = wakeText(await f.dispatch('session.compact', { trigger: 'auto', messages: transcript() }, async () => ({ skip: 'native ran' })));
     const from = text.indexOf(ARRIVED);
     const arrived = text.slice(from, text.indexOf('\n## ', from + 1));
-    expect(text).toContain(ARRIVED);
-    expect(arrived).toMatch(/\(task-notification\)\n<task-notification>gitter done: abc123<\/task-notification>/);
-    expect(arrived).toMatch(/\(user\)\nand also check the logs/);
-    expect(arrived).not.toContain('old agent done');
+    expect(arrived).toBe(`${ARRIVED}\n### 2026-10-23T12:00:00.000Z (task-notification)\n<task-notification>gitter done: abc123</task-notification>\n### 2026-10-23T12:00:00.000Z (user)\nand also check the logs\n`);
+    expect(text).not.toContain('and drop the logs');
     expect(text).toMatch(/## Notifications delivered to you\n### [^\n]+ \(task-notification\)\n<task-notification>old agent done/);
   });
 });

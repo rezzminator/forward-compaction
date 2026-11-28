@@ -57,6 +57,38 @@ describe('an unfinished call is stored, and its install waits one request for th
     expect(await asks(f)).toEqual([['skip', 'unfinished', null], ['install', 'stored', null]]);
   });
 
+  const UNPARSED = '{"objective": "Ship U5.", "next": "Write the report.", "done": {"add":["Parser merged."], "findings": {"add":["Plan in plan.md."]}}'; // one closer short of JSON: done never closes
+  it.each([
+    ['whose broken field had an argument after it', { objective: 'Ship U5.', done: '{"add":["Parser merged."]', next: 'Write the report.' }, [
+      'objective set',
+      'Added to done: [1]',
+      'next set',
+      "done arrived as text whose JSON was broken: repaired and read, this result's lines show what it changed.",
+      'Frontier: 39 characters in 1 items (done 1)',
+    ]],
+    ['whose whole input Claude Code could not parse, one closer short before its last argument', { __unparsedToolInput: { raw: UNPARSED, len: UNPARSED.length } }, [
+      'objective set',
+      'Added to done: [1]',
+      'Added to findings: [1]',
+      'next set',
+      "This call's arguments arrived as JSON that did not parse: repaired and read, this result's lines show what they changed.",
+      'findings arrived inside done, beside its operations: taken out as its own field.',
+      'Frontier: 55 characters in 2 items (done 1, findings 1)',
+    ]],
+  ])('installs at the very next ask a call %s, so the turn end keeps no reply behind a second install', async (_name, args, lines) => {
+    const f = await begin();
+    await step(f, 64_000);
+    const whole = await f.dispatch('tool.call', { tool: FORWARD, tool_use_id: 'tu-h', ...args }, async () => ({ result: 'not ours' }));
+    expect(whole.result.split('\n').slice(0, lines.length + 2)).toEqual([...lines, 'Storage: none', `Frontier stored. It installs before your next request, ${INSIDE}`]);
+    const wake = await ask(f);
+    expect(wake.messages[1].text).toContain('## Next\nWrite the report.');
+    await step(f, 30_000);
+    await answer(f, 't1');
+    expect(f.compactCalls).toEqual([]);
+    expect((await rows(f)).filter((row) => row.event === 'stored').map((row) => [row.waits ?? null, row.incomplete ?? null])).toEqual([[null, null]]);
+    expect(await asks(f)).toEqual([['install', 'stored', null]]);
+  });
+
   it("installs at main's turn end like a complete one, and a later call that sends next completes it", async () => {
     const f = await begin();
     await step(f, 64_000);

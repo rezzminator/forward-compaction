@@ -9,9 +9,9 @@ steps() { grep -E '^\| S[0-9]+ \|' "$here/scenario.md" | sed -E 's/^\| (S[0-9]+)
 
 if [ "${1:-}" = "--dry-run" ]; then
   n=$(steps | wc -l)
-  [ "$n" -ge 9 ] || { echo "drive: scenario.md has $n steps, expected S1-S9" >&2; exit 1; }
+  [ "$n" -ge 15 ] || { echo "drive: scenario.md has $n steps, expected S1-S15" >&2; exit 1; }
   steps | while IFS=$'\t' read -r id wait prompt; do
-    case $wait in main-turn|manual-compact|notification) ;; *) echo "drive: $id has unknown wait '$wait'" >&2; exit 1 ;; esac
+    case $wait in main-turn|manual-compact|notification|busy|pull-back|queued|essay|waiting) ;; edit) [[ $prompt == *' ++ '* ]] || { echo "drive: $id edits with no ' ++ ' between the sent and the appended text" >&2; exit 1; } ;; *) echo "drive: $id has unknown wait '$wait'" >&2; exit 1 ;; esac
     echo "drive (dry run): $id waits for $wait: ${prompt:0:60}..."
   done
   exit 0
@@ -24,23 +24,35 @@ rows="$root/rows"
 # Rows whose start is of hook $1, for main only (no agentId key; an escaped one inside a text does not count), whose text holds $2.
 # Subshells without pipefail: a grep that matches nothing is a count of 0, never an exit under set -e.
 count() ( set +o pipefail; grep -l "\"phase\":\"start\",\"hook\":\"$1\"" "$rows"/*.json 2>/dev/null | xargs -r grep -L '"agentId":"' | xargs -r grep -l -- "${2:-}" | wc -l )
-# Start rows of prompt.submit or session.append (any party; the recorder holds its `delivery` door alone) that name $1 and are not the typed S5 prompt (it says
+# Start rows of prompt.submit or session.append (any party; the recorder holds its `delivery`, `prompt` and `command` doors) that name $1 and are not the typed S5 prompt (it says
 # run_in_background): the shell's notification. notice_rows lists them; notices counts them.
 notice_rows() ( set +o pipefail; grep -lE '"phase":"start","hook":"(prompt.submit|session.append)"' "$rows"/*.json 2>/dev/null | xargs -r grep -l -- "$1" | xargs -r grep -L 'run_in_background' | sort )
 notices() ( set +o pipefail; notice_rows "$1" | wc -l )
 # Main turn.complete start rows written after row file $1 (row files sort by their zero-padded seq).
 turns_after() ( set +o pipefail; grep -l '"phase":"start","hook":"turn.complete"' "$rows"/*.json 2>/dev/null | xargs -r grep -L '"agentId":"' | awk -v mark="$1" '$0 > mark' | wc -l )
 
-# The newest row file, and the newest main prompt.submit start row after row file $2 whose text holds $1.
+# The newest row file; the newest main start row of hook $1 after row file $2 that holds the fixed text $3; the newest
+# main prompt.submit start row after row file $2 whose text holds $1.
 newest() { ls "$rows" | grep -E '^[0-9]+\.json' | sort | tail -1 | sed "s#^#$rows/#"; }
-typed_after() ( set +o pipefail; grep -l '"phase":"start","hook":"prompt.submit"' "$rows"/*.json 2>/dev/null | xargs -r grep -L '"agentId":"' | xargs -r grep -lF -- "$1" | awk -v mark="$2" '$0 > mark' | sort | tail -1 )
+newest_after() ( set +o pipefail; grep -l "\"phase\":\"start\",\"hook\":\"$1\"" "$rows"/*.json 2>/dev/null | xargs -r grep -L '"agentId":"' | xargs -r grep -lF -- "$3" | awk -v mark="$2" '$0 > mark' | sort | tail -1 )
+typed_after() { newest_after prompt.submit "$2" "$1"; }
+# Whether a main Bash call started after row file $1; whether main called forward_compaction after it; whether a main request started after it.
+bash_after() { [ -n "$(newest_after tool.call "$1" '"tool":"Bash"')" ]; }
+called_after() { [ -n "$(newest_after tool.call "$1" '__forward_compaction')" ]; }
+request_after() { [ -n "$(newest_after turn.step "$1" '"turnId"')" ]; }
 
-wait_for() { # $1 label, $2 command that succeeds when the condition holds, $3 seconds (default STEP_LIMIT_S)
+wait_for() { # $1 label, $2 command that succeeds when the condition holds, $3 seconds (default STEP_LIMIT_S), $4 seconds between looks (default 5)
   local deadline=$((SECONDS + ${3:-$STEP_LIMIT_S}))
   until eval "$2"; do
     [ $SECONDS -lt $deadline ] || { echo "drive: $1 did not happen within ${3:-$STEP_LIMIT_S}s" >&2; exit 1; }
-    sleep 5
+    sleep "${4:-5}"
   done
+}
+# A queued prompt typed by the step before: Up takes it back into the prompt box, which then shows it.
+pull_back() {
+  tmux send-keys -t "$target" Up
+  sleep 1
+  tmux capture-pane -p -t "$target" | grep -qF -- "$2" || echo "drive: $1 saw no pulled-back \"$2\" in the prompt box" >&2
 }
 
 # The folder trust dialog opens on "No, exit": Down picks "Yes, I trust this folder", Enter confirms it.
@@ -61,10 +73,13 @@ steps | while IFS=$'\t' read -r id wait prompt; do
   manual=$(count session.compact '"trigger":"manual"')
   done_rows=$(notices replay-done)
   before=$(newest)
-  key=${prompt%%\"*}
+  sent=${prompt%% ++ *}
+  key=${sent%%\"*}
   key=${key:0:30}
   echo "drive: $id ($wait)"
-  tmux send-keys -t "$target" -l -- "$prompt"
+  # Typed as one of the busy turn's Bash calls starts, the prompt waits in the queue for that call's 15 seconds.
+  case $wait in pull-back|edit|queued) wait_for "$id busy Bash call" "bash_after $before" 120 0.5 ;; esac
+  tmux send-keys -t "$target" -l -- "$sent"
   sleep 1
   tmux send-keys -t "$target" Enter
   case $wait in
@@ -78,6 +93,33 @@ steps | while IFS=$'\t' read -r id wait prompt; do
         echo "drive: $id saw no prompt.submit row holding \"$key\"; waiting for any new main turn" >&2
         wait_for "$id main turn.complete" "[ \$(count turn.complete) -gt $turns ]"
       fi ;;
+    busy) wait_for "$id prompt.submit" "[ -n \"\$(typed_after \"$key\" \"$before\")\" ]" 120 ;;
+    pull-back)
+      wait_for "$id queued prompt.submit" "[ -n \"\$(typed_after \"$key\" \"$before\")\" ]" 10 0.3
+      pull_back "$id" "$key"
+      tmux send-keys -t "$target" C-u ;;
+    edit)
+      wait_for "$id queued prompt.submit" "[ -n \"\$(typed_after \"$key\" \"$before\")\" ]" 10 0.3
+      pull_back "$id" "$key"
+      appended=${prompt#* ++ }
+      tmux send-keys -t "$target" -l -- "$appended"
+      sleep 1
+      tmux send-keys -t "$target" Enter
+      wait_for "$id re-sent prompt.submit" "[ -n \"\$(typed_after \"${appended:0:30}\" \"$before\")\" ]" 10 0.3 ;;
+    queued)
+      wait_for "$id queued prompt.submit" "[ -n \"\$(typed_after \"$key\" \"$before\")\" ]" 10 0.3
+      typed=$(typed_after "$key" "$before")
+      wait_for "$id busy turn.complete" "[ \$(turns_after $typed) -gt 0 ]" ;;
+    essay)
+      wait_for "$id forward_compaction call" "called_after $before"
+      call=$(newest_after tool.call "$before" '__forward_compaction')
+      wait_for "$id request after the call" "request_after $call" 300 0.5
+      sleep 2 ;;
+    waiting)
+      wait_for "$id queued prompt.submit" "[ -n \"\$(typed_after \"$key\" \"$before\")\" ]" 10 0.3
+      wait_for "$id entry" "[ -n \"\$(newest_after session.append \"$before\" \"$key\")\" ]"
+      entry=$(newest_after session.append "$before" "$key")
+      wait_for "$id turn.complete" "[ \$(turns_after $entry) -gt 0 ]" ;;
     manual-compact) wait_for "$id manual session.compact" "[ \$(count session.compact '\"trigger\":\"manual\"') -gt $manual ]" ;;
     notification)
       wait_for "$id main turn.complete" "[ \$(count turn.complete) -gt $turns ]"

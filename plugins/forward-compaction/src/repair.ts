@@ -1,5 +1,6 @@
-// Reads a tool argument that arrived as text because the JSON the model wrote for it did not parse: its brackets are
-// balanced and it is read again. Hand-written: the plugin's sandbox loads no dependency, and the slips are few and known.
+// Reads a tool argument that arrived as text because the JSON the model wrote for it did not parse, or a whole call's
+// input Claude Code could not parse: its brackets are balanced and it is read again. Hand-written: the plugin's sandbox
+// loads no dependency, and the slips are few and known.
 
 const CLOSER: Record<string, string> = { '{': '}', '[': ']' };
 const BARE_OP = /^(add|remove|edit)\s*:/;
@@ -7,8 +8,8 @@ const BARE_OP = /^(add|remove|edit)\s*:/;
 const TAG_OP = /^<(?:\w+:)?parameter name="(add|remove|edit)">/;
 const TAG_END = /^<\/(?:\w+:)?parameter>/;
 
-/** `text` with its brackets balanced: a closer that skips open brackets gets theirs first, one with nothing open is dropped, and the end closes an open string and every open bracket. Strings pass whole. */
-function balanced(text: string): string {
+/** `text` with its brackets balanced: a closer that skips open brackets gets theirs first, one with nothing open is dropped, and the end closes an open string and every open bracket, `open` counting them. Strings pass whole. */
+function balanced(text: string): { text: string; open: number } {
   const open: string[] = [];
   let out = '';
   let inString = false;
@@ -30,7 +31,7 @@ function balanced(text: string): string {
     }
     out += ch;
   }
-  return out + (inString ? '"' : '') + open.reverse().join('');
+  return { text: out + (inString ? '"' : '') + open.reverse().join(''), open: open.length + (inString ? 1 : 0) };
 }
 
 /** `add: [...], remove: [...]` as an object: each bare operation name at the top level quoted, the whole braced. An operation named by a leaked tag reads the same, its closing tag dropped and the comma the tags stand for put back. */
@@ -79,7 +80,7 @@ export function repairJson(key: string, text: string): { own: unknown; beside: R
   const body = text.trim();
   const read = (candidate: string): unknown => {
     try {
-      return JSON.parse(balanced(candidate));
+      return JSON.parse(balanced(candidate).text);
     } catch {
       return undefined; // not this reading
     }
@@ -90,4 +91,25 @@ export function repairJson(key: string, text: string): { own: unknown; beside: R
   if (typeof whole !== 'object' || whole === null || Array.isArray(whole)) return undefined;
   const { [key]: mine, ...beside } = whole as Record<string, unknown>;
   return { own: mine, beside };
+}
+
+const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
+
+/**
+ * A call whose whole input Claude Code could not parse as JSON: it hands the tool `{__unparsedToolInput: {raw, len}}` in
+ * place of the arguments, `raw` the text the model wrote. Returns that text and `read`: its arguments, read with the
+ * brackets balanced, and `open`, how many strings and brackets the text's end left open (0 when the text closed its own
+ * object). `read` is absent when no object comes out. Undefined for every other input.
+ */
+export function unparsedCall(input: unknown): { raw: string; read?: { args: Record<string, unknown>; open: number } } | undefined {
+  if (!isObject(input) || Object.keys(input).length !== 1) return undefined;
+  const held = input.__unparsedToolInput;
+  if (!isObject(held) || typeof held.raw !== 'string') return undefined;
+  const raw = held.raw, { text, open } = balanced(raw.trim());
+  try {
+    const args: unknown = JSON.parse(text);
+    return isObject(args) ? { raw, read: { args, open } } : { raw };
+  } catch {
+    return { raw }; // no reading
+  }
 }

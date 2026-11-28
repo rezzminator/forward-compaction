@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   promptsKept, restorePrompts, PROMPTS_KEPT, skillsKept, restoreSkills,
-  PERSON_ORIGINS, addEntry, attributeSkill, deliveryOf, factsFor, isUserOrigin, markStart, newLedger, resolveSpawn, runStartOf, shellsOf,
-  type EntryInput, type Ledger, type PartyKey,
+  PERSON_ORIGINS, SUBMITTED_HELD, addEntry, attributeSkill, deliveryOf, enteredOf, factsFor, holdSubmitted, isUserOrigin, markStart, newLedger, resolveSpawn, runStartOf, shellsOf,
+  type EntryInput, type Ledger, type PartyKey, type Submitted,
 } from '../plugins/forward-compaction/src/ledger.ts';
 
 const user = (text: string, at = 1): EntryInput => ({ kind: 'user', party: 'main', text, at });
@@ -132,10 +132,51 @@ describe('deliveryOf', () => {
       { kind: 'received', party: 'agent:a1', origin: 'task-notification', text: '<system-reminder>\n<task-notification>done</task-notification>\n</system-reminder>', at: 7 }],
     ['a coordinator\'s note, its text blocks joined and other blocks left out', { agentId: 'a1', origin: { kind: 'coordinator' }, message: { content: [text('note'), { type: 'image', source: {} }, text('more')] } },
       { kind: 'received', party: 'agent:a1', origin: 'coordinator', text: 'note\nmore', at: 7 }],
-    ['main, whose deliveries arrive through prompt.submit', { origin: { kind: 'task-notification' }, message: { content: [text('done')] } }, undefined],
+    ['main, whose prompts enteredOf records', { origin: { kind: 'task-notification' }, message: { content: [text('done')] } }, undefined],
     ['a row with no text', { agentId: 'a1', origin: { kind: 'coordinator' }, message: { content: [{ type: 'image', source: {} }] } }, undefined],
   ])('%s', (_name, e, want) => {
     expect(deliveryOf(e, 7)).toEqual(want);
+  });
+});
+
+describe('enteredOf', () => {
+  const composer = { kind: 'composer' };
+  const row = (door: string, body: string, extra: Record<string, unknown> = {}) => ({ door, origin: composer, message: { content: [{ type: 'text', text: body }] }, ...extra });
+  // The reminder Claude Code 2.1.331 wraps a prompt delivered into a running turn in, as recorded.
+  const reminder = (said: string) => `<system-reminder>\nThe user sent a new message while you were working:\n${said}\n\nThis is how Claude Code surfaces messages the user sends mid-turn — within the running turn, often alongside the next tool result, rather than as a separate conversation turn. Address the message above as you continue this turn.\n</system-reminder>`;
+  const held = (said: string, command?: string): Submitted => ({ text: said, ...(command !== undefined ? { command } : {}) });
+  const user = (said: string, command?: string) => ({ kind: 'user', party: 'main', at: 9, text: said, ...(command !== undefined ? { command } : {}) });
+  const command = '<command-message>forward-compaction:replay-rules</command-message>\n<command-name>/forward-compaction:replay-rules</command-name>';
+  it.each([
+    ['a prompt typed while main is idle, or queued and taken at the turn end', [held('fix the parser')], row('prompt', 'fix the parser'), user('fix the parser'), []],
+    ['a queued prompt delivered into the running turn', [held('queued ECHO mid-turn')], row('delivery', reminder('queued ECHO mid-turn')), user('queued ECHO mid-turn'), []],
+    ['a pulled-back prompt edited and re-sent, the pulled-back one left held', [held('CHARLIE original'), held('CHARLIE original EDITED')], row('delivery', reminder('CHARLIE original EDITED')), user('CHARLIE original EDITED'), [held('CHARLIE original')]],
+    ['a pulled-back prompt whose words the reminder holds, beside the delivered one', [held('continue this turn'), held('go')], row('delivery', reminder('go')), user('go'), [held('continue this turn')]],
+    ['a pulled-back prompt that is a whole line of the reminder, beside the delivered one', [held('The user sent a new message while you were working:'), held('go')], row('delivery', reminder('go')), user('go'), [held('The user sent a new message while you were working:')]],
+    ['two held prompts the delivery holds on their own lines: the longest', [held('fix'), held('fix\nand test')], row('delivery', reminder('fix\nand test')), user('fix\nand test'), [held('fix')]],
+    ['the same prompt held twice: recorded once, the other left held', [held('yes'), held('yes')], row('prompt', 'yes'), user('yes'), [held('yes')]],
+    ['a typed skill command', [held('/forward-compaction:replay-rules', 'forward-compaction:replay-rules')], row('command', command), user('/forward-compaction:replay-rules', 'forward-compaction:replay-rules'), []],
+    ['a prompt held with no text, its row with none', [held('')], { door: 'prompt', origin: composer, message: { content: [{ type: 'image', source: {} }] } }, user(''), []],
+    ['a prompt a plugin reload forgot: the row as it entered', [], row('prompt', 'typed before the reload'), user('typed before the reload'), []],
+    ['a delivery a plugin reload forgot: the row as the model read it, its reminder whole', [], row('delivery', reminder('queued before the reload')), user(reminder('queued before the reload')), []],
+    ['a command none held: a built-in the person never submitted', [held('fix the parser')], row('command', '<command-name>/compact</command-name>'), undefined, [held('fix the parser')]],
+    ['a plain prompt is no command', [held('fix the parser')], row('command', command), undefined, [held('fix the parser')]],
+    ['a command is no plain prompt', [held('/forward-compaction:replay-rules', 'forward-compaction:replay-rules')], row('prompt', '/forward-compaction:replay-rules'), user('/forward-compaction:replay-rules'), [held('/forward-compaction:replay-rules', 'forward-compaction:replay-rules')]],
+    ['a notification entering main', [held('fix the parser')], { ...row('prompt', '<task-notification>done</task-notification>'), origin: { kind: 'task-notification' } }, undefined, [held('fix the parser')]],
+    ['a meta prompt', [], row('prompt', 'a reminder', { message: { isMeta: true, content: [{ type: 'text', text: 'a reminder' }] } }), undefined, []],
+    ["a sub-agent's row", [held('fix the parser')], row('prompt', 'fix the parser', { agentId: 'a1' }), undefined, [held('fix the parser')]],
+    ['a row with no text and none held', [], { door: 'delivery', origin: composer, message: { content: [{ type: 'image', source: {} }] } }, undefined, []],
+  ])('%s', (_name, before, e, entry, after) => {
+    // Every fact is at the time its row entered (9), never the Enter time: the ledger's order is its times' order.
+    expect(enteredOf(before, e, 9)).toEqual({ ...(entry !== undefined ? { entry } : {}), held: after });
+  });
+
+  it('holds the newest SUBMITTED_HELD submissions, letting the oldest go past them', () => {
+    const many = (n: number): Submitted[] => Array.from({ length: n }, (_, i) => held(`prompt ${i}`));
+    expect(SUBMITTED_HELD).toBe(10);
+    expect(holdSubmitted(many(8), held('prompt 8'))).toEqual(many(9));
+    expect(holdSubmitted(many(9), held('prompt 9'))).toEqual(many(10));
+    expect(holdSubmitted(many(10), held('prompt 10'))).toEqual(many(11).slice(1));
   });
 });
 

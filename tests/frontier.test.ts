@@ -20,6 +20,9 @@ import { emptyHeld, LISTS } from '../plugins/forward-compaction/src/lists.ts';
 
 const notes = (input: unknown, cwd?: string): string[] => parseCall(input, cwd).notes;
 const FIELDS_NOTE = 'The fields are objective, next, orders, decisions, done, remaining, blocked, findings, storage and load_files.';
+/** A call's input as Claude Code hands it over when the JSON the model wrote for the whole call did not parse. */
+const unparsed = (raw: string): unknown => ({ __unparsedToolInput: { raw, len: raw.length } });
+const UNPARSED_NOTE = "This call's arguments arrived as JSON that did not parse: repaired and read, this result's lines show what they changed.";
 
 describe('the forward_compaction tool as registered', () => {
   it('is named forward_compaction, says changes go by number, and holds one example call', () => {
@@ -27,12 +30,13 @@ describe('the forward_compaction tool as registered', () => {
     expect(FORWARD_TOOL_DESCRIPTION).toBe('Compacts your context — call it when a forward-compaction notice asks; a call on a small context only updates your frontier. A compaction drops what you have read; the frontier stays: numbered lists, so send only changes: add texts, remove or edit by number; what you leave out stays. One fact or step per item. MANDATORY: keep it clean: each call removes what is finished, lifted or wrong, edits what changed. Always stores. Example: forward_compaction({"next": "Run the gate", "done": {"add": ["Parser merged, 41 tests pass"]}, "remaining": {"remove": [3]}}). Exact old detail later → look_back.');
   });
 
-  it('closes the schema: two texts, six lists each with add, remove and edit, storage and load_files, none required', () => {
+  it('closes the schema: two texts, six lists each with add, remove and edit, storage, load_files and model, none required', () => {
     expect(FORWARD_INPUT_SCHEMA).toMatchObject({ type: 'object', additionalProperties: false });
     expect(FORWARD_INPUT_SCHEMA).not.toHaveProperty('required');
-    expect(Object.keys(FORWARD_INPUT_SCHEMA.properties)).toEqual(['objective', 'next', 'decisions', 'done', 'remaining', 'blocked', 'findings', 'orders', 'storage', 'load_files']);
+    expect(Object.keys(FORWARD_INPUT_SCHEMA.properties)).toEqual(['objective', 'next', 'decisions', 'done', 'remaining', 'blocked', 'findings', 'orders', 'storage', 'load_files', 'model']);
     expect(FORWARD_INPUT_SCHEMA.properties.objective.description).toBe('What the work is for and what done means. Send it on your first call, then only when it changes. Once it is reached, the call that sends the next one reviews every order.');
     expect(FORWARD_INPUT_SCHEMA.properties.next.description).toBe('Every call: the first concrete action after the wake.');
+    expect(FORWARD_INPUT_SCHEMA.properties.model).toEqual({ type: 'string', description: 'The model the main chat continues on; only when the user asked for it in their own words, never on your own judgment.' });
     expect(Object.fromEntries(LISTS.map((name) => [name, FORWARD_INPUT_SCHEMA.properties[name].description]))).toEqual({
       orders: `Every rule of the user's that binds the rest of the work (a prohibition, a limit, a rule), in the user's words; several may share one item. An instruction for one part of the work is no order: it goes to remaining. A rule the user changes is edited. You lift a rule given only for an objective now reached; every other rule only the user lifts. A lifted rule leaves entirely, never kept as a LIFTED note: remove its item, or edit the item down to its other rules. Example: [2] reads 'Never push. Tests go in tests/. One CHANGELOG line per fix.' and the user drops the CHANGELOG rule. Wrong: {"edit": [{"id": 2, "text": "Never push. Tests go in tests/. LIFTED: one CHANGELOG line per fix."}]}. Right: {"edit": [{"id": 2, "text": "Never push. Tests go in tests/."}]}.`,
       decisions: "Every ruling the user gave on how something gets done, in the user's words, each with its undo when one exists. A question the user put on hold goes to blocked.",
@@ -53,10 +57,11 @@ describe('the forward_compaction tool as registered', () => {
 });
 
 describe('parseCall passes each change on as sent and names every argument it reads another way', () => {
-  it('passes texts, lists and storage on untouched, and has no load files when the call sends none', () => {
+  it('passes texts, lists, storage and model on untouched, and has no load files when the call sends none', () => {
     const input = { objective: 'ship it', next: 'wire the hook', done: { add: ['parser'] }, remaining: 'not an object', storage: { add: [{ name: 'a.md' }] } };
     expect(parseCall(input)).toEqual({ texts: { objective: 'ship it', next: 'wire the hook' }, lists: { done: { add: ['parser'] }, remaining: 'not an object' }, extra: {}, storage: { add: [{ name: 'a.md' }] }, loadAt: [], notes: [] });
     expect(parseCall({ load_files: [] })).toMatchObject({ loadFiles: [], notes: [] });
+    expect(parseCall({ next: 'go', model: 'opus' })).toEqual({ texts: { next: 'go' }, lists: {}, extra: {}, loadAt: [], notes: [], model: 'opus' });
     for (const input of ['## Objective', undefined, null]) expect(parseCall(input)).toEqual({ texts: {}, lists: {}, extra: {}, loadAt: [], notes: [] });
   });
 
@@ -71,6 +76,8 @@ describe('parseCall passes each change on as sent and names every argument it re
     [{ drop_files: ['/a'] }, {}, ['drop_files is no field: ignored.']],
     [{ done_remove_placeholder: [] }, {}, [`unknown field "done_remove_placeholder" held nothing: ignored. ${FIELDS_NOTE}`]],
     [{ note: ' ' }, {}, [`unknown field "note" held nothing: ignored. ${FIELDS_NOTE}`]],
+    [unparsed('{"done": {"add": ["parser", oops'), { findings: ['[this call\'s arguments, as they arrived]\n{"done": {"add": ["parser", oops'] }, ["This call's arguments arrived as JSON no repair could read: kept whole as one finding. Send them again."]],
+    [{ __unparsedToolInput: { len: 3 } }, { findings: ['[__unparsedToolInput, an argument forward_compaction does not take]\n{"len":3}'] }, [`unknown field "__unparsedToolInput" added to findings. ${FIELDS_NOTE}`]],
   ])('%j joins %j', (input, extra, want) => {
     const call = parseCall(input);
     expect([call.extra, call.notes]).toEqual([extra, want]);
@@ -86,6 +93,12 @@ describe('parseCall passes each change on as sent and names every argument it re
     ['a text that only starts like JSON as one text, and the JSON text after it', { done: '[4] tokens fixed, tests pass', remaining: '{"remove": [2]}' }, { done: '[4] tokens fixed, tests pass', remaining: { remove: [2] } }, ['remaining arrived as the text of its JSON: read as JSON.']],
     ['an array of numbers stays one text', { done: '[1, 2]' }, { done: '[1, 2]' }, []],
     ['an empty object or array sent as text as nothing sent', { done: '{}', remaining: '[]', findings: '{"add": ["plan"]}' }, { findings: { add: ['plan'] } }, ['done arrived as the text of its JSON: read as JSON.', 'remaining arrived as the text of its JSON: read as JSON.', 'findings arrived as the text of its JSON: read as JSON.']],
+    ['the fields written inside a list\'s object, beside its operations', { next: 'go', done: { add: ['parser'], remaining: { remove: [2] }, findings: { add: ['plan'] } } }, { done: { add: ['parser'] }, remaining: { remove: [2] }, findings: { add: ['plan'] } }, ['remaining and findings arrived inside done, beside its operations: taken out as their own fields.']],
+    ['a field written two lists deep', { done: { add: ['parser'], remaining: { remove: [2], findings: { add: ['plan'] } } } }, { done: { add: ['parser'] }, remaining: { remove: [2] }, findings: { add: ['plan'] } }, ['remaining arrived inside done, beside its operations: taken out as its own field.', 'findings arrived inside remaining, beside its operations: taken out as its own field.']],
+    ['a list\'s object holding only another field', { done: { remaining: { remove: [2] } } }, { remaining: { remove: [2] } }, ['remaining arrived inside done, beside its operations: taken out as its own field.']],
+    ['a list\'s object holding a key that is no field as sent', { done: { add: ['parser'], status: 'ok' } }, { done: { add: ['parser'], status: 'ok' } }, []],
+    ['a list\'s object holding a field the call also sent as sent', { remaining: { remove: [1] }, done: { add: ['parser'], remaining: { remove: [2] } } }, { remaining: { remove: [1] }, done: { add: ['parser'], remaining: { remove: [2] } } }, []],
+    ['a whole call whose JSON did not parse, one closer short before its last argument, as a live call sent it', unparsed('{"next": "go", "done": {"add": ["parser"], "findings": {"add": ["plan"]}}'), { done: { add: ['parser'] }, findings: { add: ['plan'] } }, [UNPARSED_NOTE, 'findings arrived inside done, beside its operations: taken out as its own field.']],
     // The four shapes real calls sent when the JSON the model wrote for an argument did not parse.
     ['a text one closer short, with the fields written after its operations', { next: 'go', done: '{"add":["sink fixed"],"remaining":{"edit":[{"id":1,"text":"ledger"}]},"findings":{"add":["plan"]}' }, { done: { add: ['sink fixed'] }, remaining: { edit: [{ id: 1, text: 'ledger' }] }, findings: { add: ['plan'] } }, [`done arrived as text whose JSON was broken: repaired and read, this result's lines show what it changed, and remaining and findings inside it taken out as their own fields.`]],
     ['a text whose array closes before its last object', { remaining: '{"edit": [{"id": 2, "text": "verify"}, {"id": 3, "text": "report [done]"]}' }, { remaining: { edit: [{ id: 2, text: 'verify' }, { id: 3, text: 'report [done]' }] } }, [`remaining arrived as text whose JSON was broken: repaired and read, this result's lines show what it changed.`]],
@@ -98,6 +111,25 @@ describe('parseCall passes each change on as sent and names every argument it re
     const call = parseCall(input);
     expect([call.lists, call.notes]).toEqual([lists, notes]);
     expect(call.broken ?? []).toEqual(notes.filter((note) => note.includes('JSON was broken')).map((note) => note.split(' ')[0]));
+  });
+
+  it.each([
+    ['the last argument, the form that ended a real call early', { objective: 'ship it', orders: '\n<parameter name="add">["No git writes."]' }, ['orders'], true],
+    ['followed by a whole list, as in a real call whose reply then showed twice', { remaining: { remove: [1] }, done: '{"add":["pilot found"]', findings: { add: ['plan'] } }, ['done'], false],
+    ['followed by a plain text', { done: '{"add":["a"]', next: 'go' }, ['done'], false],
+    ['followed by another broken field, the last argument', { done: 'add: ["a"]', findings: 'add: ["b"]' }, ['done', 'findings'], true],
+    ['the last argument, written inside the text before it after its markup closed that text early', { objective: 'ship it', next: 'go</next>\n<parameter name="done">{"add":["a"]' }, ['done'], true],
+    ['written inside the text before it after its markup closed that text early, a later argument written after it', { objective: 'ship it', next: 'go</next>\n<parameter name="done">{"add":["a"]</done>\n<parameter name="remaining">{"remove":[1]}' }, ['done'], false],
+    ['the last argument, the fields written after it inside its own text', { next: 'go', storage: '{"add":[{"name":"l.md","value":"x"}]},"done":{"add":["d"]}}' }, ['storage'], true],
+    ['a whole unparsed call one closer short, a later argument written inside the list left open', unparsed('{"objective": "ship it", "next": "go", "done": {"add": ["a"], "findings": {"add": ["b"]}}'), [], false],
+    ['a whole unparsed call whose text closes its own object', unparsed('{"objective": "ship it", "done": {"add": ["a"}, "next": "go"}'), [], false],
+    ['a whole unparsed call one closer short, no argument after the last list', unparsed('{"objective": "ship it", "next": "go", "done": {"add": ["a"]}'), [], true],
+    ['a whole unparsed call two closers short, a later argument written inside the list left open', unparsed('{"objective": "ship it", "done": {"add": ["a"], "findings": {"add": ["b"]}'), [], true],
+    ['a whole unparsed call cut inside a string', unparsed('{"objective": "ship it", "next": "go", "done": {"add": ["a'), [], true],
+    ['a whole unparsed call no repair reads', unparsed('{"done": {"add": ["parser", oops'), [], true],
+  ])('tells whether a broken field ended its call: %s', (_name, input, broken, ended) => {
+    const call = parseCall(input);
+    expect([call.broken ?? [], call.endedBroken ?? false]).toEqual([broken, ended]);
   });
 
   it('reads storage and load_files sent as the text of their JSON, and leaves one of the wrong shape to its own note', () => {
@@ -216,11 +248,11 @@ describe('receipt says what was stored and when it installs, per party (R16)', (
     [{ party: 'main' as const, files: 0, tokens: 86_000, askPoint: 67_000, compacts: false }, `Frontier updated.${NOTHING}`],
     [{ party: 'main' as const, files: 0, missing: ['next'], compacts: false }, `Frontier updated, without next: send it before it installs, or the wake names it missing.${NOTHING}`],
     [{ party: 'subagent' as const, files: 2, tokens: 120_000, askPoint: 67_000, compacts: false, replaced: true }, `Frontier updated with 2 files to load.${NOTHING} This call applied on top of your earlier one since the last wake.`],
-    [{ party: 'subagent' as const, files: 0, tokens: 201_373, askPoint: 67_000, missing: ['next'], broken: ['orders'] }, `Frontier stored, without next: send it before it installs, or the wake names it missing.${EARLY} It installs after your next request.${BEHIND}`],
-    [{ party: 'subagent' as const, files: 0, tokens: 209_322, askPoint: 67_000, broken: ['orders'] }, `Frontier stored.${EARLY} It installs after your next request.${BEHIND}`],
-    [{ party: 'subagent' as const, files: 0, askPoint: 67_000, broken: ['done'] }, `Frontier stored.${EARLY} Claude Code has not asked to compact you yet: it installs at Claude Code's second ask, from about 67k context.${BEHIND} Carry on with your work.`],
-    [{ party: 'main' as const, files: 0, tokens: 150_000, askPoint: 67_000, broken: ['done'] }, `Frontier stored.${EARLY} It installs after your next request, inside this turn: what you have read is gone then, and the rest of the turn, your reply to the user included, is written from the frontier.${BEHIND}`],
-    [{ party: 'main' as const, files: 0, tokens: 86_000, askPoint: 67_000, compacts: false, broken: ['done'] }, `Frontier updated.${NOTHING}`],
+    [{ party: 'subagent' as const, files: 0, tokens: 201_373, askPoint: 67_000, missing: ['next'], endedBroken: true }, `Frontier stored, without next: send it before it installs, or the wake names it missing.${EARLY} It installs after your next request.${BEHIND}`],
+    [{ party: 'subagent' as const, files: 0, tokens: 209_322, askPoint: 67_000, endedBroken: true }, `Frontier stored.${EARLY} It installs after your next request.${BEHIND}`],
+    [{ party: 'subagent' as const, files: 0, askPoint: 67_000, endedBroken: true }, `Frontier stored.${EARLY} Claude Code has not asked to compact you yet: it installs at Claude Code's second ask, from about 67k context.${BEHIND} Carry on with your work.`],
+    [{ party: 'main' as const, files: 0, tokens: 150_000, askPoint: 67_000, endedBroken: true }, `Frontier stored.${EARLY} It installs after your next request, inside this turn: what you have read is gone then, and the rest of the turn, your reply to the user included, is written from the frontier.${BEHIND}`],
+    [{ party: 'main' as const, files: 0, tokens: 86_000, askPoint: 67_000, compacts: false, endedBroken: true }, `Frontier updated.${NOTHING}`],
   ])('%j', (input, want) => {
     expect(receipt(input)).toBe(want);
   });

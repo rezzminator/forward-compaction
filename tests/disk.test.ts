@@ -71,6 +71,21 @@ describe('PartyFiles: write, history and load', () => {
     const unread = await new PartyFiles(R).load(memFs({ [`${R}/floor.json`]: '{"floor": "x"}' }));
     expect([unread.held.floor, unread.problems]).toEqual([undefined, [{ file: 'floor.json', error: 'not a {floor}' }]]);
   });
+  it("keeps main's model switch in model-switch.json, loads it back, writes {} once it ends, and names a file that holds none", async () => {
+    const fs = memFs(), files = new PartyFiles(R), modelSwitch = { active: { model: 'opus', from: 'claude-sonnet-5-5', took: true as const } };
+    files.changed('modelSwitch');
+    expect(await files.flush(fs, { ...emptyHeld(), modelSwitch })).toEqual([]);
+    expect([fs.files[`${R}/model-switch.json`], files.dirty.size]).toEqual(['{\n  "active": {\n    "model": "opus",\n    "from": "claude-sonnet-5-5",\n    "took": true\n  }\n}\n', 0]);
+    const loaded = await new PartyFiles(R).load(fs);
+    expect([loaded.held.modelSwitch, loaded.problems]).toEqual([modelSwitch, []]);
+    files.changed('modelSwitch');
+    expect(await files.flush(fs, emptyHeld())).toEqual([]);
+    expect(fs.files[`${R}/model-switch.json`]).toBe('{}\n');
+    const ended = await new PartyFiles(R).load(fs);
+    expect([ended.held.modelSwitch, ended.problems]).toEqual([undefined, []]);
+    const unread = await new PartyFiles(R).load(memFs({ [`${R}/model-switch.json`]: '{"active": {"model": "opus"}}' }));
+    expect([unread.held.modelSwitch, unread.problems]).toEqual([undefined, [{ file: 'model-switch.json', error: 'not a model switch' }]]);
+  });
 
   it('keeps each item\'s added time in its file and its history line, loads it back, loads an item stored without one as before, and drops one that is no ISO time', async () => {
     const fs = memFs(), files = new PartyFiles(R), held = emptyHeld(), at = '2026-10-27T14:53:00.000Z';

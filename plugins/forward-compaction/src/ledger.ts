@@ -51,15 +51,59 @@ export function shellsOf(e: Record<string, unknown>, stopping?: string): { tasks
   return { tasks: tasks.filter((t) => t.id !== stopping), crons };
 }
 
+/** A row appended to a conversation (`session.append`), as far as the ledger reads it. */
+type AppendedRow = { door: string; agentId?: string; origin: unknown; message: { isMeta?: true; content: readonly { type: string; [field: string]: unknown }[] } };
+
+/** A row's text as the model reads it: its text blocks, joined by newlines. */
+const rowText = (message: AppendedRow['message']): string =>
+  message.content.flatMap((b) => (b.type === 'text' && typeof b.text === 'string' ? [b.text] : [])).join('\n');
+
 /**
  * A row delivered into a running sub-agent (`session.append` door `delivery`: a child agent's return, a coordinator's note) as
- * the received fact, its text the row's text blocks, what the model reads; none for main, whose deliveries arrive through
- * prompt.submit, or for a row with no text.
+ * the received fact, its text the row's text blocks, what the model reads; none for main, whose prompts enteredOf records, or
+ * for a row with no text.
  */
-export function deliveryOf(e: { agentId?: string; origin: unknown; message: { content: readonly { type: string; [field: string]: unknown }[] } }, at: number): EntryInput | undefined {
-  const text = e.message.content.flatMap((b) => (b.type === 'text' && typeof b.text === 'string' ? [b.text] : [])).join('\n');
+export function deliveryOf(e: Omit<AppendedRow, 'door'>, at: number): EntryInput | undefined {
+  const text = rowText(e.message);
   if (e.agentId === undefined || e.agentId === '' || text === '') return undefined;
   return { kind: 'received', party: keyOf(e.agentId), origin: originKind(e.origin), text, at };
+}
+
+/** A prompt the user submitted (prompt.submit), held until it enters main's conversation. */
+export type Submitted = { text: string; command?: string };
+
+/** The most submissions held at once, a design budget: one pulled back from the queue is held until newer ones push it out. */
+export const SUBMITTED_HELD = 10;
+
+/** The held submissions with `s` added, the newest SUBMITTED_HELD. */
+export function holdSubmitted(held: readonly Submitted[], s: Submitted): Submitted[] {
+  // shortcut: a pull-back's queue row is its enqueue's, and its one other sign, a prompt.change of origin `engine` with its text, is not shown to be a pull-back's alone, so a pulled-back prompt is held until SUBMITTED_HELD newer ones push it out; upgrade when Claude Code names the pull-back.
+  return [...held, s].slice(-SUBMITTED_HELD);
+}
+
+/**
+ * Whether a row appended to main's conversation is a prompt of the user's entering it (`session.append`), as its user fact,
+ * and the submissions still held. A prompt typed while main is idle, or queued behind a running turn and taken at its end,
+ * enters at door `prompt` as its own text; one queued and delivered into the running turn enters at door `delivery`, its text
+ * a paragraph of Claude Code's reminder (its own lines, a blank line after); a slash command enters at door `command`, naming
+ * `<command-name>/{name}</command-name>`. The held submission it is (the longest text, the newest on a tie) gives the fact
+ * its words and is let go; a prompt or delivery none is held for (one a plugin reload forgot) is its row's text as the model
+ * reads it, a delivery's reminder whole. Every fact is at `now`, when the row entered, so the ledger's order is its time's. A row of a sub-agent or of anyone but the person, a meta prompt, a command none is held for or a
+ * row with no text is none: a submission is said once it entered, so one pulled back from the queue, or still waiting, never is.
+ */
+export function enteredOf(held: readonly Submitted[], row: AppendedRow, now: number): { entry?: EntryInput; held: Submitted[] } {
+  const none = { held: [...held] };
+  if (keyOf(row.agentId) !== 'main' || !isUserOrigin(originKind(row.origin)) || (row.door === 'prompt' && row.message.isMeta === true)) return none;
+  const text = rowText(row.message);
+  const is = (s: Submitted): boolean => {
+    if (row.door === 'command') return s.command !== undefined && text.includes(`<command-name>/${s.command}</command-name>`);
+    if (s.command !== undefined) return false;
+    return row.door === 'prompt' ? text === s.text : row.door === 'delivery' && s.text !== '' && text.includes(`\n${s.text}\n\n`);
+  };
+  const found = held.reduce((best, s, i) => (is(s) && (best < 0 || s.text.length >= held[best]!.text.length) ? i : best), -1);
+  if (found < 0) return (row.door === 'prompt' || row.door === 'delivery') && text !== '' ? { entry: { kind: 'user', party: 'main', at: now, text }, held: [...held] } : none;
+  const s = held[found]!;
+  return { entry: { kind: 'user', party: 'main', at: now, text: s.text, ...(s.command !== undefined ? { command: s.command } : {}) }, held: held.filter((_, i) => i !== found) };
 }
 
 /**
