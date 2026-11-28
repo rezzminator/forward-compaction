@@ -2,6 +2,21 @@
 
 Every release of forward-compaction, named sub-agent-compact before 1.0.0. Versions follow [semantic versioning](https://semver.org); each release is the `main` commit tagged `forward-compaction--v<version>` (`sub-agent-compact--v<version>` before 1.0.0), with a GitHub release carrying the section below.
 
+## [2.8.0] — 2026-11-28
+
+### Added
+
+- **A `forward_compaction` call can name the model the main chat continues on.** Its new optional `model` argument, sent only when you ask for the switch, is tried first with one small trial request; once that is answered, the name is given to each of main's requests from its first request after a compaction. Claude Code's own model, `/model` and your saved default never change, so its header keeps showing the earlier model; one screen line says each begin, each end and a refused name. An unknown or blocked name changes nothing, and the call's result says why. The switch ends when Claude Code gives main another model (`/model`, a relaunch, its own fallback), when the starting model is asked back, or when the first answer still comes from the starting model. Main's switch is kept in `model-switch.json` across a restart.
+
+### Changed
+
+- **A model switch never costs a prompt cache.** Main's request model changes only at its first request after a compaction of main; a call that compacts nothing keeps the switch waiting for the next one. A fork of a switched main follows the switch, and the follow is kept in `model-switch.json`. An armed switch survives a restart: after a start or a plugin reload, requests wait at most 2 s, once, for what main kept to be restored, and a request sent unswitched after that returns main's switch to waiting for its next compaction.
+
+### Fixed
+
+- **A prompt is recorded as said only once it enters main's conversation.** A prompt typed over a running turn used to be recorded at Enter. It is now held until Claude Code delivers it, so a prompt you pull back from the queue is in no compaction, one still queued at a compaction is recorded once when it is delivered, and each recorded prompt carries the time it entered.
+- **A call with a repaired field waits only when that field was the last one the model wrote.** When a whole argument follows the repaired field, the call installs its frontier right after the call, and the reply is written once, after the install. A call whose whole input Claude Code could not parse is repaired and read instead of landing in findings, and waits only when its text reads as cut short. A field written inside a list's object beside its operations is taken out as its own field. The call's receipt names an early end only for a call that waits.
+
 ## [2.7.0] — 2026-11-25
 
 ### Changed
